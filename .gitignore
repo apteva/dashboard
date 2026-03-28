@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.next/
+*.log
+*.db
+.env
+.claude/
+data/
