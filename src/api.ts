@@ -117,11 +117,14 @@ export const instances = {
 
   pause: (id: number) => request<{ paused: boolean }>("POST", `/instances/${id}/pause`),
 
-  sendEvent: (id: number, message: string) =>
-    request<any>("POST", `/instances/${id}/event`, { message }),
+  sendEvent: (id: number, message: string | Array<{ type: string; text?: string; image_url?: { url: string }; audio_url?: { url: string; mime_type?: string } }>, threadId?: string) =>
+    request<any>("POST", `/instances/${id}/event`, { message, ...(threadId ? { thread_id: threadId } : {}) }),
 
-  updateConfig: (id: number, directive: string) =>
-    request<Instance>("PUT", `/instances/${id}/config`, { directive }),
+  updateConfig: (id: number, directive?: string, mode?: string) =>
+    request<Instance>("PUT", `/instances/${id}/config`, {
+      ...(directive ? { directive } : {}),
+      ...(mode ? { mode } : {}),
+    }),
 };
 
 // Providers
@@ -308,8 +311,19 @@ export const subscriptions = {
 
 // Core per-instance API (proxied through server)
 export interface PendingApproval {
+  id?: string;
   name: string;
-  args: string;
+  args: Record<string, string>;
+}
+
+// Legacy event format from core /events SSE (used by Events page)
+export interface APIEvent {
+  type: string;
+  thread_id: string;
+  message: string;
+  iteration: number;
+  duration: string;
+  time: string;
 }
 
 export interface Status {

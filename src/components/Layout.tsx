@@ -5,10 +5,12 @@ import { useProjects } from "../hooks/useProjects";
 
 export function Layout() {
   const [providerList, setProviderList] = useState<Provider[]>([]);
+  const [version, setVersion] = useState("");
   const { projects, currentProject, setCurrentProject } = useProjects();
 
   useEffect(() => {
     providers.list().then(setProviderList).catch(() => {});
+    fetch("/version").then((r) => r.json()).then((d) => setVersion(d.version || "")).catch(() => {});
   }, []);
 
   const hasIntegrations = providerList.some((p) => p.name === "Apteva Local");
@@ -66,6 +68,11 @@ export function Layout() {
             </NavLink>
           ))}
         </div>
+        {version && (
+          <div className="px-5 py-3 border-t border-border">
+            <span className="text-text-muted text-xs">v{version}</span>
+          </div>
+        )}
       </nav>
 
       {/* Main content */}

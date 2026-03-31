@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { instances, telemetry, type Instance, type TelemetryStats, type TelemetryEvent } from "../api";
 import {
-  AreaChart, Area, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+  AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 
@@ -15,6 +15,8 @@ export function Analytics() {
   const [period, setPeriod] = useState<Period>("24h");
   const [timeline, setTimeline] = useState<any[]>([]);
   const [recentEvents, setRecentEvents] = useState<TelemetryEvent[]>([]);
+  const [allEvents, setAllEvents] = useState<TelemetryEvent[]>([]);
+  const [eventFilter, setEventFilter] = useState<string>("");
   const [toolBreakdown, setToolBreakdown] = useState<Record<string, number>>({});
   const [threadCosts, setThreadCosts] = useState<Record<string, number>>({});
 
@@ -42,6 +44,7 @@ export function Analytics() {
         setThreadCosts(costs);
       }).catch(() => {});
       telemetry.query(instance.id, "llm.done", 50).then((e) => setRecentEvents(e || [])).catch(() => {});
+      telemetry.query(instance.id, undefined, 200).then((e) => setAllEvents(e || [])).catch(() => {});
       telemetry.query(instance.id, "tool", 200).then((events) => {
         const counts: Record<string, number> = {};
         for (const e of events || []) {
@@ -71,8 +74,30 @@ export function Analytics() {
     );
   }
 
-  const costPerHour = stats && period === "1h" ? stats.total_cost : stats ? stats.total_cost / (period === "24h" ? 24 : 168) : 0;
-  const costPerDay = costPerHour * 24;
+  // Smart projection: compute cost rate from recent LLM calls per thread
+  // Groups by thread, measures avg cost/call and call frequency, then projects
+  const projectedPerHour = (() => {
+    if (recentEvents.length < 2) return stats ? stats.total_cost / Math.max(period === "1h" ? 1 : period === "24h" ? 24 : 168, 1) : 0;
+    const byThread: Record<string, { costs: number[]; times: number[] }> = {};
+    for (const e of recentEvents) {
+      const tid = e.thread_id || "main";
+      if (!byThread[tid]) byThread[tid] = { costs: [], times: [] };
+      if (e.data?.cost_usd) byThread[tid].costs.push(e.data.cost_usd);
+      if (e.time) byThread[tid].times.push(new Date(e.time).getTime());
+    }
+    let rate = 0;
+    for (const [, data] of Object.entries(byThread)) {
+      if (data.costs.length < 2 || data.times.length < 2) continue;
+      const avgCost = data.costs.reduce((a, b) => a + b, 0) / data.costs.length;
+      const sortedTimes = data.times.sort((a, b) => a - b);
+      const spanMs = sortedTimes[sortedTimes.length - 1] - sortedTimes[0];
+      if (spanMs < 1000) continue;
+      const callsPerHour = (data.times.length / spanMs) * 3600000;
+      rate += avgCost * callsPerHour;
+    }
+    return rate;
+  })();
+  const costPerDay = projectedPerHour * 24;
   const costPerMonth = costPerDay * 30;
 
   const cacheHitRate = recentEvents.length > 0
@@ -130,7 +155,7 @@ export function Analytics() {
     itemStyle: { padding: "2px 0" },
     cursor: { fill: "rgba(255,255,255,0.03)" },
   };
-  const axisStyle = { stroke: "#333", fontSize: 10, fontFamily: "'JetBrains Mono', monospace" };
+  const axisStyle = { stroke: "#555", fill: "#888", fontSize: 10, fontFamily: "'JetBrains Mono', monospace" };
   const gridStyle = { stroke: "#1a1a1a", strokeDasharray: "none" };
 
   return (
@@ -156,11 +181,11 @@ export function Analytics() {
         {stats && (
           <>
             {/* Summary cards */}
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
               <StatCard label="Total Cost" value={`$${stats.total_cost.toFixed(4)}`} sub={period} />
-              <StatCard label="Cost/Day" value={`$${costPerDay.toFixed(3)}`} />
-              <StatCard label="Cost/Month" value={`$${costPerMonth.toFixed(2)}`} />
-              <StatCard label="LLM Calls" value={String(stats.llm_calls)} />
+              <StatCard label="Projected/Day" value={`$${costPerDay.toFixed(3)}`} sub="based on recent activity" />
+              <StatCard label="Projected/Month" value={`$${costPerMonth.toFixed(2)}`} />
+              <StatCard label="LLM Calls" value={String(stats.llm_calls)} sub={`${formatNumber(stats.total_tokens_in)} tok in`} />
               <StatCard label="Cache Rate" value={`${cacheHitRate.toFixed(0)}%`} />
               <StatCard label="Errors" value={String(stats.errors)} highlight={stats.errors > 0 ? "red" : undefined} />
             </div>
@@ -226,8 +251,8 @@ export function Analytics() {
                         <YAxis {...axisStyle} tickLine={false} axisLine={false} />
                         <Tooltip {...chartTooltip} />
                         <Legend wrapperStyle={{ fontSize: 10, fontFamily: "'JetBrains Mono', monospace", color: "#666" }} />
-                        <Bar dataKey="tokens_in" name="Input" fill="#3b82f6" stackId="tok" radius={[2, 2, 0, 0]} opacity={0.8} />
-                        <Bar dataKey="tokens_out" name="Output" fill="#f97316" stackId="tok" radius={[2, 2, 0, 0]} opacity={0.8} />
+                        <Bar dataKey="tokens_in" name="Input" fill="#3b82f6" radius={[2, 2, 0, 0]} opacity={0.8} />
+                        <Bar dataKey="tokens_out" name="Output" fill="#f97316" radius={[2, 2, 0, 0]} opacity={0.8} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -240,19 +265,16 @@ export function Analytics() {
               {/* Cost by Thread */}
               {threadCostData.length > 0 && (
                 <section>
-                  <h2 className="text-text text-base font-bold mb-3">Cost by Thread</h2>
+                  <h2 className="text-text text-sm font-bold mb-3 uppercase tracking-wide">Cost by Thread</h2>
                   <div className="border border-border rounded-lg bg-bg-card p-4" style={{ height: 220 }}>
                     <ResponsiveContainer>
-                      <PieChart>
-                        <Pie data={threadCostData} dataKey="value" nameKey="name" cx="50%" cy="50%"
-                          innerRadius={50} outerRadius={80} paddingAngle={2}>
-                          {threadCostData.map((_, i) => (
-                            <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                          ))}
-                        </Pie>
+                      <BarChart data={threadCostData} layout="vertical" margin={{ left: 80 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" />
+                        <XAxis type="number" {...axisStyle} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v.toFixed(3)}`} />
+                        <YAxis type="category" dataKey="name" {...axisStyle} tickLine={false} axisLine={false} width={80} />
                         <Tooltip {...chartTooltip} formatter={(v: number) => `$${v.toFixed(4)}`} />
-                        <Legend wrapperStyle={{ fontSize: 11 }} />
-                      </PieChart>
+                        <Bar dataKey="value" fill="#f97316" radius={[0, 4, 4, 0]} opacity={0.8} />
+                      </BarChart>
                     </ResponsiveContainer>
                   </div>
                 </section>
@@ -261,15 +283,15 @@ export function Analytics() {
               {/* Tool Usage */}
               {toolData.length > 0 && (
                 <section>
-                  <h2 className="text-text text-base font-bold mb-3">Top Tools</h2>
+                  <h2 className="text-text text-sm font-bold mb-3 uppercase tracking-wide">Top Tools</h2>
                   <div className="border border-border rounded-lg bg-bg-card p-4" style={{ height: 220 }}>
                     <ResponsiveContainer>
                       <BarChart data={toolData} layout="vertical" margin={{ left: 80 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" />
-                        <XAxis type="number" stroke="#555" fontSize={11} />
-                        <YAxis type="category" dataKey="name" stroke="#555" fontSize={10} width={80} />
+                        <XAxis type="number" {...axisStyle} tickLine={false} axisLine={false} />
+                        <YAxis type="category" dataKey="name" {...axisStyle} tickLine={false} axisLine={false} width={80} />
                         <Tooltip {...chartTooltip} />
-                        <Bar dataKey="count" fill="#22c55e" radius={[0, 4, 4, 0]} />
+                        <Bar dataKey="count" fill="#f97316" radius={[0, 4, 4, 0]} opacity={0.8} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -277,38 +299,57 @@ export function Analytics() {
               )}
             </div>
 
-            {/* Stats detail row */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <StatCard label="Input Tokens" value={formatNumber(stats.total_tokens_in)} />
-              <StatCard label="Output Tokens" value={formatNumber(stats.total_tokens_out)} />
-              <StatCard label="Threads Spawned" value={String(stats.threads_spawned)} />
-              <StatCard label="Tool Calls" value={String(stats.tool_calls)} />
-            </div>
-
-            {/* Recent LLM calls */}
-            {recentEvents.length > 0 && (
+            {/* Event Stream */}
+            {allEvents.length > 0 && (
               <section>
-                <h2 className="text-text text-base font-bold mb-3">Recent LLM Calls</h2>
-                <div className="border border-border rounded-lg bg-bg-card divide-y divide-border">
-                  {recentEvents.slice(0, 15).map((e) => (
-                    <div key={e.id} className="px-4 py-3">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-text text-sm font-bold uppercase tracking-wide">Event Stream</h2>
+                  <div className="flex gap-1.5">
+                    {["", "llm", "tool", "thread", "event"].map((f) => (
+                      <button
+                        key={f}
+                        onClick={() => setEventFilter(f)}
+                        className={`px-2.5 py-1 rounded text-xs transition-colors ${
+                          eventFilter === f
+                            ? "bg-accent text-bg font-bold"
+                            : "text-text-muted border border-border hover:text-text"
+                        }`}
+                      >
+                        {f || "all"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="border border-border rounded-lg bg-bg-card divide-y divide-border max-h-[500px] overflow-y-auto">
+                  {allEvents
+                    .filter((e) => !eventFilter || e.type.startsWith(eventFilter + "."))
+                    .map((e) => (
+                    <div key={e.id} className="px-4 py-2.5">
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3 text-sm">
-                          <span className="text-text-muted">{new Date(e.time).toLocaleTimeString()}</span>
-                          <span className="text-text-dim">{e.thread_id}</span>
-                          <span className="text-text">#{e.data?.iteration}</span>
+                        <div className="flex items-center gap-2 text-sm">
+                          <span className="text-text-muted text-xs">{new Date(e.time).toLocaleTimeString()}</span>
+                          <span className={`text-xs font-bold ${eventTypeColor(e.type)}`}>{e.type}</span>
+                          <span className="text-text-dim text-xs">{e.thread_id}</span>
                         </div>
-                        <div className="flex items-center gap-4 text-sm text-text-muted">
-                          <span>{e.data?.tokens_in}→{e.data?.tokens_out} tok</span>
-                          <span>{e.data?.duration_ms}ms</span>
-                          {e.data?.cost_usd && <span className="text-accent">${e.data.cost_usd.toFixed(4)}</span>}
+                        <div className="flex items-center gap-3 text-xs text-text-muted">
+                          {e.type === "llm.done" && e.data?.tokens_in && (
+                            <>
+                              <span>{e.data.tokens_in}→{e.data.tokens_out} tok</span>
+                              <span>{e.data.duration_ms}ms</span>
+                              {e.data.cost_usd && <span className="text-accent">${e.data.cost_usd.toFixed(4)}</span>}
+                            </>
+                          )}
+                          {e.type === "tool.result" && (
+                            <>
+                              <span className={e.data?.success ? "text-green" : "text-red"}>{e.data?.success ? "ok" : "fail"}</span>
+                              <span>{e.data?.duration_ms}ms</span>
+                            </>
+                          )}
                         </div>
                       </div>
-                      {e.data?.message && (
-                        <p className="text-text-dim text-sm mt-1 truncate">
-                          {e.data.message.length > 100 ? e.data.message.substring(0, 100) + "..." : e.data.message}
-                        </p>
-                      )}
+                      <p className="text-text-dim text-xs mt-0.5 truncate">
+                        {formatEventDetail(e)}
+                      </p>
                     </div>
                   ))}
                 </div>
@@ -321,6 +362,53 @@ export function Analytics() {
       </div>
     </div>
   );
+}
+
+function eventTypeColor(type: string): string {
+  if (type.startsWith("llm.")) return "text-accent";
+  if (type === "tool.call") return "text-yellow";
+  if (type === "tool.result") return "text-text-muted";
+  if (type === "tool.pending") return "text-yellow";
+  if (type === "tool.approved") return "text-green";
+  if (type === "tool.rejected") return "text-red";
+  if (type === "thread.spawn") return "text-green";
+  if (type === "thread.done") return "text-blue";
+  if (type === "thread.message") return "text-blue";
+  if (type.startsWith("event.")) return "text-cyan";
+  if (type.includes("error")) return "text-red";
+  return "text-text-dim";
+}
+
+function formatEventDetail(e: { type: string; data?: Record<string, any> }): string {
+  const d = e.data || {};
+  switch (e.type) {
+    case "llm.done":
+      return d.message || "";
+    case "llm.error":
+      return d.error || "";
+    case "tool.call":
+    case "tool.pending":
+      return d.name ? `${d.name}${d.args ? "(" + Object.entries(d.args).map(([k, v]) => {
+        const s = String(v);
+        return `${k}=${s.length > 50 ? s.slice(0, 50) + "..." : s}`;
+      }).join(", ") + ")" : ""}` : "";
+    case "tool.result":
+      return `${d.name || ""}${d.result ? " — " + (d.result.length > 100 ? d.result.slice(0, 100) + "..." : d.result) : ""}`;
+    case "tool.approved":
+      return `${d.name} approved`;
+    case "tool.rejected":
+      return `${d.name} rejected`;
+    case "thread.spawn":
+      return d.directive || "spawned";
+    case "thread.done":
+      return d.result || "done";
+    case "thread.message":
+      return `${d.from} → ${d.to}`;
+    case "event.received":
+      return `[${d.source}] ${d.message || ""}`;
+    default:
+      return d.message || d.error || d.result || "";
+  }
 }
 
 function StatCard({ label, value, sub, highlight }: { label: string; value: string; sub?: string; highlight?: string }) {

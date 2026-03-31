@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { core, type APIEvent } from "../api";
+import { telemetry, type TelemetryEvent } from "../api";
 
-export function useSSE(maxEvents = 200) {
-  const [events, setEvents] = useState<APIEvent[]>([]);
+export function useSSE(instanceId: number | null, maxEvents = 200) {
+  const [events, setEvents] = useState<TelemetryEvent[]>([]);
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    const es = core.events();
+    if (!instanceId) return;
+
+    const es = telemetry.stream(instanceId);
     esRef.current = es;
 
     es.onmessage = (e) => {
       try {
-        const event: APIEvent = JSON.parse(e.data);
+        const event: TelemetryEvent = JSON.parse(e.data);
         setEvents((prev) => {
           const next = [...prev, event];
           return next.length > maxEvents ? next.slice(-maxEvents) : next;
@@ -26,7 +28,7 @@ export function useSSE(maxEvents = 200) {
     return () => {
       es.close();
     };
-  }, [maxEvents]);
+  }, [instanceId, maxEvents]);
 
   return events;
 }

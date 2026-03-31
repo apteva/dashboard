@@ -1,4 +1,9 @@
 import { $ } from "bun";
+import { rmSync, mkdirSync } from "fs";
+
+// Step 0: Clean old builds
+rmSync("./dist", { recursive: true, force: true });
+mkdirSync("./dist", { recursive: true });
 
 // Step 1: Build Tailwind CSS
 console.log("Building CSS...");
