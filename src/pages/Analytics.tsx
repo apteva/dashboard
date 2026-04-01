@@ -74,26 +74,35 @@ export function Analytics() {
     );
   }
 
-  // Smart projection: compute cost rate from recent LLM calls per thread
-  // Groups by thread, measures avg cost/call and call frequency, then projects
+  // Projected cost — mirrors TUI logic: cost/iter * (1h / (thinkTime + sleepTime))
+  // Uses each thread's actual pace/sleep duration to project realistically
   const projectedPerHour = (() => {
     if (recentEvents.length < 2) return stats ? stats.total_cost / Math.max(period === "1h" ? 1 : period === "24h" ? 24 : 168, 1) : 0;
-    const byThread: Record<string, { costs: number[]; times: number[] }> = {};
+    const byThread: Record<string, { totalCost: number; iterations: number; lastRate: string; times: number[] }> = {};
     for (const e of recentEvents) {
       const tid = e.thread_id || "main";
-      if (!byThread[tid]) byThread[tid] = { costs: [], times: [] };
-      if (e.data?.cost_usd) byThread[tid].costs.push(e.data.cost_usd);
+      if (!byThread[tid]) byThread[tid] = { totalCost: 0, iterations: 0, lastRate: "30s", times: [] };
+      byThread[tid].iterations++;
+      if (e.data?.cost_usd) byThread[tid].totalCost += e.data.cost_usd;
+      if (e.data?.rate) byThread[tid].lastRate = e.data.rate;
       if (e.time) byThread[tid].times.push(new Date(e.time).getTime());
     }
     let rate = 0;
     for (const [, data] of Object.entries(byThread)) {
-      if (data.costs.length < 2 || data.times.length < 2) continue;
-      const avgCost = data.costs.reduce((a, b) => a + b, 0) / data.costs.length;
-      const sortedTimes = data.times.sort((a, b) => a - b);
-      const spanMs = sortedTimes[sortedTimes.length - 1] - sortedTimes[0];
-      if (spanMs < 1000) continue;
-      const callsPerHour = (data.times.length / spanMs) * 3600000;
-      rate += avgCost * callsPerHour;
+      if (data.iterations === 0 || data.totalCost === 0) continue;
+      const costPerIter = data.totalCost / data.iterations;
+      const sleepMs = parseRateToMs(data.lastRate);
+      // Estimate avg think duration from actual event intervals
+      let avgThinkMs = 3000; // default 3s
+      if (data.times.length >= 2) {
+        const sorted = data.times.sort((a, b) => a - b);
+        const totalSpan = sorted[sorted.length - 1] - sorted[0];
+        avgThinkMs = Math.max(totalSpan / data.iterations - sleepMs, 1000);
+      }
+      if (avgThinkMs > sleepMs) avgThinkMs = 2000; // cap like TUI does
+      const cycleMs = Math.max(avgThinkMs + sleepMs, 1000);
+      const itersPerHour = 3600000 / cycleMs;
+      rate += costPerIter * itersPerHour;
     }
     return rate;
   })();
@@ -334,6 +343,7 @@ export function Analytics() {
                         <div className="flex items-center gap-3 text-xs text-text-muted">
                           {e.type === "llm.done" && e.data?.tokens_in && (
                             <>
+                              {e.data.model && <span className="text-blue">{e.data.model.split("/").pop()}</span>}
                               <span>{e.data.tokens_in}→{e.data.tokens_out} tok</span>
                               <span>{e.data.duration_ms}ms</span>
                               {e.data.cost_usd && <span className="text-accent">${e.data.cost_usd.toFixed(4)}</span>}
@@ -362,6 +372,21 @@ export function Analytics() {
       </div>
     </div>
   );
+}
+
+// Parse rate strings like "2s", "30s", "5m", "1h" to milliseconds
+function parseRateToMs(rate: string): number {
+  if (!rate) return 30000;
+  const match = rate.match(/^(\d+(?:\.\d+)?)\s*(s|m|h|ms)$/);
+  if (!match) return 30000;
+  const val = parseFloat(match[1]);
+  switch (match[2]) {
+    case "ms": return val;
+    case "s": return val * 1000;
+    case "m": return val * 60000;
+    case "h": return val * 3600000;
+    default: return 30000;
+  }
 }
 
 function eventTypeColor(type: string): string {

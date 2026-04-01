@@ -222,10 +222,13 @@ export const integrations = {
 
   app: (slug: string) => request<AppDetail>("GET", `/integrations/catalog/${slug}`),
 
-  connections: () => request<ConnectionInfo[]>("GET", "/connections"),
+  connections: (projectId?: string) => {
+    const params = projectId ? `?project_id=${projectId}` : "";
+    return request<ConnectionInfo[]>("GET", `/connections${params}`);
+  },
 
-  connect: (appSlug: string, name: string, credentials: Record<string, string>, authType?: string) =>
-    request<ConnectionInfo>("POST", "/connections", { app_slug: appSlug, name, credentials, auth_type: authType }),
+  connect: (appSlug: string, name: string, credentials: Record<string, string>, authType?: string, projectId?: string) =>
+    request<ConnectionInfo>("POST", "/connections", { app_slug: appSlug, name, credentials, auth_type: authType, project_id: projectId || "" }),
 
   disconnect: (id: number) => request<any>("DELETE", `/connections/${id}`),
 
@@ -259,10 +262,13 @@ export interface MCPTool {
 }
 
 export const mcpServers = {
-  list: () => request<MCPServer[]>("GET", "/mcp-servers"),
+  list: (projectId?: string) => {
+    const params = projectId ? `?project_id=${projectId}` : "";
+    return request<MCPServer[]>("GET", `/mcp-servers${params}`);
+  },
 
-  create: (name: string, command: string, args: string[], env: Record<string, string>, description: string) =>
-    request<MCPServer>("POST", "/mcp-servers", { name, command, args, env, description }),
+  create: (name: string, command: string, args: string[], env: Record<string, string>, description: string, projectId?: string) =>
+    request<MCPServer>("POST", "/mcp-servers", { name, command, args, env, description, project_id: projectId || "" }),
 
   delete: (id: number) => request<any>("DELETE", `/mcp-servers/${id}`),
 
@@ -289,7 +295,10 @@ export interface SubscriptionInfo {
 }
 
 export const subscriptions = {
-  list: () => request<SubscriptionInfo[]>("GET", "/subscriptions"),
+  list: (projectId?: string) => {
+    const params = projectId ? `?project_id=${projectId}` : "";
+    return request<SubscriptionInfo[]>("GET", `/subscriptions${params}`);
+  },
 
   create: (name: string, slug: string, instanceId: number, opts?: { connectionId?: number; description?: string; hmacSecret?: string }) =>
     request<{ subscription: SubscriptionInfo; webhook_url: string }>("POST", "/subscriptions", {

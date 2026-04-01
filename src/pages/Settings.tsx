@@ -319,6 +319,7 @@ function ProvidersTab() {
 // ─── MCP Servers Tab ───
 
 function MCPServersTab() {
+  const { currentProject } = useProjects();
   const [servers, setServers] = useState<MCPServer[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [name, setName] = useState("");
@@ -334,8 +335,8 @@ function MCPServersTab() {
   const [testResult, setTestResult] = useState<any>(null);
   const [testRunning, setTestRunning] = useState(false);
 
-  const load = () => mcpServers.list().then((s) => setServers(s || [])).catch(() => {});
-  useEffect(() => { load(); const i = setInterval(load, 5000); return () => clearInterval(i); }, []);
+  const load = () => mcpServers.list(currentProject?.id).then((s) => setServers(s || [])).catch(() => {});
+  useEffect(() => { load(); const i = setInterval(load, 5000); return () => clearInterval(i); }, [currentProject?.id]);
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -352,7 +353,7 @@ function MCPServersTab() {
     }
 
     try {
-      await mcpServers.create(name.trim(), command.trim(), parsedArgs, env, description.trim());
+      await mcpServers.create(name.trim(), command.trim(), parsedArgs, env, description.trim(), currentProject?.id);
       setShowAdd(false);
       setName(""); setCommand(""); setArgs(""); setDescription("");
       setEnvFields([{ key: "", value: "" }]);
@@ -710,6 +711,7 @@ function MCPServersTab() {
 // ─── Subscriptions Tab ───
 
 function SubscriptionsTab() {
+  const { currentProject } = useProjects();
   const [subs, setSubs] = useState<SubscriptionInfo[]>([]);
   const safeSubs = subs || [];
   const [connections, setConnections] = useState<any[]>([]);
@@ -724,16 +726,16 @@ function SubscriptionsTab() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const load = () => {
-    subscriptions.list().then(setSubs).catch(() => {});
-    integrations.connections().then(setConnections).catch(() => {});
-    instancesAPI.list().then(setInstanceList).catch(() => {});
+    subscriptions.list(currentProject?.id).then(setSubs).catch(() => {});
+    integrations.connections(currentProject?.id).then(setConnections).catch(() => {});
+    instancesAPI.list(currentProject?.id).then(setInstanceList).catch(() => {});
     integrations.catalog().then((apps) => {
       const map: Record<string, any> = {};
       for (const app of apps || []) map[app.slug] = app;
       setCatalog(map);
     }).catch(() => {});
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [currentProject?.id]);
 
   const safeConns = connections || [];
   const subscribedConnIds = new Set(safeSubs.map((s) => s.connection_id));

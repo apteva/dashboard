@@ -300,10 +300,19 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
 
     // Supervised mode — approval UI
     if (event.type === "tool.pending" && event.data) {
-      setPendingApproval({ name: event.data.name, args: event.data.args });
+      setPendingApproval({ id: event.data.id || event.id, name: event.data.name, args: event.data.args });
     }
     if (event.type === "tool.approved" || event.type === "tool.rejected") {
       setPendingApproval(null);
+    }
+    if (event.type === "thread.done" && event.data) {
+      // Reset filter if the killed thread was selected
+      const doneId = event.data.id || event.thread_id;
+      setThreadFilter((prev) => prev === doneId ? null : prev);
+    }
+    if (event.type === "directive.evolved") {
+      // Trigger parent reload to pick up new directive from server
+      onReload();
     }
     if (event.type === "mode.changed" && event.data) {
       setMode(event.data.mode);
@@ -454,7 +463,7 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
             >
               all
             </button>
-            {Array.from(new Set([...threads.map((t) => t.id), ...stream.map((e) => e.threadId)])).sort((a, b) => a === "main" ? -1 : b === "main" ? 1 : a.localeCompare(b)).map((tid) => (
+            {threads.map((t) => t.id).sort((a, b) => a === "main" ? -1 : b === "main" ? 1 : a.localeCompare(b)).map((tid) => (
               <button
                 key={tid}
                 onClick={() => setThreadFilter(threadFilter === tid ? null : tid)}
@@ -555,7 +564,7 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
                       <span className="text-yellow animate-pulse shrink-0">⏳</span>
                       <span className="text-text shrink-0">{d.name}</span>
                       {d.args && <span className="text-text-dim break-all">({formatArgs(d.args)})</span>}
-                      {pendingApproval && pendingApproval.name === d.name && (
+                      {pendingApproval && (pendingApproval.id === d.id || pendingApproval.id === e.id) && (
                         <span className="flex items-center gap-1 ml-1">
                           <button
                             onClick={async () => { await core.approve(instance.id, true); setPendingApproval(null); }}

@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
 import { integrations, providers, type AppSummary, type AppDetail, type ConnectionInfo, type Provider } from "../api";
 import { useNavigate } from "react-router-dom";
+import { useProjects } from "../hooks/useProjects";
 
 export function Integrations() {
+  const { currentProject } = useProjects();
   const [search, setSearch] = useState("");
   const [apps, setApps] = useState<AppSummary[]>([]);
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
@@ -18,12 +20,12 @@ export function Integrations() {
   const isActivated = providerList.some((p) => p.name === "Apteva Local");
 
   const loadApps = () => integrations.catalog(search).then(setApps).catch(() => {});
-  const loadConnections = () => integrations.connections().then(setConnections).catch(() => {});
+  const loadConnections = () => integrations.connections(currentProject?.id).then(setConnections).catch(() => {});
 
   useEffect(() => {
     providers.list().then((p) => { setProviderList(p); setLoaded(true); }).catch(() => setLoaded(true));
-    loadConnections();
   }, []);
+  useEffect(() => { loadConnections(); }, [currentProject?.id]);
   useEffect(() => { if (isActivated) loadApps(); }, [search, isActivated]);
 
   const selectApp = async (slug: string) => {
@@ -40,7 +42,7 @@ export function Integrations() {
     setError("");
     setConnecting(true);
     try {
-      await integrations.connect(selectedApp.slug, connName.trim(), credentials);
+      await integrations.connect(selectedApp.slug, connName.trim(), credentials, undefined, currentProject?.id);
       setSelectedApp(null);
       setCredentials({});
       loadConnections();
