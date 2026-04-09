@@ -150,9 +150,9 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
       setGraphEvents((prev) => [...prev.slice(-30), { type: "tool", from: event.thread_id, to: event.thread_id, text: data.name, time: Date.now() }]);
     }
     if (event.type === "tool.result" && data.name && !String(data.name).startsWith("channels_")) {
-      // Delay clearing the active tool so the glow is visible
       const threadId = event.thread_id;
       const toolName = data.name;
+      // Delay clearing active tool glow
       setTimeout(() => {
         setGraphActiveTools((prev) => {
           if (prev[threadId] === toolName) {
@@ -298,7 +298,7 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
           ) : view === "fleet" ? (
             <FleetGraph threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} events={graphEvents} />
           ) : (
-            <FleetCards threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} events={graphEvents} />
+            <FleetCards threads={graphThreads} event={latestEvent} activeTools={graphActiveTools} thoughts={graphThoughts} />
           )}
         </div>
       </div>

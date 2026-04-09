@@ -1,18 +1,19 @@
 import { useState, useEffect } from "react";
-import type { Thread } from "../api";
-import type { FleetEvent } from "./FleetGraph";
+import type { Thread, TelemetryEvent } from "../api";
 
 interface FleetCardsProps {
   threads: Thread[];
+  event: TelemetryEvent | null; // same SSE event that ActivityPanel gets
   activeTools: Record<string, string>;
   thoughts: Record<string, string>;
-  events?: FleetEvent[];
 }
 
-interface RecentTool {
+interface ToolEntry {
   threadId: string;
   name: string;
   done: boolean;
+  durationMs?: number;
+  success?: boolean;
   time: number;
 }
 
@@ -41,51 +42,45 @@ function orderTree(threads: Thread[]): Thread[] {
   return result;
 }
 
-// Tree connector lines
-function TreePrefix({ depth }: { depth: number }) {
-  if (depth === 0) return null;
-  return (
-    <div className="flex items-center shrink-0 text-text-dim select-none" style={{ width: `${depth * 20}px` }}>
-      {Array.from({ length: depth - 1 }).map((_, i) => (
-        <span key={i} className="w-5 inline-block border-l border-border h-full" />
-      ))}
-      <span className="w-5 inline-block">├─</span>
-    </div>
-  );
-}
-
-export function FleetCards({ threads, activeTools, thoughts, events = [] }: FleetCardsProps) {
+export function FleetCards({ threads, event, activeTools, thoughts }: FleetCardsProps) {
+  const [tools, setTools] = useState<ToolEntry[]>([]);
   const [messageFlash, setMessageFlash] = useState<Record<string, number>>({});
-  const [recentTools, setRecentTools] = useState<RecentTool[]>([]);
 
-  // Track messages
+  // Process SSE events — same logic as ActivityPanel
   useEffect(() => {
-    if (events.length === 0) return;
-    const latest = events[events.length - 1];
-    if (!latest || latest.type !== "message") return;
-    setMessageFlash((prev) => ({ ...prev, [latest.to]: Date.now() + 3000 }));
-  }, [events.length]);
+    if (!event) return;
+    const data = event.data || {};
 
-  // Track tool calls from events
-  useEffect(() => {
-    if (events.length === 0) return;
-    const latest = events[events.length - 1];
-    if (!latest || latest.type !== "tool") return;
-    setRecentTools((prev) => [
-      ...prev.slice(-20),
-      { threadId: latest.from, name: latest.text || "", done: false, time: Date.now() },
-    ]);
-    // Auto-mark done after 3s
-    setTimeout(() => {
-      setRecentTools((prev) =>
-        prev.map((t) =>
-          t.time === latest.time && t.name === latest.text ? { ...t, done: true } : t
-        )
-      );
-    }, 3000);
-  }, [events.length]);
+    if (event.type === "tool.call" && data.name && !String(data.name).startsWith("channels_")) {
+      setTools((prev) => [...prev, {
+        threadId: event.thread_id, name: data.name, done: false, time: Date.now(),
+      }].slice(-30));
+    }
 
-  // Decay flashes
+    if (event.type === "tool.result" && data.name && !String(data.name).startsWith("channels_")) {
+      setTools((prev) => {
+        const updated = [...prev];
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (!updated[i].done && updated[i].name === data.name && updated[i].threadId === event.thread_id) {
+            updated[i] = { ...updated[i], done: true, durationMs: data.duration_ms, success: data.success !== false };
+            return updated;
+          }
+        }
+        return updated;
+      });
+    }
+
+    // Message flash from event.received
+    if (event.type === "event.received" && data.source === "thread") {
+      const msg = String(data.message || "");
+      const match = msg.match(/\[from:(\S+)\]/);
+      if (match) {
+        setMessageFlash((prev) => ({ ...prev, [event.thread_id]: Date.now() + 3000 }));
+      }
+    }
+  }, [event]);
+
+  // Decay flashes + prune old tools
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
@@ -96,8 +91,7 @@ export function FleetCards({ threads, activeTools, thoughts, events = [] }: Flee
         }
         return Object.keys(next).length !== Object.keys(prev).length ? next : prev;
       });
-      // Clean old tools
-      setRecentTools((prev) => prev.filter((t) => Date.now() - t.time < 30000));
+      setTools((prev) => prev.filter((t) => Date.now() - t.time < 30000));
     }, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -112,9 +106,9 @@ export function FleetCards({ threads, activeTools, thoughts, events = [] }: Flee
 
   const ordered = orderTree(threads);
 
-  // Recent tools per thread
-  const toolsByThread: Record<string, RecentTool[]> = {};
-  for (const t of recentTools) {
+  // Group tools by thread
+  const toolsByThread: Record<string, ToolEntry[]> = {};
+  for (const t of tools) {
     if (!toolsByThread[t.threadId]) toolsByThread[t.threadId] = [];
     toolsByThread[t.threadId].push(t);
   }
@@ -132,18 +126,13 @@ export function FleetCards({ threads, activeTools, thoughts, events = [] }: Flee
 
         return (
           <div key={t.id} className="flex" style={{ paddingLeft: `${depth * 14}px` }}>
-            {/* Tree connector */}
             {depth > 0 && (
-              <div className="flex items-start pt-3 mr-1 text-border select-none text-xs">
-                ├─
-              </div>
+              <div className="flex items-start pt-3 mr-1 text-border select-none text-xs">├─</div>
             )}
 
-            {/* Card */}
             <div
               className={`
-                flex-1 rounded-xl border-l-[3px] border border-border
-                transition-all duration-500
+                flex-1 rounded-xl border-l-[3px] border border-border transition-all duration-500
                 ${hasMessage ? "border-l-green bg-green/8 shadow-[0_0_16px_rgba(34,197,94,0.2)]" : ""}
                 ${isActive && !hasMessage ? "border-l-accent bg-accent/8 shadow-[0_0_16px_rgba(249,115,22,0.15)]" : ""}
                 ${!isActive && !hasMessage && isMain ? "border-l-accent/50 bg-bg-card" : ""}
@@ -152,29 +141,24 @@ export function FleetCards({ threads, activeTools, thoughts, events = [] }: Flee
             >
               {/* Header */}
               <div className="flex items-center gap-3 px-4 py-3">
-                <span
-                  className={`w-2.5 h-2.5 rounded-full shrink-0 transition-all duration-300 ${
-                    hasMessage ? "bg-green animate-pulse shadow-[0_0_6px_rgba(34,197,94,0.5)]" :
-                    isActive ? "bg-accent animate-pulse shadow-[0_0_6px_rgba(249,115,22,0.5)]" :
-                    "bg-green/40"
-                  }`}
-                />
+                <span className={`w-2.5 h-2.5 rounded-full shrink-0 transition-all duration-300 ${
+                  hasMessage ? "bg-green animate-pulse shadow-[0_0_6px_rgba(34,197,94,0.5)]" :
+                  isActive ? "bg-accent animate-pulse shadow-[0_0_6px_rgba(249,115,22,0.5)]" :
+                  "bg-green/40"
+                }`} />
                 <span className="text-text font-bold text-sm">{t.id}</span>
                 {isMain && <span className="text-text-dim text-[10px] bg-accent/10 px-1.5 py-0.5 rounded">coordinator</span>}
-
                 <div className="ml-auto flex items-center gap-3 text-text-muted text-xs">
                   <span>#{t.iteration}</span>
                   <span className={`px-1.5 py-0.5 rounded text-[10px] ${
                     t.rate === "reactive" || t.rate === "fast" ? "bg-accent/15 text-accent" :
                     t.rate === "sleep" ? "bg-border text-text-dim" :
                     "bg-border text-text-muted"
-                  }`}>
-                    {t.rate}
-                  </span>
+                  }`}>{t.rate}</span>
                 </div>
               </div>
 
-              {/* Active tool — prominent */}
+              {/* Active tool */}
               {isActive && (
                 <div className="px-4 pb-2">
                   <div className="flex items-center gap-2 text-accent text-sm font-medium">
@@ -184,22 +168,27 @@ export function FleetCards({ threads, activeTools, thoughts, events = [] }: Flee
                 </div>
               )}
 
-              {/* Recent tool calls for this thread */}
-              {threadTools.length > 0 && !isActive && (
+              {/* Recent tool calls */}
+              {threadTools.length > 0 && (
                 <div className="px-4 pb-2">
                   <div className="flex flex-wrap gap-1.5">
-                    {threadTools.slice(-4).map((tt, i) => (
-                      <span
-                        key={i}
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] transition-all ${
+                    {threadTools.slice(-6).map((tt, i) => {
+                      const dur = tt.durationMs != null
+                        ? tt.durationMs >= 1000 ? `${(tt.durationMs / 1000).toFixed(1)}s` : `${tt.durationMs}ms`
+                        : "";
+                      const shortName = tt.name.replace(/^onboarding_|^cms_/, "");
+                      return (
+                        <span key={i} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] transition-all ${
                           tt.done
-                            ? "bg-green/10 text-green/70"
-                            : "bg-accent/15 text-accent"
-                        }`}
-                      >
-                        {tt.done ? "✓" : "⟳"} {tt.name.replace("onboarding_", "").replace("cms_", "")}
-                      </span>
-                    ))}
+                            ? tt.success !== false ? "bg-green/10 text-green" : "bg-red/10 text-red"
+                            : "bg-accent/15 text-accent animate-pulse"
+                        }`}>
+                          {tt.done ? (tt.success !== false ? "✓" : "✗") : "⟳"}
+                          {" "}{shortName}
+                          {dur && <span className="text-text-dim ml-0.5">({dur})</span>}
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -207,18 +196,14 @@ export function FleetCards({ threads, activeTools, thoughts, events = [] }: Flee
               {/* Thought */}
               {thought && !hasMessage && (
                 <div className="px-4 pb-3">
-                  <p className="text-text-dim text-xs italic leading-relaxed line-clamp-2">
-                    {thought}
-                  </p>
+                  <p className="text-text-dim text-xs italic leading-relaxed line-clamp-2">{thought}</p>
                 </div>
               )}
 
               {/* Message flash */}
               {hasMessage && (
                 <div className="px-4 pb-3">
-                  <p className="text-green text-xs font-medium">
-                    ← message received
-                  </p>
+                  <p className="text-green text-xs font-medium">← message received</p>
                 </div>
               )}
             </div>
