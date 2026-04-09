@@ -35,6 +35,13 @@ export function Dashboard() {
       })
       .catch(() => setLoaded(true));
 
+  // Reset state when project changes
+  useEffect(() => {
+    setInstance(null);
+    setLoaded(false);
+    setPreloadedThreads([]);
+  }, [projectId]);
+
   // Load instances for current project — wait until project is known
   useEffect(() => {
     if (!projectId) return;

@@ -32,6 +32,14 @@ export function ActivityPanel({ instance, event, onReload }: Props) {
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [mode, setMode] = useState(instance.mode || "autonomous");
 
+  // Reset state when instance changes
+  useEffect(() => {
+    setStatus(null);
+    setThreads([]);
+    setThoughts([]);
+    setTools([]);
+  }, [instance.id]);
+
   // Poll status + threads
   useEffect(() => {
     if (instance.status !== "running") return;
@@ -40,7 +48,7 @@ export function ActivityPanel({ instance, event, onReload }: Props) {
       core.threads(instance.id).then(setThreads).catch(() => {});
     };
     poll();
-    const interval = setInterval(poll, 5000);
+    const interval = setInterval(poll, 3000);
     return () => clearInterval(interval);
   }, [instance.id, instance.status]);
 
