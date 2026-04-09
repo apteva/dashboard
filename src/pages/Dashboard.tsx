@@ -189,16 +189,19 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
     }
   };
 
-  // Sync threads from poll (initial load + catch-up)
+  // Sync threads from poll (initial load + periodic catch-up)
   useEffect(() => {
     if (instance.status !== "running") return;
-    import("../api").then(({ core }) => {
-      core.threads(instance.id).then((threads) => {
-        setGraphThreads(threads.filter((t) => t.id !== "main").concat(
-          [{ id: "main", parent_id: "", depth: 0, directive: "", tools: [], iteration: 0, rate: "sleep", model: "", age: "" }]
-        ));
-      }).catch(() => {});
-    });
+    const poll = () => {
+      import("../api").then(({ core }) => {
+        core.threads(instance.id).then((threads) => {
+          setGraphThreads(threads);
+        }).catch(() => {});
+      });
+    };
+    poll();
+    const interval = setInterval(poll, 5000);
+    return () => clearInterval(interval);
   }, [instance.id, instance.status]);
 
   return (
