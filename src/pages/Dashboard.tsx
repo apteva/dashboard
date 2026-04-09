@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { instances, type Instance, type TelemetryEvent } from "../api";
 import { ChatPanel } from "../components/ChatPanel";
 import { ActivityPanel } from "../components/ActivityPanel";
-import { FleetGraph } from "../components/FleetGraph";
+import { FleetGraph, type FleetEvent } from "../components/FleetGraph";
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 
@@ -110,10 +110,11 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [view, setView] = useState<"activity" | "fleet">("activity");
 
-  // Track threads, tools, thoughts for the fleet graph
+  // Track threads, tools, thoughts, events for the fleet graph
   const [graphThreads, setGraphThreads] = useState<import("../api").Thread[]>([]);
   const [graphActiveTools, setGraphActiveTools] = useState<Record<string, string>>({});
   const [graphThoughts, setGraphThoughts] = useState<Record<string, string>>({});
+  const [graphEvents, setGraphEvents] = useState<FleetEvent[]>([]);
 
   const handleEvent = (event: TelemetryEvent) => {
     setLatestEvent(event);
@@ -141,16 +142,35 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
     // Track active tools
     if (event.type === "tool.call" && data.name && !String(data.name).startsWith("channels_")) {
       setGraphActiveTools((prev) => ({ ...prev, [event.thread_id]: data.name }));
+      // Fleet event: tool call
+      setGraphEvents((prev) => [...prev.slice(-30), { type: "tool", from: event.thread_id, to: event.thread_id, text: data.name, time: Date.now() }]);
     }
     if (event.type === "tool.result" && data.name && !String(data.name).startsWith("channels_")) {
       setGraphActiveTools((prev) => { const n = { ...prev }; if (n[event.thread_id] === data.name) delete n[event.thread_id]; return n; });
+    }
+
+    // Track thread messages (from→to communication)
+    if (event.type === "thread.message") {
+      const from = data.from || event.thread_id;
+      const to = data.to || "";
+      if (from && to) {
+        setGraphEvents((prev) => [...prev.slice(-30), { type: "message", from, to, text: data.message, time: Date.now() }]);
+      }
+    }
+
+    // Track event.received (messages arriving at threads)
+    if (event.type === "event.received" && data.source === "thread") {
+      const msg = String(data.message || "");
+      const match = msg.match(/\[from:(\S+)\]/);
+      if (match) {
+        setGraphEvents((prev) => [...prev.slice(-30), { type: "message", from: match[1], to: event.thread_id, text: msg.slice(0, 60), time: Date.now() }]);
+      }
     }
 
     // Track thoughts
     if (event.type === "llm.done" && data.message) {
       const text = String(data.message).slice(0, 100);
       setGraphThoughts((prev) => ({ ...prev, [event.thread_id]: text }));
-      // Update iteration on thread
       setGraphThreads((prev) => prev.map((t) =>
         t.id === event.thread_id ? { ...t, iteration: data.iteration || t.iteration, rate: data.rate || t.rate } : t
       ));
@@ -264,7 +284,7 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
           {view === "activity" ? (
             <ActivityPanel instance={instance} event={latestEvent} onReload={onReload} />
           ) : (
-            <FleetGraph threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} />
+            <FleetGraph threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} events={graphEvents} />
           )}
         </div>
       </div>

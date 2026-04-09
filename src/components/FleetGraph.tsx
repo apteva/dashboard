@@ -1,19 +1,23 @@
-import { useMemo, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import {
   ReactFlow,
   Background,
+  Controls,
+  MiniMap,
   type Node,
   type Edge,
   type NodeProps,
+  type OnNodesChange,
+  type OnEdgesChange,
   Position,
   Handle,
-  useNodesState,
-  useEdgesState,
+  applyNodeChanges,
+  applyEdgeChanges,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { Thread } from "../api";
 
-// ─── Custom Node ───
+// ─── Types ───
 
 interface ThreadNodeData {
   label: string;
@@ -22,39 +26,59 @@ interface ThreadNodeData {
   depth: number;
   activeTool?: string;
   thought?: string;
+  messageFrom?: string; // brief flash: "← from-thread"
   [key: string]: unknown;
 }
 
+export interface FleetEvent {
+  type: "message" | "tool" | "thought";
+  from: string;
+  to: string;
+  text?: string;
+  time: number;
+}
+
+// ─── Custom Node ───
+
 function ThreadNode({ data }: NodeProps<Node<ThreadNodeData>>) {
   const isActive = !!data.activeTool;
+  const hasMessage = !!data.messageFrom;
   const isMain = data.label === "main";
 
   return (
     <div
       className={`
-        rounded-lg border px-3 py-2 min-w-[140px] max-w-[200px] text-xs
-        ${isActive ? "border-accent bg-accent/10" : "border-border bg-bg-card"}
-        ${isMain ? "border-accent/50" : ""}
+        rounded-lg border px-3 py-2 min-w-[140px] max-w-[200px] text-xs transition-all duration-300
+        ${hasMessage ? "border-green bg-green/10 shadow-[0_0_12px_rgba(34,197,94,0.3)]" : ""}
+        ${isActive && !hasMessage ? "border-accent bg-accent/10 shadow-[0_0_12px_rgba(249,115,22,0.2)]" : ""}
+        ${!isActive && !hasMessage ? "border-border bg-bg-card" : ""}
+        ${isMain && !isActive && !hasMessage ? "border-accent/40" : ""}
       `}
     >
       <Handle type="target" position={Position.Top} className="!bg-border !w-2 !h-2 !border-0" />
 
       {/* Header */}
       <div className="flex items-center gap-1.5 mb-1">
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isActive ? "bg-accent animate-pulse" : "bg-green"}`} />
+        <span className={`w-2 h-2 rounded-full shrink-0 transition-colors duration-300 ${
+          hasMessage ? "bg-green animate-pulse" :
+          isActive ? "bg-accent animate-pulse" :
+          "bg-green/60"
+        }`} />
         <span className="text-text font-bold truncate">{data.label}</span>
       </div>
 
-      {/* Status */}
-      {isActive ? (
+      {/* Status line */}
+      {hasMessage ? (
+        <div className="text-green truncate text-[10px]">← {data.messageFrom}</div>
+      ) : isActive ? (
         <div className="text-accent truncate">⟳ {data.activeTool}</div>
       ) : (
         <div className="text-text-muted">#{data.iteration} {data.rate}</div>
       )}
 
       {/* Thought preview */}
-      {data.thought && (
-        <div className="text-text-dim mt-1 truncate italic text-[10px]">{data.thought}</div>
+      {data.thought && !hasMessage && (
+        <div className="text-text-dim mt-1 truncate italic text-[10px] max-w-[180px]">{data.thought}</div>
       )}
 
       <Handle type="source" position={Position.Bottom} className="!bg-border !w-2 !h-2 !border-0" />
@@ -69,15 +93,14 @@ const nodeTypes = { thread: ThreadNode };
 function layoutTree(threads: Thread[]): { nodes: Node<ThreadNodeData>[]; edges: Edge[] } {
   if (threads.length === 0) return { nodes: [], edges: [] };
 
-  // Build children map
   const children: Record<string, Thread[]> = {};
   const roots: Thread[] = [];
 
   for (const t of threads) {
-    const pid = t.parent_id || "";
     if (t.id === "main" || (!t.parent_id && !t.depth)) {
       roots.push(t);
     } else {
+      const pid = t.parent_id || "main";
       if (!children[pid]) children[pid] = [];
       children[pid].push(t);
     }
@@ -88,10 +111,9 @@ function layoutTree(threads: Thread[]): { nodes: Node<ThreadNodeData>[]; edges: 
 
   const NODE_W = 170;
   const NODE_H = 80;
-  const H_GAP = 30;
-  const V_GAP = 40;
+  const H_GAP = 40;
+  const V_GAP = 50;
 
-  // Calculate subtree widths for centering
   const subtreeWidth: Record<string, number> = {};
   const calcWidth = (id: string): number => {
     const kids = children[id] || [];
@@ -104,7 +126,6 @@ function layoutTree(threads: Thread[]): { nodes: Node<ThreadNodeData>[]; edges: 
     return subtreeWidth[id];
   };
 
-  // Layout nodes
   const placeNode = (t: Thread, x: number, y: number) => {
     nodes.push({
       id: t.id,
@@ -120,9 +141,10 @@ function layoutTree(threads: Thread[]): { nodes: Node<ThreadNodeData>[]; edges: 
 
     if (t.parent_id) {
       edges.push({
-        id: `${t.parent_id}-${t.id}`,
+        id: `e-${t.parent_id}-${t.id}`,
         source: t.parent_id,
         target: t.id,
+        type: "default",
         style: { stroke: "var(--color-border)", strokeWidth: 1.5 },
         animated: false,
       });
@@ -140,10 +162,7 @@ function layoutTree(threads: Thread[]): { nodes: Node<ThreadNodeData>[]; edges: 
     }
   };
 
-  // Process roots
-  for (const root of roots) {
-    calcWidth(root.id);
-  }
+  for (const root of roots) calcWidth(root.id);
 
   const totalRootW = roots.reduce((s, r) => s + (subtreeWidth[r.id] || NODE_W), 0) + (roots.length - 1) * H_GAP;
   let rx = -totalRootW / 2;
@@ -160,50 +179,134 @@ function layoutTree(threads: Thread[]): { nodes: Node<ThreadNodeData>[]; edges: 
 
 interface FleetGraphProps {
   threads: Thread[];
-  activeTools: Record<string, string>; // threadId → tool name
-  thoughts: Record<string, string>;    // threadId → latest thought text
+  activeTools: Record<string, string>;
+  thoughts: Record<string, string>;
+  events?: FleetEvent[]; // recent message/tool events for animations
 }
 
-export function FleetGraph({ threads, activeTools, thoughts }: FleetGraphProps) {
+export function FleetGraph({ threads, activeTools, thoughts, events = [] }: FleetGraphProps) {
   const { nodes: layoutNodes, edges: layoutEdges } = useMemo(() => layoutTree(threads), [threads]);
 
-  // Enrich nodes with live data
-  const enrichedNodes = useMemo(() =>
+  // Track which edges are "hot" (recent message or tool activity)
+  const [hotEdges, setHotEdges] = useState<Record<string, number>>({}); // edgeId → expiry timestamp
+
+  // Process events → mark edges as hot
+  useEffect(() => {
+    if (events.length === 0) return;
+    const latest = events[events.length - 1];
+    if (!latest) return;
+
+    // Find edge between from↔to (either direction)
+    const edgeId1 = `e-${latest.from}-${latest.to}`;
+    const edgeId2 = `e-${latest.to}-${latest.from}`;
+
+    setHotEdges((prev) => ({
+      ...prev,
+      [edgeId1]: Date.now() + 3000, // hot for 3 seconds
+      [edgeId2]: Date.now() + 3000,
+    }));
+  }, [events.length]);
+
+  // Decay hot edges
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setHotEdges((prev) => {
+        const next: Record<string, number> = {};
+        for (const [k, v] of Object.entries(prev)) {
+          if (v > now) next[k] = v;
+        }
+        return Object.keys(next).length !== Object.keys(prev).length ? next : prev;
+      });
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Track which nodes have recent messages (for the green flash)
+  const [messageFlash, setMessageFlash] = useState<Record<string, string>>({}); // threadId → from
+
+  useEffect(() => {
+    if (events.length === 0) return;
+    const latest = events[events.length - 1];
+    if (!latest || latest.type !== "message") return;
+
+    setMessageFlash((prev) => ({ ...prev, [latest.to]: latest.from }));
+
+    // Clear after 3s
+    const timeout = setTimeout(() => {
+      setMessageFlash((prev) => {
+        const next = { ...prev };
+        delete next[latest.to];
+        return next;
+      });
+    }, 3000);
+    return () => clearTimeout(timeout);
+  }, [events.length]);
+
+  // Build final nodes
+  const nodes = useMemo(() =>
     layoutNodes.map((n) => ({
       ...n,
       data: {
         ...n.data,
         activeTool: activeTools[n.id],
         thought: thoughts[n.id],
+        messageFrom: messageFlash[n.id],
       },
     })),
-    [layoutNodes, activeTools, thoughts]
+    [layoutNodes, activeTools, thoughts, messageFlash]
   );
 
-  // Animate edges with active tool calls
-  const enrichedEdges = useMemo(() =>
-    layoutEdges.map((e) => ({
-      ...e,
-      animated: !!activeTools[e.target],
-      style: {
-        ...e.style,
-        stroke: activeTools[e.target] ? "var(--color-accent)" : "var(--color-border)",
-      },
-    })),
-    [layoutEdges, activeTools]
+  // Build final edges
+  const edges = useMemo(() =>
+    layoutEdges.map((e) => {
+      const isHot = !!hotEdges[e.id];
+      const hasActiveTool = !!activeTools[e.target];
+      const active = isHot || hasActiveTool;
+      return {
+        ...e,
+        animated: active,
+        style: {
+          stroke: isHot ? "#22c55e" : hasActiveTool ? "var(--color-accent)" : "var(--color-border)",
+          strokeWidth: active ? 2.5 : 1.5,
+          transition: "stroke 0.3s, stroke-width 0.3s",
+        },
+      };
+    }),
+    [layoutEdges, activeTools, hotEdges]
   );
 
-  const [nodes, , onNodesChange] = useNodesState(enrichedNodes);
-  const [edges, , onEdgesChange] = useEdgesState(enrichedEdges);
+  // Controlled state for drag support
+  const [currentNodes, setCurrentNodes] = useState(nodes);
+  const [currentEdges, setCurrentEdges] = useState(edges);
 
-  // Update nodes/edges when enriched data changes
-  useMemo(() => {
-    onNodesChange(enrichedNodes.map((n) => ({ type: "reset" as const, item: n })));
-  }, [enrichedNodes]);
+  // Sync layout changes but preserve drag positions
+  useEffect(() => {
+    setCurrentNodes((prev) => {
+      // Merge: keep dragged positions, update data
+      const posMap: Record<string, { x: number; y: number }> = {};
+      for (const n of prev) posMap[n.id] = n.position;
 
-  useMemo(() => {
-    onEdgesChange(enrichedEdges.map((e) => ({ type: "reset" as const, item: e })));
-  }, [enrichedEdges]);
+      return nodes.map((n) => ({
+        ...n,
+        position: posMap[n.id] || n.position,
+      }));
+    });
+  }, [nodes]);
+
+  useEffect(() => {
+    setCurrentEdges(edges);
+  }, [edges]);
+
+  const onNodesChange: OnNodesChange = useCallback(
+    (changes) => setCurrentNodes((nds) => applyNodeChanges(changes, nds)),
+    []
+  );
+
+  const onEdgesChange: OnEdgesChange = useCallback(
+    (changes) => setCurrentEdges((eds) => applyEdgeChanges(changes, eds)),
+    []
+  );
 
   if (threads.length === 0) {
     return (
@@ -214,23 +317,31 @@ export function FleetGraph({ threads, activeTools, thoughts }: FleetGraphProps) 
   }
 
   return (
-    <div className="h-full w-full">
+    <div className="h-full w-full" style={{ minHeight: 400 }}>
       <ReactFlow
-        nodes={enrichedNodes}
-        edges={enrichedEdges}
+        nodes={currentNodes}
+        edges={currentEdges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         fitView
-        fitViewOptions={{ padding: 0.3 }}
-        minZoom={0.3}
-        maxZoom={1.5}
+        fitViewOptions={{ padding: 0.4 }}
+        minZoom={0.2}
+        maxZoom={2}
         proOptions={{ hideAttribution: true }}
         nodesDraggable={true}
         nodesConnectable={false}
-        elementsSelectable={false}
+        panOnDrag={true}
+        zoomOnScroll={true}
+        zoomOnPinch={true}
+        panOnScroll={false}
+        selectNodesOnDrag={false}
       >
-        <Background color="var(--color-border)" gap={20} size={1} />
+        <Background color="var(--color-border)" gap={24} size={1} />
+        <Controls
+          showInteractive={false}
+          className="!bg-bg-card !border-border !shadow-none [&>button]:!bg-bg-card [&>button]:!border-border [&>button]:!text-text-muted [&>button:hover]:!bg-accent/10"
+        />
       </ReactFlow>
     </div>
   );
