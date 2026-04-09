@@ -349,6 +349,8 @@ export interface Status {
 
 export interface Thread {
   id: string;
+  parent_id?: string;
+  depth?: number;
   directive: string;
   tools: string[];
   iteration: number;
@@ -389,6 +391,14 @@ export const core = {
     request<{ status: string }>("PUT", `/instances/${instanceId}/config`, { mode }),
   approve: (instanceId: number, approved: boolean) =>
     request<{ status: string }>("POST", `/instances/${instanceId}/approve`, { approved }),
+};
+
+// Channels
+export const channels = {
+  submitReply: (instanceId: number, text: string) =>
+    request<{ status: string }>("POST", `/instances/${instanceId}/channels/cli/reply`, { text }),
+  connectTelegram: (instanceId: number, token: string) =>
+    request<{ status: string; bot_name: string }>("POST", `/instances/${instanceId}/channels/telegram`, { token }),
 };
 
 export const telemetry = {

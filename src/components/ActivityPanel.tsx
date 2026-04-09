@@ -107,7 +107,14 @@ export function ActivityPanel({ instance, event, onReload }: Props) {
     if (event.type === "thread.spawn") {
       setThreads((prev) => {
         if (prev.some((t) => t.id === event.thread_id)) return prev;
-        return [...prev, { id: event.thread_id, directive: data.directive || "", tools: [], iteration: 0, rate: "reactive", model: "", age: "0s" }];
+        const parentId = data.parent_id || "main";
+        // Calculate depth from parent
+        let depth = 0;
+        if (parentId !== "main") {
+          const parent = prev.find((t) => t.id === parentId);
+          depth = parent ? (parent.depth || 0) + 1 : 1;
+        }
+        return [...prev, { id: event.thread_id, parent_id: parentId, depth, directive: data.directive || "", tools: [], iteration: 0, rate: "reactive", model: "", age: "0s" }];
       });
     }
 
@@ -169,24 +176,22 @@ export function ActivityPanel({ instance, event, onReload }: Props) {
         )}
       </div>
 
-      {/* Threads */}
+      {/* Threads (tree view) */}
       {threads.length > 0 && (
         <div className="px-4 py-3 border-b border-border">
           <h3 className="text-text-muted font-bold mb-2 uppercase tracking-wide text-[10px]">Threads ({threads.length})</h3>
-          <div className="space-y-2">
-            {threads.map((t) => (
-              <div key={t.id}>
-                <div className="flex items-center gap-2">
-                  <span className="text-text font-bold">{t.id}</span>
+          <div className="space-y-1">
+            {orderThreadTree(threads).map((t) => (
+              <div key={t.id} style={{ paddingLeft: `${(t.depth || 0) * 12}px` }}>
+                <div className="flex items-center gap-1.5">
+                  {(t.depth || 0) > 0 && <span className="text-text-dim">├</span>}
+                  <span className="text-text font-bold truncate">{t.id}</span>
                   {activeToolByThread[t.id] ? (
-                    <span className="text-accent tool-active-line">⟳ {activeToolByThread[t.id]}</span>
+                    <span className="text-accent tool-active-line shrink-0">⟳ {activeToolByThread[t.id]}</span>
                   ) : (
-                    <span className="text-text-muted">#{t.iteration} {t.rate}</span>
+                    <span className="text-text-muted shrink-0">#{t.iteration} {t.rate}</span>
                   )}
                 </div>
-                {t.directive && (
-                  <p className="text-text-dim mt-0.5 truncate">{t.directive}</p>
-                )}
               </div>
             ))}
           </div>
@@ -254,4 +259,34 @@ export function ActivityPanel({ instance, event, onReload }: Props) {
       )}
     </div>
   );
+}
+
+// Sort threads into depth-first tree order (children after their parent)
+function orderThreadTree(threads: Thread[]): Thread[] {
+  const children: Record<string, Thread[]> = {};
+  const roots: Thread[] = [];
+
+  for (const t of threads) {
+    const pid = t.parent_id || "main";
+    if (t.id === "main" || (!t.parent_id && !t.depth)) {
+      roots.push(t);
+    } else {
+      if (!children[pid]) children[pid] = [];
+      children[pid].push(t);
+    }
+  }
+
+  const result: Thread[] = [];
+  const walk = (node: Thread) => {
+    result.push(node);
+    for (const child of children[node.id] || []) walk(child);
+  };
+  for (const root of roots) walk(root);
+
+  // Append orphans
+  const seen = new Set(result.map((t) => t.id));
+  for (const t of threads) {
+    if (!seen.has(t.id)) result.push(t);
+  }
+  return result;
 }
