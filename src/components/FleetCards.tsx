@@ -131,7 +131,7 @@ export function FleetCards({ threads, activeTools, thoughts, events = [] }: Flee
         const threadTools = toolsByThread[t.id] || [];
 
         return (
-          <div key={t.id} className="flex" style={{ paddingLeft: `${depth * 24}px` }}>
+          <div key={t.id} className="flex" style={{ paddingLeft: `${depth * 14}px` }}>
             {/* Tree connector */}
             {depth > 0 && (
               <div className="flex items-start pt-3 mr-1 text-border select-none text-xs">

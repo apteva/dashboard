@@ -18,18 +18,22 @@ export function Dashboard() {
 
   const projectId = currentProject?.id;
 
-  const load = () =>
+  const load = (pid?: string) =>
     instances
-      .list(projectId)
+      .list(pid)
       .then((list) => {
         setInstance(list.length > 0 ? list[0] : null);
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
 
+  // Immediate load without waiting for project (gets first instance)
+  useEffect(() => { load(); }, []);
+
+  // Reload when project changes
   useEffect(() => {
-    load();
-    const interval = setInterval(load, 5000);
+    if (projectId) load(projectId);
+    const interval = setInterval(() => load(projectId), 5000);
     return () => clearInterval(interval);
   }, [projectId]);
 
