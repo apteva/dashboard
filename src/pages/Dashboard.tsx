@@ -76,7 +76,7 @@ export function Dashboard() {
   if (!loaded) return null;
 
   if (instance) {
-    return <InstanceView instance={instance} onDelete={handleDelete} onReload={load} initialThreads={preloadedThreads} />;
+    return <InstanceView instance={instance} onDelete={handleDelete} onReload={() => load(projectId)} initialThreads={preloadedThreads} />;
   }
 
   // Create instance form
