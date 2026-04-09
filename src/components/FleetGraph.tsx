@@ -145,7 +145,7 @@ function layoutTree(threads: Thread[]): { nodes: Node<ThreadNodeData>[]; edges: 
         source: t.parent_id,
         target: t.id,
         type: "default",
-        style: { stroke: "var(--color-border)", strokeWidth: 1.5 },
+        style: { stroke: "#555", strokeWidth: 2 },
         animated: false,
       });
     }
@@ -267,8 +267,8 @@ export function FleetGraph({ threads, activeTools, thoughts, events = [] }: Flee
         ...e,
         animated: active,
         style: {
-          stroke: isHot ? "#22c55e" : hasActiveTool ? "var(--color-accent)" : "var(--color-border)",
-          strokeWidth: active ? 2.5 : 1.5,
+          stroke: isHot ? "#22c55e" : hasActiveTool ? "#f97316" : "#555",
+          strokeWidth: active ? 3 : 2,
           transition: "stroke 0.3s, stroke-width 0.3s",
         },
       };
@@ -337,7 +337,7 @@ export function FleetGraph({ threads, activeTools, thoughts, events = [] }: Flee
         panOnScroll={false}
         selectNodesOnDrag={false}
       >
-        <Background color="var(--color-border)" gap={24} size={1} />
+        <Background color="#1a1a1a" gap={24} size={1} />
         <Controls
           showInteractive={false}
           className="!bg-bg-card !border-border !shadow-none [&>button]:!bg-bg-card [&>button]:!border-border [&>button]:!text-text-muted [&>button:hover]:!bg-accent/10"
