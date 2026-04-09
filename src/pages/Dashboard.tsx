@@ -18,16 +18,24 @@ export function Dashboard() {
 
   const projectId = currentProject?.id;
 
+  // Preloaded threads — fetched in parallel with instance, passed down
+  const [preloadedThreads, setPreloadedThreads] = useState<import("../api").Thread[]>([]);
+
   const load = (pid?: string) =>
     instances
       .list(pid)
       .then((list) => {
-        setInstance(list.length > 0 ? list[0] : null);
+        const inst = list.length > 0 ? list[0] : null;
+        setInstance(inst);
         setLoaded(true);
+        // Preload threads in parallel
+        if (inst && inst.status === "running") {
+          core.threads(inst.id).then(setPreloadedThreads).catch(() => {});
+        }
       })
       .catch(() => setLoaded(true));
 
-  // Immediate load without waiting for project (gets first instance)
+  // Immediate load without waiting for project
   useEffect(() => { load(); }, []);
 
   // Reload when project changes
@@ -63,7 +71,7 @@ export function Dashboard() {
   if (!loaded) return null;
 
   if (instance) {
-    return <InstanceView instance={instance} onDelete={handleDelete} onReload={load} />;
+    return <InstanceView instance={instance} onDelete={handleDelete} onReload={load} initialThreads={preloadedThreads} />;
   }
 
   // Create instance form
@@ -110,13 +118,13 @@ export function Dashboard() {
 
 // ─── Instance View (Chat + Activity) ───
 
-function InstanceView({ instance, onDelete, onReload }: { instance: Instance; onDelete: () => void; onReload: () => void }) {
+function InstanceView({ instance, onDelete, onReload, initialThreads = [] }: { instance: Instance; onDelete: () => void; onReload: () => void; initialThreads?: import("../api").Thread[] }) {
   const [latestEvent, setLatestEvent] = useState<TelemetryEvent | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [view, setView] = useState<"activity" | "fleet" | "cards">("activity");
 
   // Track threads, tools, thoughts, events for the fleet graph
-  const [graphThreads, setGraphThreads] = useState<import("../api").Thread[]>([]);
+  const [graphThreads, setGraphThreads] = useState<import("../api").Thread[]>(initialThreads);
   const [graphActiveTools, setGraphActiveTools] = useState<Record<string, string>>({});
   const [graphThoughts, setGraphThoughts] = useState<Record<string, string>>({});
   const [graphEvents, setGraphEvents] = useState<FleetEvent[]>([]);
