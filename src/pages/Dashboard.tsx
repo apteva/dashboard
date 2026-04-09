@@ -35,12 +35,9 @@ export function Dashboard() {
       })
       .catch(() => setLoaded(true));
 
-  // Immediate load without waiting for project
-  useEffect(() => { load(); }, []);
-
-  // Reload when project changes
+  // Load instances for current project
   useEffect(() => {
-    if (projectId) load(projectId);
+    load(projectId);
     const interval = setInterval(() => load(projectId), 5000);
     return () => clearInterval(interval);
   }, [projectId]);
