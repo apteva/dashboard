@@ -122,7 +122,7 @@ export function FleetCards({ threads, activeTools, thoughts, events = [] }: Flee
   return (
     <div className="h-full overflow-y-auto p-4 space-y-2">
       {ordered.map((t) => {
-        const depth = t.depth || 0;
+        const depth = t.id === "main" ? 0 : (t.depth || 0) + 1;
         const tool = activeTools[t.id];
         const thought = thoughts[t.id];
         const hasMessage = (messageFlash[t.id] || 0) > Date.now();
