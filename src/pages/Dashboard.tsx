@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { instances, type Instance, type TelemetryEvent } from "../api";
+import { instances, core, type Instance, type TelemetryEvent } from "../api";
 import { ChatPanel } from "../components/ChatPanel";
 import { ActivityPanel } from "../components/ActivityPanel";
 import { FleetGraph, type FleetEvent } from "../components/FleetGraph";
@@ -193,14 +193,10 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
   useEffect(() => {
     if (instance.status !== "running") return;
     const poll = () => {
-      import("../api").then(({ core }) => {
-        core.threads(instance.id).then((threads) => {
-          setGraphThreads(threads);
-        }).catch(() => {});
-      });
+      core.threads(instance.id).then(setGraphThreads).catch(() => {});
     };
     poll();
-    const interval = setInterval(poll, 5000);
+    const interval = setInterval(poll, 3000);
     return () => clearInterval(interval);
   }, [instance.id, instance.status]);
 
