@@ -145,7 +145,7 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
     }
 
     // Track active tools — keep visible for 3s after completion
-    if (event.type === "tool.call" && data.name && !String(data.name).startsWith("channels_")) {
+    if (event.type === "tool.call" && data.name && event.thread_id && !String(data.name).startsWith("channels_")) {
       setGraphActiveTools((prev) => ({ ...prev, [event.thread_id]: data.name }));
       setGraphEvents((prev) => [...prev.slice(-30), { type: "tool", from: event.thread_id, to: event.thread_id, text: data.name, time: Date.now() }]);
     }
