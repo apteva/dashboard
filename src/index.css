@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
 
 @theme {
   --color-bg: #0a0a0a;
@@ -36,6 +37,21 @@ select {
   background-size: 12px;
   padding-right: 30px;
   cursor: pointer;
+}
+
+/* Tool call breathing animation */
+@keyframes tool-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.tool-active-line {
+  animation: tool-breathe 1.5s ease-in-out infinite;
+}
+
+.tool-cursor {
+  animation: tool-breathe 1s ease-in-out infinite;
+  color: var(--color-accent);
 }
 
 /* Scrollbar */

@@ -14,7 +14,6 @@ import {
   applyNodeChanges,
   applyEdgeChanges,
 } from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
 import type { Thread } from "../api";
 
 // ─── Types ───
