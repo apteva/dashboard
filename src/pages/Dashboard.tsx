@@ -35,8 +35,9 @@ export function Dashboard() {
       })
       .catch(() => setLoaded(true));
 
-  // Load instances for current project
+  // Load instances for current project — wait until project is known
   useEffect(() => {
+    if (!projectId) return;
     load(projectId);
     const interval = setInterval(() => load(projectId), 5000);
     return () => clearInterval(interval);
