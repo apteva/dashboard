@@ -44,7 +44,7 @@ function orderTree(threads: Thread[]): Thread[] {
 
 export function FleetCards({ threads, event, activeTools, thoughts }: FleetCardsProps) {
   const [tools, setTools] = useState<ToolEntry[]>([]);
-  const [messageFlash, setMessageFlash] = useState<Record<string, number>>({});
+  const [messageFlash, setMessageFlash] = useState<Record<string, { from: string; text: string; expiry: number }>>({});
 
   // Process SSE events — same logic as ActivityPanel
   useEffect(() => {
@@ -73,9 +73,12 @@ export function FleetCards({ threads, event, activeTools, thoughts }: FleetCards
     // Message flash from event.received
     if (event.type === "event.received" && data.source === "thread") {
       const msg = String(data.message || "");
-      const match = msg.match(/\[from:(\S+)\]/);
+      const match = msg.match(/\[from:(\S+)\]\s*(.*)/);
       if (match) {
-        setMessageFlash((prev) => ({ ...prev, [event.thread_id]: Date.now() + 3000 }));
+        const from = match[1];
+        let text = match[2] || "";
+        if (text.length > 80) text = text.slice(0, 80) + "…";
+        setMessageFlash((prev) => ({ ...prev, [event.thread_id]: { from, text, expiry: Date.now() + 4000 } }));
       }
     }
   }, [event]);
@@ -85,9 +88,9 @@ export function FleetCards({ threads, event, activeTools, thoughts }: FleetCards
     const interval = setInterval(() => {
       const now = Date.now();
       setMessageFlash((prev) => {
-        const next: Record<string, number> = {};
+        const next: Record<string, { from: string; text: string; expiry: number }> = {};
         for (const [k, v] of Object.entries(prev)) {
-          if (v > now) next[k] = v;
+          if (v.expiry > now) next[k] = v;
         }
         return Object.keys(next).length !== Object.keys(prev).length ? next : prev;
       });
@@ -119,7 +122,8 @@ export function FleetCards({ threads, event, activeTools, thoughts }: FleetCards
         const depth = t.id === "main" ? 0 : (t.depth || 0) + 1;
         const tool = activeTools[t.id];
         const thought = thoughts[t.id];
-        const hasMessage = (messageFlash[t.id] || 0) > Date.now();
+        const msgData = messageFlash[t.id];
+        const hasMessage = !!msgData && msgData.expiry > Date.now();
         const isActive = !!tool;
         const isMain = t.id === "main";
         const threadTools = toolsByThread[t.id] || [];
@@ -201,9 +205,12 @@ export function FleetCards({ threads, event, activeTools, thoughts }: FleetCards
               )}
 
               {/* Message flash */}
-              {hasMessage && (
+              {hasMessage && msgData && (
                 <div className="px-4 pb-3">
-                  <p className="text-green text-xs font-medium">← message received</p>
+                  <p className="text-green text-xs">
+                    <span className="font-medium">← {msgData.from}</span>
+                    {msgData.text && <span className="text-green/70 ml-1.5 italic">{msgData.text}</span>}
+                  </p>
                 </div>
               )}
             </div>
