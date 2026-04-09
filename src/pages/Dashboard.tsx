@@ -3,6 +3,7 @@ import { instances, type Instance, type TelemetryEvent } from "../api";
 import { ChatPanel } from "../components/ChatPanel";
 import { ActivityPanel } from "../components/ActivityPanel";
 import { FleetGraph, type FleetEvent } from "../components/FleetGraph";
+import { FleetCards } from "../components/FleetCards";
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 
@@ -108,7 +109,7 @@ export function Dashboard() {
 function InstanceView({ instance, onDelete, onReload }: { instance: Instance; onDelete: () => void; onReload: () => void }) {
   const [latestEvent, setLatestEvent] = useState<TelemetryEvent | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [view, setView] = useState<"activity" | "fleet">("activity");
+  const [view, setView] = useState<"activity" | "fleet" | "cards">("activity");
 
   // Track threads, tools, thoughts, events for the fleet graph
   const [graphThreads, setGraphThreads] = useState<import("../api").Thread[]>([]);
@@ -139,14 +140,25 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
       setGraphThoughts((prev) => { const n = { ...prev }; delete n[event.thread_id]; return n; });
     }
 
-    // Track active tools
+    // Track active tools — keep visible for 3s after completion
     if (event.type === "tool.call" && data.name && !String(data.name).startsWith("channels_")) {
       setGraphActiveTools((prev) => ({ ...prev, [event.thread_id]: data.name }));
-      // Fleet event: tool call
       setGraphEvents((prev) => [...prev.slice(-30), { type: "tool", from: event.thread_id, to: event.thread_id, text: data.name, time: Date.now() }]);
     }
     if (event.type === "tool.result" && data.name && !String(data.name).startsWith("channels_")) {
-      setGraphActiveTools((prev) => { const n = { ...prev }; if (n[event.thread_id] === data.name) delete n[event.thread_id]; return n; });
+      // Delay clearing the active tool so the glow is visible
+      const threadId = event.thread_id;
+      const toolName = data.name;
+      setTimeout(() => {
+        setGraphActiveTools((prev) => {
+          if (prev[threadId] === toolName) {
+            const n = { ...prev };
+            delete n[threadId];
+            return n;
+          }
+          return prev;
+        });
+      }, 3000);
     }
 
     // Track thread messages (from→to communication)
@@ -198,18 +210,15 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
           <h1 className="text-text text-sm font-bold">{instance.name}</h1>
           {/* View toggle */}
           <div className="flex border border-border rounded-lg overflow-hidden ml-4">
-            <button
-              onClick={() => setView("activity")}
-              className={`px-3 py-1 text-xs transition-colors ${view === "activity" ? "bg-accent/20 text-accent" : "text-text-muted hover:text-text"}`}
-            >
-              Activity
-            </button>
-            <button
-              onClick={() => setView("fleet")}
-              className={`px-3 py-1 text-xs transition-colors ${view === "fleet" ? "bg-accent/20 text-accent" : "text-text-muted hover:text-text"}`}
-            >
-              Fleet
-            </button>
+            {(["activity", "fleet", "cards"] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={`px-3 py-1 text-xs transition-colors capitalize ${view === v ? "bg-accent/20 text-accent" : "text-text-muted hover:text-text"}`}
+              >
+                {v}
+              </button>
+            ))}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -283,8 +292,10 @@ function InstanceView({ instance, onDelete, onReload }: { instance: Instance; on
         <div className="flex-1">
           {view === "activity" ? (
             <ActivityPanel instance={instance} event={latestEvent} onReload={onReload} />
-          ) : (
+          ) : view === "fleet" ? (
             <FleetGraph threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} events={graphEvents} />
+          ) : (
+            <FleetCards threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} events={graphEvents} />
           )}
         </div>
       </div>
