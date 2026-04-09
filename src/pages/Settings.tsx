@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, projects as projectsAPI, instances as instancesAPI, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Instance, type Project, type CatalogStatus } from "../api";
+import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, projects as projectsAPI, instances as instancesAPI, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Instance, type Project, type CatalogStatus, type Channel } from "../api";
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 
@@ -11,13 +11,14 @@ interface Key {
 }
 
 
-type Tab = "projects" | "integrations" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account";
+type Tab = "projects" | "channels" | "integrations" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account";
 
 export function Settings() {
   const [tab, setTab] = useState<Tab>("projects");
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "projects", label: "Projects" },
+    { id: "channels", label: "Channels" },
     { id: "integrations", label: "Integrations" },
     { id: "providers", label: "Providers" },
     { id: "mcp", label: "MCP Servers" },
@@ -52,6 +53,7 @@ export function Settings() {
 
       <div className="flex-1 overflow-y-auto p-6">
         {tab === "projects" && <ProjectsTab />}
+        {tab === "channels" && <ChannelsTab />}
         {tab === "integrations" && <IntegrationsCatalogTab />}
         {tab === "providers" && <ProvidersTab />}
         {tab === "mcp" && <MCPServersTab />}
@@ -60,6 +62,128 @@ export function Settings() {
         {tab === "data" && <DataTab />}
         {tab === "account" && <AccountTab />}
       </div>
+    </div>
+  );
+}
+
+// ─── Channels Tab ───
+
+function ChannelsTab() {
+  const { currentProject } = useProjects();
+  const [instanceList, setInstanceList] = useState<Instance[]>([]);
+  const [channelsByInstance, setChannelsByInstance] = useState<Record<number, Channel[]>>({});
+  const [telegramToken, setTelegramToken] = useState("");
+  const [connectingFor, setConnectingFor] = useState<number | null>(null);
+  const [showConnect, setShowConnect] = useState<number | null>(null);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  const load = () => {
+    instancesAPI.list(currentProject?.id).then((list) => {
+      setInstanceList(list || []);
+      for (const inst of list || []) {
+        channels.list(inst.id).then((chs) => {
+          setChannelsByInstance((prev) => ({ ...prev, [inst.id]: chs }));
+        }).catch(() => {});
+      }
+    }).catch(() => {});
+  };
+
+  useEffect(() => { load(); }, [currentProject?.id]);
+
+  const handleConnect = async (instanceId: number) => {
+    if (!telegramToken.trim()) return;
+    setError("");
+    setSuccess("");
+    setConnectingFor(instanceId);
+    try {
+      const result = await channels.connectTelegram(instanceId, telegramToken.trim());
+      setSuccess(`Connected @${result.bot_name} to instance`);
+      setTelegramToken("");
+      setShowConnect(null);
+      load();
+    } catch (err: any) {
+      setError(err.message || "Failed to connect");
+    } finally {
+      setConnectingFor(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <div>
+        <h2 className="text-text text-base font-bold mb-1">Channels</h2>
+        <p className="text-text-muted text-sm">Manage communication channels for each instance. Channels allow your agents to reach you via Telegram, CLI, or other gateways.</p>
+      </div>
+
+      {instanceList.length === 0 && (
+        <p className="text-text-muted text-sm">No instances found.</p>
+      )}
+
+      {instanceList.map((inst) => {
+        const chs = channelsByInstance[inst.id] || [];
+        return (
+          <div key={inst.id} className="border border-border rounded-lg bg-bg-card">
+            <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${inst.status === "running" ? "bg-green" : "bg-red"}`} />
+                <span className="text-text font-bold text-sm">{inst.name}</span>
+              </div>
+              <button
+                onClick={() => setShowConnect(showConnect === inst.id ? null : inst.id)}
+                className="px-3 py-1 text-xs border border-border rounded-lg text-text-muted hover:text-accent hover:border-accent transition-colors"
+              >
+                + Connect
+              </button>
+            </div>
+
+            {/* Channel list */}
+            <div className="px-4 py-3 space-y-2">
+              {chs.length === 0 && (
+                <p className="text-text-dim text-xs">No channels connected</p>
+              )}
+              {chs.map((ch) => (
+                <div key={ch.id} className="flex items-center gap-3 text-sm">
+                  <span className={`w-2 h-2 rounded-full ${ch.status === "connected" ? "bg-green" : "bg-red"}`} />
+                  <span className="text-text font-medium">
+                    {ch.id === "cli" ? "CLI / Dashboard" : ch.id === "telegram" ? "Telegram" : ch.id}
+                  </span>
+                  {ch.bot_name && <span className="text-text-muted text-xs">@{ch.bot_name}</span>}
+                  <span className={`ml-auto text-xs px-2 py-0.5 rounded ${
+                    ch.status === "connected" ? "bg-green/10 text-green" : "bg-red/10 text-red"
+                  }`}>
+                    {ch.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Connect form */}
+            {showConnect === inst.id && (
+              <div className="px-4 py-3 border-t border-border space-y-3">
+                <p className="text-text-muted text-xs">Connect a Telegram bot. Get a token from <a href="https://t.me/BotFather" target="_blank" className="text-accent hover:underline">@BotFather</a>.</p>
+                <div className="flex gap-2">
+                  <input
+                    value={telegramToken}
+                    onChange={(e) => setTelegramToken(e.target.value)}
+                    placeholder="Bot token from @BotFather"
+                    className="flex-1 bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+                  />
+                  <button
+                    onClick={() => handleConnect(inst.id)}
+                    disabled={connectingFor === inst.id}
+                    className="px-4 py-2 bg-accent text-bg rounded-lg text-sm font-bold hover:bg-accent-hover transition-colors disabled:opacity-50"
+                  >
+                    {connectingFor === inst.id ? "Connecting..." : "Connect"}
+                  </button>
+                </div>
+                {error && <p className="text-red text-xs">{error}</p>}
+                {success && <p className="text-green text-xs">{success}</p>}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

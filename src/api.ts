@@ -394,7 +394,15 @@ export const core = {
 };
 
 // Channels
+export interface Channel {
+  id: string;
+  status: string;
+  bot_name?: string;
+}
+
 export const channels = {
+  list: (instanceId: number) =>
+    request<Channel[]>("GET", `/instances/${instanceId}/channels`),
   submitReply: (instanceId: number, text: string) =>
     request<{ status: string }>("POST", `/instances/${instanceId}/channels/cli/reply`, { text }),
   connectTelegram: (instanceId: number, token: string) =>
