@@ -353,6 +353,7 @@ export interface Thread {
   depth?: number;
   directive: string;
   tools: string[];
+  mcp_names?: string[];
   iteration: number;
   rate: string;
   model: string;

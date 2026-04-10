@@ -3,7 +3,6 @@ import {
   ReactFlow,
   Background,
   Controls,
-  MiniMap,
   type Node,
   type Edge,
   type NodeProps,
@@ -11,8 +10,6 @@ import {
   type OnEdgesChange,
   Position,
   Handle,
-  applyNodeChanges,
-  applyEdgeChanges,
 } from "@xyflow/react";
 import type { Thread } from "../api";
 
@@ -23,6 +20,7 @@ interface ThreadNodeData {
   rate: string;
   iteration: number;
   depth: number;
+  mcpNames?: string[];
   activeTool?: string;
   thought?: string;
   messageFrom?: string; // brief flash: "← from-thread"
@@ -47,7 +45,7 @@ function ThreadNode({ data }: NodeProps<Node<ThreadNodeData>>) {
   return (
     <div
       className={`
-        rounded-lg border px-3 py-2 min-w-[140px] max-w-[200px] text-xs transition-all duration-300
+        rounded-lg border px-3 py-2.5 min-w-[160px] max-w-[220px] text-xs transition-all duration-300
         ${hasMessage ? "border-green bg-green/10 shadow-[0_0_12px_rgba(34,197,94,0.3)]" : ""}
         ${isActive && !hasMessage ? "border-accent bg-accent/10 shadow-[0_0_12px_rgba(249,115,22,0.2)]" : ""}
         ${!isActive && !hasMessage ? "border-border bg-bg-card" : ""}
@@ -73,6 +71,15 @@ function ThreadNode({ data }: NodeProps<Node<ThreadNodeData>>) {
         <div className="text-accent truncate">⟳ {data.activeTool}</div>
       ) : (
         <div className="text-text-muted">#{data.iteration} {data.rate}</div>
+      )}
+
+      {/* MCP badges */}
+      {data.mcpNames && data.mcpNames.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-1">
+          {data.mcpNames.map((mcp) => (
+            <span key={mcp} className="text-[8px] px-1 py-0.5 rounded bg-accent/10 text-accent/70">⚡{mcp}</span>
+          ))}
+        </div>
       )}
 
       {/* Thought preview */}
@@ -135,6 +142,7 @@ function layoutTree(threads: Thread[]): { nodes: Node<ThreadNodeData>[]; edges: 
         rate: t.rate || "sleep",
         iteration: t.iteration || 0,
         depth: t.depth || 0,
+        mcpNames: t.mcp_names,
       },
     });
 
@@ -260,14 +268,13 @@ export function FleetGraph({ threads, activeTools, thoughts, events = [] }: Flee
   const edges = useMemo(() =>
     layoutEdges.map((e) => {
       const isHot = !!hotEdges[e.id];
-      const hasActiveTool = !!activeTools[e.target];
-      const active = isHot || hasActiveTool;
+      // Edges only animate for messages between threads, not tool calls
       return {
         ...e,
-        animated: active,
+        animated: isHot,
         style: {
-          stroke: isHot ? "#22c55e" : hasActiveTool ? "#f97316" : "#555",
-          strokeWidth: active ? 3 : 2,
+          stroke: isHot ? "#22c55e" : "#555",
+          strokeWidth: isHot ? 3 : 2,
           transition: "stroke 0.3s, stroke-width 0.3s",
         },
       };
@@ -275,37 +282,29 @@ export function FleetGraph({ threads, activeTools, thoughts, events = [] }: Flee
     [layoutEdges, activeTools, hotEdges]
   );
 
-  // Controlled state for drag support
-  const [currentNodes, setCurrentNodes] = useState(nodes);
-  const [currentEdges, setCurrentEdges] = useState(edges);
+  // Merge drag positions with live data updates
+  const [dragPositions, setDragPositions] = useState<Record<string, { x: number; y: number }>>({});
 
-  // Sync layout changes but preserve drag positions
-  useEffect(() => {
-    setCurrentNodes((prev) => {
-      // Merge: keep dragged positions, update data
-      const posMap: Record<string, { x: number; y: number }> = {};
-      for (const n of prev) posMap[n.id] = n.position;
-
-      return nodes.map((n) => ({
-        ...n,
-        position: posMap[n.id] || n.position,
-      }));
-    });
-  }, [nodes]);
-
-  useEffect(() => {
-    setCurrentEdges(edges);
-  }, [edges]);
+  const finalNodes = useMemo(() =>
+    nodes.map((n) => ({
+      ...n,
+      position: dragPositions[n.id] || n.position,
+    })),
+    [nodes, dragPositions]
+  );
 
   const onNodesChange: OnNodesChange = useCallback(
-    (changes) => setCurrentNodes((nds) => applyNodeChanges(changes, nds)),
+    (changes) => {
+      for (const change of changes) {
+        if (change.type === "position" && change.position && change.id) {
+          setDragPositions((prev) => ({ ...prev, [change.id!]: change.position! }));
+        }
+      }
+    },
     []
   );
 
-  const onEdgesChange: OnEdgesChange = useCallback(
-    (changes) => setCurrentEdges((eds) => applyEdgeChanges(changes, eds)),
-    []
-  );
+  const onEdgesChange: OnEdgesChange = useCallback(() => {}, []);
 
   if (threads.length === 0) {
     return (
@@ -318,8 +317,8 @@ export function FleetGraph({ threads, activeTools, thoughts, events = [] }: Flee
   return (
     <div className="h-full w-full" style={{ minHeight: 400 }}>
       <ReactFlow
-        nodes={currentNodes}
-        edges={currentEdges}
+        nodes={finalNodes}
+        edges={edges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}

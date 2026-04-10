@@ -197,6 +197,26 @@ export function FleetCards({ threads, event, activeTools, thoughts }: FleetCards
                 </div>
               )}
 
+              {/* MCP servers + tools */}
+              {(t.mcp_names?.length || 0) > 0 && (
+                <div className="px-4 pb-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {t.mcp_names!.map((mcp) => (
+                      <span key={mcp} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-accent/8 text-accent/70 border border-accent/20">
+                        ⚡ {mcp}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Directive preview */}
+              {t.directive && !isActive && !hasMessage && !thought && (
+                <div className="px-4 pb-2">
+                  <p className="text-text-dim text-[10px] leading-relaxed line-clamp-1">{t.directive}</p>
+                </div>
+              )}
+
               {/* Thought */}
               {thought && !hasMessage && (
                 <div className="px-4 pb-3">
