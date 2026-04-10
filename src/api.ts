@@ -411,10 +411,11 @@ export const channels = {
 };
 
 export const telemetry = {
-  query: (instanceId: number, type?: string, limit?: number) => {
+  query: (instanceId: number, type?: string, limit?: number, threadId?: string) => {
     const params = new URLSearchParams({ instance_id: String(instanceId) });
     if (type) params.set("type", type);
     if (limit) params.set("limit", String(limit));
+    if (threadId) params.set("thread_id", threadId);
     return request<TelemetryEvent[]>("GET", `/telemetry?${params}`);
   },
   stats: (instanceId: number, period: string = "24h") =>

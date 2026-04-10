@@ -4,6 +4,7 @@ import { ChatPanel } from "../components/ChatPanel";
 import { ActivityPanel } from "../components/ActivityPanel";
 import { FleetGraph, type FleetEvent } from "../components/FleetGraph";
 import { FleetCards } from "../components/FleetCards";
+import { ThreadDetailModal } from "../components/ThreadDetailModal";
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 
@@ -134,9 +135,21 @@ function InstanceView({ instance, onDelete, onReload, initialThreads = [] }: { i
   const [graphThoughts, setGraphThoughts] = useState<Record<string, string>>({});
   const [graphEvents, setGraphEvents] = useState<FleetEvent[]>([]);
 
+  // Thread detail modal
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [threadLiveEvents, setThreadLiveEvents] = useState<Record<string, TelemetryEvent[]>>({});
+
   const handleEvent = (event: TelemetryEvent) => {
     setLatestEvent(event);
     const data = event.data || {};
+
+    // Collect live events per thread for detail modal
+    if (event.thread_id) {
+      setThreadLiveEvents((prev) => {
+        const arr = prev[event.thread_id] || [];
+        return { ...prev, [event.thread_id]: [...arr.slice(-200), event] };
+      });
+    }
 
     // Track threads
     if (event.type === "thread.spawn") {
@@ -314,12 +327,21 @@ function InstanceView({ instance, onDelete, onReload, initialThreads = [] }: { i
           {view === "activity" ? (
             <ActivityPanel instance={instance} event={latestEvent} onReload={onReload} />
           ) : view === "fleet" ? (
-            <FleetGraph threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} events={graphEvents} />
+            <FleetGraph threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} events={graphEvents} onNodeClick={setSelectedThreadId} />
           ) : (
             <FleetCards threads={graphThreads} event={latestEvent} activeTools={graphActiveTools} thoughts={graphThoughts} />
           )}
         </div>
       </div>
+
+      {/* Thread detail modal */}
+      <ThreadDetailModal
+        open={!!selectedThreadId}
+        onClose={() => setSelectedThreadId(null)}
+        thread={graphThreads.find((t) => t.id === selectedThreadId) || null}
+        instanceId={instance.id}
+        liveEvents={selectedThreadId ? (threadLiveEvents[selectedThreadId] || []) : []}
+      />
     </div>
   );
 }

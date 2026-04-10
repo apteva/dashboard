@@ -25,7 +25,7 @@ export function Modal({ open, onClose, children }: Props) {
     >
       <div className="absolute inset-0 bg-bg/80 backdrop-blur-sm" />
       <div
-        className="relative bg-bg-card border border-border rounded-lg shadow-lg max-w-md w-full mx-4"
+        className="relative bg-bg-card border border-border rounded-lg shadow-lg max-w-2xl w-full mx-4 overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {children}

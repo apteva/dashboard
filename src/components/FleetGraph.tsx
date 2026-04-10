@@ -185,9 +185,10 @@ interface FleetGraphProps {
   activeTools: Record<string, string>;
   thoughts: Record<string, string>;
   events?: FleetEvent[]; // recent message/tool events for animations
+  onNodeClick?: (threadId: string) => void;
 }
 
-export function FleetGraph({ threads, activeTools, thoughts, events = [] }: FleetGraphProps) {
+export function FleetGraph({ threads, activeTools, thoughts, events = [], onNodeClick }: FleetGraphProps) {
   const { nodes: layoutNodes, edges: layoutEdges } = useMemo(() => layoutTree(threads), [threads]);
 
   // Track hot edges: edgeId → { expiry, from, to } (actual message direction)
@@ -310,6 +311,10 @@ export function FleetGraph({ threads, activeTools, thoughts, events = [] }: Flee
 
   const onEdgesChange: OnEdgesChange = useCallback(() => {}, []);
 
+  const handleNodeClick = useCallback((_: any, node: Node) => {
+    if (onNodeClick) onNodeClick(node.id);
+  }, [onNodeClick]);
+
   if (threads.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-text-muted text-sm">
@@ -326,6 +331,7 @@ export function FleetGraph({ threads, activeTools, thoughts, events = [] }: Flee
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onNodeClick={handleNodeClick}
         fitView
         fitViewOptions={{ padding: 0.4 }}
         minZoom={0.2}
