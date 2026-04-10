@@ -46,7 +46,7 @@ function ThreadNode({ data }: NodeProps<Node<ThreadNodeData>>) {
   return (
     <div
       className={`
-        rounded-lg border px-3 py-2.5 min-w-[160px] max-w-[220px] text-xs transition-all duration-300
+        rounded-lg border px-3 py-2.5 w-[180px] h-[72px] text-xs transition-colors duration-300 overflow-hidden
         ${hasMessage ? "border-green bg-green/10 shadow-[0_0_12px_rgba(34,197,94,0.3)]" : ""}
         ${isActive && !hasMessage ? "border-accent bg-accent/10 shadow-[0_0_12px_rgba(249,115,22,0.2)]" : ""}
         ${!isActive && !hasMessage ? "border-border bg-bg-card" : ""}
@@ -56,37 +56,32 @@ function ThreadNode({ data }: NodeProps<Node<ThreadNodeData>>) {
       <Handle type="target" position={Position.Top} className="!bg-border !w-2 !h-2 !border-0" />
 
       {/* Header */}
-      <div className="flex items-center gap-1.5 mb-1">
+      <div className="flex items-center gap-1.5">
         <span className={`w-2 h-2 rounded-full shrink-0 transition-colors duration-300 ${
           hasMessage ? "bg-green animate-pulse" :
           isActive ? "bg-accent animate-pulse" :
           "bg-green/60"
         }`} />
-        <span className="text-text font-bold truncate">{data.label}</span>
+        <span className="text-text font-bold truncate text-[11px]">{data.label}</span>
       </div>
 
-      {/* Status line */}
-      {hasMessage ? (
-        <div className="text-green truncate text-[10px]">← {data.messageFrom}</div>
-      ) : isActive ? (
-        <div className="text-accent truncate">⟳ {data.activeTool}</div>
-      ) : (
-        <div className="text-text-muted">#{data.iteration} {data.rate}</div>
-      )}
+      {/* Status line — fixed height */}
+      <div className="mt-1 h-[14px] truncate">
+        {hasMessage ? (
+          <span className="text-green text-[10px]">← {data.messageFrom}</span>
+        ) : isActive ? (
+          <span className="text-accent text-[10px]">⟳ {data.activeTool}</span>
+        ) : (
+          <span className="text-text-muted text-[10px]">#{data.iteration} {data.rate}</span>
+        )}
+      </div>
 
-      {/* MCP badges */}
-      {data.mcpNames && data.mcpNames.length > 0 && (
-        <div className="flex flex-wrap gap-1 mt-1">
-          {data.mcpNames.map((mcp) => (
-            <span key={mcp} className="text-[8px] px-1 py-0.5 rounded bg-accent/10 text-accent/70">⚡{mcp}</span>
-          ))}
-        </div>
-      )}
-
-      {/* Thought preview */}
-      {data.thought && !hasMessage && (
-        <div className="text-text-dim mt-1 truncate italic text-[10px] max-w-[180px]">{data.thought}</div>
-      )}
+      {/* MCP badges — fixed height */}
+      <div className="mt-1 h-[14px] flex gap-1 overflow-hidden">
+        {data.mcpNames && data.mcpNames.map((mcp) => (
+          <span key={mcp} className="text-[8px] px-1 py-0.5 rounded bg-accent/10 text-accent/70 leading-none">⚡{mcp}</span>
+        ))}
+      </div>
 
       <Handle type="source" position={Position.Bottom} className="!bg-border !w-2 !h-2 !border-0" />
     </div>
@@ -116,8 +111,8 @@ function layoutTree(threads: Thread[]): { nodes: Node<ThreadNodeData>[]; edges: 
   const nodes: Node<ThreadNodeData>[] = [];
   const edges: Edge[] = [];
 
-  const NODE_W = 170;
-  const NODE_H = 80;
+  const NODE_W = 180;
+  const NODE_H = 72;
   const H_GAP = 40;
   const V_GAP = 50;
 
@@ -274,15 +269,14 @@ export function FleetGraph({ threads, activeTools, thoughts, events = [] }: Flee
   const edges = useMemo(() =>
     layoutEdges.map((e) => {
       const isHot = !!hotEdges[e.id];
-      const color = isHot ? "#22c55e" : "#555";
+      const color = isHot ? "#22c55e" : "#666";
       return {
         ...e,
         animated: isHot,
-        markerEnd: { type: MarkerType.ArrowClosed, color, width: 12, height: 12 },
+        markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
         style: {
           stroke: color,
-          strokeWidth: isHot ? 3 : 2,
-          transition: "stroke 0.3s, stroke-width 0.3s",
+          strokeWidth: isHot ? 2.5 : 1.5,
         },
       };
     }),

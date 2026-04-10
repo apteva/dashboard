@@ -136,7 +136,7 @@ export function FleetCards({ threads, event, activeTools, thoughts }: FleetCards
 
             <div
               className={`
-                flex-1 rounded-xl border-l-[3px] border border-border transition-all duration-500
+                flex-1 rounded-xl border-l-[3px] border border-border transition-colors duration-500 min-h-[64px]
                 ${hasMessage ? "border-l-green bg-green/8 shadow-[0_0_16px_rgba(34,197,94,0.2)]" : ""}
                 ${isActive && !hasMessage ? "border-l-accent bg-accent/8 shadow-[0_0_16px_rgba(249,115,22,0.15)]" : ""}
                 ${!isActive && !hasMessage && isMain ? "border-l-accent/50 bg-bg-card" : ""}
