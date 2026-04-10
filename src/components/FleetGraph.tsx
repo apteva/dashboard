@@ -10,6 +10,7 @@ import {
   type OnEdgesChange,
   Position,
   Handle,
+  MarkerType,
 } from "@xyflow/react";
 import type { Thread } from "../api";
 
@@ -152,6 +153,7 @@ function layoutTree(threads: Thread[]): { nodes: Node<ThreadNodeData>[]; edges: 
         source: t.parent_id,
         target: t.id,
         type: "smoothstep",
+        markerEnd: { type: MarkerType.ArrowClosed, color: "#555", width: 12, height: 12 },
         style: { stroke: "#555", strokeWidth: 2 },
         animated: false,
       });
@@ -230,25 +232,29 @@ export function FleetGraph({ threads, activeTools, thoughts, events = [] }: Flee
   }, []);
 
   // Track which nodes have recent messages (for the green flash)
-  const [messageFlash, setMessageFlash] = useState<Record<string, string>>({}); // threadId → from
+  const [messageFlash, setMessageFlash] = useState<Record<string, { from: string; expiry: number }>>({});
 
   useEffect(() => {
     if (events.length === 0) return;
     const latest = events[events.length - 1];
     if (!latest || latest.type !== "message") return;
-
-    setMessageFlash((prev) => ({ ...prev, [latest.to]: latest.from }));
-
-    // Clear after 3s
-    const timeout = setTimeout(() => {
-      setMessageFlash((prev) => {
-        const next = { ...prev };
-        delete next[latest.to];
-        return next;
-      });
-    }, 3000);
-    return () => clearTimeout(timeout);
+    setMessageFlash((prev) => ({ ...prev, [latest.to]: { from: latest.from, expiry: Date.now() + 3000 } }));
   }, [events.length]);
+
+  // Decay message flashes (same interval as hotEdges)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setMessageFlash((prev) => {
+        const next: Record<string, { from: string; expiry: number }> = {};
+        for (const [k, v] of Object.entries(prev)) {
+          if (v.expiry > now) next[k] = v;
+        }
+        return Object.keys(next).length !== Object.keys(prev).length ? next : prev;
+      });
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
 
   // Build final nodes
   const nodes = useMemo(() =>
@@ -258,7 +264,7 @@ export function FleetGraph({ threads, activeTools, thoughts, events = [] }: Flee
         ...n.data,
         activeTool: activeTools[n.id],
         thought: thoughts[n.id],
-        messageFrom: messageFlash[n.id],
+        messageFrom: messageFlash[n.id]?.from,
       },
     })),
     [layoutNodes, activeTools, thoughts, messageFlash]
@@ -268,12 +274,13 @@ export function FleetGraph({ threads, activeTools, thoughts, events = [] }: Flee
   const edges = useMemo(() =>
     layoutEdges.map((e) => {
       const isHot = !!hotEdges[e.id];
-      // Edges only animate for messages between threads, not tool calls
+      const color = isHot ? "#22c55e" : "#555";
       return {
         ...e,
         animated: isHot,
+        markerEnd: { type: MarkerType.ArrowClosed, color, width: 12, height: 12 },
         style: {
-          stroke: isHot ? "#22c55e" : "#555",
+          stroke: color,
           strokeWidth: isHot ? 3 : 2,
           transition: "stroke 0.3s, stroke-width 0.3s",
         },
