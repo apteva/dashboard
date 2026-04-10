@@ -206,13 +206,13 @@ function InstanceView({ instance, onDelete, onReload, initialThreads = [] }: { i
     }
   };
 
-  // Sync threads from poll (initial load + periodic catch-up)
+  // Sync threads from poll (works for both running and stopped)
   useEffect(() => {
-    if (instance.status !== "running") return;
     const poll = () => {
       core.threads(instance.id).then(setGraphThreads).catch(() => {});
     };
     poll();
+    if (instance.status !== "running") return;
     const interval = setInterval(poll, 3000);
     return () => clearInterval(interval);
   }, [instance.id, instance.status]);

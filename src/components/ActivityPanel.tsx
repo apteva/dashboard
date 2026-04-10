@@ -40,16 +40,17 @@ export function ActivityPanel({ instance, event, onReload }: Props) {
     setTools([]);
   }, [instance.id]);
 
-  // Poll status + threads
+  // Poll status + threads (works for both running and stopped instances)
   useEffect(() => {
-    if (instance.status !== "running") return;
     const poll = () => {
       core.status(instance.id).then((s) => { setStatus(s); setMode(s.mode); }).catch(() => {});
       core.threads(instance.id).then(setThreads).catch(() => {});
     };
     poll();
-    const interval = setInterval(poll, 3000);
-    return () => clearInterval(interval);
+    if (instance.status === "running") {
+      const interval = setInterval(poll, 3000);
+      return () => clearInterval(interval);
+    }
   }, [instance.id, instance.status]);
 
   // Process SSE events
