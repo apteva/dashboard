@@ -293,8 +293,8 @@ function InstanceView({ instance, onDelete, onReload, initialThreads = [] }: { i
 
       {/* Main content */}
       <div className="flex-1 flex min-h-0">
-        {/* Chat panel */}
-        <div className="w-1/3 min-w-[300px] border-r border-border">
+        {/* Chat panel — hidden in fleet view but stays mounted for SSE */}
+        <div className={`border-r border-border ${view === "fleet" ? "w-0 min-w-0 overflow-hidden" : "w-1/3 min-w-[300px]"}`}>
           {instance.status === "running" ? (
             <ChatPanel instanceId={instance.id} onEvent={handleEvent} />
           ) : (
@@ -304,7 +304,7 @@ function InstanceView({ instance, onDelete, onReload, initialThreads = [] }: { i
           )}
         </div>
 
-        {/* Right panel — Activity or Fleet graph */}
+        {/* Right panel — Activity, Fleet graph, or Cards */}
         <div className="flex-1">
           {view === "activity" ? (
             <ActivityPanel instance={instance} event={latestEvent} onReload={onReload} />
