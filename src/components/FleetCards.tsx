@@ -197,12 +197,12 @@ export function FleetCards({ threads, event, activeTools, thoughts }: FleetCards
                 </div>
               )}
 
-              {/* MCP servers + tools */}
+              {/* MCP servers */}
               {(t.mcp_names?.length || 0) > 0 && (
                 <div className="px-4 pb-2">
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="flex flex-wrap gap-1">
                     {t.mcp_names!.map((mcp) => (
-                      <span key={mcp} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-accent/8 text-accent/70 border border-accent/20">
+                      <span key={mcp} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-accent/8 text-accent/70 border border-accent/20">
                         ⚡ {mcp}
                       </span>
                     ))}
