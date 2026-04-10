@@ -165,7 +165,7 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
     // Tool call (non-channels) — show indicator
     if (event.type === "tool.call" && data.name && !String(data.name).startsWith("channels_")) {
       setMessages((prev) => [...prev, {
-        id: `${event.thread_id}:${data.id || nextId()}`, role: "tool", text: data.reason || "",
+        id: `${event.thread_id}:${data.id || ""}:${nextId()}`, role: "tool", text: data.reason || "",
         toolName: data.name, time: Date.now(),
       }]);
       return;
@@ -186,7 +186,7 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
         }
         // No matching start — add done entry
         return [...updated, {
-          id: `${event.thread_id}:${data.id || nextId()}:done`, role: "tool", text: "", toolName: data.name,
+          id: `${event.thread_id}:${data.id || ""}:done:${nextId()}`, role: "tool", text: "", toolName: data.name,
           toolDone: true, toolDurationMs: data.duration_ms, toolSuccess: data.success !== false,
           time: Date.now(),
         }];
