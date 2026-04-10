@@ -51,13 +51,17 @@ export function FleetCards({ threads, event, activeTools, thoughts }: FleetCards
     if (!event) return;
     const data = event.data || {};
 
-    if (event.type === "tool.call" && data.name && !String(data.name).startsWith("channels_") && event.thread_id) {
+    const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_status", "channels_ask"]);
+    const toolName = String(data.name || "");
+    const showTool = event.thread_id && toolName && !hiddenTools.has(toolName) && !toolName.startsWith("channels_");
+
+    if (event.type === "tool.call" && showTool) {
       setTools((prev) => [...prev, {
-        threadId: event.thread_id, name: data.name, done: false, time: Date.now(),
+        threadId: event.thread_id, name: toolName, done: false, time: Date.now(),
       }].slice(-30));
     }
 
-    if (event.type === "tool.result" && data.name && !String(data.name).startsWith("channels_") && event.thread_id) {
+    if (event.type === "tool.result" && showTool) {
       setTools((prev) => {
         const updated = [...prev];
         for (let i = updated.length - 1; i >= 0; i--) {

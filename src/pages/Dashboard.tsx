@@ -158,11 +158,16 @@ function InstanceView({ instance, onDelete, onReload, initialThreads = [] }: { i
     }
 
     // Track active tools — keep visible for 3s after completion
-    if (event.type === "tool.call" && data.name && event.thread_id && !String(data.name).startsWith("channels_")) {
-      setGraphActiveTools((prev) => ({ ...prev, [event.thread_id]: data.name }));
-      setGraphEvents((prev) => [...prev.slice(-30), { type: "tool", from: event.thread_id, to: event.thread_id, text: data.name, time: Date.now() }]);
+    // Skip noisy inline tools (send, pace, done, evolve, remember) and channels from display
+    const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_status", "channels_ask"]);
+    const toolName = String(data.name || "");
+    const showTool = event.thread_id && toolName && !hiddenTools.has(toolName) && !toolName.startsWith("channels_");
+
+    if (event.type === "tool.call" && showTool) {
+      setGraphActiveTools((prev) => ({ ...prev, [event.thread_id]: toolName }));
+      setGraphEvents((prev) => [...prev.slice(-30), { type: "tool", from: event.thread_id, to: event.thread_id, text: toolName, time: Date.now() }]);
     }
-    if (event.type === "tool.result" && data.name && !String(data.name).startsWith("channels_")) {
+    if (event.type === "tool.result" && showTool) {
       const threadId = event.thread_id;
       const toolName = data.name;
       // Delay clearing active tool glow
