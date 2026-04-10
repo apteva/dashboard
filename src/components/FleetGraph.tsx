@@ -148,8 +148,7 @@ function layoutTree(threads: Thread[]): { nodes: Node<ThreadNodeData>[]; edges: 
         source: t.parent_id,
         target: t.id,
         type: "smoothstep",
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#555", width: 12, height: 12 },
-        style: { stroke: "#555", strokeWidth: 2 },
+        style: { stroke: "#555", strokeWidth: 1.5 },
         animated: false,
       });
     }
@@ -191,34 +190,33 @@ interface FleetGraphProps {
 export function FleetGraph({ threads, activeTools, thoughts, events = [] }: FleetGraphProps) {
   const { nodes: layoutNodes, edges: layoutEdges } = useMemo(() => layoutTree(threads), [threads]);
 
-  // Track which edges are "hot" (recent message or tool activity)
-  const [hotEdges, setHotEdges] = useState<Record<string, number>>({}); // edgeId → expiry timestamp
+  // Track hot edges: edgeId → { expiry, from, to } (actual message direction)
+  const [hotEdges, setHotEdges] = useState<Record<string, { expiry: number; from: string; to: string }>>({});
 
-  // Process events → mark edges as hot
   useEffect(() => {
     if (events.length === 0) return;
     const latest = events[events.length - 1];
     if (!latest) return;
 
-    // Find edge between from↔to (either direction)
+    // Edge IDs are always parent→child, but message may flow either way
     const edgeId1 = `e-${latest.from}-${latest.to}`;
     const edgeId2 = `e-${latest.to}-${latest.from}`;
+    const info = { expiry: Date.now() + 3000, from: latest.from, to: latest.to };
 
     setHotEdges((prev) => ({
       ...prev,
-      [edgeId1]: Date.now() + 3000, // hot for 3 seconds
-      [edgeId2]: Date.now() + 3000,
+      [edgeId1]: info,
+      [edgeId2]: info,
     }));
   }, [events.length]);
 
-  // Decay hot edges
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
       setHotEdges((prev) => {
-        const next: Record<string, number> = {};
+        const next: typeof prev = {};
         for (const [k, v] of Object.entries(prev)) {
-          if (v > now) next[k] = v;
+          if (v.expiry > now) next[k] = v;
         }
         return Object.keys(next).length !== Object.keys(prev).length ? next : prev;
       });
@@ -268,16 +266,21 @@ export function FleetGraph({ threads, activeTools, thoughts, events = [] }: Flee
   // Build final edges
   const edges = useMemo(() =>
     layoutEdges.map((e) => {
-      const isHot = !!hotEdges[e.id];
-      const color = isHot ? "#22c55e" : "#666";
+      const hot = hotEdges[e.id];
+      if (!hot) {
+        return { ...e, style: { stroke: "#555", strokeWidth: 1.5 } };
+      }
+      // Arrow points toward the message recipient
+      // Edge is defined as source(parent)→target(child)
+      // If message goes child→parent (hot.to === e.source), arrow at start (toward parent)
+      // If message goes parent→child (hot.to === e.target), arrow at end (toward child)
+      const arrowMarker = { type: MarkerType.ArrowClosed, color: "#22c55e", width: 14, height: 14 };
+      const towardParent = hot.to === e.source;
       return {
         ...e,
-        animated: isHot,
-        markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
-        style: {
-          stroke: color,
-          strokeWidth: isHot ? 2.5 : 1.5,
-        },
+        animated: true,
+        ...(towardParent ? { markerStart: arrowMarker } : { markerEnd: arrowMarker }),
+        style: { stroke: "#22c55e", strokeWidth: 2.5 },
       };
     }),
     [layoutEdges, activeTools, hotEdges]
