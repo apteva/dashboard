@@ -151,7 +151,7 @@ function layoutTree(threads: Thread[]): { nodes: Node<ThreadNodeData>[]; edges: 
         id: `e-${t.parent_id}-${t.id}`,
         source: t.parent_id,
         target: t.id,
-        type: "default",
+        type: "smoothstep",
         style: { stroke: "#555", strokeWidth: 2 },
         animated: false,
       });

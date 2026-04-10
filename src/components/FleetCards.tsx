@@ -210,10 +210,10 @@ export function FleetCards({ threads, event, activeTools, thoughts }: FleetCards
                 </div>
               )}
 
-              {/* Directive preview */}
-              {t.directive && !isActive && !hasMessage && !thought && (
-                <div className="px-4 pb-2">
-                  <p className="text-text-dim text-[10px] leading-relaxed line-clamp-1">{t.directive}</p>
+              {/* Directive preview — always show unless message flash */}
+              {t.directive && !hasMessage && (
+                <div className="px-4 pb-1">
+                  <p className="text-text-dim text-[10px] leading-relaxed line-clamp-1 opacity-60">{t.directive}</p>
                 </div>
               )}
 
