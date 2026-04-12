@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import type { Thread, TelemetryEvent } from "../api";
+import type { Thread } from "../api";
+import type { SubscribeFn } from "./InstanceView";
 
 interface FleetCardsProps {
   threads: Thread[];
-  event: TelemetryEvent | null; // same SSE event that ActivityPanel gets
+  subscribe: SubscribeFn; // synchronous event fan-out from InstanceView
   activeTools: Record<string, string>;
   thoughts: Record<string, string>;
 }
@@ -42,14 +43,14 @@ function orderTree(threads: Thread[]): Thread[] {
   return result;
 }
 
-export function FleetCards({ threads, event, activeTools, thoughts }: FleetCardsProps) {
+export function FleetCards({ threads, subscribe, activeTools, thoughts }: FleetCardsProps) {
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [messageFlash, setMessageFlash] = useState<Record<string, { from: string; text: string; expiry: number }>>({});
 
-  // Process SSE events — same logic as ActivityPanel
+  // Process SSE events — subscribe synchronously so no chunks are lost.
   useEffect(() => {
-    if (!event) return;
-    const data = event.data || {};
+    return subscribe((event) => {
+      const data = event.data || {};
 
     const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_status", "channels_ask"]);
     const toolName = String(data.name || "");
@@ -85,7 +86,8 @@ export function FleetCards({ threads, event, activeTools, thoughts }: FleetCards
         setMessageFlash((prev) => ({ ...prev, [event.thread_id]: { from, text, expiry: Date.now() + 4000 } }));
       }
     }
-  }, [event]);
+    });
+  }, [subscribe]);
 
   // Decay flashes + prune old tools
   useEffect(() => {

@@ -1,4 +1,8 @@
-const BASE = "";
+// All REST/JSON API endpoints live under /api/ on the server. The SPA owns
+// every other path (refresh on /instances/42 no longer collides with the
+// server's /instances/ prefix match). Static assets and the SPA catchall
+// route through `/` on the server.
+const BASE = "/api";
 
 async function request<T>(method: string, path: string, body?: any): Promise<T> {
   const headers: Record<string, string> = {};
@@ -104,8 +108,15 @@ export const instances = {
     return request<Instance[]>("GET", `/instances${params}`);
   },
 
-  create: (name: string, directive?: string, mode?: string, projectId?: string) =>
-    request<Instance>("POST", "/instances", { name, directive: directive || "", mode: mode || "autonomous", project_id: projectId || "" }),
+  create: (name: string, directive?: string, mode?: string, projectId?: string, start?: boolean) =>
+    request<Instance>("POST", "/instances", {
+      name,
+      directive: directive || "",
+      mode: mode || "autonomous",
+      project_id: projectId || "",
+      // Server default is start=true; pass explicit false to create stopped.
+      ...(start === false ? { start: false } : {}),
+    }),
 
   get: (id: number) => request<Instance>("GET", `/instances/${id}`),
 
@@ -132,6 +143,7 @@ export interface Provider {
   id: number;
   type: string;
   name: string;
+  project_id?: string;
   created_at: string;
   updated_at: string;
 }
@@ -141,12 +153,23 @@ export interface ProviderDetail extends Provider {
 }
 
 export const providers = {
-  list: () => request<Provider[]>("GET", "/providers"),
+  // If projectId is passed, the response includes providers scoped to that
+  // project PLUS any unscoped "global" ones (project_id = '').
+  list: (projectId?: string) => {
+    const params = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    return request<Provider[]>("GET", `/providers${params}`);
+  },
 
   get: (id: number) => request<ProviderDetail>("GET", `/providers/${id}`),
 
-  create: (type: string, name: string, data: Record<string, string>, providerTypeId?: number) =>
-    request<Provider>("POST", "/providers", { type, name, data, provider_type_id: providerTypeId || 0 }),
+  create: (type: string, name: string, data: Record<string, string>, providerTypeId?: number, projectId?: string) =>
+    request<Provider>("POST", "/providers", {
+      type,
+      name,
+      data,
+      provider_type_id: providerTypeId || 0,
+      project_id: projectId || "",
+    }),
 
   update: (id: number, type: string, name: string, data: Record<string, string>) =>
     request<any>("PUT", `/providers/${id}`, { type, name, data }),
@@ -200,8 +223,49 @@ export interface ConnectionInfo {
   name: string;
   auth_type: string;
   status: string;
+  source: string;                // 'local' | 'composio'
+  provider_id?: number;
+  external_id?: string;
   tool_count: number;
   created_at: string;
+}
+
+// Response shape when a connection create kicks off an OAuth flow (local
+// oauth2 or composio). `redirect_url` is what the popup should open.
+export interface ConnectCreateResponse {
+  connection: ConnectionInfo;
+  redirect_url: string;
+}
+
+export interface ComposioApp {
+  slug: string;
+  name: string;
+  description?: string;
+  logo?: string;
+  categories?: string[];
+  no_auth?: boolean;
+  composio_managed?: boolean;
+}
+
+export interface ComposioCredField {
+  name: string;
+  display_name: string;
+  description?: string;
+  type: string;
+  required: boolean;
+  default?: string;
+}
+
+export interface ComposioToolkitDetails {
+  slug: string;
+  name: string;
+  composio_managed_auth_schemes: string[];
+  auth_mode: string;              // lowercase: oauth2 / api_key / basic / ...
+  auth_mode_display: string;
+  auth_guide_url?: string;
+  config_fields: ComposioCredField[];
+  init_fields: ComposioCredField[];
+  is_composio_managed: boolean;
 }
 
 export interface CatalogStatus {
@@ -227,10 +291,71 @@ export const integrations = {
     return request<ConnectionInfo[]>("GET", `/connections${params}`);
   },
 
+  // Local non-OAuth: stores credentials immediately, returns ConnectionInfo.
+  // Local OAuth2: returns ConnectCreateResponse with an authorize URL.
   connect: (appSlug: string, name: string, credentials: Record<string, string>, authType?: string, projectId?: string) =>
-    request<ConnectionInfo>("POST", "/connections", { app_slug: appSlug, name, credentials, auth_type: authType, project_id: projectId || "" }),
+    request<ConnectionInfo | ConnectCreateResponse>("POST", "/connections", {
+      source: "local",
+      app_slug: appSlug,
+      name,
+      credentials,
+      auth_type: authType,
+      project_id: projectId || "",
+    }),
+
+  // Hosted Composio connection — server calls Composio, returns a redirect URL
+  // the dashboard must open in a popup. The connection row is pending until
+  // the user finishes OAuth on Composio's side; poll /connections/:id to flip.
+  connectComposio: (
+    providerId: number,
+    appSlug: string,
+    opts?: {
+      name?: string;
+      projectId?: string;
+      authMode?: string;                           // API_KEY / OAUTH2 / BASIC ...
+      configCreds?: Record<string, string>;        // fields for auth_config creation
+      initCreds?: Record<string, string>;          // fields for per-connection init
+    },
+  ) =>
+    request<ConnectCreateResponse>("POST", "/connections", {
+      source: "composio",
+      provider_id: providerId,
+      app_slug: appSlug,
+      name: opts?.name || appSlug,
+      project_id: opts?.projectId || "",
+      composio_auth_mode: opts?.authMode || "",
+      composio_config_creds: opts?.configCreds || {},
+      composio_init_creds: opts?.initCreds || {},
+    }),
+
+  // Per-toolkit detail fetch — returns the credential field schema so the
+  // dashboard can render a form before initiating the connection. Proxied
+  // through apteva-server so the Composio API key never leaves the server.
+  composioToolkit: (providerId: number, slug: string) =>
+    request<ComposioToolkitDetails>("GET", `/composio/toolkit/${encodeURIComponent(slug)}?provider_id=${providerId}`),
+
+  // Manual trigger for Composio MCP server reconciliation. Recreates the
+  // aggregate remote mcp_servers row for a (project, provider) tuple from
+  // the current set of active composio connections. Use this after a
+  // reconcile failure during connection creation.
+  composioReconcile: (providerId: number, projectId?: string) =>
+    request<{ status: string; mcp_server: MCPServer | null }>(
+      "POST",
+      `/composio/reconcile?provider_id=${providerId}${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ""}`,
+    ),
+
+  // Single-connection fetch — used by OAuth-flow polling.
+  get: (id: number) => request<ConnectionInfo>("GET", `/connections/${id}`),
 
   disconnect: (id: number) => request<any>("DELETE", `/connections/${id}`),
+
+  // Composio app catalog (proxied via apteva-server using the user's API key).
+  // Pass a non-empty `search` to use Composio's server-side search instead of
+  // paging through the full catalog.
+  composioApps: (providerId: number, search?: string) => {
+    const q = `?provider_id=${providerId}${search ? `&search=${encodeURIComponent(search)}` : ""}`;
+    return request<ComposioApp[]>("GET", `/composio/apps${q}`);
+  },
 
   tools: (id: number) =>
     request<Array<{ name: string; description: string; method: string; path: string }>>("GET", `/connections/${id}/tools`),
@@ -246,10 +371,13 @@ export interface MCPServer {
   command: string;
   args: string;
   description: string;
-  status: string;
+  status: string;          // 'running' | 'stopped' | 'reachable' | 'unprobed'
   tool_count: number;
   pid: number;
-  source: string;
+  source: string;          // 'custom' | 'local' | 'remote'
+  transport?: string;      // 'stdio' | 'http'
+  url?: string;
+  provider_id?: number;
   connection_id: number;
   proxy_config?: { name: string; transport: string; url?: string; command?: string; args?: string[] };
   created_at: string;
@@ -278,6 +406,19 @@ export const mcpServers = {
   stop: (id: number) => request<any>("POST", `/mcp-servers/${id}/stop`),
 
   tools: (id: number) => request<MCPTool[]>("GET", `/mcp-servers/${id}/tools`),
+
+  // Invoke a tool on an MCP server. Works for source=remote (HTTP MCP) and
+  // source=custom (stdio subprocess). Local catalog rows must use
+  // integrations.execute(connection_id, ...) instead.
+  //
+  // Response shape mirrors integrations.execute for dashboard uniformity:
+  //   { success: boolean, status: number, data: any }
+  callTool: (id: number, tool: string, args: Record<string, any>) =>
+    request<{ success: boolean; status: number; data: any }>(
+      "POST",
+      `/mcp-servers/${id}/call-tool`,
+      { tool, args },
+    ),
 };
 
 // Subscriptions
@@ -384,12 +525,42 @@ export interface TelemetryStats {
   errors: number;
 }
 
+// MCPServerConfig is the shape cores consume for each entry in their
+// mcp_servers config list. Matches both stdio entries (command+args) and
+// streamable HTTP entries (url). Used when reading the current config and
+// when pushing a new desired list via setMCPServers.
+export interface MCPServerConfig {
+  name: string;
+  transport?: string;      // 'http' | 'stdio'
+  url?: string;
+  command?: string;
+  args?: string[];
+  main_access?: boolean;
+  connected?: boolean;     // present on GET, absent on PUT
+}
+
 export const core = {
   status: (instanceId: number) => request<Status>("GET", `/instances/${instanceId}/status`),
   threads: (instanceId: number) => request<Thread[]>("GET", `/instances/${instanceId}/threads`),
-  config: (instanceId: number) => request<{ directive: string; mode: string; auto_approve: string[] }>("GET", `/instances/${instanceId}/config`),
+  // GET /instances/:id/config — proxied to the core. The core responds with
+  // the current in-memory config including the live mcp_servers list (each
+  // entry annotated with `connected: true`).
+  config: (instanceId: number) =>
+    request<{
+      directive: string;
+      mode: string;
+      auto_approve?: string[];
+      mcp_servers?: MCPServerConfig[];
+    }>("GET", `/instances/${instanceId}/config`),
   setMode: (instanceId: number, mode: "autonomous" | "supervised") =>
     request<{ status: string }>("PUT", `/instances/${instanceId}/config`, { mode }),
+  // Replace the full mcp_servers list on a running instance. The core runs
+  // reconcileMCP against the new list — servers in the list but not
+  // currently connected are connected, servers currently connected but not
+  // in the list are disconnected. System entries (apteva-server / channels)
+  // must be included in `servers` or they will be reaped by reconcile.
+  setMCPServers: (instanceId: number, servers: MCPServerConfig[]) =>
+    request<{ status: string }>("PUT", `/instances/${instanceId}/config`, { mcp_servers: servers }),
   approve: (instanceId: number, approved: boolean) =>
     request<{ status: string }>("POST", `/instances/${instanceId}/approve`, { approved }),
 };

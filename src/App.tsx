@@ -3,7 +3,8 @@ import { useAuth } from "./hooks/useAuth";
 import { ProjectProvider } from "./hooks/useProjects";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
-import { Dashboard } from "./pages/Dashboard";
+import { Instances } from "./pages/Instances";
+import { Instance } from "./pages/Instance";
 import { Integrations } from "./pages/Integrations";
 import { Analytics } from "./pages/Analytics";
 import { Settings } from "./pages/Settings";
@@ -29,7 +30,8 @@ export default function App() {
             </ProtectedRoute>
           }
         >
-          <Route path="/" element={<Dashboard />} />
+          <Route path="/" element={<Instances />} />
+          <Route path="/instances/:id" element={<Instance />} />
           <Route path="/integrations" element={<Integrations />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/settings" element={<Settings />} />

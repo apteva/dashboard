@@ -1,136 +1,55 @@
-import { useState, useEffect } from "react";
-import { instances, core, type Instance, type TelemetryEvent } from "../api";
-import { ChatPanel } from "../components/ChatPanel";
-import { ActivityPanel } from "../components/ActivityPanel";
-import { FleetGraph, type FleetEvent } from "../components/FleetGraph";
-import { FleetCards } from "../components/FleetCards";
-import { ThreadDetailModal } from "../components/ThreadDetailModal";
-import { Modal } from "../components/Modal";
-import { useProjects } from "../hooks/useProjects";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { instances, core, type Instance, type Thread, type TelemetryEvent } from "../api";
 
-export function Dashboard() {
-  const { currentProject } = useProjects();
-  const [instance, setInstance] = useState<Instance | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const [name, setName] = useState("");
-  const [directive, setDirective] = useState("");
-  const [error, setError] = useState("");
-  const [creating, setCreating] = useState(false);
+export type EventListener = (event: TelemetryEvent) => void;
+export type SubscribeFn = (listener: EventListener) => () => void;
+import { ChatPanel } from "./ChatPanel";
+import { ActivityPanel } from "./ActivityPanel";
+import { FleetGraph, type FleetEvent } from "./FleetGraph";
+import { FleetCards } from "./FleetCards";
+import { ThreadDetailModal } from "./ThreadDetailModal";
+import { Modal } from "./Modal";
 
-  const projectId = currentProject?.id;
-
-  // Preloaded threads — fetched in parallel with instance, passed down
-  const [preloadedThreads, setPreloadedThreads] = useState<import("../api").Thread[]>([]);
-
-  const load = (pid?: string) =>
-    instances
-      .list(pid)
-      .then((list) => {
-        const inst = list.length > 0 ? list[0] : null;
-        setInstance(inst);
-        setLoaded(true);
-        // Preload threads in parallel
-        if (inst && inst.status === "running") {
-          core.threads(inst.id).then(setPreloadedThreads).catch(() => {});
-        }
-      })
-      .catch(() => setLoaded(true));
-
-  // Reset state when project changes
-  useEffect(() => {
-    setInstance(null);
-    setLoaded(false);
-    setPreloadedThreads([]);
-  }, [projectId]);
-
-  // Load instances for current project — wait until project is known
-  useEffect(() => {
-    if (!projectId) return;
-    load(projectId);
-    const interval = setInterval(() => load(projectId), 5000);
-    return () => clearInterval(interval);
-  }, [projectId]);
-
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim()) return;
-    setError("");
-    setCreating(true);
-    try {
-      await instances.create(name.trim(), directive.trim(), "autonomous", projectId);
-      setName("");
-      setDirective("");
-      load();
-    } catch (err: any) {
-      setError(err.message || "Failed to create instance");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!instance) return;
-    await instances.delete(instance.id);
-    setInstance(null);
-  };
-
-  if (!loaded) return null;
-
-  if (instance) {
-    return <InstanceView instance={instance} onDelete={handleDelete} onReload={() => load(projectId)} initialThreads={preloadedThreads} />;
-  }
-
-  // Create instance form
-  return (
-    <div className="flex flex-col h-full">
-      <div className="border-b border-border px-6 py-4">
-        <h1 className="text-text text-lg font-bold">Dashboard</h1>
-      </div>
-      <div className="flex-1 overflow-y-auto p-6">
-        <form onSubmit={handleCreate} className="border border-border rounded-lg p-6 bg-bg-card space-y-4 max-w-lg">
-          <h2 className="text-text text-base font-bold">Create your instance</h2>
-          <div>
-            <label className="block text-text-muted text-sm mb-2">Name</label>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent"
-              placeholder="My instance"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-text-muted text-sm mb-2">Directive (optional)</label>
-            <textarea
-              value={directive}
-              onChange={(e) => setDirective(e.target.value)}
-              className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent resize-none h-24"
-              placeholder="What should this instance think about?"
-            />
-          </div>
-          {error && <div className="text-red text-sm">{error}</div>}
-          <button
-            type="submit"
-            disabled={creating}
-            className="px-6 py-3 bg-accent text-bg rounded-lg font-bold text-base hover:bg-accent-hover transition-colors disabled:opacity-50"
-          >
-            {creating ? "Creating..." : "Create Instance"}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-// ─── Instance View (Chat + Activity) ───
-
-function InstanceView({ instance, onDelete, onReload, initialThreads = [] }: { instance: Instance; onDelete: () => void; onReload: () => void; initialThreads?: import("../api").Thread[] }) {
-  const [latestEvent, setLatestEvent] = useState<TelemetryEvent | null>(null);
+// InstanceView is the rich per-instance view: chat panel + activity/fleet/cards
+// side panel, lifecycle controls (start/stop/pause/delete), thread detail
+// modal. Used by the /instances/:id route to render whichever instance the
+// user navigated to.
+//
+// onDelete is called after a successful delete so the parent can navigate
+// back to the instances list. onReload is called after lifecycle actions
+// (start/stop) so the parent can refresh its instance metadata.
+export function InstanceView({
+  instance,
+  onDelete,
+  onReload,
+  initialThreads = [],
+}: {
+  instance: Instance;
+  onDelete: () => void;
+  onReload: () => void;
+  initialThreads?: Thread[];
+}) {
+  // Event bus for fan-out to sibling panels.
+  //
+  // We used to pass the latest SSE event as a React state prop (`latestEvent`)
+  // to ActivityPanel/FleetCards. That was broken for streaming text: when
+  // several llm.chunk events arrive in the same React tick, setLatestEvent
+  // is called rapidly and only the *last* event survives the render — every
+  // intermediate chunk is dropped, which is exactly the "missing middle
+  // words" symptom we saw in the Thoughts panel.
+  //
+  // Instead, panels register a synchronous listener via `subscribe(cb)` and
+  // receive every event in order with no batching.
+  const listenersRef = useRef<Set<EventListener>>(new Set());
+  const subscribe: SubscribeFn = useCallback((cb) => {
+    listenersRef.current.add(cb);
+    return () => { listenersRef.current.delete(cb); };
+  }, []);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [view, setView] = useState<"activity" | "fleet" | "cards">("activity");
 
   // Track threads, tools, thoughts, events for the fleet graph
-  const [graphThreads, setGraphThreads] = useState<import("../api").Thread[]>(initialThreads);
+  const [graphThreads, setGraphThreads] = useState<Thread[]>(initialThreads);
   const [graphActiveTools, setGraphActiveTools] = useState<Record<string, string>>({});
   const [graphThoughts, setGraphThoughts] = useState<Record<string, string>>({});
   const [graphEvents, setGraphEvents] = useState<FleetEvent[]>([]);
@@ -139,8 +58,22 @@ function InstanceView({ instance, onDelete, onReload, initialThreads = [] }: { i
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [threadLiveEvents, setThreadLiveEvents] = useState<Record<string, TelemetryEvent[]>>({});
 
+  // Reset all live state when the instance changes — critical because
+  // react-router keeps the component mounted when navigating between
+  // /instances/:id → /instances/:other, and stale threads from the previous
+  // instance would otherwise leak into the fleet graph.
+  useEffect(() => {
+    setGraphThreads(initialThreads);
+    setGraphActiveTools({});
+    setGraphThoughts({});
+    setGraphEvents([]);
+    setThreadLiveEvents({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instance.id]);
+
   const handleEvent = (event: TelemetryEvent) => {
-    setLatestEvent(event);
+    // Fan out to every subscribed panel synchronously — no React batching.
+    listenersRef.current.forEach((cb) => cb(event));
     const data = event.data || {};
 
     // Collect live events per thread for detail modal
@@ -183,7 +116,6 @@ function InstanceView({ instance, onDelete, onReload, initialThreads = [] }: { i
     if (event.type === "tool.result" && showTool) {
       const threadId = event.thread_id;
       const toolName = data.name;
-      // Delay clearing active tool glow
       setTimeout(() => {
         setGraphActiveTools((prev) => {
           if (prev[threadId] === toolName) {
@@ -325,11 +257,11 @@ function InstanceView({ instance, onDelete, onReload, initialThreads = [] }: { i
         {/* Right panel — Activity, Fleet graph, or Cards */}
         <div className="flex-1">
           {view === "activity" ? (
-            <ActivityPanel instance={instance} event={latestEvent} onReload={onReload} />
+            <ActivityPanel instance={instance} subscribe={subscribe} onReload={onReload} />
           ) : view === "fleet" ? (
             <FleetGraph threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} events={graphEvents} onNodeClick={setSelectedThreadId} />
           ) : (
-            <FleetCards threads={graphThreads} event={latestEvent} activeTools={graphActiveTools} thoughts={graphThoughts} />
+            <FleetCards threads={graphThreads} subscribe={subscribe} activeTools={graphActiveTools} thoughts={graphThoughts} />
           )}
         </div>
       </div>

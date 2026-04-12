@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
-import { core, instances, type Instance, type Status, type Thread, type TelemetryEvent } from "../api";
+import { core, instances, type Instance, type Status, type Thread } from "../api";
+import type { SubscribeFn } from "./InstanceView";
+import { MCPPanel } from "./MCPPanel";
 
 interface ThoughtEntry {
   threadId: string;
@@ -19,13 +21,20 @@ interface ToolEntry {
   time: number;
 }
 
+// Noisy internal tools that shouldn't clutter the Tool Calls list — same
+// filter the ChatPanel uses. Keep this in sync with ChatPanel.hiddenTools.
+const hiddenTools = new Set([
+  "pace", "done", "evolve", "remember", "send",
+  "channels_respond", "channels_ask", "channels_status",
+]);
+
 interface Props {
   instance: Instance;
-  event: TelemetryEvent | null; // latest event from ChatPanel's SSE
+  subscribe: SubscribeFn; // synchronous event fan-out from InstanceView's SSE
   onReload: () => void;
 }
 
-export function ActivityPanel({ instance, event, onReload }: Props) {
+export function ActivityPanel({ instance, subscribe, onReload }: Props) {
   const [status, setStatus] = useState<Status | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [thoughts, setThoughts] = useState<ThoughtEntry[]>([]);
@@ -53,10 +62,11 @@ export function ActivityPanel({ instance, event, onReload }: Props) {
     }
   }, [instance.id, instance.status]);
 
-  // Process SSE events
+  // Process SSE events — subscribe synchronously so every chunk is handled,
+  // even when many arrive in the same React tick.
   useEffect(() => {
-    if (!event) return;
-    const data = event.data || {};
+    return subscribe((event) => {
+      const data = event.data || {};
 
     if (event.type === "llm.chunk" && data.text) {
       setThoughts((prev) => {
@@ -93,18 +103,21 @@ export function ActivityPanel({ instance, event, onReload }: Props) {
       });
     }
 
-    if (event.type === "tool.call" && data.name && !String(data.name).startsWith("channels_")) {
+    const toolName = String(data.name || "");
+    const toolHidden = hiddenTools.has(toolName) || toolName.startsWith("channels_");
+
+    if (event.type === "tool.call" && toolName && !toolHidden) {
       setTools((prev) => [...prev, {
-        name: data.name, reason: data.reason || "", threadId: event.thread_id,
+        name: toolName, reason: data.reason || "", threadId: event.thread_id,
         done: false, time: Date.now(),
       }].slice(-20));
     }
 
-    if (event.type === "tool.result" && data.name && !String(data.name).startsWith("channels_")) {
+    if (event.type === "tool.result" && toolName && !toolHidden) {
       setTools((prev) => {
         const updated = [...prev];
         for (let i = updated.length - 1; i >= 0; i--) {
-          if (!updated[i].done && updated[i].name === data.name) {
+          if (!updated[i].done && updated[i].name === toolName) {
             updated[i] = { ...updated[i], done: true, durationMs: data.duration_ms, success: data.success !== false };
             return updated;
           }
@@ -138,7 +151,8 @@ export function ActivityPanel({ instance, event, onReload }: Props) {
     if (event.type === "directive.evolved") {
       onReload();
     }
-  }, [event]);
+    });
+  }, [subscribe, onReload]);
 
   const formatUptime = (s: number) => {
     if (s < 60) return `${s}s`;
@@ -201,11 +215,26 @@ export function ActivityPanel({ instance, event, onReload }: Props) {
                     <span className="text-text-muted shrink-0">#{t.iteration} {t.rate}</span>
                   )}
                 </div>
+                {t.mcp_names && t.mcp_names.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-0.5 pl-3">
+                    {t.mcp_names.map((m) => (
+                      <span
+                        key={m}
+                        className="text-[9px] px-1 py-0.5 rounded bg-accent/10 text-accent"
+                      >
+                        {m}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
         </div>
       )}
+
+      {/* MCP Servers attached to this instance */}
+      <MCPPanel instanceId={instance.id} running={instance.status === "running"} />
 
       {/* Recent tool calls */}
       {tools.length > 0 && (

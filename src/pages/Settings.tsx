@@ -264,6 +264,7 @@ function IntegrationsCatalogTab() {
 // ─── Providers Tab ───
 
 function ProvidersTab() {
+  const { currentProject } = useProjects();
   const [providerList, setProviderList] = useState<Provider[]>([]);
   const [types, setTypes] = useState<ProviderTypeInfo[]>([]);
   const [configuring, setConfiguring] = useState<ProviderTypeInfo | null>(null);
@@ -271,19 +272,19 @@ function ProvidersTab() {
   const [error, setError] = useState("");
 
   const load = () => {
-    providers.list().then(setProviderList).catch(() => {});
+    providers.list(currentProject?.id).then(setProviderList).catch(() => {});
     providerTypes.list().then(setTypes).catch(() => {});
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [currentProject?.id]);
 
   const isActive = (name: string) => providerList.some((p) => p.name === name);
   const getActive = (name: string) => providerList.find((p) => p.name === name);
 
   const handleActivate = async (pt: ProviderTypeInfo) => {
     if (!pt.requires_credentials) {
-      // No credentials needed — activate immediately
+      // No credentials needed — activate immediately (scoped to current project)
       try {
-        await providers.create(pt.type, pt.name, {}, pt.id);
+        await providers.create(pt.type, pt.name, {}, pt.id, currentProject?.id);
         load();
       } catch {}
       return;
@@ -309,7 +310,7 @@ function ProvidersTab() {
     }
 
     try {
-      await providers.create(configuring.type, configuring.name, data, configuring.id);
+      await providers.create(configuring.type, configuring.name, data, configuring.id, currentProject?.id);
       setConfiguring(null);
       setFields({});
       load();
@@ -348,6 +349,15 @@ function ProvidersTab() {
         <h2 className="text-text text-base font-bold">Providers</h2>
         <p className="text-text-muted text-sm mt-1">
           Activate providers to enable LLMs, integrations, and other services.
+          {currentProject ? (
+            <>
+              {" "}
+              Scoped to project <b>{currentProject.name}</b>. Unscoped providers
+              are visible in every project.
+            </>
+          ) : (
+            <> Without a selected project, new providers are unscoped (visible everywhere).</>
+          )}
         </p>
       </div>
 
@@ -372,7 +382,22 @@ function ProvidersTab() {
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-text text-sm font-bold">{pt.name}</span>
                     {active && (
-                      <span className="inline-block w-2 h-2 rounded-full bg-green" />
+                      <div className="flex items-center gap-1.5">
+                        {(() => {
+                          const p = getActive(pt.name);
+                          const scope = p?.project_id ? "project" : "global";
+                          return (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                              scope === "project"
+                                ? "bg-accent/20 text-accent"
+                                : "bg-bg-hover text-text-dim"
+                            }`}>
+                              {scope}
+                            </span>
+                          );
+                        })()}
+                        <span className="inline-block w-2 h-2 rounded-full bg-green" />
+                      </div>
                     )}
                   </div>
                   <p className="text-text-muted text-xs leading-relaxed mb-2">{pt.description}</p>
@@ -458,9 +483,56 @@ function MCPServersTab() {
   const [testArgs, setTestArgs] = useState<Record<string, string>>({});
   const [testResult, setTestResult] = useState<any>(null);
   const [testRunning, setTestRunning] = useState(false);
+  const [showOptional, setShowOptional] = useState(false);
+
+  const [providerList, setProviderList] = useState<Provider[]>([]);
+  const [composioConns, setComposioConns] = useState<number>(0);
+  const [syncingComposio, setSyncingComposio] = useState(false);
+  const [composioSyncError, setComposioSyncError] = useState("");
 
   const load = () => mcpServers.list(currentProject?.id).then((s) => setServers(s || [])).catch(() => {});
-  useEffect(() => { load(); const i = setInterval(load, 5000); return () => clearInterval(i); }, [currentProject?.id]);
+  useEffect(() => {
+    load();
+    const i = setInterval(load, 5000);
+    return () => clearInterval(i);
+  }, [currentProject?.id]);
+
+  // Look for a Composio provider and active composio connections in this
+  // project — if they exist but there's no remote mcp row, offer a Sync
+  // button. Reconcile is idempotent so Sync is always safe to click.
+  useEffect(() => {
+    providers.list(currentProject?.id).then(setProviderList).catch(() => {});
+    integrations
+      .connections(currentProject?.id)
+      .then((cs) => {
+        const count = (cs || []).filter(
+          (c) => c.source === "composio" && c.status === "active",
+        ).length;
+        setComposioConns(count);
+      })
+      .catch(() => {});
+  }, [currentProject?.id, servers.length]);
+
+  const composioProvider = providerList.find((p) => p.name === "Composio");
+  const hasRemoteRow = servers.some(
+    (s) => s.source === "remote" && s.provider_id === composioProvider?.id,
+  );
+  const showComposioSyncHint =
+    !!composioProvider && composioConns > 0 && !hasRemoteRow;
+
+  const handleComposioSync = async () => {
+    if (!composioProvider) return;
+    setSyncingComposio(true);
+    setComposioSyncError("");
+    try {
+      await integrations.composioReconcile(composioProvider.id, currentProject?.id);
+      load();
+    } catch (err: any) {
+      setComposioSyncError(err?.message || "Sync failed");
+    } finally {
+      setSyncingComposio(false);
+    }
+  };
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -511,10 +583,23 @@ function MCPServersTab() {
   const toggleTools = async (id: number) => {
     if (expandedTools[id]) {
       setExpandedTools((prev) => { const n = { ...prev }; delete n[id]; return n; });
-    } else {
-      const tools = await mcpServers.tools(id);
-      setExpandedTools((prev) => ({ ...prev, [id]: tools }));
+      return;
     }
+    // For remote rows that haven't been probed yet, kick off Start first so
+    // the server-side probe populates the cached tool list.
+    const srv = servers.find((s) => s.id === id);
+    if (srv && srv.source === "remote" && srv.tool_count === 0) {
+      try {
+        const result = await mcpServers.start(id);
+        setExpandedTools((prev) => ({ ...prev, [id]: result.tools || [] }));
+        load();
+        return;
+      } catch {
+        // fall through to tools() call — maybe the server had a stale probe
+      }
+    }
+    const tools = await mcpServers.tools(id);
+    setExpandedTools((prev) => ({ ...prev, [id]: tools }));
   };
 
   return (
@@ -526,6 +611,35 @@ function MCPServersTab() {
           that Apteva instances can use.
         </p>
       </div>
+
+      {/* Hint for missing Composio hosted MCP row */}
+      {showComposioSyncHint && (
+        <div className="border border-accent/40 bg-accent/5 rounded-lg p-4">
+          <div className="flex items-start gap-3">
+            <div className="flex-1">
+              <div className="text-text text-sm font-bold">
+                Composio hosted MCP not synced
+              </div>
+              <p className="text-text-muted text-xs mt-1">
+                You have {composioConns} active Composio connection
+                {composioConns === 1 ? "" : "s"} but no hosted MCP server row
+                yet. Click Sync to create (or refresh) the aggregate Composio
+                MCP endpoint for this project.
+              </p>
+              {composioSyncError && (
+                <p className="text-red text-xs mt-2">{composioSyncError}</p>
+              )}
+            </div>
+            <button
+              onClick={handleComposioSync}
+              disabled={syncingComposio}
+              className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
+            >
+              {syncingComposio ? "Syncing…" : "Sync"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {!showAdd && (
         <button
@@ -632,7 +746,11 @@ function MCPServersTab() {
             <div className="flex items-center justify-between p-4">
               <div className="flex items-center gap-3">
                 <span className={`inline-block w-2.5 h-2.5 rounded-full ${
-                  s.status === "running" ? "bg-green" : "bg-red"
+                  s.status === "running" || s.status === "reachable"
+                    ? "bg-green"
+                    : s.status === "unprobed"
+                      ? "bg-yellow-500"
+                      : "bg-red"
                 }`} />
                 <div>
                   <span className="text-text text-base font-bold">{s.name}</span>
@@ -645,19 +763,35 @@ function MCPServersTab() {
                 {s.source === "local" && (
                   <span className="text-xs px-2 py-0.5 rounded bg-bg-hover text-text-dim">integration</span>
                 )}
-                {s.tool_count > 0 && (
-                  <button onClick={() => toggleTools(s.id)}
-                    className="text-sm text-text-muted hover:text-text transition-colors">
-                    {s.tool_count} tools
+                {s.source === "remote" && (
+                  <span className="text-xs px-2 py-0.5 rounded bg-purple-900/40 text-purple-300">
+                    hosted
+                  </span>
+                )}
+                {s.source === "remote" && s.status === "reachable" && (
+                  <span className="text-xs px-2 py-0.5 rounded bg-green/20 text-green">reachable</span>
+                )}
+                {s.source === "remote" && s.status === "unprobed" && (
+                  <button
+                    onClick={() => handleStart(s.id)}
+                    className="text-xs px-2 py-0.5 rounded bg-bg-hover text-text-muted hover:text-accent transition-colors"
+                  >
+                    Probe
                   </button>
                 )}
-                {s.source !== "local" && s.status === "running" && (
+                {(s.tool_count > 0 || s.source === "remote") && (
+                  <button onClick={() => toggleTools(s.id)}
+                    className="text-sm text-text-muted hover:text-text transition-colors">
+                    {s.tool_count > 0 ? `${s.tool_count} tools` : "probe"}
+                  </button>
+                )}
+                {s.source === "custom" && s.status === "running" && (
                   <button onClick={() => handleStop(s.id)}
                     className="text-sm text-text-muted hover:text-red transition-colors">
                     Stop
                   </button>
                 )}
-                {s.source !== "local" && s.status !== "running" && (
+                {s.source === "custom" && s.status !== "running" && (
                   <button onClick={() => handleStart(s.id)}
                     className="text-sm text-accent hover:text-accent-hover transition-colors">
                     Start
@@ -671,6 +805,19 @@ function MCPServersTab() {
             </div>
             {s.command && (
               <div className="px-4 pb-3 text-text-dim text-sm">{s.command}</div>
+            )}
+            {s.source === "remote" && s.url && (
+              <div className="px-4 pb-3 flex items-center gap-2">
+                <span className="text-text-dim text-xs">URL:</span>
+                <code className="text-accent text-xs bg-bg-input rounded px-2 py-1 select-all overflow-hidden truncate max-w-full">
+                  {s.url}
+                </code>
+              </div>
+            )}
+            {s.source === "remote" && (
+              <div className="px-4 pb-3 text-text-dim text-xs">
+                Managed upstream. Cores connect directly — apteva-server does not proxy this endpoint.
+              </div>
             )}
 
             {/* Server config toggle */}
@@ -730,9 +877,11 @@ function MCPServersTab() {
                       <span className="text-accent text-sm font-bold shrink-0">{tool.name}</span>
                       <span className="text-text-muted text-sm">{tool.description}</span>
                     </div>
-                    {s.source === "local" && s.connection_id > 0 && (
+                    {((s.source === "local" && s.connection_id > 0) ||
+                      s.source === "remote" ||
+                      (s.source === "custom" && s.status === "running")) && (
                       <button
-                        onClick={() => { setTestingTool({ serverId: s.id, tool }); setTestArgs({}); setTestResult(null); }}
+                        onClick={() => { setTestingTool({ serverId: s.id, tool }); setTestArgs({}); setTestResult(null); setShowOptional(false); }}
                         className="text-xs text-accent hover:text-accent-hover transition-colors shrink-0 ml-3"
                       >
                         Test
@@ -748,85 +897,141 @@ function MCPServersTab() {
 
       {/* Tool testing modal */}
       <Modal open={!!testingTool} onClose={() => { setTestingTool(null); setTestResult(null); }}>
-        {testingTool && (
-          <div className="p-6 space-y-4">
-            <h3 className="text-text text-base font-bold">{testingTool.tool.name}</h3>
-            <p className="text-text-muted text-sm">{testingTool.tool.description}</p>
+        {testingTool && (() => {
+          const props = (testingTool.tool.inputSchema?.properties as Record<string, any>) || {};
+          const requiredList = (testingTool.tool.inputSchema?.required as string[]) || [];
+          const entries = Object.entries(props);
+          const required = entries.filter(([k]) => requiredList.includes(k));
+          const optional = entries.filter(([k]) => !requiredList.includes(k));
 
-            {/* Input fields from schema */}
-            {testingTool.tool.inputSchema?.properties && Object.entries(testingTool.tool.inputSchema.properties as Record<string, any>).map(([key, schema]) => (
-              <div key={key}>
-                <label className="block text-text-muted text-sm mb-1">
-                  {key}
-                  {(testingTool.tool.inputSchema.required as string[] || []).includes(key) && (
-                    <span className="text-red ml-1">*</span>
-                  )}
-                </label>
-                {schema.description && (
-                  <p className="text-text-dim text-xs mb-1">{schema.description}</p>
+          const renderField = ([key, schema]: [string, any]) => (
+            <div key={key}>
+              <label className="block text-text-muted text-sm mb-1">
+                {key}
+                {requiredList.includes(key) && <span className="text-red ml-1">*</span>}
+                {schema.type && (
+                  <span className="text-text-dim text-xs ml-2">{schema.type}</span>
                 )}
-                <input
-                  value={testArgs[key] || ""}
-                  onChange={(e) => setTestArgs({ ...testArgs, [key]: e.target.value })}
-                  className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
-                  placeholder={schema.type === "number" ? "0" : ""}
-                />
-              </div>
-            ))}
-
-            {testResult && (
-              <div className={`border rounded-lg p-3 text-sm ${testResult.success ? "border-green" : "border-red"}`}>
-                <div className="text-text-muted text-xs mb-1">
-                  Status: {testResult.status} {testResult.success ? "OK" : "Error"}
-                </div>
-                <pre className="text-text text-xs overflow-auto max-h-40 whitespace-pre-wrap">
-                  {typeof testResult.data === "string" ? testResult.data : JSON.stringify(testResult.data, null, 2)}
-                </pre>
-              </div>
-            )}
-
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={() => { setTestingTool(null); setTestResult(null); }}
-                className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
-              >
-                Close
-              </button>
-              <button
-                disabled={testRunning}
-                onClick={async () => {
-                  setTestRunning(true);
-                  setTestResult(null);
-                  try {
-                    // Find connection_id from the server
-                    const srv = servers.find((sv) => sv.id === testingTool.serverId);
-                    if (!srv || !srv.connection_id) return;
-                    // Parse number args
-                    const input: Record<string, any> = {};
-                    for (const [k, v] of Object.entries(testArgs)) {
-                      if (v === "") continue;
-                      const schema = (testingTool.tool.inputSchema?.properties as any)?.[k];
-                      if (schema?.type === "number") {
-                        input[k] = Number(v);
-                      } else {
-                        input[k] = v;
-                      }
-                    }
-                    const result = await integrations.execute(srv.connection_id, testingTool.tool.name, input);
-                    setTestResult(result);
-                  } catch (err: any) {
-                    setTestResult({ success: false, status: 0, data: err.message });
-                  } finally {
-                    setTestRunning(false);
-                  }
-                }}
-                className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
-              >
-                {testRunning ? "Running..." : "Run"}
-              </button>
+              </label>
+              {schema.description && (
+                <p className="text-text-dim text-xs mb-1 line-clamp-2">{schema.description}</p>
+              )}
+              <input
+                value={testArgs[key] || ""}
+                onChange={(e) => setTestArgs({ ...testArgs, [key]: e.target.value })}
+                className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+                placeholder={
+                  schema.type === "number" || schema.type === "integer"
+                    ? "0"
+                    : schema.type === "array" || schema.type === "object"
+                      ? "JSON"
+                      : ""
+                }
+              />
             </div>
-          </div>
-        )}
+          );
+
+          return (
+            <div className="p-6 flex flex-col max-h-[80vh]">
+              <div className="shrink-0">
+                <h3 className="text-text text-base font-bold">{testingTool.tool.name}</h3>
+                {testingTool.tool.description && (
+                  <p className="text-text-muted text-sm mt-1 line-clamp-3">
+                    {testingTool.tool.description}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-4 my-4 pr-1">
+                {entries.length === 0 && (
+                  <p className="text-text-muted text-sm">No arguments.</p>
+                )}
+                {required.map(renderField)}
+                {optional.length > 0 && (
+                  <div className="pt-2 border-t border-border">
+                    <button
+                      type="button"
+                      onClick={() => setShowOptional((v) => !v)}
+                      className="text-xs text-accent hover:text-accent-hover transition-colors"
+                    >
+                      {showOptional
+                        ? `▾ Hide ${optional.length} optional field${optional.length === 1 ? "" : "s"}`
+                        : `▸ Show ${optional.length} optional field${optional.length === 1 ? "" : "s"}`}
+                    </button>
+                    {showOptional && (
+                      <div className="space-y-4 mt-3">
+                        {optional.map(renderField)}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {testResult && (
+                <div className={`shrink-0 border rounded-lg p-3 text-sm mb-3 ${testResult.success ? "border-green" : "border-red"}`}>
+                  <div className="text-text-muted text-xs mb-1">
+                    Status: {testResult.status} {testResult.success ? "OK" : "Error"}
+                  </div>
+                  <pre className="text-text text-xs overflow-auto max-h-40 whitespace-pre-wrap">
+                    {typeof testResult.data === "string" ? testResult.data : JSON.stringify(testResult.data, null, 2)}
+                  </pre>
+                </div>
+              )}
+
+              <div className="shrink-0 flex justify-end gap-3">
+                <button
+                  onClick={() => { setTestingTool(null); setTestResult(null); }}
+                  className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
+                >
+                  Close
+                </button>
+                <button
+                  disabled={testRunning}
+                  onClick={async () => {
+                    setTestRunning(true);
+                    setTestResult(null);
+                    try {
+                      const srv = servers.find((sv) => sv.id === testingTool.serverId);
+                      if (!srv) return;
+                      // Parse arg types from the tool's input schema.
+                      const input: Record<string, any> = {};
+                      for (const [k, v] of Object.entries(testArgs)) {
+                        if (v === "") continue;
+                        const schema = (testingTool.tool.inputSchema?.properties as any)?.[k];
+                        if (schema?.type === "number" || schema?.type === "integer") {
+                          input[k] = Number(v);
+                        } else if (schema?.type === "boolean") {
+                          input[k] = v === "true" || v === "1";
+                        } else if (schema?.type === "array" || schema?.type === "object") {
+                          // Let user paste JSON for complex types.
+                          try { input[k] = JSON.parse(v); } catch { input[k] = v; }
+                        } else {
+                          input[k] = v;
+                        }
+                      }
+                      // Dispatch on source: local → integrations.execute,
+                      // remote/custom → mcpServers.callTool.
+                      let result;
+                      if (srv.source === "local" && srv.connection_id > 0) {
+                        result = await integrations.execute(srv.connection_id, testingTool.tool.name, input);
+                      } else {
+                        result = await mcpServers.callTool(srv.id, testingTool.tool.name, input);
+                      }
+                      setTestResult(result);
+                    } catch (err: any) {
+                      setTestResult({ success: false, status: 0, data: err.message });
+                    } finally {
+                      setTestRunning(false);
+                    }
+                  }}
+                  className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
+                >
+                  {testRunning ? "Running..." : "Run"}
+                </button>
+              </div>
+            </div>
+          );
+        })()}
       </Modal>
     </div>
   );

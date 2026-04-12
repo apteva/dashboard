@@ -1,23 +1,18 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { providers, type Provider } from "../api";
 import { useProjects } from "../hooks/useProjects";
 
 export function Layout() {
-  const [providerList, setProviderList] = useState<Provider[]>([]);
   const [version, setVersion] = useState("");
   const { projects, currentProject, setCurrentProject } = useProjects();
 
   useEffect(() => {
-    providers.list().then(setProviderList).catch(() => {});
     fetch("/version").then((r) => r.json()).then((d) => setVersion(d.version || "")).catch(() => {});
   }, []);
 
-  const hasIntegrations = providerList.some((p) => p.name === "Apteva Local");
-
   const navItems = [
-    { to: "/", label: "Dashboard" },
-    ...(hasIntegrations ? [{ to: "/integrations", label: "Integrations" }] : []),
+    { to: "/", label: "Instances" },
+    { to: "/integrations", label: "Integrations" },
     { to: "/analytics", label: "Analytics" },
     { to: "/settings", label: "Settings" },
   ];

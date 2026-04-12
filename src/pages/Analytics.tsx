@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { instances, telemetry, type Instance, type TelemetryStats, type TelemetryEvent } from "../api";
+import { useProjects } from "../hooks/useProjects";
 import {
   AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -10,6 +11,8 @@ type Period = "1h" | "24h" | "7d";
 const COLORS = ["#f97316", "#3b82f6", "#a855f7", "#eab308", "#06b6d4", "#ec4899", "#6366f1", "#84cc16"];
 
 export function Analytics() {
+  const { currentProject } = useProjects();
+  const projectId = currentProject?.id;
   const [instance, setInstance] = useState<Instance | null>(null);
   const [stats, setStats] = useState<TelemetryStats | null>(null);
   const [period, setPeriod] = useState<Period>("24h");
@@ -21,10 +24,11 @@ export function Analytics() {
   const [threadCosts, setThreadCosts] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    instances.list().then((list) => {
+    setInstance(null);
+    instances.list(projectId).then((list) => {
       if (list && list.length > 0) setInstance(list[0]);
     });
-  }, []);
+  }, [projectId]);
 
   useEffect(() => {
     if (!instance) return;
@@ -59,7 +63,17 @@ export function Analytics() {
     load();
     const interval = setInterval(load, 10000);
     return () => clearInterval(interval);
-  }, [instance, period]);
+  }, [instance?.id, period]);
+
+  // Reset telemetry state when project changes
+  useEffect(() => {
+    setStats(null);
+    setTimeline([]);
+    setRecentEvents([]);
+    setAllEvents([]);
+    setToolBreakdown({});
+    setThreadCosts({});
+  }, [projectId]);
 
   if (!instance) {
     return (
@@ -74,39 +88,10 @@ export function Analytics() {
     );
   }
 
-  // Projected cost — mirrors TUI logic: cost/iter * (1h / (thinkTime + sleepTime))
-  // Uses each thread's actual pace/sleep duration to project realistically
-  const projectedPerHour = (() => {
-    if (recentEvents.length < 2) return stats ? stats.total_cost / Math.max(period === "1h" ? 1 : period === "24h" ? 24 : 168, 1) : 0;
-    const byThread: Record<string, { totalCost: number; iterations: number; lastRate: string; times: number[] }> = {};
-    for (const e of recentEvents) {
-      const tid = e.thread_id || "main";
-      if (!byThread[tid]) byThread[tid] = { totalCost: 0, iterations: 0, lastRate: "30s", times: [] };
-      byThread[tid].iterations++;
-      if (e.data?.cost_usd) byThread[tid].totalCost += e.data.cost_usd;
-      if (e.data?.rate) byThread[tid].lastRate = e.data.rate;
-      if (e.time) byThread[tid].times.push(new Date(e.time).getTime());
-    }
-    let rate = 0;
-    for (const [, data] of Object.entries(byThread)) {
-      if (data.iterations === 0 || data.totalCost === 0) continue;
-      const costPerIter = data.totalCost / data.iterations;
-      const sleepMs = parseRateToMs(data.lastRate);
-      // Estimate avg think duration from actual event intervals
-      let avgThinkMs = 3000; // default 3s
-      if (data.times.length >= 2) {
-        const sorted = data.times.sort((a, b) => a - b);
-        const totalSpan = sorted[sorted.length - 1] - sorted[0];
-        avgThinkMs = Math.max(totalSpan / data.iterations - sleepMs, 1000);
-      }
-      if (avgThinkMs > sleepMs) avgThinkMs = 2000; // cap like TUI does
-      const cycleMs = Math.max(avgThinkMs + sleepMs, 1000);
-      const itersPerHour = 3600000 / cycleMs;
-      rate += costPerIter * itersPerHour;
-    }
-    return rate;
-  })();
-  const costPerDay = projectedPerHour * 24;
+  // Projected cost — extrapolate from actual spend in the selected period
+  const periodHours = period === "1h" ? 1 : period === "24h" ? 24 : 168;
+  const costPerHour = stats ? stats.total_cost / Math.max(periodHours, 1) : 0;
+  const costPerDay = costPerHour * 24;
   const costPerMonth = costPerDay * 30;
 
   const cacheHitRate = recentEvents.length > 0
