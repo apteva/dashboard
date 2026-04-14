@@ -9,6 +9,7 @@ import { FleetGraph, type FleetEvent } from "./FleetGraph";
 import { FleetCards } from "./FleetCards";
 import { ThreadDetailModal } from "./ThreadDetailModal";
 import { Modal } from "./Modal";
+import { LiveStatsBar } from "./LiveStatsBar";
 
 // InstanceView is the rich per-instance view: chat panel + activity/fleet/cards
 // side panel, lifecycle controls (start/stop/pause/delete), thread detail
@@ -41,6 +42,9 @@ export function InstanceView({
   // Instead, panels register a synchronous listener via `subscribe(cb)` and
   // receive every event in order with no batching.
   const listenersRef = useRef<Set<EventListener>>(new Set());
+  // Top-level event-id dedup for handleEvent. Bounded at 500.
+  const seenHandledEventsRef = useRef<Set<string>>(new Set());
+  const seenHandledOrderRef = useRef<string[]>([]);
   const subscribe: SubscribeFn = useCallback((cb) => {
     listenersRef.current.add(cb);
     return () => { listenersRef.current.delete(cb); };
@@ -68,10 +72,29 @@ export function InstanceView({
     setGraphThoughts({});
     setGraphEvents([]);
     setThreadLiveEvents({});
+    seenHandledEventsRef.current = new Set();
+    seenHandledOrderRef.current = [];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instance.id]);
 
+  // Top-level dedup. ChatPanel's EventSource is the single source of truth
+  // for SSE in this view; if the same event.id arrives twice (StrictMode
+  // double-mount, browser EventSource reconnect, etc.) we drop the
+  // duplicate here so neither the fan-out subscribers nor the local
+  // state mutations below ever see it twice. This is the belt; the
+  // panels (ChatPanel, ActivityPanel) keep their own dedup as
+  // suspenders, since they each have rendering paths that historically
+  // produced visible duplicates.
   const handleEvent = (event: TelemetryEvent) => {
+    if (event.id) {
+      if (seenHandledEventsRef.current.has(event.id)) return;
+      seenHandledEventsRef.current.add(event.id);
+      seenHandledOrderRef.current.push(event.id);
+      if (seenHandledOrderRef.current.length > 500) {
+        const old = seenHandledOrderRef.current.shift();
+        if (old) seenHandledEventsRef.current.delete(old);
+      }
+    }
     // Fan out to every subscribed panel synchronously — no React batching.
     listenersRef.current.forEach((cb) => cb(event));
     const data = event.data || {};
@@ -220,6 +243,12 @@ export function InstanceView({
           </button>
         </div>
       </div>
+
+      {/* Live stats strip — iterations, tokens, cost, projected $/day.
+          Aggregates llm.done telemetry via the shared event bus so every
+          iteration across main + sub-threads contributes. Mirrors the
+          CLI/TUI token strip. */}
+      <LiveStatsBar instanceId={instance.id} subscribe={subscribe} />
 
       {/* Delete confirmation */}
       <Modal open={showDeleteConfirm} onClose={() => setShowDeleteConfirm(false)}>

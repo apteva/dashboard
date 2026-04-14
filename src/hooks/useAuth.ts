@@ -16,7 +16,8 @@ export function useAuth() {
       await auth.login(email, password);
       setAuthenticated(true);
     },
-    register: auth.register,
+    register: (email: string, password: string, setupToken?: string) =>
+      auth.register(email, password, setupToken),
     logout: () => {
       auth.logout();
       setAuthenticated(false);

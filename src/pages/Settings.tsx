@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, projects as projectsAPI, instances as instancesAPI, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Instance, type Project, type CatalogStatus, type Channel } from "../api";
+import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, projects as projectsAPI, instances as instancesAPI, serverSettings, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Instance, type Project, type CatalogStatus, type Channel, type ServerSettings as ServerSettingsType } from "../api";
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 
@@ -11,7 +11,7 @@ interface Key {
 }
 
 
-type Tab = "projects" | "channels" | "integrations" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account";
+type Tab = "projects" | "channels" | "integrations" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server";
 
 export function Settings() {
   const [tab, setTab] = useState<Tab>("projects");
@@ -25,6 +25,7 @@ export function Settings() {
     { id: "subscriptions", label: "Subscriptions" },
     { id: "api-keys", label: "API Keys" },
     { id: "data", label: "Data" },
+    { id: "server", label: "Server" },
     { id: "account", label: "Account" },
   ];
 
@@ -60,6 +61,7 @@ export function Settings() {
         {tab === "subscriptions" && <SubscriptionsTab />}
         {tab === "api-keys" && <APIKeysTab />}
         {tab === "data" && <DataTab />}
+        {tab === "server" && <ServerTab />}
         {tab === "account" && <AccountTab />}
       </div>
     </div>
@@ -124,17 +126,28 @@ function ChannelsTab() {
         const chs = channelsByInstance[inst.id] || [];
         return (
           <div key={inst.id} className="border border-border rounded-lg bg-bg-card">
-            <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${inst.status === "running" ? "bg-green" : "bg-red"}`} />
-                <span className="text-text font-bold text-sm">{inst.name}</span>
+            {/* Instance header — labelled and visually distinct from the
+                channel rows below so users don't mistake the instance name
+                for a channel entry. */}
+            <div className="px-4 py-3 border-b border-border flex items-center justify-between bg-bg-hover/40">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-[9px] uppercase tracking-wide text-text-dim font-bold shrink-0">
+                  Instance
+                </span>
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${inst.status === "running" ? "bg-green" : "bg-red"}`} />
+                <span className="text-text font-bold text-sm truncate">{inst.name}</span>
               </div>
               <button
                 onClick={() => setShowConnect(showConnect === inst.id ? null : inst.id)}
-                className="px-3 py-1 text-xs border border-border rounded-lg text-text-muted hover:text-accent hover:border-accent transition-colors"
+                className="px-3 py-1 text-xs border border-border rounded-lg text-text-muted hover:text-accent hover:border-accent transition-colors shrink-0 ml-2"
               >
-                + Connect
+                + Connect channel
               </button>
+            </div>
+            <div className="px-4 pt-3 pb-1">
+              <div className="text-[9px] uppercase tracking-wide text-text-muted font-bold">
+                Channels
+              </div>
             </div>
 
             {/* Channel list */}
@@ -327,7 +340,9 @@ function ProvidersTab() {
     }
   };
 
-  // Group types by category
+  // Group types by category. We collapse "browser" and "browserbase" into
+  // the same "Browser" section so users see Browserbase, Local Browser, and
+  // Remote CDP side-by-side instead of in two separate headings.
   const typeLabels: Record<string, string> = {
     llm: "LLM",
     embeddings: "Embeddings",
@@ -336,9 +351,13 @@ function ProvidersTab() {
     search: "Search",
     integrations: "Integrations",
   };
+  const groupKeyFor = (t: string): string => {
+    if (t === "browserbase") return "browser";
+    return t;
+  };
   const groups: Record<string, ProviderTypeInfo[]> = {};
   for (const t of types) {
-    const key = t.type;
+    const key = groupKeyFor(t.type);
     if (!groups[key]) groups[key] = [];
     groups[key].push(t);
   }
@@ -477,7 +496,27 @@ function MCPServersTab() {
   const [description, setDescription] = useState("");
   const [envFields, setEnvFields] = useState<Array<{ key: string; value: string }>>([{ key: "", value: "" }]);
   const [error, setError] = useState("");
+  // Add-MCP form tab: either build a custom stdio server from scratch,
+  // or create another MCP row over an existing connection on this project
+  // (different name + tool subset).
+  const [addTab, setAddTab] = useState<"scratch" | "connection">("scratch");
+  const [addConnList, setAddConnList] = useState<import("../api").ConnectionInfo[]>([]);
+  const [addConnId, setAddConnId] = useState<number | 0>(0);
+  const [addConnName, setAddConnName] = useState("");
+  const [addConnTools, setAddConnTools] = useState<MCPTool[]>([]);
+  const [addConnSelected, setAddConnSelected] = useState<Set<string>>(new Set());
+  const [addConnLoading, setAddConnLoading] = useState(false);
   const [expandedTools, setExpandedTools] = useState<Record<number, MCPTool[]>>({});
+  // allowedTools[serverId] is the currently-persisted filter for each row,
+  // populated alongside expandedTools when the user clicks to see the tool
+  // list. null = no filter (all tools enabled).
+  const [allowedTools, setAllowedTools] = useState<Record<number, string[] | null>>({});
+  const [scopeModal, setScopeModal] = useState<{
+    server: MCPServer;
+    allTools: MCPTool[];
+    selected: Set<string>;
+  } | null>(null);
+  const [scopeSaving, setScopeSaving] = useState(false);
   const [showConfig, setShowConfig] = useState<Record<number, boolean>>({});
   const [testingTool, setTestingTool] = useState<{ serverId: number; tool: MCPTool } | null>(null);
   const [testArgs, setTestArgs] = useState<Record<string, string>>({});
@@ -531,6 +570,48 @@ function MCPServersTab() {
       setComposioSyncError(err?.message || "Sync failed");
     } finally {
       setSyncingComposio(false);
+    }
+  };
+
+  // When the user picks a connection in the "From connection" tab, load
+  // the full app tool catalog. A connection always has at least one MCP
+  // server row — any of them exposes the full catalog via the tools()
+  // endpoint (the allowed_tools field only filters what the agent sees,
+  // not what the catalog returns).
+  const selectAddConnection = async (connId: number) => {
+    setAddConnId(connId);
+    setAddConnTools([]);
+    setAddConnSelected(new Set());
+    if (!connId) return;
+    const conn = addConnList.find((c) => c.id === connId);
+    const existing = servers.find((s) => s.connection_id === connId && s.source === "local");
+    if (!conn || !existing) {
+      setError("No MCP row found for this connection — reconnect first");
+      return;
+    }
+    setAddConnLoading(true);
+    try {
+      const resp = await mcpServers.tools(existing.id);
+      setAddConnTools(resp.tools || []);
+      setAddConnName(`${conn.app_slug}-2`);
+    } catch (err: any) {
+      setError(err?.message || "Failed to load tool list");
+    } finally {
+      setAddConnLoading(false);
+    }
+  };
+
+  const handleAddFromConnection = async () => {
+    setError("");
+    if (!addConnId) { setError("Pick a connection"); return; }
+    if (!addConnName.trim()) { setError("Name is required"); return; }
+    if (addConnSelected.size === 0) { setError("Select at least one tool"); return; }
+    try {
+      await integrations.createScopedMCP(addConnId, addConnName.trim(), Array.from(addConnSelected));
+      setShowAdd(false);
+      load();
+    } catch (err: any) {
+      setError(err?.message || "Save failed");
     }
   };
 
@@ -598,8 +679,62 @@ function MCPServersTab() {
         // fall through to tools() call — maybe the server had a stale probe
       }
     }
-    const tools = await mcpServers.tools(id);
-    setExpandedTools((prev) => ({ ...prev, [id]: tools }));
+    const resp = await mcpServers.tools(id);
+    setExpandedTools((prev) => ({ ...prev, [id]: resp.tools || [] }));
+    setAllowedTools((prev) => ({ ...prev, [id]: resp.allowed_tools || null }));
+  };
+
+  // openScopeModal fetches the full tool catalog for the server row and
+  // opens a picker with every tool as a checkbox. The picker's initial
+  // selection is the server's current allowed_tools (or "all ticked" if
+  // the filter is empty — legacy behaviour).
+  const openScopeModal = async (server: MCPServer) => {
+    try {
+      const resp = await mcpServers.tools(server.id);
+      const tools = resp.tools || [];
+      const existing = resp.allowed_tools || [];
+      const selected = new Set<string>(
+        existing.length > 0 ? existing : tools.map((t) => t.name),
+      );
+      setScopeModal({ server, allTools: tools, selected });
+    } catch (err: any) {
+      alert(`Failed to load tool list: ${err.message || err}`);
+    }
+  };
+
+  const saveScope = async () => {
+    if (!scopeModal) return;
+    setScopeSaving(true);
+    try {
+      // If every available tool is ticked, we persist an empty list meaning
+      // "no filter" — keeps the row's allowed_tools column clean for the
+      // common case and avoids constant-sized payloads that grow with the
+      // catalog.
+      const allChecked =
+        scopeModal.selected.size === scopeModal.allTools.length;
+      const allowed = allChecked ? [] : Array.from(scopeModal.selected);
+      await mcpServers.setAllowedTools(scopeModal.server.id, allowed);
+
+      // For remote rows, trigger a reconcile so Composio re-creates the
+      // upstream server with the new action set. Best-effort — we surface
+      // the update immediately on the UI regardless.
+      if (
+        scopeModal.server.source === "remote" &&
+        scopeModal.server.provider_id
+      ) {
+        integrations
+          .composioReconcile(scopeModal.server.provider_id, currentProject?.id)
+          .catch(() => {});
+      }
+      // Refresh cached tool list + allowed_tools for this row.
+      setAllowedTools((prev) => ({ ...prev, [scopeModal.server.id]: allowed }));
+      setScopeModal(null);
+      load();
+    } catch (err: any) {
+      alert(`Save failed: ${err.message || err}`);
+    } finally {
+      setScopeSaving(false);
+    }
   };
 
   return (
@@ -643,15 +778,177 @@ function MCPServersTab() {
 
       {!showAdd && (
         <button
-          onClick={() => setShowAdd(true)}
+          onClick={() => {
+            setShowAdd(true);
+            setAddTab("scratch");
+            setError("");
+            setAddConnId(0);
+            setAddConnName("");
+            setAddConnTools([]);
+            setAddConnSelected(new Set());
+            integrations
+              .connections(currentProject?.id)
+              .then((cs) => setAddConnList((cs || []).filter((c) => c.source === "local" && c.status === "active")))
+              .catch(() => setAddConnList([]));
+          }}
           className="px-4 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors w-fit"
         >
-          Add Server
+          Add MCP
         </button>
       )}
 
       {showAdd && (
-        <form onSubmit={handleAdd} className="border border-border rounded-lg p-5 bg-bg-card space-y-4">
+        <div className="border border-border rounded-lg p-5 bg-bg-card space-y-4">
+          {/* Tabs: scratch vs. from existing connection */}
+          <div className="flex gap-0 border-b border-border -mx-5 px-5">
+            <button
+              type="button"
+              onClick={() => { setAddTab("scratch"); setError(""); }}
+              className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+                addTab === "scratch"
+                  ? "text-accent border-accent"
+                  : "text-text-muted border-transparent hover:text-text"
+              }`}
+            >
+              From scratch
+            </button>
+            <button
+              type="button"
+              onClick={() => { setAddTab("connection"); setError(""); }}
+              className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+                addTab === "connection"
+                  ? "text-accent border-accent"
+                  : "text-text-muted border-transparent hover:text-text"
+              }`}
+            >
+              From existing connection
+            </button>
+          </div>
+
+          {addTab === "connection" && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-text-muted text-sm mb-2">Connection</label>
+                <select
+                  value={addConnId}
+                  onChange={(e) => selectAddConnection(Number(e.target.value))}
+                  className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent"
+                >
+                  <option value={0}>— pick a connection —</option>
+                  {addConnList.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.app_slug})
+                    </option>
+                  ))}
+                </select>
+                {addConnList.length === 0 && (
+                  <p className="text-text-dim text-xs mt-1">
+                    No local connections on this project. Create one from the Integrations tab first.
+                  </p>
+                )}
+              </div>
+
+              {addConnId > 0 && (
+                <>
+                  <div>
+                    <label className="block text-text-muted text-sm mb-2">MCP name</label>
+                    <input
+                      value={addConnName}
+                      onChange={(e) => setAddConnName(e.target.value)}
+                      className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent"
+                      placeholder="google-sheets-readonly"
+                    />
+                    <p className="text-text-dim text-xs mt-1">
+                      Must be unique within this project. The agent references the MCP by this name.
+                    </p>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-text-muted text-sm">Tools</label>
+                      <div className="flex gap-2 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setAddConnSelected(new Set(addConnTools.map((t) => t.name)))}
+                          className="text-text-muted hover:text-accent transition-colors"
+                        >
+                          All
+                        </button>
+                        <span className="text-text-dim">·</span>
+                        <button
+                          type="button"
+                          onClick={() => setAddConnSelected(new Set())}
+                          className="text-text-muted hover:text-accent transition-colors"
+                        >
+                          None
+                        </button>
+                      </div>
+                    </div>
+                    <div className="text-text-dim text-xs mb-2">
+                      {addConnSelected.size} / {addConnTools.length} selected
+                    </div>
+                    <div className="max-h-64 overflow-y-auto border border-border rounded-lg divide-y divide-border">
+                      {addConnLoading && (
+                        <div className="px-3 py-2 text-text-dim text-sm">Loading tools…</div>
+                      )}
+                      {!addConnLoading && addConnTools.length === 0 && (
+                        <div className="px-3 py-2 text-text-dim text-sm">No tools found.</div>
+                      )}
+                      {addConnTools.map((tool) => {
+                        const checked = addConnSelected.has(tool.name);
+                        return (
+                          <label
+                            key={tool.name}
+                            className="flex items-start gap-2 px-3 py-2 hover:bg-bg-hover cursor-pointer"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                const next = new Set(addConnSelected);
+                                if (checked) next.delete(tool.name);
+                                else next.add(tool.name);
+                                setAddConnSelected(next);
+                              }}
+                              className="mt-1"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-text text-sm font-mono">{tool.name}</div>
+                              {tool.description && (
+                                <div className="text-text-dim text-xs truncate">{tool.description}</div>
+                              )}
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {error && <div className="text-red text-sm">{error}</div>}
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={handleAddFromConnection}
+                  className="px-5 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
+                >
+                  Create MCP
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowAdd(false); setError(""); }}
+                  className="px-5 py-2.5 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {addTab === "scratch" && (
+          <form onSubmit={handleAdd} className="space-y-4">
           <div>
             <label className="block text-text-muted text-sm mb-2">Name</label>
             <input
@@ -734,6 +1031,8 @@ function MCPServersTab() {
             </button>
           </div>
         </form>
+          )}
+        </div>
       )}
 
       {servers.length === 0 && !showAdd && (
@@ -753,9 +1052,17 @@ function MCPServersTab() {
                       : "bg-red"
                 }`} />
                 <div>
-                  <span className="text-text text-base font-bold">{s.name}</span>
-                  {s.description && (
-                    <span className="text-text-muted text-sm ml-3">{s.description}</span>
+                  {/* Display name prominent, slug shown as a mono pill
+                      so the user sees what the agent refers to the
+                      server as. For legacy rows where the name was
+                      set to the display form, show just the name. */}
+                  <span className="text-text text-base font-bold">
+                    {s.description || s.name}
+                  </span>
+                  {s.description && s.description !== s.name && (
+                    <code className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-bg-input text-text-muted font-mono">
+                      {s.name}
+                    </code>
                   )}
                 </div>
               </div>
@@ -782,9 +1089,36 @@ function MCPServersTab() {
                 {(s.tool_count > 0 || s.source === "remote") && (
                   <button onClick={() => toggleTools(s.id)}
                     className="text-sm text-text-muted hover:text-text transition-colors">
-                    {s.tool_count > 0 ? `${s.tool_count} tools` : "probe"}
+                    {(() => {
+                      // Prefer the row's own allowed_tools from the list
+                      // response — it's the authoritative source right
+                      // from the DB, available on every load() tick. The
+                      // allowedTools side-state is kept around so the
+                      // Scope modal's "in-flight" save reflects instantly,
+                      // but we only fall back to it when the row doesn't
+                      // carry allowed_tools yet (older server responses).
+                      const fromRow = s.allowed_tools;
+                      const fromState = allowedTools[s.id];
+                      const allowed = fromRow && fromRow.length > 0
+                        ? fromRow
+                        : fromState;
+                      if (allowed && allowed.length > 0) {
+                        return `${allowed.length}/${s.tool_count} tools`;
+                      }
+                      return s.tool_count > 0 ? `${s.tool_count} tools` : "probe";
+                    })()}
                   </button>
                 )}
+                {(s.source === "local" || s.source === "remote") &&
+                  s.connection_id > 0 && (
+                    <button
+                      onClick={() => openScopeModal(s)}
+                      className="text-sm text-text-muted hover:text-accent transition-colors"
+                      title="Select which tools are exposed by this MCP server"
+                    >
+                      Scope
+                    </button>
+                  )}
                 {s.source === "custom" && s.status === "running" && (
                   <button onClick={() => handleStop(s.id)}
                     className="text-sm text-text-muted hover:text-red transition-colors">
@@ -869,28 +1203,111 @@ function MCPServersTab() {
             )}
 
             {/* Expanded tools list */}
-            {expandedTools[s.id] && expandedTools[s.id].length > 0 && (
-              <div className="border-t border-border px-4 py-3 space-y-2">
-                {expandedTools[s.id].map((tool) => (
-                  <div key={tool.name} className="flex items-center justify-between">
-                    <div className="flex items-start gap-3">
-                      <span className="text-accent text-sm font-bold shrink-0">{tool.name}</span>
-                      <span className="text-text-muted text-sm">{tool.description}</span>
-                    </div>
-                    {((s.source === "local" && s.connection_id > 0) ||
-                      s.source === "remote" ||
-                      (s.source === "custom" && s.status === "running")) && (
-                      <button
-                        onClick={() => { setTestingTool({ serverId: s.id, tool }); setTestArgs({}); setTestResult(null); setShowOptional(false); }}
-                        className="text-xs text-accent hover:text-accent-hover transition-colors shrink-0 ml-3"
-                      >
-                        Test
-                      </button>
+            {expandedTools[s.id] && expandedTools[s.id].length > 0 && (() => {
+              // When the MCP server is scoped, only show the tools that
+              // are actually in the filter — this is what the agent sees
+              // at runtime. The full catalog is still available in the
+              // Scope modal for editing; the list view here reflects the
+              // live state. Accept both bare and slug-prefixed forms in
+              // the filter set because scenarios sometimes store one or
+              // the other.
+              const fullList = expandedTools[s.id] || [];
+              let visible = fullList;
+              let hiddenCount = 0;
+              if (s.allowed_tools && s.allowed_tools.length > 0) {
+                const allowedSet = new Set<string>();
+                for (const name of s.allowed_tools) {
+                  allowedSet.add(name);
+                  // Also accept the bare form (without integration prefix)
+                  // so DB rows that stored prefixed names match tools that
+                  // were registered bare, and vice versa.
+                  const slugMatch = s.name
+                    .toLowerCase()
+                    .replace(/[-\s]/g, "[-_]?");
+                  const bare = name.replace(new RegExp("^" + slugMatch + "[_-]?", "i"), "");
+                  if (bare && bare !== name) allowedSet.add(bare);
+                }
+                visible = fullList.filter((t) => allowedSet.has(t.name));
+                hiddenCount = fullList.length - visible.length;
+              }
+              return (
+              <div className="border-t border-border">
+                {/* Compact tool count header with scope indicator */}
+                <div className="px-4 py-2 flex items-center justify-between bg-bg-card/30 border-b border-border/50">
+                  <span className="text-text-dim text-[10px] uppercase tracking-wide font-bold">
+                    {visible.length} tool{visible.length === 1 ? "" : "s"} visible
+                    {hiddenCount > 0 && (
+                      <span className="text-text-muted normal-case font-normal ml-2">
+                        ({hiddenCount} hidden by scope)
+                      </span>
                     )}
-                  </div>
-                ))}
+                  </span>
+                  {(s.allowed_tools && s.allowed_tools.length > 0) && (
+                    <span className="text-accent text-[10px] font-bold">
+                      scoped to {s.allowed_tools.length}/{fullList.length}
+                    </span>
+                  )}
+                </div>
+                {/* Tool list: name on top (mono, no prefix), description on
+                    bottom (muted), Test button right-aligned. Two-line
+                    layout is much easier to scan than the old single-row
+                    flex that jammed everything together. */}
+                <div className="divide-y divide-border/30">
+                  {visible.map((tool) => {
+                    // Strip the slug_ prefix for display — the integration
+                    // is already identified by the parent card, and the
+                    // prefix is noise here. "omnikit-storage_get_file"
+                    // renders as "get_file". Keep the full name for the
+                    // Test modal key.
+                    const displayName = tool.name.replace(
+                      new RegExp("^" + s.name.toLowerCase().replace(/[-\s]/g, "[-_]?") + "[_-]?", "i"),
+                      "",
+                    ) || tool.name;
+                    const canTest =
+                      (s.source === "local" && s.connection_id > 0) ||
+                      s.source === "remote" ||
+                      (s.source === "custom" && s.status === "running");
+                    return (
+                      <div
+                        key={tool.name}
+                        className="group px-4 py-2.5 flex items-start gap-3 hover:bg-bg-hover transition-colors"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-baseline gap-2">
+                            <code className="text-accent text-xs font-bold font-mono truncate">
+                              {displayName}
+                            </code>
+                          </div>
+                          {tool.description && (
+                            <p className="text-text-muted text-xs mt-0.5 line-clamp-2 leading-snug">
+                              {/* Drop the [IntegrationName] prefix core tacks
+                                  onto descriptions — the card header already
+                                  names the integration, showing it here again
+                                  just adds clutter. */}
+                              {tool.description.replace(/^\[[^\]]+\]\s*/, "")}
+                            </p>
+                          )}
+                        </div>
+                        {canTest && (
+                          <button
+                            onClick={() => {
+                              setTestingTool({ serverId: s.id, tool });
+                              setTestArgs({});
+                              setTestResult(null);
+                              setShowOptional(false);
+                            }}
+                            className="text-[10px] text-text-muted hover:text-accent transition-colors shrink-0 opacity-0 group-hover:opacity-100 px-2 py-1 border border-border rounded"
+                          >
+                            Test
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            )}
+              );
+            })()}
           </div>
         ))}
       </div>
@@ -1033,6 +1450,115 @@ function MCPServersTab() {
           );
         })()}
       </Modal>
+
+      {/* Tool scope picker — select which tools this MCP server exposes */}
+      <Modal open={!!scopeModal} onClose={() => setScopeModal(null)}>
+        {scopeModal && (
+          <div className="p-6 flex flex-col max-h-[80vh] min-w-[560px]">
+            <div className="shrink-0 mb-4">
+              <h3 className="text-text text-base font-bold">
+                Tool scope: {scopeModal.server.name}
+              </h3>
+              <p className="text-text-muted text-sm mt-1">
+                Pick which tools this MCP server exposes. Only the ticked
+                tools are visible to instances that attach this server.
+                Untick everything to re-enable all tools.
+              </p>
+              {scopeModal.server.source === "remote" && (
+                <p className="text-accent text-xs mt-2">
+                  ℹ Composio-hosted server — a reconcile will run after save
+                  so the upstream gets the new action set. Running instances
+                  need a restart to pick up the change.
+                </p>
+              )}
+            </div>
+
+            <div className="shrink-0 flex items-center gap-3 mb-3 text-xs">
+              <button
+                onClick={() =>
+                  setScopeModal({
+                    ...scopeModal,
+                    selected: new Set(scopeModal.allTools.map((t) => t.name)),
+                  })
+                }
+                className="text-accent hover:text-accent-hover transition-colors"
+              >
+                Select all
+              </button>
+              <span className="text-text-dim">·</span>
+              <button
+                onClick={() =>
+                  setScopeModal({ ...scopeModal, selected: new Set() })
+                }
+                className="text-text-muted hover:text-text transition-colors"
+              >
+                Clear
+              </button>
+              <span className="ml-auto text-text-dim">
+                {scopeModal.selected.size} / {scopeModal.allTools.length}{" "}
+                selected
+              </span>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-1 border border-border rounded-lg p-3 mb-4">
+              {scopeModal.allTools.length === 0 && (
+                <p className="text-text-muted text-sm py-4 text-center">
+                  No tools available from this server.
+                </p>
+              )}
+              {scopeModal.allTools.map((tool) => {
+                const checked = scopeModal.selected.has(tool.name);
+                return (
+                  <label
+                    key={tool.name}
+                    className="flex items-start gap-2 py-1 cursor-pointer hover:bg-bg-hover rounded px-2"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const next = new Set(scopeModal.selected);
+                        if (e.target.checked) next.add(tool.name);
+                        else next.delete(tool.name);
+                        setScopeModal({ ...scopeModal, selected: next });
+                      }}
+                      className="mt-1 shrink-0 accent-accent"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-text text-sm font-mono">
+                        {tool.name}
+                      </div>
+                      {tool.description && (
+                        <div className="text-text-muted text-xs mt-0.5 line-clamp-2">
+                          {tool.description}
+                        </div>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="shrink-0 flex justify-end gap-3">
+              <button
+                onClick={() => setScopeModal(null)}
+                disabled={scopeSaving}
+                className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveScope}
+                disabled={scopeSaving}
+                className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
+              >
+                {scopeSaving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
     </div>
   );
 }
@@ -1083,6 +1609,8 @@ function SubscriptionsTab() {
           connectionId: adding.id,
           description: description.trim(),
           hmacSecret: hmacSecret.trim(),
+          events: Array.from(selectedEvents),
+          projectId: currentProject?.id,
         }
       );
       setAdding(null);
@@ -1154,7 +1682,10 @@ function SubscriptionsTab() {
         <section>
           <h3 className="text-text-muted text-sm font-bold mb-3 uppercase tracking-wide">Active</h3>
           <div className="space-y-3">
-            {safeSubs.map((sub) => (
+            {safeSubs.map((sub) => {
+              const conn = connections.find((c: any) => c.id === sub.connection_id);
+              const inst = instanceList.find((i) => i.id === sub.instance_id);
+              return (
               <div key={sub.id} className="border border-border rounded-lg p-4 bg-bg-card">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-3">
@@ -1178,22 +1709,40 @@ function SubscriptionsTab() {
                   </div>
                 </div>
                 {sub.description && <p className="text-text-dim text-sm mb-2">{sub.description}</p>}
-                <div className="flex items-center gap-2">
-                  <code className="text-xs bg-bg-input rounded px-2 py-1 text-accent select-all flex-1 overflow-x-auto">
-                    {sub.webhook_url}
-                  </code>
-                  <button
-                    onClick={() => copyUrl(sub.id, sub.webhook_url)}
-                    className="text-xs text-text-muted hover:text-text transition-colors shrink-0"
-                  >
-                    {copiedId === sub.id ? "Copied!" : "Copy"}
-                  </button>
-                </div>
-                <div className="text-text-dim text-xs mt-2">
-                  Instance #{sub.instance_id}
-                </div>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs mt-2">
+                  <dt className="text-text-dim">Connection</dt>
+                  <dd className="text-text">
+                    {conn ? (
+                      <>
+                        {conn.app_name}
+                        <span className="text-text-muted ml-2">{conn.name}</span>
+                      </>
+                    ) : (
+                      <span className="text-text-dim">#{sub.connection_id} (not found)</span>
+                    )}
+                  </dd>
+                  <dt className="text-text-dim">Instance</dt>
+                  <dd className="text-text">
+                    {inst ? inst.name : <span className="text-text-dim">#{sub.instance_id} (not found)</span>}
+                  </dd>
+                  <dt className="text-text-dim">Events</dt>
+                  <dd>
+                    {sub.events && sub.events.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {sub.events.map((ev) => (
+                          <code key={ev} className="text-[10px] px-1.5 py-0.5 rounded bg-bg-input text-text font-mono">
+                            {ev}
+                          </code>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-text-dim">all events</span>
+                    )}
+                  </dd>
+                </dl>
               </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       )}
@@ -1564,6 +2113,156 @@ function DataTab() {
           </div>
         </div>
       </Modal>
+    </div>
+  );
+}
+
+// ─── Server Tab ───
+//
+// Admin-editable server-wide settings. Today: just `public_url`, the URL
+// the outside world uses to reach this server (Google, GitHub, etc., for
+// OAuth callbacks; webhook providers for delivery). Stored in
+// server_settings table so it survives container redeploys and doesn't
+// require a server restart to change.
+
+function ServerTab() {
+  const [data, setData] = useState<ServerSettingsType | null>(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  const load = () => {
+    serverSettings
+      .get()
+      .then((d) => {
+        setData(d);
+        setDraft(d.public_url.value);
+      })
+      .catch((err) => setError(err?.message || "Failed to load"));
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSaved(false);
+    setSaving(true);
+    try {
+      const updated = await serverSettings.update({ public_url: draft.trim() });
+      setData(updated);
+      setDraft(updated.public_url.value);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err: any) {
+      setError(err?.message || "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!data) {
+    return <div className="text-text-muted text-sm">Loading…</div>;
+  }
+
+  const pu = data.public_url;
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <div>
+        <h2 className="text-text text-base font-bold">Server</h2>
+        <p className="text-text-muted text-sm mt-1">
+          Server-wide settings that affect how this Apteva instance is reached
+          from the outside world.
+        </p>
+      </div>
+
+      <form onSubmit={handleSave} className="border border-border rounded-lg p-5 bg-bg-card space-y-4">
+        <div>
+          <label className="block text-text text-sm font-bold mb-1">Public URL</label>
+          <p className="text-text-muted text-xs mb-3 leading-relaxed">
+            The base URL the outside world uses to reach this server. Required
+            for OAuth callbacks (GitHub, Google, etc.) and incoming webhooks.
+            Set this to the public hostname you've pointed at the server,
+            including the scheme. Example: <code className="text-text">https://agents.example.com</code>.
+            Leave blank to fall back to the <code className="text-text">PUBLIC_URL</code> env
+            var, then to <code className="text-text">http://localhost:&lt;port&gt;</code>.
+          </p>
+          <input
+            type="text"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="https://agents.example.com"
+            className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text font-mono focus:outline-none focus:border-accent"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+
+        {/* Effective state — what the server is actually using right now,
+            so the admin can confirm their change took effect. */}
+        <div className="border border-border rounded-lg p-3 bg-bg-hover/40 text-[11px] space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="text-text-muted shrink-0">Effective:</span>
+            <code className="text-text font-mono break-all">{pu.effective || "(unset)"}</code>
+            <span className="ml-auto text-[10px] uppercase tracking-wide text-text-dim shrink-0">
+              from {pu.source}
+            </span>
+          </div>
+          {pu.env_value && pu.source !== "env" && (
+            <div className="flex items-center gap-2">
+              <span className="text-text-dim shrink-0">PUBLIC_URL env:</span>
+              <code className="text-text-dim font-mono break-all">{pu.env_value}</code>
+            </div>
+          )}
+          <div className="flex items-center gap-2 pt-1 border-t border-border/50 mt-1">
+            <span className="text-text-muted shrink-0">OAuth callback:</span>
+            <code className="text-text font-mono break-all">{pu.oauth_callback}</code>
+          </div>
+          <p className="text-text-dim mt-1">
+            Use the OAuth callback URL above when registering an OAuth app on the
+            upstream provider (GitHub, Google, etc.). Save here first, then
+            paste it into the provider's "Authorized redirect URI" field.
+          </p>
+        </div>
+
+        {error && <div className="text-red text-sm">{error}</div>}
+        {saved && <div className="text-green text-sm">Saved.</div>}
+
+        <div className="flex gap-3">
+          <button
+            type="submit"
+            disabled={saving || draft.trim() === pu.value}
+            className="px-5 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+          {pu.value && (
+            <button
+              type="button"
+              onClick={async () => {
+                setError("");
+                setSaving(true);
+                try {
+                  const updated = await serverSettings.update({ public_url: "" });
+                  setData(updated);
+                  setDraft("");
+                } catch (err: any) {
+                  setError(err?.message || "Failed to clear");
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              className="px-5 py-2.5 border border-border rounded-lg text-sm text-text-muted hover:text-red hover:border-red transition-colors"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </form>
     </div>
   );
 }

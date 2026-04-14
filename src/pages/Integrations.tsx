@@ -33,6 +33,17 @@ export function Integrations() {
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState("");
 
+  // Local OAuth client credentials. The user's own OAuth app id+secret
+  // (registered with the upstream provider — e.g. github.com/settings/developers).
+  // We collect them per app+project and persist them on the connection's
+  // encrypted blob server-side, so the next connect to the same app skips
+  // the form. On app selection we ask the server whether anything is
+  // already on file and hide the form when so.
+  const [oauthClientID, setOAuthClientID] = useState("");
+  const [oauthClientSecret, setOAuthClientSecret] = useState("");
+  const [oauthClientResolved, setOAuthClientResolved] = useState(false);
+  const [oauthCallbackURL, setOAuthCallbackURL] = useState("");
+
   // Composio state
   const [composioSearch, setComposioSearch] = useState("");
   const [composioApps, setComposioApps] = useState<ComposioApp[]>([]);
@@ -121,6 +132,24 @@ export function Integrations() {
     setCredentials({});
     setConnName(app.name);
     setError("");
+    setOAuthClientID("");
+    setOAuthClientSecret("");
+    setOAuthClientResolved(false);
+    setOAuthCallbackURL("");
+
+    // For OAuth2 apps, find out whether the user already registered an
+    // OAuth client for this app+project. If yes, hide the form. If no,
+    // we'll show two fields plus the callback URL helper.
+    if (app.auth.types.includes("oauth2")) {
+      try {
+        const status = await integrations.oauthClientStatus(slug, currentProject?.id);
+        setOAuthClientResolved(status.resolved);
+        setOAuthCallbackURL(status.callback_url);
+      } catch {
+        // Non-fatal — the user can still type creds; the server will
+        // re-validate on submit.
+      }
+    }
   };
 
   const handleConnectLocal = async (e: React.FormEvent) => {
@@ -129,12 +158,22 @@ export function Integrations() {
     setError("");
     setConnecting(true);
     try {
+      const isOAuth2 = selectedLocalApp.auth.types.includes("oauth2");
+      const oauthCreds = isOAuth2 && !oauthClientResolved
+        ? { client_id: oauthClientID.trim(), client_secret: oauthClientSecret.trim() }
+        : undefined;
+      // Pin auth_type to "oauth2" when the app supports it, even if the
+      // server's default-picker would also choose it. Templates that list
+      // ["bearer", "oauth2"] could otherwise be routed to the non-OAuth
+      // path (silent "connected" with empty creds) if the picker drifts.
+      const explicitAuthType = isOAuth2 ? "oauth2" : undefined;
       const result = await integrations.connect(
         selectedLocalApp.slug,
         connName.trim(),
         credentials,
-        undefined,
+        explicitAuthType,
         currentProject?.id,
+        oauthCreds,
       );
       // OAuth2 apps return { connection, redirect_url } — open the popup and
       // start polling the pending connection. Non-OAuth apps return the
@@ -148,6 +187,8 @@ export function Integrations() {
       }
       setSelectedLocalApp(null);
       setCredentials({});
+      setOAuthClientID("");
+      setOAuthClientSecret("");
     } catch (err: any) {
       setError(err?.message || "Failed to connect");
     } finally {
@@ -655,10 +696,33 @@ export function Integrations() {
               Auth: {selectedLocalApp.auth.types.join(", ")} · {selectedLocalApp.tools.length} tools
             </div>
 
-            {selectedLocalApp.auth.types.includes("oauth2") && (
+            {selectedLocalApp.auth.types.includes("oauth2") && oauthClientResolved && (
               <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted">
-                This app uses OAuth2 — clicking Connect opens a popup for you to authorize.
-                No credentials to enter here.
+                OAuth client already registered for this project. Click <b>Authorize</b>
+                to open {selectedLocalApp.name} in a popup.
+              </div>
+            )}
+
+            {selectedLocalApp.auth.types.includes("oauth2") && !oauthClientResolved && (
+              <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted space-y-2">
+                <p>
+                  <b>{selectedLocalApp.name} OAuth setup.</b> You need to register an OAuth
+                  app on {selectedLocalApp.name}'s side first, then paste its client
+                  ID and secret below.
+                </p>
+                {oauthCallbackURL && (
+                  <p>
+                    Use this redirect / callback URL when registering the OAuth app:
+                    <br />
+                    <code className="text-text inline-block mt-1 px-1.5 py-0.5 rounded bg-bg-card font-mono text-[10px] break-all">
+                      {oauthCallbackURL}
+                    </code>
+                  </p>
+                )}
+                <p className="text-text-dim">
+                  These credentials are saved encrypted on the connection — you only need
+                  to enter them once per project.
+                </p>
               </div>
             )}
 
@@ -672,6 +736,38 @@ export function Integrations() {
                   required
                 />
               </div>
+
+              {selectedLocalApp.auth.types.includes("oauth2") && !oauthClientResolved && (
+                <>
+                  <div>
+                    <label className="block text-text-muted text-sm mb-2">
+                      OAuth Client ID
+                    </label>
+                    <input
+                      value={oauthClientID}
+                      onChange={(e) => setOAuthClientID(e.target.value)}
+                      className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text font-mono focus:outline-none focus:border-accent"
+                      placeholder="Iv1.abc123…"
+                      autoComplete="off"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-text-muted text-sm mb-2">
+                      OAuth Client Secret
+                    </label>
+                    <input
+                      type="password"
+                      value={oauthClientSecret}
+                      onChange={(e) => setOAuthClientSecret(e.target.value)}
+                      className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text font-mono focus:outline-none focus:border-accent"
+                      placeholder="secret"
+                      autoComplete="new-password"
+                      required
+                    />
+                  </div>
+                </>
+              )}
 
               {!selectedLocalApp.auth.types.includes("oauth2") &&
                 selectedLocalApp.auth.credential_fields?.map((field) => (

@@ -4,8 +4,13 @@
 // route through `/` on the server.
 const BASE = "/api";
 
-async function request<T>(method: string, path: string, body?: any): Promise<T> {
-  const headers: Record<string, string> = {};
+async function request<T>(
+  method: string,
+  path: string,
+  body?: any,
+  extraHeaders?: Record<string, string>,
+): Promise<T> {
+  const headers: Record<string, string> = { ...(extraHeaders || {}) };
   if (body) headers["Content-Type"] = "application/json";
 
   const res = await fetch(`${BASE}${path}`, {
@@ -27,10 +32,35 @@ async function request<T>(method: string, path: string, body?: any): Promise<T> 
   return res.json();
 }
 
+// Server-wide settings (admin-editable, lives in server_settings table).
+export interface ServerSettings {
+  public_url: {
+    value: string;        // raw DB value (empty if not set)
+    env_value: string;    // raw env var value (empty if not set)
+    effective: string;    // what the server is actually using
+    source: "db" | "env" | "unset";
+    oauth_callback: string; // computed: <effective>/oauth/local/callback
+  };
+}
+
+export const serverSettings = {
+  get: () => request<ServerSettings>("GET", "/settings/server"),
+  update: (patch: { public_url?: string }) =>
+    request<ServerSettings>("PUT", "/settings/server", patch),
+};
+
 // Auth
 export const auth = {
-  register: (email: string, password: string) =>
-    request<{ id: number; email: string }>("POST", "/auth/register", { email, password }),
+  status: () =>
+    request<{ reg_mode: string; needs_setup: boolean }>("GET", "/auth/status"),
+
+  register: (email: string, password: string, setupToken?: string) =>
+    request<{ id: number; email: string }>(
+      "POST",
+      "/auth/register",
+      { email, password },
+      setupToken ? { "X-Setup-Token": setupToken } : undefined,
+    ),
 
   login: (email: string, password: string) =>
     request<{ user_id: number; email: string }>("POST", "/auth/login", { email, password }),
@@ -120,6 +150,9 @@ export const instances = {
 
   get: (id: number) => request<Instance>("GET", `/instances/${id}`),
 
+  rename: (id: number, name: string) =>
+    request<Instance>("PUT", `/instances/${id}`, { name }),
+
   delete: (id: number) => request<any>("DELETE", `/instances/${id}`),
 
   stop: (id: number) => request<Instance>("POST", `/instances/${id}/stop`),
@@ -141,6 +174,7 @@ export const instances = {
 // Providers
 export interface Provider {
   id: number;
+  provider_type_id?: number;
   type: string;
   name: string;
   project_id?: string;
@@ -293,7 +327,17 @@ export const integrations = {
 
   // Local non-OAuth: stores credentials immediately, returns ConnectionInfo.
   // Local OAuth2: returns ConnectCreateResponse with an authorize URL.
-  connect: (appSlug: string, name: string, credentials: Record<string, string>, authType?: string, projectId?: string) =>
+  // For OAuth2 apps, the caller may pass the user's own OAuth client_id /
+  // client_secret — these get folded into the connection's encrypted blob so
+  // subsequent connects to the same app+project skip the form.
+  connect: (
+    appSlug: string,
+    name: string,
+    credentials: Record<string, string>,
+    authType?: string,
+    projectId?: string,
+    oauth?: { client_id?: string; client_secret?: string },
+  ) =>
     request<ConnectionInfo | ConnectCreateResponse>("POST", "/connections", {
       source: "local",
       app_slug: appSlug,
@@ -301,7 +345,47 @@ export const integrations = {
       credentials,
       auth_type: authType,
       project_id: projectId || "",
+      ...(oauth?.client_id ? { client_id: oauth.client_id } : {}),
+      ...(oauth?.client_secret ? { client_secret: oauth.client_secret } : {}),
     }),
+
+  // Create an additional MCP server row over an existing connection
+  // with a specific tool subset. Lets the user attach two distinct
+  // scoped MCPs (e.g. google-sheets-readonly + google-sheets-rw) from
+  // the same OAuth credentials and route them to different sub-threads.
+  // Returns the new MCP row id + URL.
+  createScopedMCP: (
+    connectionId: number,
+    name: string,
+    allowedTools: string[],
+  ) =>
+    request<{
+      id: number;
+      name: string;
+      connection_id: number;
+      app_slug: string;
+      allowed_tools: string[];
+      url: string;
+    }>("POST", `/connections/${connectionId}/mcp`, {
+      name,
+      allowed_tools: allowedTools,
+    }),
+
+  // Look up whether an OAuth client is already registered for an app+project.
+  // Used by the dashboard to hide the client_id/secret form when the user
+  // has already gone through it once for this app in this project.
+  oauthClientStatus: (appSlug: string, projectId?: string) => {
+    const params = new URLSearchParams({ app_slug: appSlug });
+    if (projectId) params.set("project_id", projectId);
+    return request<{
+      has_client_id: boolean;
+      has_client_secret: boolean;
+      client_id: string;
+      source: "stored" | "env" | "";
+      resolved: boolean;
+      callback_url: string;
+    }>("GET", `/oauth/local/client?${params}`);
+  },
 
   // Hosted Composio connection — server calls Composio, returns a redirect URL
   // the dashboard must open in a popup. The connection row is pending until
@@ -357,6 +441,16 @@ export const integrations = {
     return request<ComposioApp[]>("GET", `/composio/apps${q}`);
   },
 
+  // List every action (tool) a Composio toolkit exposes. Used by the
+  // tool-scope picker so the user can narrow an MCP server row to a
+  // subset. Auto-picks the user's first Composio provider on the server
+  // side — no provider_id needed.
+  composioToolkitActions: (slug: string) =>
+    request<Array<{ slug: string; name: string; description: string; toolkit: string }>>(
+      "GET",
+      `/composio/toolkits/${encodeURIComponent(slug)}/actions`,
+    ),
+
   tools: (id: number) =>
     request<Array<{ name: string; description: string; method: string; path: string }>>("GET", `/connections/${id}/tools`),
 
@@ -379,6 +473,11 @@ export interface MCPServer {
   url?: string;
   provider_id?: number;
   connection_id: number;
+  // allowed_tools is the persisted tool filter. Empty/null means "all tools
+  // exposed" (legacy). A populated array means only those tools are served
+  // by this MCP server row — enforced server-side for local rows and
+  // forwarded to Composio as `actions` for remote rows.
+  allowed_tools?: string[] | null;
   proxy_config?: { name: string; transport: string; url?: string; command?: string; args?: string[] };
   created_at: string;
 }
@@ -386,7 +485,15 @@ export interface MCPServer {
 export interface MCPTool {
   name: string;
   description: string;
-  inputSchema: Record<string, any>;
+  inputSchema?: Record<string, any>;
+}
+
+// Shape returned by GET /mcp-servers/:id/tools: the full catalog of tools
+// that row can expose, plus the currently-persisted allowed_tools filter
+// (may be empty = all tools enabled).
+export interface MCPServerToolsResponse {
+  tools: MCPTool[];
+  allowed_tools: string[] | null;
 }
 
 export const mcpServers = {
@@ -405,7 +512,21 @@ export const mcpServers = {
 
   stop: (id: number) => request<any>("POST", `/mcp-servers/${id}/stop`),
 
-  tools: (id: number) => request<MCPTool[]>("GET", `/mcp-servers/${id}/tools`),
+  // Fetch the tool catalog for an MCP server row. Response now includes
+  // `allowed_tools` so callers rendering a picker can pre-tick the current
+  // filter. Legacy callers that typed this as `MCPTool[]` get the .tools
+  // field — they keep working by accessing response.tools.
+  tools: (id: number) => request<MCPServerToolsResponse>("GET", `/mcp-servers/${id}/tools`),
+
+  // Overwrite the allowed_tools filter. Pass an empty array to clear
+  // (re-enable all tools). Takes effect immediately for source=local
+  // rows; source=remote (Composio) needs a subsequent /composio/reconcile.
+  setAllowedTools: (id: number, allowed: string[]) =>
+    request<{ status: string; allowed_tools: string[] }>(
+      "PUT",
+      `/mcp-servers/${id}/tools`,
+      { allowed_tools: allowed },
+    ),
 
   // Invoke a tool on an MCP server. Works for source=remote (HTTP MCP) and
   // source=custom (stdio subprocess). Local catalog rows must use
@@ -432,6 +553,8 @@ export interface SubscriptionInfo {
   webhook_path: string;
   webhook_url: string;
   enabled: boolean;
+  events: string[];
+  thread_id?: string;
   created_at: string;
 }
 
@@ -441,13 +564,34 @@ export const subscriptions = {
     return request<SubscriptionInfo[]>("GET", `/subscriptions${params}`);
   },
 
-  create: (name: string, slug: string, instanceId: number, opts?: { connectionId?: number; description?: string; hmacSecret?: string }) =>
-    request<{ subscription: SubscriptionInfo; webhook_url: string }>("POST", "/subscriptions", {
-      name, slug, instance_id: instanceId,
-      connection_id: opts?.connectionId || 0,
-      description: opts?.description || "",
-      hmac_secret: opts?.hmacSecret || "",
-    }),
+  create: (
+    name: string,
+    slug: string,
+    instanceId: number,
+    opts?: {
+      connectionId?: number;
+      description?: string;
+      hmacSecret?: string;
+      events?: string[];
+      threadId?: string;
+      projectId?: string;
+    },
+  ) =>
+    request<{ subscription: SubscriptionInfo; webhook_url: string; auto_registered: boolean }>(
+      "POST",
+      "/subscriptions",
+      {
+        name,
+        slug,
+        instance_id: instanceId,
+        connection_id: opts?.connectionId || 0,
+        description: opts?.description || "",
+        hmac_secret: opts?.hmacSecret || "",
+        events: opts?.events || [],
+        thread_id: opts?.threadId || "",
+        project_id: opts?.projectId || "",
+      },
+    ),
 
   delete: (id: string) => request<any>("DELETE", `/subscriptions/${id}`),
 
@@ -551,7 +695,28 @@ export const core = {
       mode: string;
       auto_approve?: string[];
       mcp_servers?: MCPServerConfig[];
+      computer?: {
+        connected: boolean;
+        type?: string;
+        display?: { width: number; height: number };
+      } | null;
     }>("GET", `/instances/${instanceId}/config`),
+
+  // Hot-attach or detach the browser/computer environment on a running
+  // instance. The server fills in credentials from the saved browser
+  // provider when the type needs them, so the dashboard only sends the
+  // mode (and an optional URL for the "service" CDP type).
+  setComputer: (
+    instanceId: number,
+    computer:
+      | { type: "" }
+      | { type: "local"; width?: number; height?: number }
+      | { type: "browserbase"; width?: number; height?: number }
+      | { type: "service"; url?: string; width?: number; height?: number },
+  ) =>
+    request<{ status: string }>("PUT", `/instances/${instanceId}/config`, {
+      computer,
+    }),
   setMode: (instanceId: number, mode: "autonomous" | "supervised") =>
     request<{ status: string }>("PUT", `/instances/${instanceId}/config`, { mode }),
   // Replace the full mcp_servers list on a running instance. The core runs
@@ -563,6 +728,25 @@ export const core = {
     request<{ status: string }>("PUT", `/instances/${instanceId}/config`, { mcp_servers: servers }),
   approve: (instanceId: number, approved: boolean) =>
     request<{ status: string }>("POST", `/instances/${instanceId}/approve`, { approved }),
+
+  // Reset the main thread's conversation context. Mirrors the CLI's
+  // /clear command. Choose any combination of:
+  //   history — wipe the LLM message history (the agent forgets the
+  //             back-and-forth, but keeps remembered facts)
+  //   memory  — wipe the persistent memory (forget learned facts)
+  //   threads — kill all sub-threads (does NOT touch main)
+  // Default is { history: true } which is the equivalent of /clear.
+  reset: (
+    instanceId: number,
+    opts?: { history?: boolean; memory?: boolean; threads?: boolean },
+  ) =>
+    request<{ status: string }>("PUT", `/instances/${instanceId}/config`, {
+      reset: {
+        history: opts?.history ?? true,
+        memory: opts?.memory ?? false,
+        threads: opts?.threads ?? false,
+      },
+    }),
 };
 
 // Channels
