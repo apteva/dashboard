@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { useAuth } from "./hooks/useAuth";
+import { AuthProvider, useAuth } from "./hooks/useAuth";
 import { ProjectProvider } from "./hooks/useProjects";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
@@ -11,32 +11,42 @@ import { Settings } from "./pages/Settings";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { authenticated } = useAuth();
-  if (authenticated === null) return null; // loading
-  if (!authenticated) return <Navigate to="/login" replace />;
+  console.log("[auth] ProtectedRoute render, authenticated=", authenticated, "path=", window.location.pathname);
+  if (authenticated === null) {
+    console.log("[auth] ProtectedRoute: loading (null)");
+    return null;
+  }
+  if (!authenticated) {
+    console.log("[auth] ProtectedRoute: not authenticated → redirect /login");
+    return <Navigate to="/login" replace />;
+  }
+  console.log("[auth] ProtectedRoute: authenticated → render children");
   return <>{children}</>;
 }
 
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route
-          element={
-            <ProtectedRoute>
-              <ProjectProvider>
-                <Layout />
-              </ProjectProvider>
-            </ProtectedRoute>
-          }
-        >
-          <Route path="/" element={<Instances />} />
-          <Route path="/instances/:id" element={<Instance />} />
-          <Route path="/integrations" element={<Integrations />} />
-          <Route path="/analytics" element={<Analytics />} />
-          <Route path="/settings" element={<Settings />} />
-        </Route>
-      </Routes>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route
+            element={
+              <ProtectedRoute>
+                <ProjectProvider>
+                  <Layout />
+                </ProjectProvider>
+              </ProtectedRoute>
+            }
+          >
+            <Route path="/" element={<Instances />} />
+            <Route path="/instances/:id" element={<Instance />} />
+            <Route path="/integrations" element={<Integrations />} />
+            <Route path="/analytics" element={<Analytics />} />
+            <Route path="/settings" element={<Settings />} />
+          </Route>
+        </Routes>
+      </AuthProvider>
     </BrowserRouter>
   );
 }

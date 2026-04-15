@@ -181,7 +181,7 @@ export function MCPPanel({ instanceId, running }: Props) {
                   onClick={() => handleDetach(s.name)}
                   disabled={busy}
                   className="text-text-muted hover:text-red transition-colors disabled:opacity-50 text-[10px] px-1"
-                  title="Detach from this instance"
+                  title="Detach from this agent"
                 >
                   ×
                 </button>

@@ -22,6 +22,43 @@ interface ToolEntry {
   time: number;
 }
 
+// IncomingEvent mirrors the CLI's "incoming events on thread" line — each
+// event.received telemetry entry lands here and fades out over EVENT_FADE_MS.
+// Rendered as a live-decaying list so the panel shows what's hitting the
+// bus right now without turning into a permanent scrollback log.
+interface IncomingEvent {
+  id: string;
+  threadId: string;
+  source: string;   // "bus" | "console" | "thread" | "webhook" | …
+  message: string;
+  time: number;
+}
+
+// How long an incoming-event row stays visible before fully fading out.
+// 30s feels about right — long enough to read a burst of messages, short
+// enough that the panel doesn't become a running log.
+const EVENT_FADE_MS = 30_000;
+
+// formatToolTime renders a tool-call timestamp. Events from today show
+// HH:MM:SS; older events show "MMM DD HH:MM" so historical replay of a
+// multi-day session is unambiguous. The detail lives at row level so
+// each entry can be read in isolation (e.g. when exported).
+function formatToolTime(ms: number): string {
+  if (!ms) return "";
+  const d = new Date(ms);
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  if (sameDay) return `${hh}:${mm}:${ss}`;
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${months[d.getMonth()]} ${String(d.getDate()).padStart(2, "0")} ${hh}:${mm}`;
+}
+
 // Noisy internal tools that shouldn't clutter the Tool Calls list — same
 // filter the ChatPanel uses. Keep this in sync with ChatPanel.hiddenTools.
 const hiddenTools = new Set([
@@ -40,6 +77,7 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [thoughts, setThoughts] = useState<ThoughtEntry[]>([]);
   const [tools, setTools] = useState<ToolEntry[]>([]);
+  const [incomingEvents, setIncomingEvents] = useState<IncomingEvent[]>([]);
   const [mode, setMode] = useState(instance.mode || "autonomous");
 
   // Reset state when instance changes
@@ -48,7 +86,28 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
     setThreads([]);
     setThoughts([]);
     setTools([]);
+    setIncomingEvents([]);
   }, [instance.id]);
+
+  // Re-render every 500ms while we have live events so opacity can decay
+  // smoothly. Stop the tick when the list is empty to avoid a wasteful
+  // setState loop on idle detail pages.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (incomingEvents.length === 0) return;
+    const t = setInterval(() => {
+      // Also GC anything fully faded so the list doesn't grow unbounded
+      // under a sustained event stream.
+      const cutoff = Date.now() - EVENT_FADE_MS;
+      setIncomingEvents((prev) => {
+        const alive = prev.filter((e) => e.time >= cutoff);
+        if (alive.length !== prev.length) return alive;
+        return prev;
+      });
+      forceTick((n) => n + 1);
+    }, 500);
+    return () => clearInterval(t);
+  }, [incomingEvents.length]);
 
   // Poll status + threads (works for both running and stopped instances)
   useEffect(() => {
@@ -163,9 +222,15 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
     const toolHidden = hiddenTools.has(toolName) || toolName.startsWith("channels_");
 
     if (event.type === "tool.call" && toolName && !toolHidden) {
+      // Prefer the core's wall-clock time when present (event.time is
+      // the ISO string attached at emit). Falls back to Date.now() for
+      // live events that lack a time for any reason. Historical replay
+      // relies on this so past tool calls show their real timestamp
+      // instead of the moment the page loaded.
+      const eventTime = event.time ? new Date(event.time).getTime() : Date.now();
       setTools((prev) => [...prev, {
         name: toolName, reason: data.reason || "", threadId: event.thread_id,
-        done: false, time: Date.now(),
+        done: false, time: eventTime,
       }].slice(-20));
     }
 
@@ -206,6 +271,30 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
 
     if (event.type === "directive.evolved") {
       onReload();
+    }
+
+    // event.received is the bus-drain telemetry — one entry per item the
+    // thinker pulled from its subscriber channel each iteration. Mirrors
+    // the CLI's "incoming events" line per thread. Push it into the
+    // fade-out list so the UI shows what's landing on the bus right now.
+    if (event.type === "event.received") {
+      const source = String(data.source || "bus");
+      const message = String(data.message || "");
+      const eventTime = event.time ? new Date(event.time).getTime() : Date.now();
+      const id = event.id || `${event.thread_id}:${eventTime}:${source}:${message.slice(0, 40)}`;
+      setIncomingEvents((prev) => {
+        // Bounded at 50 alive entries — far more than any reasonable
+        // burst rate at the default 30s fade window.
+        const next = [...prev, {
+          id,
+          threadId: event.thread_id || "main",
+          source,
+          message,
+          time: eventTime,
+        }];
+        if (next.length > 50) next.splice(0, next.length - 50);
+        return next;
+      });
     }
     });
   }, [subscribe, onReload]);
@@ -414,37 +503,47 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
       {tools.length > 0 && (
         <div className="px-4 py-3 border-b border-border">
           <h3 className="text-text-muted font-bold mb-2 uppercase tracking-wide text-[10px]">Tool Calls</h3>
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             {tools.slice(-8).map((t, i) => {
+              const ts = formatToolTime(t.time);
               if (t.done) {
                 const dur = t.durationMs != null
                   ? t.durationMs >= 1000 ? `${(t.durationMs / 1000).toFixed(1)}s` : `${t.durationMs}ms`
                   : "";
                 return (
-                  <div key={i} className="flex items-center gap-1.5 min-w-0">
-                    <span className={t.success ? "text-green" : "text-red"}>✓</span>
-                    {t.reason ? (
-                      <span className="text-text truncate" title={`${t.name}${dur ? ` (${dur})` : ""}`}>{t.reason}</span>
-                    ) : (
-                      <span className="text-text-dim">{t.name}</span>
-                    )}
-                    {dur && <span className="text-text-muted shrink-0">({dur})</span>}
+                  <div key={i} className="min-w-0">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className={t.success ? "text-green" : "text-red"}>✓</span>
+                      {t.reason ? (
+                        <span className="text-text truncate" title={`${t.name}${dur ? ` (${dur})` : ""}`}>{t.reason}</span>
+                      ) : (
+                        <span className="text-text-dim truncate">{t.name}</span>
+                      )}
+                      {dur && <span className="text-text-muted shrink-0">({dur})</span>}
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[10px] text-text-dim pl-[18px]">
+                      <span>{ts}</span>
+                      <span>·</span>
+                      <span className="truncate">{t.threadId || "main"}</span>
+                    </div>
                   </div>
                 );
               }
               return (
-                <div key={i} className="flex items-center gap-1.5 tool-active-line min-w-0">
-                  <span className="text-accent shrink-0">⟳</span>
-                  {t.reason ? (
-                    <span
-                      className="text-accent truncate"
-                      title={t.name}
-                    >
-                      {t.reason}
-                    </span>
-                  ) : (
-                    <span className="text-accent truncate">{t.name}</span>
-                  )}
+                <div key={i} className="min-w-0">
+                  <div className="flex items-center gap-1.5 tool-active-line min-w-0">
+                    <span className="text-accent shrink-0">⟳</span>
+                    {t.reason ? (
+                      <span className="text-accent truncate" title={t.name}>{t.reason}</span>
+                    ) : (
+                      <span className="text-accent truncate">{t.name}</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[10px] text-text-dim pl-[18px]">
+                    <span>{ts}</span>
+                    <span>·</span>
+                    <span className="truncate">{t.threadId || "main"}</span>
+                  </div>
                 </div>
               );
             })}
@@ -459,6 +558,47 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
           {instance.directive || <span className="italic">No directive set</span>}
         </p>
       </div>
+
+      {/* Incoming Events — live stream of what's hitting each thread's
+          bus, mirroring the CLI's "event.received" view. Each row fades
+          out over EVENT_FADE_MS via an opacity-per-age calculation,
+          giving a decaying-trail effect without turning into a permanent
+          scrollback log. */}
+      {incomingEvents.length > 0 && (
+        <div className="px-4 py-3 border-b border-border">
+          <h3 className="text-text-muted font-bold mb-2 uppercase tracking-wide text-[10px]">
+            Incoming Events
+          </h3>
+          <div className="space-y-1">
+            {[...incomingEvents].reverse().slice(0, 12).map((e) => {
+              const age = Date.now() - e.time;
+              const opacity = Math.max(0.05, 1 - age / EVENT_FADE_MS);
+              const sourceColor =
+                e.source === "webhook" ? "text-purple-400" :
+                e.source === "console" ? "text-blue-400" :
+                e.source === "thread" ? "text-green-400" :
+                "text-text-dim";
+              return (
+                <div
+                  key={e.id}
+                  className="flex items-start gap-1.5 min-w-0"
+                  style={{ opacity }}
+                >
+                  <span className={`shrink-0 text-[9px] uppercase font-bold ${sourceColor}`}>
+                    {e.source}
+                  </span>
+                  <span className="shrink-0 text-text-muted text-[10px]">
+                    {e.threadId}
+                  </span>
+                  <span className="text-text-dim text-[10px] truncate flex-1" title={e.message}>
+                    {e.message}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Thoughts */}
       {thoughts.length > 0 && (

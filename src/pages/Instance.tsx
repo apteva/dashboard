@@ -54,17 +54,17 @@ export function Instance() {
     return (
       <div className="flex flex-col h-full">
         <div className="border-b border-border px-6 py-4">
-          <h1 className="text-text text-lg font-bold">Instance not found</h1>
+          <h1 className="text-text text-lg font-bold">Agent not found</h1>
         </div>
         <div className="flex-1 p-6">
           <p className="text-text-muted text-sm">
-            No instance with id <code className="text-text">#{instanceId}</code> in this project.
+            No agent with id <code className="text-text">#{instanceId}</code> in this project.
           </p>
           <button
             onClick={() => navigate("/")}
             className="mt-4 px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
           >
-            ← Back to instances
+            ← Back to agents
           </button>
         </div>
       </div>

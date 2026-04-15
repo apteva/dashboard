@@ -80,16 +80,22 @@ export function LiveStatsBar({
     return subscribe((event) => {
       if (event.type !== "llm.done") return;
       const data = event.data || {};
-      const now = Date.now();
+      // Use the event's own wall-clock time rather than Date.now() so
+      // historical telemetry replay (ChatPanel seeds with 500 past
+      // events on mount) produces correct rate projections over the
+      // real elapsed interval instead of bursting everything into
+      // "now" and dividing by zero.
+      const eventTime = new Date(event.time).getTime() || Date.now();
       const cost = Number(data.cost_usd) || 0;
-      recentRef.current.push({ t: now, cost });
-      // Trim old entries outside the window.
-      const cutoff = now - WINDOW_MS;
+      recentRef.current.push({ t: eventTime, cost });
+      // Trim entries outside the window relative to the most recent
+      // event seen, which may still be a historical event during replay.
+      const cutoff = eventTime - WINDOW_MS;
       while (recentRef.current.length > 0 && recentRef.current[0].t < cutoff) {
         recentRef.current.shift();
       }
       setStats((prev) => {
-        const firstAt = prev.firstAt === 0 ? now : prev.firstAt;
+        const firstAt = prev.firstAt === 0 ? eventTime : Math.min(prev.firstAt, eventTime);
         return {
           iters: prev.iters + 1,
           tokensIn: prev.tokensIn + (Number(data.tokens_in) || 0),
@@ -97,7 +103,7 @@ export function LiveStatsBar({
           tokensOut: prev.tokensOut + (Number(data.tokens_out) || 0),
           costUSD: prev.costUSD + cost,
           firstAt,
-          lastAt: now,
+          lastAt: Math.max(prev.lastAt, eventTime),
           lastModel: String(data.model || prev.lastModel),
         };
       });
@@ -117,18 +123,20 @@ export function LiveStatsBar({
   }
   const recent = recentRef.current;
 
-  // Smart rate: cost accumulated within the window divided by window span.
-  // - Before elapsedSec reaches WINDOW_MS, we scale by the actual elapsed
-  //   (so a fresh burst isn't diluted by the nominal 3-minute denominator).
-  // - When the window is full, we use WINDOW_MS as the denominator — so if
-  //   the agent has gone quiet, old events roll off and the rate falls.
-  // - If the most recent event is older than the window, recent is empty
-  //   and the rate is 0.
-  const windowSec = Math.min(elapsedSec, WINDOW_MS / 1000);
+  // Rate: cost accumulated within the window divided by the FULL window
+  // span (not by actual elapsed). Using actual elapsed scales tiny early
+  // samples into wild projections — one $0.03 event at 2 s elapsed would
+  // otherwise project to $54/hr. Fixed-window denominator means early
+  // bursts are diluted instead of amplified, and as the agent runs
+  // longer the full window fills up naturally. The window is 3 minutes
+  // so the rate still responds to bursts and idle within ~3 min.
+  //
+  // projUsable gates the display until we have enough signal to trust
+  // the projection: at least 3 iterations AND 30 s of wall-clock. Below
+  // that, the bar shows "—" instead of a garbage number.
   const windowCost = recent.reduce((s, e) => s + e.cost, 0);
-  const projUsable = elapsedSec >= 5 && stats.iters > 0;
-  const costPerHour =
-    projUsable && windowSec > 0 ? (windowCost / windowSec) * 3600 : 0;
+  const projUsable = elapsedSec >= 30 && stats.iters >= 3;
+  const costPerHour = projUsable ? (windowCost / (WINDOW_MS / 1000)) * 3600 : 0;
   const costPerDay = costPerHour * 24;
 
   // Session average — shown in the tooltip so the user can compare the

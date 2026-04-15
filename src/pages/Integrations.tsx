@@ -130,7 +130,14 @@ export function Integrations() {
     const app = await integrations.app(slug);
     setSelectedLocalApp(app);
     setCredentials({});
-    setConnName(app.name);
+    // Suggest a default connection name. If the user already has one or
+    // more connections for this app in the current project, append a
+    // suffix so the unique-name server check doesn't immediately reject
+    // the submit. The user can still edit the field before saving.
+    const existing = (connections || []).filter(
+      (c) => c.app_slug === slug && c.source === "local",
+    );
+    setConnName(existing.length === 0 ? app.name : `${app.name} ${existing.length + 1}`);
     setError("");
     setOAuthClientID("");
     setOAuthClientSecret("");
@@ -468,15 +475,20 @@ export function Integrations() {
               />
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 {(localApps || []).map((app) => {
-                  const isConnected = (connections || []).some(
+                  // Count existing local connections for this app in the
+                  // current project. Local apps support multiple
+                  // connections (e.g. two SocialCast accounts), so we
+                  // show the count as a badge and keep the card clickable
+                  // to add another.
+                  const connectedCount = (connections || []).filter(
                     (c) => c.app_slug === app.slug && c.source === "local",
-                  );
+                  ).length;
                   return (
                     <button
                       key={app.slug}
                       onClick={() => selectLocalApp(app.slug)}
                       className={`border rounded-lg p-4 text-left transition-colors ${
-                        isConnected
+                        connectedCount > 0
                           ? "border-green bg-bg-card"
                           : "border-border bg-bg-card hover:border-accent"
                       }`}
@@ -486,7 +498,8 @@ export function Integrations() {
                         <div className="flex-1 min-w-0">
                           <span className="text-text text-sm font-bold">{app.name}</span>
                         </div>
-                        {isConnected && <span className="text-green text-xs shrink-0">connected</span>}
+                        {connectedCount === 1 && <span className="text-green text-xs shrink-0">connected</span>}
+                        {connectedCount > 1 && <span className="text-green text-xs shrink-0">{connectedCount} connections</span>}
                       </div>
                       <p className="text-text-muted text-xs leading-relaxed line-clamp-2">
                         {app.description}

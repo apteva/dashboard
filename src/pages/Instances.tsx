@@ -38,6 +38,8 @@ export function Instances() {
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [directive, setDirective] = useState("");
+  const [includeAptevaServer, setIncludeAptevaServer] = useState(true);
+  const [includeChannels, setIncludeChannels] = useState(true);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
 
@@ -248,9 +250,14 @@ export function Instances() {
       // (or on the instance page) when they want it running. Avoids having
       // a fresh instance consume tokens before the user has had a chance
       // to configure directive / MCPs / channels.
-      await instances.create(name.trim(), directive.trim(), "autonomous", projectId, false);
+      await instances.create(name.trim(), directive.trim(), "autonomous", projectId, false, {
+        includeAptevaServer,
+        includeChannels,
+      });
       setName("");
       setDirective("");
+      setIncludeAptevaServer(true);
+      setIncludeChannels(true);
       setShowCreate(false);
       load();
     } catch (err: any) {
@@ -311,11 +318,11 @@ export function Instances() {
     <div className="flex flex-col h-full">
       <div className="border-b border-border px-6 py-4 flex items-center justify-between">
         <div>
-          <h1 className="text-text text-lg font-bold">Instances</h1>
+          <h1 className="text-text text-lg font-bold">Agents</h1>
           <p className="text-text-muted text-sm mt-1">
             {list.length === 0
-              ? "No instances yet. Create one to get started."
-              : `${list.length} instance${list.length === 1 ? "" : "s"} in this project.`}
+              ? "No agents yet. Create one to get started."
+              : `${list.length} agent${list.length === 1 ? "" : "s"} in this project.`}
           </p>
         </div>
         {!showCreate && (
@@ -323,7 +330,7 @@ export function Instances() {
             onClick={() => setShowCreate(true)}
             className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
           >
-            + New Instance
+            + New Agent
           </button>
         )}
       </div>
@@ -334,7 +341,7 @@ export function Instances() {
             onSubmit={handleCreate}
             className="border border-border rounded-lg p-5 bg-bg-card space-y-4 max-w-2xl"
           >
-            <h2 className="text-text text-base font-bold">Create instance</h2>
+            <h2 className="text-text text-base font-bold">Create agent</h2>
             <div>
               <label className="block text-text-muted text-sm mb-2">Name</label>
               <input
@@ -352,8 +359,45 @@ export function Instances() {
                 value={directive}
                 onChange={(e) => setDirective(e.target.value)}
                 className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent resize-none h-24"
-                placeholder="What should this instance think about?"
+                placeholder="What should this agent think about?"
               />
+            </div>
+            <div>
+              <label className="block text-text-muted text-sm mb-2">System MCPs</label>
+              <div className="space-y-2">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeAptevaServer}
+                    onChange={(e) => setIncludeAptevaServer(e.target.checked)}
+                    className="accent-accent mt-0.5"
+                  />
+                  <div>
+                    <div className="text-text text-sm">apteva-server</div>
+                    <div className="text-text-dim text-xs leading-snug">
+                      Built-in gateway exposing integrations, connections, subscriptions,
+                      telemetry, and thread-spawning to the agent. Uncheck for a lean
+                      sandbox agent that only sees MCPs you wire up yourself.
+                    </div>
+                  </div>
+                </label>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeChannels}
+                    onChange={(e) => setIncludeChannels(e.target.checked)}
+                    className="accent-accent mt-0.5"
+                  />
+                  <div>
+                    <div className="text-text text-sm">channels</div>
+                    <div className="text-text-dim text-xs leading-snug">
+                      Provides channels_respond / channels_ask / channels_status tools
+                      for talking to the user via the dashboard chat, CLI, Telegram, etc.
+                      Uncheck if the agent will communicate another way.
+                    </div>
+                  </div>
+                </label>
+              </div>
             </div>
             {error && <div className="text-red text-sm">{error}</div>}
             <div className="flex gap-3">
@@ -379,7 +423,7 @@ export function Instances() {
         )}
 
         {list.length === 0 && !showCreate && (
-          <div className="text-text-muted text-sm">No instances. Click + New Instance.</div>
+          <div className="text-text-muted text-sm">No agents. Click + New Agent.</div>
         )}
 
         <div className="space-y-2">

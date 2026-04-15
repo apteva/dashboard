@@ -359,10 +359,13 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
       const channel = String(args?.channel || "cli");
       const isCli = channel === "cli";
       const streamingId = streamingMsgIdRef.current;
+      // Stable key for this finalized response — keyed on the core's
+      // tool-call id, not nextId(). Ensures a duplicate dispatch (SSE
+      // replay, StrictMode remount, core re-emit) updates the same row
+      // instead of appending a second identical row.
+      const respondKey = `${event.thread_id || ""}:respond:${data.id || ""}`;
 
       if (!isCli) {
-        // Non-cli response (telegram, slack, etc.) — drop any in-flight
-        // streaming row (we optimistically streamed it as cli) and skip.
         if (streamingId) {
           setMessages((prev) => prev.filter((m) => m.id !== streamingId));
         }
@@ -371,19 +374,27 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
         return;
       }
 
-      if (streamingId) {
-        // Replace the streaming row's text with the canonical args.text
-        // and mark it no longer streaming (cursor disappears).
-        setMessages((prev) => prev.map((m) =>
-          m.id === streamingId ? { ...m, text, streaming: false } : m,
-        ));
-      } else if (text) {
-        // No streaming row — provider didn't emit tool_chunks for this
-        // call. Create a finalized row directly.
-        setMessages((prev) => [...prev, {
-          id: nextId(), role: "agent", text, time: eventTime,
-        }]);
-      }
+      setMessages((prev) => {
+        // If a row with this stable key already exists, just refresh its
+        // text (the second dispatch is authoritative and identical).
+        const existingIdx = prev.findIndex((m) => m.id === respondKey);
+        if (existingIdx >= 0) {
+          const next = prev.slice();
+          next[existingIdx] = { ...next[existingIdx], text, streaming: false };
+          return next;
+        }
+        // Otherwise, promote the in-flight streaming row to the stable
+        // key, or create a fresh finalized row if there was no streaming.
+        if (streamingId) {
+          return prev.map((m) =>
+            m.id === streamingId
+              ? { ...m, id: respondKey, text, streaming: false }
+              : m,
+          );
+        }
+        if (!text) return prev;
+        return [...prev, { id: respondKey, role: "agent", text, time: eventTime }];
+      });
       streamingMsgIdRef.current = null;
       extractorRef.current.reset();
       return;

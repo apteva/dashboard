@@ -87,12 +87,12 @@ export function Events() {
           <span className="text-text-dim text-xs ml-3">{events.length} events</span>
         </div>
         {instance && <span className="text-green text-xs">● live</span>}
-        {!instance && <span className="text-text-dim text-xs">no instance</span>}
+        {!instance && <span className="text-text-dim text-xs">no agent</span>}
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 font-mono">
         {!instance && (
-          <div className="text-text-muted text-xs">No running instance found.</div>
+          <div className="text-text-muted text-xs">No running agent found.</div>
         )}
         {instance && events.length === 0 && (
           <div className="text-text-muted text-xs">waiting for events...</div>

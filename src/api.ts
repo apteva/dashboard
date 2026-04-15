@@ -4,6 +4,21 @@
 // route through `/` on the server.
 const BASE = "/api";
 
+// Soft auth-invalidation signal. AuthProvider registers a callback at
+// mount that flips its context state to `authenticated = false`. When
+// any authenticated API call gets a 401, we fire the callback instead
+// of doing `window.location.href = "/login"`, which would hard-reload
+// and recreate every context, destroying React Router history and
+// causing feedback loops between Login's "redirect if authenticated"
+// useEffect and the failing call. With the soft signal:
+//   401 → callback → setAuthenticated(false) → ProtectedRoute renders
+//   <Navigate to="/login"> via React Router → Login mounts, Login sees
+//   authenticated=false, stays put. No reload, no loop.
+let onAuthInvalid: (() => void) | null = null;
+export function setAuthInvalidHandler(fn: (() => void) | null) {
+  onAuthInvalid = fn;
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -13,15 +28,24 @@ async function request<T>(
   const headers: Record<string, string> = { ...(extraHeaders || {}) };
   if (body) headers["Content-Type"] = "application/json";
 
-  const res = await fetch(`${BASE}${path}`, {
+  const url = `${BASE}${path}`;
+  console.log(`[api] → ${method} ${url}`);
+  const res = await fetch(url, {
     method,
     headers,
     credentials: "same-origin",
     body: body ? JSON.stringify(body) : undefined,
   });
+  console.log(`[api] ← ${res.status} ${method} ${url}`);
   if (res.status === 401) {
-    if (!path.startsWith("/auth/")) {
-      window.location.href = "/login";
+    // Soft signal only — no hard window.location.href redirect. Let
+    // AuthProvider flip its state so React Router handles navigation
+    // through the normal component tree. Skip the signal for /auth/
+    // paths themselves (so auth.me() returning 401 during initial
+    // load doesn't double-fire through the provider).
+    if (!path.startsWith("/auth/") && onAuthInvalid) {
+      console.log(`[api] 401 on ${path} → notifying AuthProvider`);
+      onAuthInvalid();
     }
     throw new Error("unauthorized");
   }
@@ -138,7 +162,14 @@ export const instances = {
     return request<Instance[]>("GET", `/instances${params}`);
   },
 
-  create: (name: string, directive?: string, mode?: string, projectId?: string, start?: boolean) =>
+  create: (
+    name: string,
+    directive?: string,
+    mode?: string,
+    projectId?: string,
+    start?: boolean,
+    opts?: { includeAptevaServer?: boolean; includeChannels?: boolean },
+  ) =>
     request<Instance>("POST", "/instances", {
       name,
       directive: directive || "",
@@ -146,6 +177,11 @@ export const instances = {
       project_id: projectId || "",
       // Server default is start=true; pass explicit false to create stopped.
       ...(start === false ? { start: false } : {}),
+      // Server defaults both system-MCP flags to true. Only send them
+      // when the caller wants a non-default value so the wire payload
+      // stays minimal in the common case.
+      ...(opts?.includeAptevaServer === false ? { include_apteva_server: false } : {}),
+      ...(opts?.includeChannels === false ? { include_channels: false } : {}),
     }),
 
   get: (id: number) => request<Instance>("GET", `/instances/${id}`),
@@ -456,6 +492,22 @@ export const integrations = {
 
   execute: (id: number, tool: string, input: Record<string, any>) =>
     request<{ success: boolean; status: number; data: any }>("POST", `/connections/${id}/execute`, { tool, input }),
+
+  // List Composio trigger templates for this connection's toolkit.
+  // Returns [] for local-source connections (server responds 404 there,
+  // we fall back to empty in the caller). The trigger config schema is
+  // untyped because it varies per-trigger — the UI renders a dynamic
+  // form from it.
+  triggers: (id: number) =>
+    request<{ connection_id: number; toolkit: string; triggers: Array<{
+      slug: string;
+      name: string;
+      description: string;
+      instructions?: string;
+      type: string;      // "webhook" | "poll"
+      toolkit: string;
+      config: Record<string, any>;
+    }> }>("GET", `/connections/${id}/triggers`),
 };
 
 // MCP Servers
@@ -575,9 +627,13 @@ export const subscriptions = {
       events?: string[];
       threadId?: string;
       projectId?: string;
+      // Composio-source only: which trigger template to instantiate
+      // and its config fields (varies per trigger template).
+      triggerSlug?: string;
+      triggerConfig?: Record<string, any>;
     },
   ) =>
-    request<{ subscription: SubscriptionInfo; webhook_url: string; auto_registered: boolean }>(
+    request<{ subscription: SubscriptionInfo; webhook_url: string; auto_registered: boolean; trigger_id?: string; trigger_slug?: string }>(
       "POST",
       "/subscriptions",
       {
@@ -590,6 +646,8 @@ export const subscriptions = {
         events: opts?.events || [],
         thread_id: opts?.threadId || "",
         project_id: opts?.projectId || "",
+        trigger_slug: opts?.triggerSlug || "",
+        trigger_config: opts?.triggerConfig || {},
       },
     ),
 

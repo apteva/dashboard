@@ -11,7 +11,7 @@ export function Layout() {
   }, []);
 
   const navItems = [
-    { to: "/", label: "Instances" },
+    { to: "/", label: "Agents" },
     { to: "/integrations", label: "Integrations" },
     { to: "/analytics", label: "Analytics" },
     { to: "/settings", label: "Settings" },

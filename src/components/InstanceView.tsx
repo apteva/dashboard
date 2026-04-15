@@ -253,7 +253,7 @@ export function InstanceView({
       {/* Delete confirmation */}
       <Modal open={showDeleteConfirm} onClose={() => setShowDeleteConfirm(false)}>
         <div className="p-6">
-          <h3 className="text-text text-lg font-bold mb-2">Delete Instance</h3>
+          <h3 className="text-text text-lg font-bold mb-2">Delete Agent</h3>
           <p className="text-text-dim text-sm mb-6">
             Delete <span className="text-text font-bold">{instance.name}</span>? This cannot be undone.
           </p>

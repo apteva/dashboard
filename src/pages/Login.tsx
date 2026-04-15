@@ -24,8 +24,21 @@ export function Login() {
   const [setupToken, setSetupToken] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const { login, register } = useAuth();
+  const { login, register, authenticated } = useAuth();
   const navigate = useNavigate();
+
+  // If the user arrives at /login with a valid session already, bounce
+  // them straight to the dashboard. Without this, a user who logs in,
+  // closes the tab, then reopens it on /login (bookmarks, back button)
+  // sits on the login form forever even though their cookie is still
+  // valid — auth.me() succeeds in AuthProvider but the Login page
+  // itself never re-checks and stays mounted.
+  useEffect(() => {
+    if (authenticated === true) {
+      console.log("[login] already authenticated on mount → navigate /");
+      navigate("/", { replace: true });
+    }
+  }, [authenticated, navigate]);
 
   // Detect server state on mount. We only care about distinguishing
   // setup from non-setup — open vs locked just toggles the register button
@@ -68,13 +81,17 @@ export function Login() {
     e.preventDefault();
     setError("");
     setBusy(true);
+    console.log("[login] handleSubmit mode=", mode);
     try {
       if (mode === "register") {
         await register(email, password);
       }
       await login(email, password);
+      console.log("[login] login() resolved, calling navigate('/')");
       navigate("/");
+      console.log("[login] navigate('/') called, new url=", window.location.pathname);
     } catch (err: any) {
+      console.log("[login] handleSubmit error:", err?.message || err);
       setError(err.message || "Failed");
     } finally {
       setBusy(false);

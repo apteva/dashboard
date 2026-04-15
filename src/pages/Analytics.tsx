@@ -82,7 +82,7 @@ export function Analytics() {
           <h1 className="text-text text-lg font-bold">Analytics</h1>
         </div>
         <div className="flex-1 p-6">
-          <p className="text-text-muted text-sm">No instance running. Create one from the Dashboard.</p>
+          <p className="text-text-muted text-sm">No agent running. Create one from the Dashboard.</p>
         </div>
       </div>
     );
