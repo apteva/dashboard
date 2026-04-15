@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { instances, core, type Instance, type Status, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
+import { Modal } from "../components/Modal";
 
 // Per-instance live activity snapshot built from the all-instances SSE
 // stream. We keep just enough to render the row strip — the latest
@@ -325,104 +326,16 @@ export function Instances() {
               : `${list.length} agent${list.length === 1 ? "" : "s"} in this project.`}
           </p>
         </div>
-        {!showCreate && (
-          <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
-          >
-            + New Agent
-          </button>
-        )}
+        <button
+          onClick={() => setShowCreate(true)}
+          className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
+        >
+          + New Agent
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
-        {showCreate && (
-          <form
-            onSubmit={handleCreate}
-            className="border border-border rounded-lg p-5 bg-bg-card space-y-4 max-w-2xl"
-          >
-            <h2 className="text-text text-base font-bold">Create agent</h2>
-            <div>
-              <label className="block text-text-muted text-sm mb-2">Name</label>
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent"
-                placeholder="supervisor"
-                required
-                autoFocus
-              />
-            </div>
-            <div>
-              <label className="block text-text-muted text-sm mb-2">Directive (optional)</label>
-              <textarea
-                value={directive}
-                onChange={(e) => setDirective(e.target.value)}
-                className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent resize-none h-24"
-                placeholder="What should this agent think about?"
-              />
-            </div>
-            <div>
-              <label className="block text-text-muted text-sm mb-2">System MCPs</label>
-              <div className="space-y-2">
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={includeAptevaServer}
-                    onChange={(e) => setIncludeAptevaServer(e.target.checked)}
-                    className="accent-accent mt-0.5"
-                  />
-                  <div>
-                    <div className="text-text text-sm">apteva-server</div>
-                    <div className="text-text-dim text-xs leading-snug">
-                      Built-in gateway exposing integrations, connections, subscriptions,
-                      telemetry, and thread-spawning to the agent. Uncheck for a lean
-                      sandbox agent that only sees MCPs you wire up yourself.
-                    </div>
-                  </div>
-                </label>
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={includeChannels}
-                    onChange={(e) => setIncludeChannels(e.target.checked)}
-                    className="accent-accent mt-0.5"
-                  />
-                  <div>
-                    <div className="text-text text-sm">channels</div>
-                    <div className="text-text-dim text-xs leading-snug">
-                      Provides channels_respond / channels_ask / channels_status tools
-                      for talking to the user via the dashboard chat, CLI, Telegram, etc.
-                      Uncheck if the agent will communicate another way.
-                    </div>
-                  </div>
-                </label>
-              </div>
-            </div>
-            {error && <div className="text-red text-sm">{error}</div>}
-            <div className="flex gap-3">
-              <button
-                type="submit"
-                disabled={creating}
-                className="px-5 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
-              >
-                {creating ? "Creating..." : "Create"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowCreate(false);
-                  setError("");
-                }}
-                className="px-5 py-2.5 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        )}
-
-        {list.length === 0 && !showCreate && (
+        {list.length === 0 && (
           <div className="text-text-muted text-sm">No agents. Click + New Agent.</div>
         )}
 
@@ -656,6 +569,89 @@ export function Instances() {
           })}
         </div>
       </div>
+
+      {/* Create-agent modal. Lives at the page root so the backdrop
+          covers the full viewport regardless of which list row the
+          user was viewing when they clicked + New Agent. */}
+      <Modal open={showCreate} onClose={() => { setShowCreate(false); setError(""); }}>
+        <form onSubmit={handleCreate} className="p-6 w-[520px] max-w-full space-y-4">
+          <h2 className="text-text text-base font-bold">Create agent</h2>
+          <div>
+            <label className="block text-text-muted text-sm mb-2">Name</label>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent"
+              placeholder="supervisor"
+              required
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="block text-text-muted text-sm mb-2">Directive (optional)</label>
+            <textarea
+              value={directive}
+              onChange={(e) => setDirective(e.target.value)}
+              className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent resize-none h-24"
+              placeholder="What should this agent think about?"
+            />
+          </div>
+          <div>
+            <label className="block text-text-muted text-sm mb-2">System MCPs</label>
+            <div className="space-y-2">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includeAptevaServer}
+                  onChange={(e) => setIncludeAptevaServer(e.target.checked)}
+                  className="accent-accent mt-0.5"
+                />
+                <div>
+                  <div className="text-text text-sm">apteva-server</div>
+                  <div className="text-text-dim text-xs leading-snug">
+                    Built-in gateway exposing integrations, connections, subscriptions,
+                    telemetry, and thread-spawning to the agent. Uncheck for a lean
+                    sandbox agent that only sees MCPs you wire up yourself.
+                  </div>
+                </div>
+              </label>
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includeChannels}
+                  onChange={(e) => setIncludeChannels(e.target.checked)}
+                  className="accent-accent mt-0.5"
+                />
+                <div>
+                  <div className="text-text text-sm">channels</div>
+                  <div className="text-text-dim text-xs leading-snug">
+                    Provides channels_respond / channels_ask / channels_status tools
+                    for talking to the user via the dashboard chat, CLI, Telegram, etc.
+                    Uncheck if the agent will communicate another way.
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
+          {error && <div className="text-red text-sm">{error}</div>}
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => { setShowCreate(false); setError(""); }}
+              className="px-5 py-2.5 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={creating}
+              className="px-5 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
+            >
+              {creating ? "Creating..." : "Create"}
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }
