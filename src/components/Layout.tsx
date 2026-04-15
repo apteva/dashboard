@@ -4,10 +4,30 @@ import { useProjects } from "../hooks/useProjects";
 
 export function Layout() {
   const [version, setVersion] = useState("");
+  const [versionTip, setVersionTip] = useState("");
   const { projects, currentProject, setCurrentProject } = useProjects();
 
   useEffect(() => {
-    fetch("/version").then((r) => r.json()).then((d) => setVersion(d.version || "")).catch(() => {});
+    // /version now returns the full component breakdown — apteva (umbrella),
+    // cli, dashboard, integrations, core, plus the build timestamp.
+    // Display the umbrella in the sidebar footer; hover to see the full
+    // breakdown via title. Fall back to the old `version` field for
+    // older server binaries that haven't shipped the new handler yet.
+    fetch("/version")
+      .then((r) => r.json())
+      .then((d) => {
+        const umbrella = d.apteva || d.version || "";
+        setVersion(umbrella);
+        const parts: string[] = [];
+        if (d.apteva) parts.push(`apteva ${d.apteva}`);
+        if (d.cli) parts.push(`cli ${d.cli}`);
+        if (d.dashboard) parts.push(`dashboard ${d.dashboard}`);
+        if (d.integrations) parts.push(`integrations ${d.integrations}`);
+        if (d.core) parts.push(`core ${d.core}`);
+        if (d.build) parts.push(`build ${d.build}`);
+        setVersionTip(parts.join("\n"));
+      })
+      .catch(() => {});
   }, []);
 
   const navItems = [
@@ -65,7 +85,12 @@ export function Layout() {
         </div>
         {version && (
           <div className="px-5 py-3 border-t border-border">
-            <span className="text-text-muted text-xs">v{version}</span>
+            <span
+              className="text-text-muted text-xs"
+              title={versionTip}
+            >
+              v{version}
+            </span>
           </div>
         )}
       </nav>
