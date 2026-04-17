@@ -194,7 +194,7 @@ export function Instances() {
             // care about real work, not pace/done/evolve/remember.
             const hidden = new Set([
               "pace", "done", "evolve", "remember", "send",
-              "channels_respond", "channels_status", "channels_ask",
+              "channels_respond", "channels_status",
             ]);
             if (!hidden.has(name)) {
               next.activeTool = name;
@@ -625,7 +625,7 @@ export function Instances() {
                 <div>
                   <div className="text-text text-sm">channels</div>
                   <div className="text-text-dim text-xs leading-snug">
-                    Provides channels_respond / channels_ask / channels_status tools
+                    Provides channels_respond / channels_status tools
                     for talking to the user via the dashboard chat, CLI, Telegram, etc.
                     Uncheck if the agent will communicate another way.
                   </div>

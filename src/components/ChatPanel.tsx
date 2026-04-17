@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { marked } from "marked";
-import { instances, channels, core, type TelemetryEvent } from "../api";
+import { instances, core, type TelemetryEvent } from "../api";
 
 // Markdown renderer — marked.parse is synchronous when we pass `async: false`.
 // We trust core's output (agent-generated) so we don't need a sanitizer; the
@@ -13,7 +13,12 @@ function renderMarkdown(src: string): string {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "agent" | "tool" | "ask" | "status";
+  // Monotonic insertion sequence. Used as the sort key at render time so
+  // the rendered order stays deterministic even if later state updates
+  // mutate earlier rows in place. Once assigned on first insert, seq is
+  // never changed — updates preserve the row's original position.
+  seq: number;
+  role: "user" | "agent" | "tool" | "status";
   text: string;
   streaming?: boolean;
   toolName?: string;
@@ -142,10 +147,17 @@ interface Props {
 export function ChatPanel({ instanceId, onEvent }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [asking, setAsking] = useState(false);
   const [connected, setConnected] = useState(false);
+  const connectedRef = useRef(false);
+  const [showClearModal, setShowClearModal] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const msgIdRef = useRef(0);
+  // Local counter for user-typed messages (the only role whose id isn't
+  // derived from a telemetry event). Telemetry-driven rows use stable keys
+  // computed from event fields so they dedup naturally across reconnects.
+  const userCounterRef = useRef(0);
+  // Monotonic seq assigned on first insert; preserved on updates so rows
+  // stay in their original position regardless of later mutations.
+  const seqRef = useRef(0);
   // Dedup layers, strongest first. Each rendering path consults both sets;
   // adding to either short-circuits the handler.
   //
@@ -164,23 +176,68 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
   const seenToolCallsRef = useRef<Set<string>>(new Set());
   const seenToolCallsOrderRef = useRef<string[]>([]);
 
-  // Streaming state for channels_respond. The CLI streams each LLM
-  // tool_chunk fragment through a JSON extractor and renders text
-  // character-by-character. We do the same here:
-  //   1. extractorRef holds the current parser state across chunks
-  //   2. streamingMsgIdRef points at the chat row we're appending to
-  //   3. streamingChannelOkRef tracks whether the in-progress
-  //      channels_respond targets the cli channel (we only stream
-  //      cli; non-cli responses don't need to render here at all)
-  // When tool.call lands with the complete args we replace the
-  // streaming row's text with the canonical text — so even if the
-  // extractor missed a byte across a chunk boundary, the final
-  // rendering is correct. tool.result clears the streaming state.
+  // Streaming state for channels_respond. Chunks are buffered in
+  // the extractor and only rendered when tool.call finalizes, so
+  // the agent message appears AFTER any tool calls from the same turn.
   const extractorRef = useRef<TextExtractor>(new TextExtractor());
-  const streamingMsgIdRef = useRef<string | null>(null);
-  const streamingChannelOkRef = useRef<boolean>(true);
+  // Stable key of the current channels_respond streaming row (if any).
+  // Set on the first llm.tool_chunk of a turn; tool.call channels_respond
+  // converts that exact row into the final agent message in place so the
+  // text keeps its original seq / visual position.
+  const streamingKeyRef = useRef<string | null>(null);
 
-  const nextId = () => String(++msgIdRef.current);
+  // Live "thinking" indicator for the main thread. Driven by llm.start /
+  // llm.thinking / llm.done / llm.error — gives the user visible feedback
+  // that something is happening even when the agent is mid-reasoning and
+  // hasn't emitted any visible tool calls or response chunks yet.
+  const [thinking, setThinking] = useState<{ active: boolean; preview: string }>({
+    active: false,
+    preview: "",
+  });
+  // Ring buffer of recent llm.thinking text so we can show the tail without
+  // keeping a full transcript around.
+  const thinkingBufRef = useRef<string>("");
+
+  // Stable ref for onEvent so the SSE effect doesn't re-run on parent re-render.
+  const onEventRef = useRef(onEvent);
+  onEventRef.current = onEvent;
+
+  const nextSeq = () => ++seqRef.current;
+  const nextUserId = () => `user:${++userCounterRef.current}`;
+
+  // upsertMessage — the single mutation primitive for telemetry-driven
+  // rows. Every handler uses this so the same event can arrive twice (SSE
+  // reconnect, StrictMode remount) and the render output stays identical:
+  // the second arrival just updates the existing row in place instead of
+  // appending a duplicate.
+  //
+  // The mutator receives either the existing row or undefined (in which
+  // case it must return a freshly-built row). We assign `seq` here, not in
+  // the mutator, so callers can't accidentally disturb ordering.
+  const upsertMessage = (
+    id: string,
+    mutator: (prev: ChatMessage | undefined) => Omit<ChatMessage, "id" | "seq">,
+  ) => {
+    setMessages((prev) => {
+      const idx = prev.findIndex((m) => m.id === id);
+      if (idx >= 0) {
+        const next = prev.slice();
+        next[idx] = { ...next[idx], ...mutator(next[idx]), id, seq: next[idx].seq };
+        return next;
+      }
+      const fresh = mutator(undefined);
+      return [...prev, { ...fresh, id, seq: nextSeq() }];
+    });
+  };
+
+  // Render-time ordering: sort by seq defensively. Insertion already keeps
+  // the array sorted (seq is monotonic and we append), so this is normally
+  // a no-op — but it guarantees order even if a future handler inserts
+  // out-of-order or another code path mutates the array.
+  const orderedMessages = useMemo(
+    () => [...messages].sort((a, b) => a.seq - b.seq),
+    [messages],
+  );
 
   // Auto-scroll on new messages
   useEffect(() => {
@@ -211,7 +268,7 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
       try {
         const event: TelemetryEvent = JSON.parse(e.data);
         handleSSEEvent(event);
-        onEvent(event);
+        onEventRef.current(event);
       } catch {}
     };
     return () => es.close();
@@ -222,15 +279,16 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
   // attach model.
   useEffect(() => {
     setConnected(false);
+    connectedRef.current = false;
     setMessages([]);
-    setAsking(false);
     seenEventsRef.current = new Set();
     seenOrderRef.current = [];
     seenToolCallsRef.current = new Set();
     seenToolCallsOrderRef.current = [];
     extractorRef.current.reset();
-    streamingMsgIdRef.current = null;
-    streamingChannelOkRef.current = true;
+    streamingKeyRef.current = null;
+    thinkingBufRef.current = "";
+    setThinking({ active: false, preview: "" });
   }, [instanceId]);
 
   // Connect — mirrors the CLI handshake in apteva/client.go:91. Sends the
@@ -238,10 +296,12 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
   // and greet the user. Only fires on explicit button click; nothing
   // happens on panel mount.
   const handleConnect = async () => {
+    setMessages([]);
     const bootstrap = '[cli] root user connected via dashboard. RULES: 1) Reply to ALL [cli] messages using channels_respond(channel="cli"). 2) When the user asks you to do something, IMMEDIATELY acknowledge what you will do BEFORE doing it, then follow up with the result. 3) Never leave a message unanswered. Greet them now.';
     try {
       await instances.sendEvent(instanceId, bootstrap);
       setConnected(true);
+      connectedRef.current = true;
     } catch {}
   };
 
@@ -250,6 +310,7 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
       await instances.sendEvent(instanceId, "[cli] root user disconnected from terminal");
     } catch {}
     setConnected(false);
+    connectedRef.current = false;
   };
 
   // Tools that are noisy internal housekeeping — hide from the chat UI.
@@ -257,23 +318,23 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
   // user-visible work (real tool calls + agent replies), not pace/done/evolve.
   const hiddenTools = new Set([
     "pace", "done", "evolve", "remember", "send",
-    "channels_respond", "channels_ask", "channels_status",
+    "channels_respond", "channels_status",
   ]);
 
   const handleSSEEvent = (event: TelemetryEvent) => {
-    // Parse the core's emit time once. We use this — NOT Date.now() —
-    // for every message timestamp, then sort messages by time at
-    // render. This guarantees chronological order regardless of how
-    // events are batched, raced, or reordered between core's emit and
-    // ChatPanel's processing. Falls back to Date.now() if event.time is
-    // missing or malformed (shouldn't happen, but defensive).
-    const eventTime = (() => {
-      if (event.time) {
-        const t = Date.parse(event.time);
-        if (!Number.isNaN(t)) return t;
-      }
-      return Date.now();
-    })();
+    if (!connectedRef.current) return;
+
+    // Only show main-thread events in the chat. Sub-thread tool calls
+    // are internal work and would interleave confusingly with the
+    // conversation.
+    const threadId = event.thread_id || "main";
+    if (threadId !== "main" && threadId !== "") return;
+
+    // Monotonic insertion counter — events arrive in correct order via
+    // SSE, so we use arrival order rather than server timestamps.
+    // Server timestamps mixed with client Date.now() on user messages
+    // caused ordering bugs due to clock skew.
+    const eventTime = Date.now();
 
     // Layer 1: telemetry event.id
     if (event.id) {
@@ -304,194 +365,157 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
       }
     }
 
-    // llm.tool_chunk — incremental fragments of the LLM's tool-call
-    // arguments JSON. We only care about channels_respond chunks targeting
-    // the cli channel. Each chunk gets fed through the extractor which
-    // pulls the running text value out of the in-flight JSON. The first
-    // non-empty chunk creates a streaming row; subsequent chunks append.
-    if (event.type === "llm.tool_chunk" && data.tool === "channels_respond") {
-      const chunk = String(data.chunk || "");
-      if (!chunk) return;
-      // Note: at this point we don't yet know which channel the agent
-      // is targeting — tool.call (which carries the channel arg) lands
-      // AFTER all the tool_chunk events for that call. So we
-      // optimistically stream as cli and the tool.call handler below
-      // will discard the row if the channel turned out to be different.
-      if (!streamingChannelOkRef.current) return;
-      const newText = extractorRef.current.feed(chunk);
-      if (newText === "") return;
-
-      if (streamingMsgIdRef.current === null) {
-        // Create a fresh streaming row anchored to the core's emit
-        // time of the FIRST chunk. We never update this timestamp as
-        // more chunks land — that would let the row drift below later
-        // tool calls. Tool calls and other messages with later
-        // timestamps get sorted to the right position after this row.
-        const id = nextId();
-        streamingMsgIdRef.current = id;
-        setMessages((prev) => [...prev, {
-          id,
-          role: "agent",
-          text: newText,
-          streaming: true,
-          time: eventTime,
-        }]);
-      } else {
-        // Append to the existing streaming row.
-        const id = streamingMsgIdRef.current;
-        setMessages((prev) => prev.map((m) =>
-          m.id === id ? { ...m, text: m.text + newText } : m,
-        ));
+    // Live "thinking" indicator. llm.start opens the window; llm.thinking
+    // chunks update the preview tail; llm.done / llm.error close it. Only
+    // runs for the main thread (sub-threads filtered out above). The
+    // indicator itself is rendered just above the input bar.
+    if (event.type === "llm.start") {
+      thinkingBufRef.current = "";
+      setThinking({ active: true, preview: "" });
+      return;
+    }
+    if (event.type === "llm.thinking") {
+      const chunk = String(data.text || "");
+      if (chunk) {
+        // Keep the last ~400 chars so the preview tail stays fresh without
+        // growing unbounded during long reasoning phases.
+        thinkingBufRef.current = (thinkingBufRef.current + chunk).slice(-400);
+        setThinking({ active: true, preview: thinkingBufRef.current });
       }
       return;
     }
+    if (event.type === "llm.done" || event.type === "llm.error" || event.type === "llm.err") {
+      thinkingBufRef.current = "";
+      setThinking({ active: false, preview: "" });
+      // fall through so future handlers can still act on llm.done if needed
+    }
 
-    // channels_respond tool.call — finalizes whichever streaming row was
-    // built up by the llm.tool_chunk events. The tool.call args are the
-    // canonical text value, so we replace the streaming row's text with
-    // them (in case the extractor dropped a byte at a chunk boundary).
-    // If no streaming row exists yet (rare — e.g. provider didn't emit
-    // tool_chunk events, or the channel is non-cli), we either create a
-    // new row from the args or skip rendering.
+    const threadId = event.thread_id || "main";
+
+    // llm.tool_chunk — stream text incrementally for channels_respond.
+    // The streaming row is keyed on (thread, iteration) — stable across
+    // reconnects within the same turn, so duplicate/late chunks update
+    // the same row instead of creating phantoms. tool.call channels_respond
+    // below converts this exact row into the final agent message in place,
+    // preserving its seq (and therefore its visual position).
+    if (event.type === "llm.tool_chunk" && data.tool === "channels_respond") {
+      const chunk = String(data.chunk || "");
+      if (!chunk) return;
+      const newText = extractorRef.current.feed(chunk);
+      if (newText === "") return;
+      const iteration = data.iteration ?? "?";
+      const streamKey = `stream:${threadId}:${iteration}`;
+      streamingKeyRef.current = streamKey;
+      upsertMessage(streamKey, (prev) => ({
+        role: "agent",
+        text: (prev?.text || "") + newText,
+        streaming: true,
+        time: prev?.time ?? eventTime,
+      }));
+      return;
+    }
+
+    // channels_respond tool.call — finalize the agent reply with the
+    // canonical text from the tool args. If a streaming row exists from
+    // the same turn, mutate it in place (keep its seq) so the reply stays
+    // where the user first saw it appear. Otherwise append fresh.
     if (event.type === "tool.call" && data.name === "channels_respond") {
       const args = data.args as Record<string, any> | undefined;
       const text = String(args?.text || "").trim();
       const channel = String(args?.channel || "cli");
       const isCli = channel === "cli";
-      const streamingId = streamingMsgIdRef.current;
-      // Stable key for this finalized response — keyed on the core's
-      // tool-call id, not nextId(). Ensures a duplicate dispatch (SSE
-      // replay, StrictMode remount, core re-emit) updates the same row
-      // instead of appending a second identical row.
-      const respondKey = `${event.thread_id || ""}:respond:${data.id || ""}`;
+      const streamKey = streamingKeyRef.current;
+      const agentKey = `agent:${threadId}:${data.id || ""}`;
 
+      // Non-CLI channel — the response was addressed elsewhere. Drop any
+      // streaming preview we rendered and don't keep an agent row.
       if (!isCli) {
-        if (streamingId) {
-          setMessages((prev) => prev.filter((m) => m.id !== streamingId));
+        if (streamKey) {
+          setMessages((prev) => prev.filter((m) => m.id !== streamKey));
         }
-        streamingMsgIdRef.current = null;
+        streamingKeyRef.current = null;
         extractorRef.current.reset();
         return;
       }
 
       setMessages((prev) => {
-        // If a row with this stable key already exists, just refresh its
-        // text (the second dispatch is authoritative and identical).
-        const existingIdx = prev.findIndex((m) => m.id === respondKey);
-        if (existingIdx >= 0) {
+        // Already finalized (duplicate tool.call delivery) — update text.
+        const finalIdx = prev.findIndex((m) => m.id === agentKey);
+        if (finalIdx >= 0) {
           const next = prev.slice();
-          next[existingIdx] = { ...next[existingIdx], text, streaming: false };
+          next[finalIdx] = { ...next[finalIdx], text, streaming: false };
           return next;
         }
-        // Otherwise, promote the in-flight streaming row to the stable
-        // key, or create a fresh finalized row if there was no streaming.
-        if (streamingId) {
-          return prev.map((m) =>
-            m.id === streamingId
-              ? { ...m, id: respondKey, text, streaming: false }
-              : m,
-          );
+        // Streaming row present — rename to agentKey in place, keeping seq.
+        if (streamKey) {
+          const sIdx = prev.findIndex((m) => m.id === streamKey);
+          if (sIdx >= 0) {
+            const next = prev.slice();
+            next[sIdx] = { ...next[sIdx], id: agentKey, text, streaming: false };
+            return next;
+          }
         }
+        // No streaming row (no chunks ever arrived) — insert fresh.
         if (!text) return prev;
-        return [...prev, { id: respondKey, role: "agent", text, time: eventTime }];
+        return [...prev, {
+          id: agentKey, seq: nextSeq(), role: "agent",
+          text, streaming: false, time: eventTime,
+        }];
       });
-      streamingMsgIdRef.current = null;
+      streamingKeyRef.current = null;
       extractorRef.current.reset();
       return;
     }
 
-    // channels_ask — agent is asking a question
-    if (event.type === "tool.call" && data.name === "channels_ask") {
-      setAsking(true);
-      const args = data.args as Record<string, any> | undefined;
-      const question = String(args?.question || args?.text || "").trim();
-      if (question) {
-        setMessages((prev) => [...prev, {
-          id: nextId(), role: "agent", text: question, time: eventTime,
-        }]);
-      }
-      return;
-    }
-
-    // channels_status
+    // channels_status — one-line agent status breadcrumb. Keyed on the
+    // telemetry event id so reconnects don't duplicate the row.
     if (event.type === "tool.call" && data.name === "channels_status") {
       const args = data.args as Record<string, string> | undefined;
-      if (args?.line) {
-        setMessages((prev) => [...prev, {
-          id: nextId(), role: "status", text: args.line,
-          level: args.level || "info", time: eventTime,
-        }]);
-      }
+      if (!args?.line) return;
+      const statusKey = `status:${event.id || `${threadId}:${event.time}:${data.id || ""}`}`;
+      upsertMessage(statusKey, () => ({
+        role: "status",
+        text: args.line,
+        level: args.level || "info",
+        time: eventTime,
+      }));
       return;
     }
 
     // Tool call (visible tools only) — show indicator.
     //
-    // Critical: the message id is derived from data.id (the core's stable
-    // call identifier like "functions.google-sheets_read_range:87"), NOT
-    // from a monotonic counter. The matching tool.result event carries
-    // the SAME data.id, which lets the result handler below find this
-    // exact row and mark it done. Previously we used nextId() which made
-    // every event a unique row, and the result handler then matched by
-    // tool name — but with multiple concurrent calls of the same tool,
-    // results raced against calls and the matcher missed, producing
-    // duplicate "done with no reason" rows in the chat.
+    // Keyed on the core's stable call id (e.g. "functions.google-sheets_read_range:87"),
+    // so the matching tool.result lands on the same row. upsertMessage
+    // preserves seq on update — the row stays where it first appeared.
     if (event.type === "tool.call" && data.name && !hiddenTools.has(String(data.name))) {
-      const callKey = `${event.thread_id || ""}:tool:${data.id || ""}`;
-      setMessages((prev) => {
-        // If a matching row already exists (e.g. result arrived before
-        // call due to reordering), update it in place with the reason.
-        // Otherwise append a new row.
-        const idx = prev.findIndex((m) => m.id === callKey);
-        if (idx >= 0) {
-          const updated = [...prev];
-          updated[idx] = {
-            ...updated[idx],
-            text: data.reason || updated[idx].text || "",
-            toolName: data.name,
-          };
-          return updated;
-        }
-        return [...prev, {
-          id: callKey,
-          role: "tool",
-          text: data.reason || "",
-          toolName: data.name,
-          time: eventTime,
-        }];
-      });
+      const callKey = `tool:${threadId}:${data.id || ""}`;
+      upsertMessage(callKey, (prev) => ({
+        role: "tool",
+        text: data.reason || prev?.text || "",
+        toolName: data.name,
+        toolDone: prev?.toolDone,
+        toolDurationMs: prev?.toolDurationMs,
+        toolSuccess: prev?.toolSuccess,
+        time: prev?.time ?? eventTime,
+      }));
       return;
     }
 
-    // Tool result (visible tools only) — find the matching call row by
-    // its stable id and flip it to done. If no row exists yet (result
-    // arrived before its call), create one as a placeholder; the call
-    // handler above will fill in the reason when it eventually arrives.
+    // Tool result (visible tools only) — flip the matching call row to
+    // done. If the result somehow precedes the call, upsertMessage still
+    // inserts a placeholder; the later call handler fills in the reason
+    // without disturbing toolDone/duration.
     if (event.type === "tool.result" && data.name && !hiddenTools.has(String(data.name))) {
-      const callKey = `${event.thread_id || ""}:tool:${data.id || ""}`;
-      setMessages((prev) => {
-        const idx = prev.findIndex((m) => m.id === callKey);
-        if (idx >= 0) {
-          const updated = [...prev];
-          updated[idx] = {
-            ...updated[idx],
-            toolDone: true,
-            toolDurationMs: data.duration_ms,
-            toolSuccess: data.success !== false,
-          };
-          return updated;
-        }
-        return [...prev, {
-          id: callKey,
-          role: "tool",
-          text: "",
-          toolName: data.name,
-          toolDone: true,
-          toolDurationMs: data.duration_ms,
-          toolSuccess: data.success !== false,
-          time: eventTime,
-        }];
-      });
+      const callKey = `tool:${threadId}:${data.id || ""}`;
+      upsertMessage(callKey, (prev) => ({
+        role: "tool",
+        text: prev?.text || "",
+        toolName: prev?.toolName || data.name,
+        toolDone: true,
+        toolDurationMs: data.duration_ms,
+        toolSuccess: data.success !== false,
+        time: prev?.time ?? eventTime,
+      }));
       return;
     }
   };
@@ -501,16 +525,10 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
     if (!text) return;
     setInput("");
 
-    if (asking) {
-      // Reply to an ask
-      setAsking(false);
-      setMessages((prev) => [...prev, { id: nextId(), role: "user", text, time: Date.now() }]);
-      await channels.submitReply(instanceId, text);
-    } else {
-      // Normal message
-      setMessages((prev) => [...prev, { id: nextId(), role: "user", text, time: Date.now() }]);
-      await instances.sendEvent(instanceId, `[cli] ${text}`);
-    }
+    setMessages((prev) => [...prev, {
+      id: nextUserId(), seq: nextSeq(), role: "user", text, time: Date.now(),
+    }]);
+    await instances.sendEvent(instanceId, `[cli] ${text}`);
   };
 
   // Clear the chat — mirrors the CLI's /clear command. Wipes the local
@@ -520,9 +538,7 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
   // when the agent gets stuck in a tangent or you want a fresh context
   // window without losing learned state.
   const handleClear = async () => {
-    if (!confirm("Clear conversation? The agent will forget the chat history (memory and sub-threads are kept).")) {
-      return;
-    }
+    setShowClearModal(false);
     setMessages([]);
     seenEventsRef.current = new Set();
     seenOrderRef.current = [];
@@ -531,8 +547,6 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
     try {
       await core.reset(instanceId, { history: true });
     } catch (err) {
-      // Non-fatal — the local UI is already cleared. Show the error
-      // briefly so the user knows the server-side reset didn't land.
       console.error("clear: server reset failed", err);
     }
   };
@@ -552,10 +566,10 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
               there's something to clear, so hide when chat is empty. Always
               visible when there are messages, regardless of connected state,
               so the user can wipe a finished session before disconnecting. */}
-          {messages.length > 0 && (
+          {connected && messages.length > 0 && (
             <button
-              onClick={handleClear}
-              title="Clear conversation history (agent forgets the chat but keeps memory)"
+              onClick={() => setShowClearModal(true)}
+              title="Clear conversation history"
               className="text-[10px] text-text-muted hover:text-red transition-colors"
             >
               Clear
@@ -579,24 +593,14 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
         </div>
       </div>
 
-      {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-3 min-w-0">
+      {/* Messages — grayed out when disconnected */}
+      <div ref={scrollRef} className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-3 min-w-0 transition-opacity duration-300 ${connected ? "" : "opacity-30 pointer-events-none"}`}>
         {messages.length === 0 && (
           <p className="text-text-muted text-xs text-center py-8">
             {connected ? "Send a message to start chatting" : 'Click "Connect to chat" to talk with the agent'}
           </p>
         )}
-        {/* Sort messages by their core-emit timestamp before rendering.
-            Each message stores `time` set from the SSE event.time field
-            (or Date.now() for user-typed messages, which always happen
-            "now" anyway). Sorting at render handles every case where
-            messages were appended out of order — async batching of
-            setMessages calls, tool.call events arriving after a later
-            iteration's tool_chunks, etc. — without requiring any
-            insertion-time logic to find the right slot. The sort is
-            stable in modern JS engines, so equal-time messages keep
-            insertion order. */}
-        {[...messages].sort((a, b) => a.time - b.time).map((msg) => {
+        {orderedMessages.map((msg) => {
           if (msg.role === "user") {
             return (
               <div key={msg.id} className="flex justify-end min-w-0">
@@ -654,10 +658,25 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
         })}
       </div>
 
-      {/* Ask banner — sits just above the floating input bar */}
-      {asking && (
-        <div className="px-4 pt-2 pb-1 text-[10px] text-accent text-center">
-          The agent is asking you a question — type your answer below
+      {/* Thinking indicator — pinned just above the input bar whenever
+          the main thread has an open llm.start window. Gives the user
+          visible proof that reasoning is happening between (or before)
+          tool calls and response chunks. The preview is the tail of the
+          most recent llm.thinking text so the user can see WHAT the agent
+          is reasoning about, not just that it's alive. */}
+      {connected && thinking.active && (
+        <div className="shrink-0 px-4 py-1.5 border-t border-border/50 bg-bg-card/40 flex items-start gap-2 min-w-0">
+          <span className="text-accent text-[10px] shrink-0 mt-0.5 animate-pulse">●</span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] text-accent uppercase tracking-wide font-bold">
+              Thinking…
+            </div>
+            {thinking.preview && (
+              <div className="text-[10px] text-text-muted italic leading-snug break-words line-clamp-2">
+                {thinking.preview}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -722,9 +741,7 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
             placeholder={
               !connected
                 ? "Click \"Connect to chat\" to start"
-                : asking
-                  ? "Type your answer…"
-                  : "Message the agent…  (Enter to send, Shift+Enter for newline)"
+                : "Message the agent…  (Enter to send, Shift+Enter for newline)"
             }
             autoFocus={connected}
           />
@@ -750,6 +767,35 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
           </button>
         </form>
       </div>
+
+      {/* Clear conversation modal */}
+      {showClearModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowClearModal(false)}>
+          <div className="absolute inset-0 bg-bg/80 backdrop-blur-sm" />
+          <div className="relative bg-bg-card border border-border rounded-lg shadow-lg w-80 mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 space-y-3">
+              <h3 className="text-text text-sm font-bold">Clear conversation</h3>
+              <p className="text-text-muted text-xs leading-relaxed">
+                The agent will forget the chat history. Memory and sub-threads are kept.
+              </p>
+              <div className="flex gap-2 justify-end pt-1">
+                <button
+                  onClick={() => setShowClearModal(false)}
+                  className="px-3 py-1.5 text-xs text-text-muted border border-border rounded-lg hover:border-text-muted transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleClear}
+                  className="px-3 py-1.5 text-xs text-bg bg-red hover:bg-red/80 rounded-lg font-bold transition-colors"
+                >
+                  Clear history
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

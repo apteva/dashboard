@@ -9,10 +9,12 @@ interface ThoughtEntry {
   text: string;
   iteration: number;
   streaming: boolean;
+  reasoning: boolean; // true = reasoning/thinking tokens, false = output
   time: number;
 }
 
 interface ToolEntry {
+  id: string;
   name: string;
   reason: string;
   threadId: string;
@@ -34,10 +36,9 @@ interface IncomingEvent {
   time: number;
 }
 
-// How long an incoming-event row stays visible before fully fading out.
-// 30s feels about right — long enough to read a burst of messages, short
-// enough that the panel doesn't become a running log.
+// How long rows stay visible before fully fading out.
 const EVENT_FADE_MS = 30_000;
+const TOOL_FADE_MS = 60_000;
 
 // formatToolTime renders a tool-call timestamp. Events from today show
 // HH:MM:SS; older events show "MMM DD HH:MM" so historical replay of a
@@ -63,7 +64,7 @@ function formatToolTime(ms: number): string {
 // filter the ChatPanel uses. Keep this in sync with ChatPanel.hiddenTools.
 const hiddenTools = new Set([
   "pace", "done", "evolve", "remember", "send",
-  "channels_respond", "channels_ask", "channels_status",
+  "channels_respond", "channels_status",
 ]);
 
 interface Props {
@@ -78,6 +79,7 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
   const [thoughts, setThoughts] = useState<ThoughtEntry[]>([]);
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [incomingEvents, setIncomingEvents] = useState<IncomingEvent[]>([]);
+  const [thinking, setThinking] = useState<Record<string, boolean>>({}); // threadId → thinking
   const [mode, setMode] = useState(instance.mode || "autonomous");
 
   // Reset state when instance changes
@@ -87,27 +89,26 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
     setThoughts([]);
     setTools([]);
     setIncomingEvents([]);
+    setThinking({});
   }, [instance.id]);
 
-  // Re-render every 500ms while we have live events so opacity can decay
-  // smoothly. Stop the tick when the list is empty to avoid a wasteful
-  // setState loop on idle detail pages.
+  // Re-render every 500ms for decay animation + GC of faded entries.
   const [, forceTick] = useState(0);
   useEffect(() => {
-    if (incomingEvents.length === 0) return;
     const t = setInterval(() => {
-      // Also GC anything fully faded so the list doesn't grow unbounded
-      // under a sustained event stream.
-      const cutoff = Date.now() - EVENT_FADE_MS;
+      const now = Date.now();
       setIncomingEvents((prev) => {
-        const alive = prev.filter((e) => e.time >= cutoff);
-        if (alive.length !== prev.length) return alive;
-        return prev;
+        const alive = prev.filter((e) => e.time >= now - EVENT_FADE_MS);
+        return alive.length !== prev.length ? alive : prev;
+      });
+      setTools((prev) => {
+        const alive = prev.filter((t) => !t.done || t.time >= now - TOOL_FADE_MS);
+        return alive.length !== prev.length ? alive : prev;
       });
       forceTick((n) => n + 1);
     }, 500);
     return () => clearInterval(t);
-  }, [incomingEvents.length]);
+  }, []);
 
   // Poll status + threads (works for both running and stopped instances)
   useEffect(() => {
@@ -130,12 +131,16 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
   const seenEventsRef = useRef<Set<string>>(new Set());
   const seenOrderRef = useRef<string[]>([]);
 
+  // Stable ref for onReload so the subscriber effect doesn't re-run
+  // when the parent re-renders (which would cause an unsub/resub gap
+  // that drops events).
+  const onReloadRef = useRef(onReload);
+  onReloadRef.current = onReload;
+
   // Process SSE events — subscribe synchronously so every chunk is handled,
   // even when many arrive in the same React tick.
   useEffect(() => {
     return subscribe((event) => {
-      // Dedup by telemetry event.id BEFORE any state mutation. Any handler
-      // below this guard will see each unique event exactly once.
       if (event.id) {
         if (seenEventsRef.current.has(event.id)) return;
         seenEventsRef.current.add(event.id);
@@ -148,7 +153,55 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
 
       const data = event.data || {};
 
+    // llm.start — agent started an LLM call, no tokens yet
+    if (event.type === "llm.start") {
+      setThinking((prev) => ({ ...prev, [event.thread_id || "main"]: true }));
+      return;
+    }
+
+    // llm.thinking — reasoning tokens (separate from output)
+    if (event.type === "llm.thinking" && data.text) {
+      // Clear the "waiting" thinking state — reasoning tokens are arriving
+      setThinking((prev) => {
+        if (!prev[event.thread_id || "main"]) return prev;
+        const next = { ...prev };
+        delete next[event.thread_id || "main"];
+        return next;
+      });
+      setThoughts((prev) => {
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].streaming && prev[i].reasoning && prev[i].threadId === event.thread_id) {
+            const updated = [...prev];
+            updated[i] = { ...updated[i], text: updated[i].text + data.text };
+            return updated;
+          }
+        }
+        return [...prev, {
+          threadId: event.thread_id, text: data.text,
+          iteration: Number(data.iteration) || 0,
+          streaming: true, reasoning: true, time: Date.now(),
+        }];
+      });
+      return;
+    }
+
     if (event.type === "llm.chunk" && data.text) {
+      // Clear thinking state — output tokens arriving
+      setThinking((prev) => {
+        if (!prev[event.thread_id || "main"]) return prev;
+        const next = { ...prev };
+        delete next[event.thread_id || "main"];
+        return next;
+      });
+      // Close any open reasoning entry for this thread (reasoning phase done)
+      setThoughts((prev) => {
+        const updated = prev.map((t) =>
+          t.streaming && t.reasoning && t.threadId === event.thread_id
+            ? { ...t, streaming: false }
+            : t,
+        );
+        return updated !== prev ? updated : prev;
+      });
       const chunkIter = Number(data.iteration) || 0;
       setThoughts((prev) => {
         // First: append to an in-progress streaming entry if one exists
@@ -178,12 +231,19 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
         }
         return [...prev, {
           threadId: event.thread_id, text: data.text, iteration: chunkIter,
-          streaming: true, time: Date.now(),
+          streaming: true, reasoning: false, time: Date.now(),
         }];
       });
     }
 
     if (event.type === "llm.done") {
+      // Clear thinking state
+      setThinking((prev) => {
+        if (!prev[event.thread_id || "main"]) return prev;
+        const next = { ...prev };
+        delete next[event.thread_id || "main"];
+        return next;
+      });
       setThoughts((prev) => {
         // Flip EVERY streaming entry for this thread, not just the last
         // one. The "one streaming entry per llm.done" invariant breaks
@@ -211,6 +271,7 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
             text: data.message,
             iteration: data.iteration || 0,
             streaming: false,
+            reasoning: false,
             time: Date.now(),
           });
         }
@@ -222,21 +283,29 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
     const toolHidden = hiddenTools.has(toolName) || toolName.startsWith("channels_");
 
     if (event.type === "tool.call" && toolName && !toolHidden) {
-      // Prefer the core's wall-clock time when present (event.time is
-      // the ISO string attached at emit). Falls back to Date.now() for
-      // live events that lack a time for any reason. Historical replay
-      // relies on this so past tool calls show their real timestamp
-      // instead of the moment the page loaded.
+      const callId = String(data.id || event.id || "");
       const eventTime = event.time ? new Date(event.time).getTime() : Date.now();
-      setTools((prev) => [...prev, {
-        name: toolName, reason: data.reason || "", threadId: event.thread_id,
-        done: false, time: eventTime,
-      }].slice(-20));
+      setTools((prev) => {
+        // Dedup: skip if a tool entry with this id already exists
+        if (callId && prev.some((t) => t.id === callId)) return prev;
+        return [...prev, {
+          id: callId, name: toolName, reason: data.reason || "",
+          threadId: event.thread_id, done: false, time: eventTime,
+        }].slice(-20);
+      });
     }
 
     if (event.type === "tool.result" && toolName && !toolHidden) {
+      const callId = String(data.id || "");
       setTools((prev) => {
         const updated = [...prev];
+        // Match by stable call id first, fall back to name
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (callId && updated[i].id === callId) {
+            updated[i] = { ...updated[i], done: true, durationMs: data.duration_ms, success: data.success !== false };
+            return updated;
+          }
+        }
         for (let i = updated.length - 1; i >= 0; i--) {
           if (!updated[i].done && updated[i].name === toolName) {
             updated[i] = { ...updated[i], done: true, durationMs: data.duration_ms, success: data.success !== false };
@@ -270,7 +339,7 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
     }
 
     if (event.type === "directive.evolved") {
-      onReload();
+      onReloadRef.current();
     }
 
     // event.received is the bus-drain telemetry — one entry per item the
@@ -283,8 +352,7 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
       const eventTime = event.time ? new Date(event.time).getTime() : Date.now();
       const id = event.id || `${event.thread_id}:${eventTime}:${source}:${message.slice(0, 40)}`;
       setIncomingEvents((prev) => {
-        // Bounded at 50 alive entries — far more than any reasonable
-        // burst rate at the default 30s fade window.
+        if (prev.some((e) => e.id === id)) return prev;
         const next = [...prev, {
           id,
           threadId: event.thread_id || "main",
@@ -297,7 +365,7 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
       });
     }
     });
-  }, [subscribe, onReload]);
+  }, [subscribe]);
 
   const formatUptime = (s: number) => {
     if (s < 60) return `${s}s`;
@@ -318,11 +386,14 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
         <div className="flex items-center gap-2 mb-2">
           <span className={`w-2 h-2 rounded-full ${instance.status === "running" ? (status?.paused ? "bg-accent" : "bg-green") : "bg-red"}`} />
           <span className="text-text font-bold text-sm">{status?.paused ? "PAUSED" : instance.status === "running" ? "RUNNING" : "STOPPED"}</span>
+          {Object.keys(thinking).length > 0 && (
+            <span className="text-[10px] animate-pulse" style={{ color: "#a78bfa" }}>thinking</span>
+          )}
           <div className="ml-auto flex gap-2">
             <button
               onClick={async () => {
                 const newMode = mode === "autonomous" ? "cautious" : "autonomous";
-                await instances.updateConfig(instance.id, undefined, newMode);
+                await instances.updateConfig(instance.id, { mode: newMode });
                 setMode(newMode);
               }}
               className={`px-2 py-0.5 rounded border text-[10px] transition-colors ${
@@ -395,6 +466,11 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
                     {t.model && (
                       <span className="text-text-dim shrink-0 text-[10px]">
                         {t.model}
+                      </span>
+                    )}
+                    {thinking[t.id] && !activeToolByThread[t.id] && (
+                      <span className="animate-pulse shrink-0 ml-auto text-[10px]" style={{ color: "#a78bfa" }}>
+                        thinking...
                       </span>
                     )}
                     {activeToolByThread[t.id] && (
@@ -504,14 +580,17 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
         <div className="px-4 py-3 border-b border-border">
           <h3 className="text-text-muted font-bold mb-2 uppercase tracking-wide text-[10px]">Tool Calls</h3>
           <div className="space-y-1.5">
-            {tools.slice(-8).map((t, i) => {
+            {tools.slice(-8).map((t) => {
               const ts = formatToolTime(t.time);
+              const opacity = t.done
+                ? Math.max(0.05, 1 - (Date.now() - t.time) / TOOL_FADE_MS)
+                : 1;
               if (t.done) {
                 const dur = t.durationMs != null
                   ? t.durationMs >= 1000 ? `${(t.durationMs / 1000).toFixed(1)}s` : `${t.durationMs}ms`
                   : "";
                 return (
-                  <div key={i} className="min-w-0">
+                  <div key={t.id} className="min-w-0" style={{ opacity }}>
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className={t.success ? "text-green" : "text-red"}>✓</span>
                       {t.reason ? (
@@ -530,7 +609,7 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
                 );
               }
               return (
-                <div key={i} className="min-w-0">
+                <div key={t.id} className="min-w-0">
                   <div className="flex items-center gap-1.5 tool-active-line min-w-0">
                     <span className="text-accent shrink-0">⟳</span>
                     {t.reason ? (
@@ -608,11 +687,22 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
             {thoughts.slice(-6).map((t, i) => (
               <div key={i}>
                 <div className="flex items-center gap-1.5 mb-0.5">
-                  {t.streaming && <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />}
+                  {t.streaming && (
+                    <span
+                      className="w-1.5 h-1.5 rounded-full animate-pulse"
+                      style={{ backgroundColor: t.reasoning ? "#a78bfa" : "var(--color-accent)" }}
+                    />
+                  )}
+                  {t.reasoning && (
+                    <span className="text-[9px] uppercase font-bold" style={{ color: "#a78bfa" }}>reasoning</span>
+                  )}
                   <span className="text-text-muted">{t.threadId}</span>
                   <span className="text-text-dim ml-auto">#{t.iteration}</span>
                 </div>
-                <p className={`leading-relaxed ${t.streaming ? "text-text" : "text-text-dim"}`}>
+                <p
+                  className={`leading-relaxed ${t.streaming && !t.reasoning ? "text-text" : "text-text-dim"}`}
+                  style={t.streaming && t.reasoning ? { color: "#c4b5fd", fontStyle: "italic" } : undefined}
+                >
                   {t.text.length > 150 ? t.text.slice(0, 150) + "..." : t.text}
                   {t.streaming && <span className="tool-cursor">▊</span>}
                 </p>

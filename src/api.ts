@@ -200,12 +200,27 @@ export const instances = {
   sendEvent: (id: number, message: string | Array<{ type: string; text?: string; image_url?: { url: string }; audio_url?: { url: string; mime_type?: string } }>, threadId?: string) =>
     request<any>("POST", `/instances/${id}/event`, { message, ...(threadId ? { thread_id: threadId } : {}) }),
 
-  updateConfig: (id: number, directive?: string, mode?: string) =>
+  updateConfig: (id: number, opts: { directive?: string; mode?: string; providers?: Array<{ name: string; default: boolean }> }) =>
     request<Instance>("PUT", `/instances/${id}/config`, {
-      ...(directive ? { directive } : {}),
-      ...(mode ? { mode } : {}),
+      ...(opts.directive ? { directive: opts.directive } : {}),
+      ...(opts.mode ? { mode: opts.mode } : {}),
+      ...(opts.providers ? { providers: opts.providers } : {}),
     }),
+
+  chatHistory: (id: number, limit?: number) =>
+    request<ChatHistoryMessage[]>("GET", `/instances/${id}/chat-history${limit ? `?limit=${limit}` : ""}`),
 };
+
+export interface ChatHistoryMessage {
+  id: string;
+  role: "user" | "agent" | "tool" | "status";
+  text: string;
+  time: string;
+  tool_name?: string;
+  tool_done?: boolean;
+  tool_duration_ms?: number;
+  tool_success?: boolean;
+}
 
 // Providers
 export interface Provider {
@@ -222,6 +237,14 @@ export interface ProviderDetail extends Provider {
   data: Record<string, string>;
 }
 
+export interface ModelInfo {
+  id: string;
+  name: string;
+  context_size?: number;
+  input_cost?: number;
+  output_cost?: number;
+}
+
 export const providers = {
   // If projectId is passed, the response includes providers scoped to that
   // project PLUS any unscoped "global" ones (project_id = '').
@@ -231,6 +254,8 @@ export const providers = {
   },
 
   get: (id: number) => request<ProviderDetail>("GET", `/providers/${id}`),
+
+  models: (id: number) => request<ModelInfo[]>("GET", `/providers/${id}/models`),
 
   create: (type: string, name: string, data: Record<string, string>, providerTypeId?: number, projectId?: string) =>
     request<Provider>("POST", "/providers", {
@@ -808,19 +833,51 @@ export const core = {
 };
 
 // Channels
-export interface Channel {
-  id: string;
+export interface ChannelInfo {
+  id: number;
+  instance_id: number;
+  type: string;
+  name: string;
   status: string;
-  bot_name?: string;
+}
+
+export interface SlackChannelInfo {
+  id: string;
+  name: string;
+  is_member: boolean;
+  is_private: boolean;
+  num_members: number;
 }
 
 export const channels = {
-  list: (instanceId: number) =>
-    request<Channel[]>("GET", `/instances/${instanceId}/channels`),
-  submitReply: (instanceId: number, text: string) =>
-    request<{ status: string }>("POST", `/instances/${instanceId}/channels/cli/reply`, { text }),
-  connectTelegram: (instanceId: number, token: string) =>
-    request<{ status: string; bot_name: string }>("POST", `/instances/${instanceId}/channels/telegram`, { token }),
+  list: (opts: { instanceId?: number; projectId?: string }) => {
+    const params = new URLSearchParams();
+    if (opts.instanceId) params.set("instance_id", String(opts.instanceId));
+    if (opts.projectId) params.set("project_id", opts.projectId);
+    return request<ChannelInfo[]>("GET", `/channels?${params}`);
+  },
+  connect: (instanceId: number, type: string, config: Record<string, string>) =>
+    request<{ status: string; type: string; bot_name?: string; channel?: string }>(
+      "POST", "/channels/connect", { instance_id: instanceId, type, ...config },
+    ),
+  disconnect: (channelId: number) =>
+    request<{ status: string }>("DELETE", `/channels/disconnect/${channelId}`),
+};
+
+export const slack = {
+  configure: (projectId: string, botToken: string, appToken: string) =>
+    request<{ status: string }>("POST", "/slack/configure", { project_id: projectId, bot_token: botToken, app_token: appToken }),
+  status: (projectId: string) =>
+    request<{ connected: boolean }>("GET", `/slack/status?project_id=${encodeURIComponent(projectId)}`),
+  listChannels: (projectId: string) =>
+    request<SlackChannelInfo[]>("GET", `/slack/channels?project_id=${encodeURIComponent(projectId)}`),
+};
+
+export const email = {
+  configure: (projectId: string, apiKey: string) =>
+    request<{ status: string }>("POST", "/email/configure", { project_id: projectId, api_key: apiKey }),
+  status: (projectId: string) =>
+    request<{ connected: boolean }>("GET", `/email/status?project_id=${encodeURIComponent(projectId)}`),
 };
 
 export const telemetry = {

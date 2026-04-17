@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { instances, core, type Instance, type Thread, type TelemetryEvent } from "../api";
+import { instances, core, providers as providersAPI, type Instance, type Thread, type TelemetryEvent, type Provider, type ProviderDetail, type ModelInfo } from "../api";
 
 export type EventListener = (event: TelemetryEvent) => void;
 export type SubscribeFn = (listener: EventListener) => () => void;
@@ -50,6 +50,7 @@ export function InstanceView({
     return () => { listenersRef.current.delete(cb); };
   }, []);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
   const [view, setView] = useState<"activity" | "fleet" | "cards">("activity");
 
   // Track threads, tools, thoughts, events for the fleet graph
@@ -128,7 +129,7 @@ export function InstanceView({
 
     // Track active tools — keep visible for 3s after completion
     // Skip noisy inline tools (send, pace, done, evolve, remember) and channels from display
-    const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_status", "channels_ask"]);
+    const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_status"]);
     const toolName = String(data.name || "");
     const showTool = event.thread_id && toolName && !hiddenTools.has(toolName) && !toolName.startsWith("channels_");
 
@@ -236,6 +237,13 @@ export function InstanceView({
             </button>
           )}
           <button
+            onClick={() => setShowConfig(true)}
+            className="px-2.5 py-1 border border-border rounded-lg text-xs text-text-muted hover:text-accent hover:border-accent transition-colors"
+            title="Instance settings"
+          >
+            Config
+          </button>
+          <button
             onClick={() => setShowDeleteConfirm(true)}
             className="px-2.5 py-1 border border-border rounded-lg text-xs text-text-muted hover:text-red hover:border-red transition-colors"
           >
@@ -269,6 +277,14 @@ export function InstanceView({
           </div>
         </div>
       </Modal>
+
+      {/* Config modal */}
+      <ConfigModal
+        open={showConfig}
+        onClose={() => setShowConfig(false)}
+        instance={instance}
+        onSaved={onReload}
+      />
 
       {/* Main content */}
       <div className="flex-1 flex min-h-0">
@@ -304,5 +320,224 @@ export function InstanceView({
         liveEvents={selectedThreadId ? (threadLiveEvents[selectedThreadId] || []) : []}
       />
     </div>
+  );
+}
+
+// --- Config Modal ---
+
+function ConfigModal({ open, onClose, instance, onSaved }: {
+  open: boolean;
+  onClose: () => void;
+  instance: Instance;
+  onSaved: () => void;
+}) {
+  const [providerList, setProviderList] = useState<Provider[]>([]);
+  const [providerDetails, setProviderDetails] = useState<Record<number, ProviderDetail>>({});
+  const [availableModels, setAvailableModels] = useState<Record<number, ModelInfo[]>>({});
+  const [loadingModels, setLoadingModels] = useState<number | null>(null);
+  const [defaultProvider, setDefaultProvider] = useState("");
+  const [modelLarge, setModelLarge] = useState("");
+  const [modelMedium, setModelMedium] = useState("");
+  const [modelSmall, setModelSmall] = useState("");
+  const [directive, setDirective] = useState("");
+  const [mode, setMode] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const provKey = (p: Provider) => p.type === "llm" ? p.name.toLowerCase() : p.type.toLowerCase();
+
+  useEffect(() => {
+    if (!open) return;
+    setDirective(instance.directive || "");
+    setMode(instance.mode || "autonomous");
+    setError("");
+
+    try {
+      const cfg = JSON.parse(instance.config || "{}");
+      setDefaultProvider(cfg.default_provider || "");
+    } catch { setDefaultProvider(""); }
+
+    providersAPI.list(instance.project_id).then((list) => {
+      const llm = (list || []).filter((p) => p.type === "llm");
+      setProviderList(llm);
+      for (const p of llm) {
+        providersAPI.get(p.id).then((d) => {
+          setProviderDetails((prev) => ({ ...prev, [p.id]: d }));
+        }).catch(() => {});
+      }
+    }).catch(() => {});
+  }, [open, instance.id]);
+
+  // When provider selection changes, load its current model settings
+  const selectedDetail = providerList.find((p) => provKey(p) === defaultProvider);
+  const selectedData = selectedDetail ? providerDetails[selectedDetail.id] : null;
+
+  useEffect(() => {
+    if (selectedData) {
+      setModelLarge(selectedData.data.model_large || "");
+      setModelMedium(selectedData.data.model_medium || "");
+      setModelSmall(selectedData.data.model_small || "");
+    } else {
+      setModelLarge(""); setModelMedium(""); setModelSmall("");
+    }
+  }, [selectedData?.data?.model_large, selectedData?.data?.model_medium, selectedData?.data?.model_small]);
+
+  // Auto-fetch models when a provider is selected
+  useEffect(() => {
+    if (!selectedDetail || availableModels[selectedDetail.id]) return;
+    setLoadingModels(selectedDetail.id);
+    providersAPI.models(selectedDetail.id).then((m) => {
+      setAvailableModels((prev) => ({ ...prev, [selectedDetail.id]: m }));
+    }).catch(() => {}).finally(() => setLoadingModels(null));
+  }, [selectedDetail?.id]);
+
+  const handleRefreshModels = async () => {
+    if (!selectedDetail) return;
+    setLoadingModels(selectedDetail.id);
+    try {
+      const m = await providersAPI.models(selectedDetail.id);
+      setAvailableModels((prev) => ({ ...prev, [selectedDetail.id]: m }));
+    } catch (err: any) {
+      setError("Failed to fetch models: " + (err.message || ""));
+    } finally { setLoadingModels(null); }
+  };
+
+  const models = selectedDetail ? availableModels[selectedDetail.id] : undefined;
+
+  const handleSave = async () => {
+    setSaving(true); setError("");
+    try {
+      // Update model sizes on the provider if changed
+      if (selectedDetail && selectedData) {
+        const d = { ...selectedData.data };
+        let changed = false;
+        if (modelLarge !== (d.model_large || "")) { d.model_large = modelLarge; changed = true; }
+        if (modelMedium !== (d.model_medium || "")) { d.model_medium = modelMedium; changed = true; }
+        if (modelSmall !== (d.model_small || "")) { d.model_small = modelSmall; changed = true; }
+        if (changed) {
+          await providersAPI.update(selectedDetail.id, selectedDetail.type, selectedDetail.name, d);
+        }
+      }
+
+      const provs = defaultProvider
+        ? providerList.map((p) => ({ name: provKey(p), default: provKey(p) === defaultProvider }))
+        : undefined;
+      await instances.updateConfig(instance.id, {
+        directive: directive || undefined,
+        mode: mode || undefined,
+        providers: provs,
+      });
+      onSaved();
+      onClose();
+    } catch (err: any) {
+      setError(err.message || "Failed to save");
+    } finally { setSaving(false); }
+  };
+
+  const modelSelect = (label: string, value: string, onChange: (v: string) => void) => (
+    <div className="flex items-center gap-2">
+      <span className="text-text-muted text-xs w-16 shrink-0">{label}</span>
+      {models ? (
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="flex-1 bg-bg-input border border-border rounded-lg px-2 py-1.5 text-xs text-text font-mono focus:outline-none focus:border-accent"
+        >
+          <option value="">— not set —</option>
+          {models.map((m) => (
+            <option key={m.id} value={m.id}>{m.id}</option>
+          ))}
+        </select>
+      ) : (
+        <span className="text-text-dim text-xs font-mono flex-1">{value || "—"}</span>
+      )}
+    </div>
+  );
+
+  return (
+    <Modal open={open} onClose={onClose}>
+      <div className="p-6 space-y-5 max-h-[80vh] overflow-y-auto">
+        <h3 className="text-text text-base font-bold">Instance Config</h3>
+
+        {/* Default provider */}
+        <div>
+          <label className="text-text-muted text-xs font-bold uppercase tracking-wide block mb-1">Provider</label>
+          <select
+            value={defaultProvider}
+            onChange={(e) => setDefaultProvider(e.target.value)}
+            className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+          >
+            <option value="">Auto (first available)</option>
+            {providerList.map((p) => (
+              <option key={p.id} value={provKey(p)}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Models */}
+        {selectedDetail && (
+          <div className="border border-border rounded-lg p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-text-muted text-[10px] font-bold uppercase tracking-wide">Models</span>
+              <button
+                onClick={handleRefreshModels}
+                disabled={loadingModels === selectedDetail.id}
+                className="text-[10px] text-accent hover:text-accent-hover transition-colors disabled:opacity-50"
+              >
+                {loadingModels === selectedDetail.id ? "Loading..." : "Refresh"}
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {modelSelect("Large", modelLarge, setModelLarge)}
+              {modelSelect("Medium", modelMedium, setModelMedium)}
+              {modelSelect("Small", modelSmall, setModelSmall)}
+            </div>
+          </div>
+        )}
+
+        {/* Mode */}
+        <div>
+          <label className="text-text-muted text-xs font-bold uppercase tracking-wide block mb-1">Mode</label>
+          <div className="flex gap-2">
+            {["autonomous", "cautious", "learn"].map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`px-3 py-1.5 text-xs rounded-lg border transition-colors flex-1 capitalize ${
+                  mode === m ? "border-accent text-accent bg-accent/10" : "border-border text-text-muted"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Directive */}
+        <div>
+          <label className="text-text-muted text-xs font-bold uppercase tracking-wide block mb-1">Directive</label>
+          <textarea
+            value={directive}
+            onChange={(e) => setDirective(e.target.value)}
+            rows={4}
+            className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent resize-none font-mono"
+            placeholder="What should this agent do?"
+          />
+        </div>
+
+        {error && <p className="text-red text-xs">{error}</p>}
+
+        <div className="flex justify-end gap-3 pt-1">
+          <button onClick={onClose}
+            className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors">
+            Cancel
+          </button>
+          <button onClick={handleSave} disabled={saving}
+            className="px-4 py-2 bg-accent text-bg rounded-lg text-sm font-bold hover:bg-accent-hover transition-colors disabled:opacity-50">
+            {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
