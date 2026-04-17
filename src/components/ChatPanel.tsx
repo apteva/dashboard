@@ -390,7 +390,6 @@ export function ChatPanel({ instanceId, onEvent }: Props) {
       // fall through so future handlers can still act on llm.done if needed
     }
 
-    const threadId = event.thread_id || "main";
 
     // llm.tool_chunk — stream text incrementally for channels_respond.
     // The streaming row is keyed on (thread, iteration) — stable across
