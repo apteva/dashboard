@@ -43,9 +43,21 @@ function orderTree(threads: Thread[]): Thread[] {
   return result;
 }
 
+// Per-thread context-window snapshot from the most recent llm.done.
+// Updates as the agent thinks; rendered as a small badge on each card
+// so a glance at the fleet view tells you which threads are running
+// near their model's input limit.
+interface CtxStat {
+  tokensIn: number;
+  maxTokens: number; // 0 = unknown
+  msgs: number;
+  model: string;
+}
+
 export function FleetCards({ threads, subscribe, activeTools, thoughts }: FleetCardsProps) {
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [messageFlash, setMessageFlash] = useState<Record<string, { from: string; text: string; expiry: number }>>({});
+  const [ctxByThread, setCtxByThread] = useState<Record<string, CtxStat>>({});
 
   // Process SSE events — subscribe synchronously so no chunks are lost.
   useEffect(() => {
@@ -73,6 +85,21 @@ export function FleetCards({ threads, subscribe, activeTools, thoughts }: FleetC
         }
         return updated;
       });
+    }
+
+    // Per-thread context stats — snapshot the latest llm.done payload
+    // and key by thread_id. Cheap (overwrites a single map slot per
+    // turn) and gives the fleet view a real-time pressure gauge.
+    if (event.type === "llm.done" && event.thread_id) {
+      setCtxByThread((prev) => ({
+        ...prev,
+        [event.thread_id]: {
+          tokensIn: Number(data.tokens_in || 0),
+          maxTokens: Number(data.max_context_tokens || 0),
+          msgs: Number(data.context_msgs || 0),
+          model: String(data.model || ""),
+        },
+      }));
     }
 
     // Message flash from event.received
@@ -159,6 +186,38 @@ export function FleetCards({ threads, subscribe, activeTools, thoughts }: FleetC
                 <span className="text-text font-bold text-sm">{t.id}</span>
                 {isMain && <span className="text-text-dim text-[10px] bg-accent/10 px-1.5 py-0.5 rounded">coordinator</span>}
                 <div className="ml-auto flex items-center gap-3 text-text-muted text-xs">
+                  {(() => {
+                    const c = ctxByThread[t.id];
+                    if (!c) return null;
+                    const max = c.maxTokens;
+                    const pct = max > 0 ? Math.min(100, Math.round((c.tokensIn / max) * 100)) : 0;
+                    const fmt = (n: number) =>
+                      n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + "M" :
+                      n >= 1_000 ? (n / 1_000).toFixed(1) + "K" : String(n);
+                    const barColor = pct >= 90 ? "bg-red" : pct >= 70 ? "bg-yellow" : "bg-accent";
+                    const labelColor = pct >= 90 ? "text-red" : pct >= 70 ? "text-yellow" : "text-text-muted";
+                    return (
+                      <span
+                        className="flex items-center gap-1.5 text-[10px]"
+                        title={
+                          `model=${c.model}\n` +
+                          `tokens_in=${c.tokensIn.toLocaleString()}` +
+                          (max > 0 ? ` / ${max.toLocaleString()} (${pct}%)` : " (max unknown)") +
+                          `\nmsgs=${c.msgs}`
+                        }
+                      >
+                        <span className={labelColor}>
+                          {fmt(c.tokensIn)}
+                          {max > 0 && <> /{fmt(max)} ({pct}%)</>}
+                        </span>
+                        {max > 0 && (
+                          <span className="w-10 h-1 bg-border rounded-full overflow-hidden">
+                            <span className={`block h-full ${barColor}`} style={{ width: `${pct}%` }} />
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })()}
                   <span>#{t.iteration}</span>
                   <span className={`px-1.5 py-0.5 rounded text-[10px] ${
                     t.rate === "reactive" || t.rate === "fast" ? "bg-accent/15 text-accent" :

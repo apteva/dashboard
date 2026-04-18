@@ -227,23 +227,40 @@ export function Integrations() {
   const handlePickComposio = async (app: ComposioApp) => {
     if (!composioProvider) return;
     setComposioError("");
-    setComposioPicked(app);
-    setComposioDetails(null);
-    setComposioConfigCreds({});
-    setComposioInitCreds({});
+
+    // Fetch toolkit details FIRST so we can decide whether we need to
+    // render our own side panel at all. Composio-managed and
+    // no-config-field toolkits hand the entire credential collection
+    // off to Composio's hosted modal — opening (and immediately
+    // closing) our side panel just causes a visible flash. Only call
+    // setComposioPicked when there's a real form to show.
     setComposioDetailsLoading(true);
+    let d: ComposioToolkitDetails;
     try {
-      const d = await integrations.composioToolkit(composioProvider.id, app.slug);
-      setComposioDetails(d);
-      const shouldSkipForm = d.is_composio_managed || d.config_fields.length === 0;
-      if (shouldSkipForm) {
-        await submitComposioConnection(app, d, {}, {});
-      }
+      d = await integrations.composioToolkit(composioProvider.id, app.slug);
     } catch (err: any) {
       setComposioError(err?.message || "Failed to load toolkit details");
-    } finally {
       setComposioDetailsLoading(false);
+      return;
     }
+    setComposioDetailsLoading(false);
+
+    const shouldSkipForm = d.is_composio_managed || d.config_fields.length === 0;
+    if (shouldSkipForm) {
+      // Straight to Composio's hosted flow — no inline side panel.
+      // submitComposioConnection opens the popup with the redirect_url
+      // it gets back from the server.
+      await submitComposioConnection(app, d, {}, {});
+      return;
+    }
+
+    // Real config_fields to collect (e.g. the user wants to bring their
+    // own OAuth client_id/secret instead of using composio-managed
+    // auth) — show the inline form.
+    setComposioPicked(app);
+    setComposioDetails(d);
+    setComposioConfigCreds({});
+    setComposioInitCreds({});
   };
 
   const submitComposioConnection = async (

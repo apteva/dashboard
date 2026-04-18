@@ -909,3 +909,86 @@ export const telemetry = {
     return new EventSource(`${BASE}/telemetry/stream?instance_id=${instanceId}`);
   },
 };
+
+// --- Apteva Apps framework ---
+
+export interface AppManifest {
+  slug: string;
+  name: string;
+  version: string;
+  description?: string;
+  ui_slots?: Array<{ slot: string; title?: string; entry?: string }>;
+  publishes?: string[];
+  subscribes?: string[];
+}
+
+export const apps = {
+  manifest: () => request<AppManifest[]>("GET", "/apps/manifest"),
+};
+
+// --- channel-chat app ---
+//
+// DB-backed chat as a first-class Apteva App. Messages live in the
+// server's DB with a monotonic autoincrement id — ordering is free,
+// dedup is trivial (just check id before insert). Reconnect uses
+// `since=<last_id>` to fetch the exact gap.
+
+export interface ChatRow {
+  id: string;
+  instance_id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatMessageRow {
+  id: number;
+  chat_id: string;
+  role: "user" | "agent" | "system";
+  content: string;
+  user_id?: number;
+  thread_id?: string;
+  status: "streaming" | "final";
+  created_at: string;
+}
+
+export const chat = {
+  // APP_PATH is the HTTP prefix the Apteva Apps framework uses for
+  // this app. Keeping it as a constant here means if the slug changes
+  // upstream we only touch one line.
+  APP_PATH: "/apps/channel-chat",
+
+  listChats: (instanceId: number) =>
+    request<ChatRow[]>("GET", `/apps/channel-chat/chats?instance_id=${instanceId}`),
+
+  createChat: (instanceId: number, title?: string) =>
+    request<ChatRow>("POST", "/apps/channel-chat/chats", { instance_id: instanceId, title }),
+
+  messages: (chatId: string, since: number = 0, limit: number = 500) =>
+    request<ChatMessageRow[]>(
+      "GET",
+      `/apps/channel-chat/messages?chat_id=${encodeURIComponent(chatId)}&since=${since}&limit=${limit}`,
+    ),
+
+  post: (chatId: string, content: string) =>
+    request<ChatMessageRow>(
+      "POST",
+      `/apps/channel-chat/messages?chat_id=${encodeURIComponent(chatId)}`,
+      { content },
+    ),
+
+  clear: (chatId: string) =>
+    request<{ deleted: number }>(
+      "DELETE",
+      `/apps/channel-chat/messages?chat_id=${encodeURIComponent(chatId)}`,
+    ),
+
+  // stream returns an EventSource for live messages. Pass the last
+  // seen id as `since` so the server can backfill the gap before
+  // live delivery starts — the caller doesn't need a separate
+  // "catch up" path.
+  stream: (chatId: string, since: number = 0): EventSource => {
+    const qs = `chat_id=${encodeURIComponent(chatId)}&since=${since}`;
+    return new EventSource(`${BASE}/apps/channel-chat/stream?${qs}`);
+  },
+};

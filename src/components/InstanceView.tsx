@@ -5,6 +5,7 @@ export type EventListener = (event: TelemetryEvent) => void;
 export type SubscribeFn = (listener: EventListener) => () => void;
 import { ChatPanel } from "./ChatPanel";
 import { ActivityPanel } from "./ActivityPanel";
+import { InjectPanel } from "./InjectPanel";
 import { FleetGraph, type FleetEvent } from "./FleetGraph";
 import { FleetCards } from "./FleetCards";
 import { ThreadDetailModal } from "./ThreadDetailModal";
@@ -77,6 +78,31 @@ export function InstanceView({
     seenHandledOrderRef.current = [];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instance.id]);
+
+  // Telemetry SSE — single EventSource for the whole instance view,
+  // owned HERE (not inside ChatPanel) so the right panel (Activity,
+  // Fleet, Cards) keeps receiving events after ChatPanel was rewritten
+  // to consume the channel-chat app's own SSE stream instead of
+  // telemetry.
+  //
+  // Every incoming event goes through handleEvent (top-level dedup)
+  // which then fans out to every subscribe(cb) caller. The chat
+  // panel's status dot + the stats badge + Activity + FleetCards are
+  // all downstream of this one stream.
+  useEffect(() => {
+    if (instance.status !== "running") return;
+    const es = new EventSource(`/api/instances/${instance.id}/events`);
+    es.onmessage = (e) => {
+      try {
+        const event: TelemetryEvent = JSON.parse(e.data);
+        handleEvent(event);
+      } catch {
+        // malformed frame — ignore; EventSource auto-reconnects on error
+      }
+    };
+    return () => es.close();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instance.id, instance.status]);
 
   // Top-level dedup. ChatPanel's EventSource is the single source of truth
   // for SSE in this view; if the same event.id arrives twice (StrictMode
@@ -291,7 +317,7 @@ export function InstanceView({
         {/* Chat panel — hidden in fleet view but stays mounted for SSE */}
         <div className={`border-r border-border ${view === "fleet" ? "w-0 min-w-0 overflow-hidden" : "w-1/3 min-w-[300px]"}`}>
           {instance.status === "running" ? (
-            <ChatPanel instanceId={instance.id} onEvent={handleEvent} />
+            <ChatPanel instanceId={instance.id} subscribe={subscribe} onEvent={handleEvent} />
           ) : (
             <div className="flex items-center justify-center h-full text-text-muted text-sm">
               Instance is stopped. Start it to begin chatting.
@@ -299,14 +325,23 @@ export function InstanceView({
           )}
         </div>
 
-        {/* Right panel — Activity, Fleet graph, or Cards */}
-        <div className="flex-1">
-          {view === "activity" ? (
-            <ActivityPanel instance={instance} subscribe={subscribe} onReload={onReload} />
-          ) : view === "fleet" ? (
-            <FleetGraph threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} events={graphEvents} onNodeClick={setSelectedThreadId} />
-          ) : (
-            <FleetCards threads={graphThreads} subscribe={subscribe} activeTools={graphActiveTools} thoughts={graphThoughts} />
+        {/* Right panel — Activity, Fleet graph, or Cards. Column
+            layout so the always-visible InjectPanel pins to the bottom
+            while the selected view (activity/fleet/cards) takes the
+            remaining space. Hidden when the instance is stopped — no
+            thinker to inject into. */}
+        <div className="flex-1 flex flex-col min-h-0">
+          <div className="flex-1 min-h-0">
+            {view === "activity" ? (
+              <ActivityPanel instance={instance} subscribe={subscribe} onReload={onReload} />
+            ) : view === "fleet" ? (
+              <FleetGraph threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} events={graphEvents} onNodeClick={setSelectedThreadId} />
+            ) : (
+              <FleetCards threads={graphThreads} subscribe={subscribe} activeTools={graphActiveTools} thoughts={graphThoughts} />
+            )}
+          </div>
+          {instance.status === "running" && (
+            <InjectPanel instanceId={instance.id} threads={graphThreads} />
           )}
         </div>
       </div>
