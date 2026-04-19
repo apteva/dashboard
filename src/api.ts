@@ -142,12 +142,15 @@ export const projects = {
 };
 
 // Instances
+// Agent safety mode. Source of truth: core/config.go.
+export type RunMode = "autonomous" | "cautious" | "learn";
+
 export interface Instance {
   id: number;
   user_id: number;
   name: string;
   directive: string;
-  mode: string; // "autonomous" or "supervised"
+  mode: RunMode;
   config: string;
   port: number;
   pid: number;
@@ -711,7 +714,7 @@ export interface Status {
   threads: number;
   memories: number;
   paused: boolean;
-  mode: "autonomous" | "supervised";
+  mode: RunMode;
   pending_approval: PendingApproval | null;
 }
 
@@ -800,7 +803,7 @@ export const core = {
     request<{ status: string }>("PUT", `/instances/${instanceId}/config`, {
       computer,
     }),
-  setMode: (instanceId: number, mode: "autonomous" | "supervised") =>
+  setMode: (instanceId: number, mode: RunMode) =>
     request<{ status: string }>("PUT", `/instances/${instanceId}/config`, { mode }),
   // Replace the full mcp_servers list on a running instance. The core runs
   // reconcileMCP against the new list — servers in the list but not

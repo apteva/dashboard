@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { core, instances, type Instance, type Status, type Thread } from "../api";
+import { core, instances, type Instance, type RunMode, type Status, type Thread } from "../api";
 import type { SubscribeFn } from "./InstanceView";
 import { MCPPanel } from "./MCPPanel";
 import { ComputerPanel } from "./ComputerPanel";
@@ -80,7 +80,9 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [incomingEvents, setIncomingEvents] = useState<IncomingEvent[]>([]);
   const [thinking, setThinking] = useState<Record<string, boolean>>({}); // threadId → thinking
-  const [mode, setMode] = useState(instance.mode || "autonomous");
+  const [mode, setMode] = useState<RunMode>(
+    (instance.mode as RunMode) || "autonomous",
+  );
 
   // Reset state when instance changes
   useEffect(() => {
@@ -335,7 +337,7 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
     }
 
     if (event.type === "mode.changed" && data.mode) {
-      setMode(data.mode);
+      setMode(data.mode as RunMode);
     }
 
     if (event.type === "directive.evolved") {
@@ -392,13 +394,21 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
           <div className="ml-auto flex gap-2">
             <button
               onClick={async () => {
-                const newMode = mode === "autonomous" ? "cautious" : "autonomous";
+                // Cycle through all three modes the core supports.
+                // autonomous → cautious → learn → autonomous.
+                const next: Record<RunMode, RunMode> = {
+                  autonomous: "cautious",
+                  cautious: "learn",
+                  learn: "autonomous",
+                };
+                const newMode = next[mode] ?? "autonomous";
                 await instances.updateConfig(instance.id, { mode: newMode });
                 setMode(newMode);
               }}
               className={`px-2 py-0.5 rounded border text-[10px] transition-colors ${
                 mode !== "autonomous" ? "border-accent text-accent" : "border-border text-text-muted hover:border-accent"
               }`}
+              title="click to cycle safety mode: autonomous → cautious → learn"
             >
               {mode}
             </button>
