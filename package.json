@@ -1,6 +1,6 @@
 {
   "name": "apteva-dashboard",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "module": "src/main.tsx",
   "type": "module",
   "private": true,
