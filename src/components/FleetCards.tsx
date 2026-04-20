@@ -220,8 +220,11 @@ export function FleetCards({ threads, subscribe, activeTools, thoughts }: FleetC
                   })()}
                   <span>#{t.iteration}</span>
                   <span className={`px-1.5 py-0.5 rounded text-[10px] ${
-                    t.rate === "reactive" || t.rate === "fast" ? "bg-accent/15 text-accent" :
-                    t.rate === "sleep" ? "bg-border text-text-dim" :
+                    t.rate === "reactive" ? "bg-green/15 text-green" :
+                    t.rate === "fast" ? "bg-accent/15 text-accent" :
+                    t.rate === "normal" ? "bg-blue/15 text-blue" :
+                    t.rate === "slow" ? "bg-border text-text-muted" :
+                    t.rate === "sleep" ? "bg-red/10 text-red/70" :
                     "bg-border text-text-muted"
                   }`}>{t.rate}</span>
                 </div>

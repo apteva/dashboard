@@ -417,7 +417,14 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
         {status && (
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-text-muted">
             <span>iter</span><span className="text-text">{status.iteration}</span>
-            <span>rate</span><span className="text-text">{status.rate}</span>
+            <span>rate</span><span className={`px-1.5 py-0.5 rounded text-[10px] w-fit ${
+              status.rate === "reactive" ? "bg-green/15 text-green" :
+              status.rate === "fast" ? "bg-accent/15 text-accent" :
+              status.rate === "normal" ? "bg-blue/15 text-blue" :
+              status.rate === "slow" ? "bg-border text-text-muted" :
+              status.rate === "sleep" ? "bg-red/10 text-red/70" :
+              "bg-border text-text-muted"
+            }`}>{status.rate}</span>
             <span>model</span><span className="text-text truncate">{status.model}</span>
             <span>uptime</span><span className="text-text">{formatUptime(status.uptime_seconds)}</span>
             <span>memory</span><span className="text-text">{status.memories}</span>
@@ -471,8 +478,16 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
                     {(t.depth || 0) > 0 && <span className="text-text-dim">├</span>}
                     <span className="text-text font-bold truncate">{t.id}</span>
                     <span className="text-text-muted shrink-0 text-[10px]">
-                      #{t.iteration} {t.rate}
+                      #{t.iteration}
                     </span>
+                    <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] ${
+                      t.rate === "reactive" ? "bg-green/15 text-green" :
+                      t.rate === "fast" ? "bg-accent/15 text-accent" :
+                      t.rate === "normal" ? "bg-blue/15 text-blue" :
+                      t.rate === "slow" ? "bg-border text-text-muted" :
+                      t.rate === "sleep" ? "bg-red/10 text-red/70" :
+                      "bg-border text-text-muted"
+                    }`}>{t.rate}</span>
                     {t.model && (
                       <span className="text-text-dim shrink-0 text-[10px]">
                         {t.model}

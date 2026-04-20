@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
-import { instances, core, type Instance, type Status, type TelemetryEvent } from "../api";
+import { instances, core, type Instance, type RunMode, type Status, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { Modal } from "../components/Modal";
 
@@ -39,6 +39,12 @@ export function Instances() {
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [directive, setDirective] = useState("");
+  // Default new instances to "learn" — safest default for a fresh agent:
+  // it asks before every new kind of action and remembers answers, so
+  // users building their first agent can watch it ask rather than act.
+  // Can be changed to cautious/autonomous before create, or later in
+  // InstanceView / the ActivityPanel header toggle.
+  const [createMode, setCreateMode] = useState<RunMode>("learn");
   const [includeAptevaServer, setIncludeAptevaServer] = useState(true);
   const [includeChannels, setIncludeChannels] = useState(true);
   const [error, setError] = useState("");
@@ -251,12 +257,13 @@ export function Instances() {
       // (or on the instance page) when they want it running. Avoids having
       // a fresh instance consume tokens before the user has had a chance
       // to configure directive / MCPs / channels.
-      await instances.create(name.trim(), directive.trim(), "autonomous", projectId, false, {
+      await instances.create(name.trim(), directive.trim(), createMode, projectId, false, {
         includeAptevaServer,
         includeChannels,
       });
       setName("");
       setDirective("");
+      setCreateMode("learn");
       setIncludeAptevaServer(true);
       setIncludeChannels(true);
       setShowCreate(false);
@@ -438,10 +445,19 @@ export function Instances() {
                         )}
                         <span className="text-text-dim text-xs">#{inst.id}</span>
                         <span
+                          title={
+                            inst.mode === "learn"
+                              ? "learn — asks before every new kind of action, remembers answers"
+                              : inst.mode === "cautious"
+                                ? "cautious — asks before state-changing actions"
+                                : "autonomous — acts independently"
+                          }
                           className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide ${
-                            inst.mode === "autonomous"
-                              ? "bg-accent/20 text-accent"
-                              : "bg-bg-hover text-text-muted"
+                            inst.mode === "learn"
+                              ? "bg-green/20 text-green"
+                              : inst.mode === "cautious"
+                                ? "bg-blue/20 text-blue"
+                                : "bg-accent/20 text-accent"
                           }`}
                         >
                           {inst.mode}
@@ -465,7 +481,14 @@ export function Instances() {
                           <>
                             <span>{live.threads} threads</span>
                             <span>#{live.iter}</span>
-                            <span>{live.rate}</span>
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+                              live.rate === "reactive" ? "bg-green/15 text-green" :
+                              live.rate === "fast" ? "bg-accent/15 text-accent" :
+                              live.rate === "normal" ? "bg-blue/15 text-blue" :
+                              live.rate === "slow" ? "bg-border text-text-muted" :
+                              live.rate === "sleep" ? "bg-red/10 text-red/70" :
+                              "bg-border text-text-muted"
+                            }`}>{live.rate}</span>
                           </>
                         ) : isRunning ? (
                           <span className="opacity-50">…</span>
@@ -595,6 +618,33 @@ export function Instances() {
               className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent resize-none h-24"
               placeholder="What should this agent think about?"
             />
+          </div>
+          <div>
+            <label className="block text-text-muted text-sm mb-2">Safety mode</label>
+            <div className="flex gap-2">
+              {(["learn", "cautious", "autonomous"] as RunMode[]).map((m) => (
+                <button
+                  type="button"
+                  key={m}
+                  onClick={() => setCreateMode(m)}
+                  className={`flex-1 px-3 py-2 text-sm rounded-lg border capitalize transition-colors ${
+                    createMode === m
+                      ? "border-accent text-accent bg-accent/10"
+                      : "border-border text-text-muted hover:border-accent"
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+            <div className="text-text-dim text-xs leading-snug mt-2">
+              {createMode === "learn" &&
+                "Asks before every new kind of action and remembers your answers. Best for first-time setup."}
+              {createMode === "cautious" &&
+                "Asks before any state-changing action (exec, write, delete, external send). Read-only tools are free."}
+              {createMode === "autonomous" &&
+                "Acts independently. Only informs you before irreversible or high-blast-radius actions."}
+            </div>
           </div>
           <div>
             <label className="block text-text-muted text-sm mb-2">System MCPs</label>

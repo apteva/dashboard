@@ -833,7 +833,28 @@ export const core = {
         threads: opts?.threads ?? false,
       },
     }),
+
+  // Memory — what the agent has remembered. Auto-recalled by vector
+  // similarity, so fixing or pruning a bad memory immediately changes
+  // what gets surfaced on future turns. `tag` is the bracketed prefix
+  // the remember-tool guidance asks the agent to use ([preference],
+  // [correction], …) — the UI uses it for coloring/filtering.
+  listMemory: (instanceId: number) =>
+    request<MemoryItem[]>("GET", `/instances/${instanceId}/memory`),
+  updateMemory: (instanceId: number, index: number, text: string) =>
+    request<{ ok: boolean }>("PUT", `/instances/${instanceId}/memory/${index}`, { text }),
+  deleteMemory: (instanceId: number, index: number) =>
+    request<{ ok: boolean; count: number }>("DELETE", `/instances/${instanceId}/memory/${index}`),
 };
+
+export interface MemoryItem {
+  index: number;
+  text: string;
+  tag?: string;
+  namespace?: string;
+  session?: string;
+  time: string;
+}
 
 // Channels
 export interface ChannelInfo {

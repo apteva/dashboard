@@ -5,6 +5,7 @@ export type EventListener = (event: TelemetryEvent) => void;
 export type SubscribeFn = (listener: EventListener) => () => void;
 import { ChatPanel } from "./ChatPanel";
 import { ActivityPanel } from "./ActivityPanel";
+import { MemoryPanel } from "./MemoryPanel";
 import { InjectPanel } from "./InjectPanel";
 import { FleetGraph, type FleetEvent } from "./FleetGraph";
 import { FleetCards } from "./FleetCards";
@@ -52,7 +53,7 @@ export function InstanceView({
   }, []);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
-  const [view, setView] = useState<"activity" | "fleet" | "cards">("activity");
+  const [view, setView] = useState<"activity" | "fleet" | "cards" | "memory">("activity");
 
   // Track threads, tools, thoughts, events for the fleet graph
   const [graphThreads, setGraphThreads] = useState<Thread[]>(initialThreads);
@@ -226,7 +227,7 @@ export function InstanceView({
           <h1 className="text-text text-sm font-bold">{instance.name}</h1>
           {/* View toggle */}
           <div className="flex border border-border rounded-lg overflow-hidden ml-4">
-            {(["activity", "fleet", "cards"] as const).map((v) => (
+            {(["activity", "fleet", "cards", "memory"] as const).map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
@@ -336,6 +337,14 @@ export function InstanceView({
               <ActivityPanel instance={instance} subscribe={subscribe} onReload={onReload} />
             ) : view === "fleet" ? (
               <FleetGraph threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} events={graphEvents} onNodeClick={setSelectedThreadId} />
+            ) : view === "memory" ? (
+              instance.status === "running" ? (
+                <MemoryPanel instanceId={instance.id} />
+              ) : (
+                <div className="flex items-center justify-center h-full text-text-muted text-sm">
+                  Start the agent to view its memory.
+                </div>
+              )
             ) : (
               <FleetCards threads={graphThreads} subscribe={subscribe} activeTools={graphActiveTools} thoughts={graphThoughts} />
             )}
