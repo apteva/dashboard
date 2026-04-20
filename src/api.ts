@@ -324,6 +324,7 @@ export interface ConnectionInfo {
   source: string;                // 'local' | 'composio'
   provider_id?: number;
   external_id?: string;
+  project_id?: string;
   tool_count: number;
   created_at: string;
 }
@@ -496,6 +497,9 @@ export const integrations = {
   get: (id: number) => request<ConnectionInfo>("GET", `/connections/${id}`),
 
   disconnect: (id: number) => request<any>("DELETE", `/connections/${id}`),
+
+  rename: (id: number, name: string) =>
+    request<ConnectionInfo>("PATCH", `/connections/${id}`, { name }),
 
   // Composio app catalog (proxied via apteva-server using the user's API key).
   // Pass a non-empty `search` to use Composio's server-side search instead of
@@ -855,6 +859,58 @@ export interface MemoryItem {
   session?: string;
   time: string;
 }
+
+// Connection invites — operator mints a stateless signed link a client can
+// use to complete an integration (new connection OR credential swap on an
+// existing one) without a dashboard login.
+export interface InviteResponse {
+  token: string;
+  url: string;
+  expires_at: string;
+}
+export interface PublicInviteInfo {
+  source: string;
+  app_slug: string;
+  app_name?: string;
+  project_id: string;
+  connection_id?: number;
+  connection_name?: string;
+  name?: string;
+  allowed_tools?: string;
+  auth_types?: string[];
+  credential_fields?: Array<{
+    name: string;
+    label: string;
+    description?: string;
+    required?: boolean;
+    type?: string;
+  }>;
+  has_oauth2?: boolean;
+  expires_at: string;
+}
+export interface FulfillResponse {
+  status: "connected" | "updated" | "redirect";
+  connection_id?: number;
+  redirect_url?: string;
+}
+
+export const invites = {
+  create: (body: {
+    app_slug: string;
+    source?: string;
+    project_id?: string;
+    connection_id?: number;
+    provider_id?: number;
+    allowed_tools?: string;
+    name?: string;
+    ttl_seconds?: number;
+  }) => request<InviteResponse>("POST", "/invites", body),
+  // Public (no-auth) fetch — used by the /connect/:token page.
+  get: (token: string) =>
+    request<PublicInviteInfo>("GET", `/public/invites/${encodeURIComponent(token)}`),
+  fulfill: (token: string, body: { credentials?: Record<string, string>; name?: string }) =>
+    request<FulfillResponse>("POST", `/public/invites/${encodeURIComponent(token)}/fulfill`, body),
+};
 
 // Channels
 export interface ChannelInfo {

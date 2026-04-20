@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from "./hooks/useAuth";
 import { ProjectProvider } from "./hooks/useProjects";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
+import { Connect } from "./pages/Connect";
 import { Instances } from "./pages/Instances";
 import { Instance } from "./pages/Instance";
 import { Integrations } from "./pages/Integrations";
@@ -30,6 +31,7 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/connect/:token" element={<Connect />} />
           <Route
             element={
               <ProtectedRoute>

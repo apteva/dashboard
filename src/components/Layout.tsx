@@ -16,8 +16,12 @@ export function Layout() {
     fetch("/version")
       .then((r) => r.json())
       .then((d) => {
-        const umbrella = d.apteva || d.version || "";
-        setVersion(umbrella);
+        // Show the CLI version as the primary label — that's the one that
+        // gets bumped per release (apteva/package.json). Fall back to the
+        // umbrella/package version for older server binaries that predate
+        // this change.
+        const primary = d.cli || d.apteva || d.version || "";
+        setVersion(primary);
         const parts: string[] = [];
         if (d.apteva) parts.push(`apteva ${d.apteva}`);
         if (d.cli) parts.push(`cli ${d.cli}`);

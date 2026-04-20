@@ -409,6 +409,16 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
           setProviderDetails((prev) => ({ ...prev, [p.id]: d }));
         }).catch(() => {});
       }
+      // Pre-select the first available LLM provider when the instance has
+      // no stored default_provider yet. Without this the small/medium/large
+      // rows render empty on a fresh instance even though the project has
+      // providers configured — user then has to click twice (provider
+      // dropdown, then save) before anything meaningful shows.
+      setDefaultProvider((cur) => {
+        if (cur) return cur;
+        const first = llm[0];
+        return first ? provKey(first) : "";
+      });
     }).catch(() => {});
   }, [open, instance.id]);
 

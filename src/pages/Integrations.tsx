@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import {
   integrations,
   providers,
+  invites,
+  mcpServers,
   type AppSummary,
   type AppDetail,
   type ConnectionInfo,
@@ -9,7 +11,9 @@ import {
   type ComposioApp,
   type ComposioToolkitDetails,
   type ConnectCreateResponse,
+  type InviteResponse,
 } from "../api";
+import { Modal } from "../components/Modal";
 import { useNavigate } from "react-router-dom";
 import { useProjects } from "../hooks/useProjects";
 
@@ -20,6 +24,28 @@ export function Integrations() {
   const navigate = useNavigate();
 
   const [tab, setTab] = useState<SourceTab>("local");
+  const [inviteFor, setInviteFor] = useState<ConnectionInfo | null>(null);
+  const [inviteLink, setInviteLink] = useState<InviteResponse | null>(null);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteErr, setInviteErr] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [renameFor, setRenameFor] = useState<ConnectionInfo | null>(null);
+  const [renameText, setRenameText] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameErr, setRenameErr] = useState("");
+
+  // Tool picker — after a new connection is active, present the catalog
+  // of tools exposed by that integration and let the user pick which subset
+  // becomes an MCP server sub-threads can spawn against.
+  type ConnTool = { name: string; description: string };
+  const [pickerFor, setPickerFor] = useState<ConnectionInfo | null>(null);
+  const [pickerMCPId, setPickerMCPId] = useState<number | null>(null); // editing existing MCP row
+  const [pickerTools, setPickerTools] = useState<ConnTool[]>([]);
+  const [pickerSelected, setPickerSelected] = useState<Set<string>>(new Set());
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [pickerBusy, setPickerBusy] = useState(false);
+  const [pickerErr, setPickerErr] = useState("");
+  const [pickerFilter, setPickerFilter] = useState("");
   const [providerList, setProviderList] = useState<Provider[]>([]);
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -184,13 +210,17 @@ export function Integrations() {
       );
       // OAuth2 apps return { connection, redirect_url } — open the popup and
       // start polling the pending connection. Non-OAuth apps return the
-      // connection directly, fully active.
+      // connection object directly, fully active.
       if ("redirect_url" in (result as any)) {
         const r = result as ConnectCreateResponse;
         openOAuthPopup(r.redirect_url);
         pollConnection(r.connection.id);
       } else {
         loadConnections();
+        // Non-OAuth path: response IS the connection (ConnectionInfo).
+        // Open the tool picker immediately so the user can create the
+        // first MCP for this integration.
+        openPickerFor(result as unknown as ConnectionInfo);
       }
       setSelectedLocalApp(null);
       setCredentials({});
@@ -293,6 +323,10 @@ export function Integrations() {
       if (result.redirect_url) {
         openOAuthPopup(result.redirect_url);
         pollConnection(result.connection.id);
+      } else if (result.connection) {
+        // Composio direct create (no redirect needed) — connection is
+        // already active, go straight to the tool picker.
+        openPickerFor(result.connection as unknown as ConnectionInfo);
       }
       setComposioPicked(null);
       setComposioDetails(null);
@@ -332,7 +366,15 @@ export function Integrations() {
       attempts += 1;
       try {
         const c = await integrations.get(id);
-        if (c.status === "active" || c.status === "failed") {
+        if (c.status === "active") {
+          loadConnections();
+          // Connection finished OAuth — open the tool picker so the user
+          // can pick which tools to expose as the first MCP for this
+          // integration.
+          openPickerFor(c as unknown as ConnectionInfo);
+          return;
+        }
+        if (c.status === "failed") {
           loadConnections();
           return;
         }
@@ -347,6 +389,137 @@ export function Integrations() {
   const handleDisconnect = async (id: number) => {
     await integrations.disconnect(id);
     loadConnections();
+  };
+
+  const openInviteFor = async (c: ConnectionInfo) => {
+    setInviteFor(c);
+    setInviteLink(null);
+    setInviteErr("");
+    setCopied(false);
+    setInviteBusy(true);
+    try {
+      const r = await invites.create({
+        app_slug: c.app_slug,
+        source: c.source || "local",
+        project_id: c.project_id || "",
+        connection_id: c.id,
+      });
+      setInviteLink(r);
+    } catch (e: any) {
+      setInviteErr(e?.message || "failed to create invite");
+    } finally {
+      setInviteBusy(false);
+    }
+  };
+
+  // Open the tool picker for a freshly-created connection. The connection
+  // create path auto-registered one MCP server with every tool enabled —
+  // we locate that row and edit ITS allowed_tools rather than creating a
+  // second scoped MCP. If somehow no MCP row exists (shouldn't happen),
+  // fall back to reading the raw connection tools + creating a new one.
+  const openPickerFor = async (c: ConnectionInfo) => {
+    setPickerFor(c);
+    setPickerMCPId(null);
+    setPickerTools([]);
+    setPickerSelected(new Set());
+    setPickerErr("");
+    setPickerFilter("");
+    setPickerLoading(true);
+    try {
+      const servers = await mcpServers.list(c.project_id || "");
+      const existing = (servers || []).find((s) => s.connection_id === c.id);
+      if (existing) {
+        const info = await mcpServers.tools(existing.id);
+        setPickerMCPId(existing.id);
+        setPickerTools(info.tools.map((t) => ({ name: t.name, description: t.description })));
+        // Pre-tick the currently-persisted filter; if none set, tick all
+        // (matches the "all tools exposed" semantics of an empty filter).
+        const current = info.allowed_tools && info.allowed_tools.length > 0
+          ? new Set(info.allowed_tools)
+          : new Set(info.tools.map((t) => t.name));
+        setPickerSelected(current);
+      } else {
+        // Fallback: no MCP row auto-created — use the raw connection tool
+        // catalog and create a new scoped MCP on submit.
+        const tools = await integrations.tools(c.id);
+        setPickerTools(tools);
+        setPickerSelected(new Set(tools.map((t) => t.name)));
+      }
+    } catch (e: any) {
+      setPickerErr(e?.message || "failed to load tools");
+    } finally {
+      setPickerLoading(false);
+    }
+  };
+
+  const togglePickerTool = (name: string) => {
+    setPickerSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const submitPicker = async () => {
+    if (!pickerFor) return;
+    if (pickerSelected.size === 0) { setPickerErr("pick at least one tool"); return; }
+    setPickerBusy(true);
+    setPickerErr("");
+    try {
+      const allowed = Array.from(pickerSelected);
+      if (pickerMCPId != null) {
+        // Edit the auto-created MCP row in place — no second MCP server.
+        await mcpServers.setAllowedTools(pickerMCPId, allowed);
+      } else {
+        // Fallback path (no auto-created MCP found) — create a scoped one.
+        await integrations.createScopedMCP(
+          pickerFor.id,
+          `${pickerFor.app_slug}-${pickerFor.id}`,
+          allowed,
+        );
+      }
+      setPickerFor(null);
+      loadConnections();
+    } catch (e: any) {
+      setPickerErr(e?.message || "failed to save tools");
+    } finally {
+      setPickerBusy(false);
+    }
+  };
+
+  const openRenameFor = (c: ConnectionInfo) => {
+    setRenameFor(c);
+    setRenameText(c.name);
+    setRenameErr("");
+  };
+
+  const submitRename = async () => {
+    if (!renameFor) return;
+    const next = renameText.trim();
+    if (!next || next === renameFor.name) { setRenameFor(null); return; }
+    setRenameBusy(true);
+    setRenameErr("");
+    try {
+      await integrations.rename(renameFor.id, next);
+      setRenameFor(null);
+      loadConnections();
+    } catch (e: any) {
+      setRenameErr(e?.message || "rename failed");
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
+  const copyInvite = async () => {
+    if (!inviteLink) return;
+    try {
+      await navigator.clipboard.writeText(inviteLink.url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore — user can select + copy manually
+    }
   };
 
   // --- Filtering for Composio ---
@@ -467,6 +640,20 @@ export function Integrations() {
                       {c.tool_count > 0 && (
                         <span className="text-text-dim text-sm">{c.tool_count} tools</span>
                       )}
+                      <button
+                        onClick={() => openRenameFor(c)}
+                        className="text-sm text-text-muted hover:text-text transition-colors"
+                        title="Rename"
+                      >
+                        Rename
+                      </button>
+                      <button
+                        onClick={() => openInviteFor(c)}
+                        className="text-sm text-text-muted hover:text-accent transition-colors"
+                        title="Generate a shareable link to let someone else swap the credentials"
+                      >
+                        Invite
+                      </button>
                       <button
                         onClick={() => handleDisconnect(c.id)}
                         className="text-sm text-text-muted hover:text-red transition-colors"
@@ -852,6 +1039,185 @@ export function Integrations() {
           </div>
         )}
       </div>
+
+      <Modal open={!!pickerFor} onClose={() => !pickerBusy && setPickerFor(null)}>
+        <div className="p-6 w-[620px] max-w-full space-y-3">
+          <div>
+            <h2 className="text-text text-base font-bold">
+              Select tools — {pickerFor?.app_name || pickerFor?.app_slug}
+            </h2>
+            <p className="text-text-dim text-xs leading-snug mt-1">
+              Pick which tools from this connection are exposed to your
+              agents. Unchecked tools are filtered server-side on every
+              call. Applies to the MCP server that was created for this
+              integration.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 pt-1">
+            <input
+              value={pickerFilter}
+              onChange={(e) => setPickerFilter(e.target.value)}
+              placeholder="filter tools…"
+              className="flex-1 bg-bg-input border border-border rounded-lg px-3 py-1.5 text-xs text-text focus:outline-none focus:border-accent"
+            />
+            <button
+              type="button"
+              onClick={() => setPickerSelected(new Set(pickerTools.map((t) => t.name)))}
+              className="text-xs text-text-muted hover:text-text"
+            >
+              All
+            </button>
+            <button
+              type="button"
+              onClick={() => setPickerSelected(new Set())}
+              className="text-xs text-text-muted hover:text-text"
+            >
+              None
+            </button>
+            <span className="text-xs text-text-dim">
+              {pickerSelected.size}/{pickerTools.length}
+            </span>
+          </div>
+          <div className="border border-border rounded-lg max-h-[360px] overflow-y-auto divide-y divide-border">
+            {pickerLoading && (
+              <div className="p-3 text-text-dim text-xs">Loading tools…</div>
+            )}
+            {!pickerLoading && pickerTools.length === 0 && (
+              <div className="p-3 text-text-dim text-xs">
+                No tools available for this connection.
+              </div>
+            )}
+            {pickerTools
+              .filter((t) => {
+                const q = pickerFilter.trim().toLowerCase();
+                if (!q) return true;
+                return (
+                  t.name.toLowerCase().includes(q) ||
+                  (t.description || "").toLowerCase().includes(q)
+                );
+              })
+              .map((t) => {
+                const checked = pickerSelected.has(t.name);
+                return (
+                  <label
+                    key={t.name}
+                    className={`flex items-start gap-3 p-2.5 cursor-pointer hover:bg-bg-hover ${checked ? "bg-accent/5" : ""}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => togglePickerTool(t.name)}
+                      className="mt-1 accent-accent"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-text text-xs font-mono truncate">{t.name}</div>
+                      {t.description && (
+                        <div className="text-text-dim text-[11px] leading-snug truncate">
+                          {t.description}
+                        </div>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+          </div>
+          {pickerErr && <div className="text-red text-xs">{pickerErr}</div>}
+          <div className="flex justify-end gap-3 pt-1">
+            <button
+              onClick={() => setPickerFor(null)}
+              disabled={pickerBusy}
+              className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text"
+            >
+              Skip
+            </button>
+            <button
+              onClick={submitPicker}
+              disabled={pickerBusy || pickerLoading || pickerSelected.size === 0}
+              className="px-4 py-2 bg-accent text-bg font-bold rounded-lg text-sm hover:bg-accent-hover disabled:opacity-50"
+            >
+              {pickerBusy ? "Saving…" : `Save (${pickerSelected.size}/${pickerTools.length})`}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={!!renameFor} onClose={() => !renameBusy && setRenameFor(null)}>
+        <div className="p-6 w-[420px] max-w-full space-y-3">
+          <h2 className="text-text text-base font-bold">Rename connection</h2>
+          <p className="text-text-dim text-xs leading-snug">
+            Only the display name changes. Credentials, project, and the
+            app slug (<span className="text-text-muted">{renameFor?.app_name}</span>) stay the same.
+          </p>
+          <input
+            value={renameText}
+            onChange={(e) => setRenameText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") submitRename(); }}
+            autoFocus
+            className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+          />
+          {renameErr && <div className="text-red text-xs">{renameErr}</div>}
+          <div className="flex justify-end gap-3 pt-1">
+            <button
+              onClick={() => setRenameFor(null)}
+              disabled={renameBusy}
+              className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={submitRename}
+              disabled={renameBusy || !renameText.trim() || renameText.trim() === renameFor?.name}
+              className="px-4 py-2 bg-accent text-bg font-bold rounded-lg text-sm hover:bg-accent-hover disabled:opacity-50"
+            >
+              {renameBusy ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={!!inviteFor} onClose={() => { setInviteFor(null); setInviteLink(null); setInviteErr(""); }}>
+        <div className="p-6 w-[560px] max-w-full space-y-3">
+          <h2 className="text-text text-base font-bold">
+            Invite link — {inviteFor?.name}
+          </h2>
+          <p className="text-text-dim text-xs leading-snug">
+            Anyone with this link can submit new credentials for
+            <span className="text-text"> {inviteFor?.app_name}</span>. The new
+            credentials replace the existing ones on submit. Default TTL: 1 hour.
+          </p>
+          {inviteBusy && <div className="text-text-dim text-xs">Generating…</div>}
+          {inviteErr && <div className="text-red text-xs">{inviteErr}</div>}
+          {inviteLink && (
+            <>
+              <div className="flex gap-2">
+                <input
+                  readOnly
+                  value={inviteLink.url}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="flex-1 bg-bg-input border border-border rounded-lg px-3 py-2 text-xs text-text font-mono focus:outline-none focus:border-accent"
+                />
+                <button
+                  onClick={copyInvite}
+                  className="px-3 py-2 border border-border rounded-lg text-xs text-text-muted hover:text-text"
+                >
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <div className="text-text-dim text-[10px]">
+                expires {new Date(inviteLink.expires_at).toLocaleString()}
+              </div>
+            </>
+          )}
+          <div className="flex justify-end pt-2">
+            <button
+              onClick={() => { setInviteFor(null); setInviteLink(null); setInviteErr(""); }}
+              className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
