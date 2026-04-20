@@ -591,6 +591,11 @@ export const mcpServers = {
 
   delete: (id: number) => request<any>("DELETE", `/mcp-servers/${id}`),
 
+  // Rename the canonical MCP server name. The new name is validated
+  // server-side (slug-like chars only) and must be unique per project.
+  rename: (id: number, name: string) =>
+    request<MCPServer>("PATCH", `/mcp-servers/${id}`, { name }),
+
   start: (id: number) =>
     request<{ status: string; tool_count: number; tools: MCPTool[] }>("POST", `/mcp-servers/${id}/start`),
 

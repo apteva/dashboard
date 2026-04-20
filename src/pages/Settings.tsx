@@ -708,6 +708,10 @@ function MCPServersTab() {
     selected: Set<string>;
   } | null>(null);
   const [scopeSaving, setScopeSaving] = useState(false);
+  const [renameMCP, setRenameMCP] = useState<MCPServer | null>(null);
+  const [renameMCPText, setRenameMCPText] = useState("");
+  const [renameMCPBusy, setRenameMCPBusy] = useState(false);
+  const [renameMCPErr, setRenameMCPErr] = useState("");
   const [showConfig, setShowConfig] = useState<Record<number, boolean>>({});
   const [testingTool, setTestingTool] = useState<{ serverId: number; tool: MCPTool } | null>(null);
   const [testArgs, setTestArgs] = useState<Record<string, string>>({});
@@ -721,6 +725,28 @@ function MCPServersTab() {
   const [composioSyncError, setComposioSyncError] = useState("");
 
   const load = () => mcpServers.list(currentProject?.id).then((s) => setServers(s || [])).catch(() => {});
+
+  const openRenameMCP = (s: MCPServer) => {
+    setRenameMCP(s);
+    setRenameMCPText(s.name);
+    setRenameMCPErr("");
+  };
+  const submitRenameMCP = async () => {
+    if (!renameMCP) return;
+    const next = renameMCPText.trim();
+    if (!next || next === renameMCP.name) { setRenameMCP(null); return; }
+    setRenameMCPBusy(true);
+    setRenameMCPErr("");
+    try {
+      await mcpServers.rename(renameMCP.id, next);
+      setRenameMCP(null);
+      load();
+    } catch (e: any) {
+      setRenameMCPErr(e?.message || "rename failed");
+    } finally {
+      setRenameMCPBusy(false);
+    }
+  };
   useEffect(() => {
     load();
     const i = setInterval(load, 5000);
@@ -1322,6 +1348,11 @@ function MCPServersTab() {
                     Start
                   </button>
                 )}
+                <button onClick={() => openRenameMCP(s)}
+                  className="text-sm text-text-muted hover:text-text transition-colors"
+                  title="Rename this MCP server (changes the canonical name agents use)">
+                  Rename
+                </button>
                 <button onClick={() => handleDelete(s.id)}
                   className="text-sm text-text-muted hover:text-red transition-colors">
                   Delete
@@ -1643,6 +1674,46 @@ function MCPServersTab() {
       </Modal>
 
       {/* Tool scope picker — select which tools this MCP server exposes */}
+      <Modal open={!!renameMCP} onClose={() => !renameMCPBusy && setRenameMCP(null)}>
+        <div className="p-6 w-[480px] max-w-full space-y-3">
+          <h2 className="text-text text-base font-bold">Rename MCP server</h2>
+          <p className="text-text-dim text-xs leading-snug">
+            This name is the canonical identifier agents use — it appears
+            as the tool-name prefix and as the <code>mcp=</code> argument
+            when sub-threads spawn. Running sub-threads that reference the
+            old name will need to be re-spawned after rename.
+          </p>
+          <input
+            value={renameMCPText}
+            onChange={(e) => setRenameMCPText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") submitRenameMCP(); }}
+            autoFocus
+            placeholder="slug-like-name"
+            className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text font-mono focus:outline-none focus:border-accent"
+          />
+          <div className="text-text-dim text-[10px]">
+            letters, digits, <code>-</code>, <code>_</code>, <code>.</code> only
+          </div>
+          {renameMCPErr && <div className="text-red text-xs">{renameMCPErr}</div>}
+          <div className="flex justify-end gap-3 pt-1">
+            <button
+              onClick={() => setRenameMCP(null)}
+              disabled={renameMCPBusy}
+              className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={submitRenameMCP}
+              disabled={renameMCPBusy || !renameMCPText.trim() || renameMCPText.trim() === renameMCP?.name}
+              className="px-4 py-2 bg-accent text-bg font-bold rounded-lg text-sm hover:bg-accent-hover disabled:opacity-50"
+            >
+              {renameMCPBusy ? "Saving…" : "Rename"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       <Modal open={!!scopeModal} onClose={() => setScopeModal(null)}>
         {scopeModal && (
           <div className="p-6 flex flex-col max-h-[80vh] min-w-[560px]">
