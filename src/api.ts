@@ -777,6 +777,11 @@ export interface MCPServerConfig {
   command?: string;
   args?: string[];
   main_access?: boolean;
+  // no_spawn marks an MCP as main-only: sub-threads can't attach it via
+  // spawn(mcp="..."). The host sets this on infrastructure servers
+  // (gateways, outbound bridges) that shouldn't be reachable from a
+  // worker. Display hint only — writes preserve the flag verbatim.
+  no_spawn?: boolean;
   connected?: boolean;     // present on GET, absent on PUT
 }
 
@@ -816,13 +821,14 @@ export const core = {
     }),
   setMode: (instanceId: number, mode: RunMode) =>
     request<{ status: string }>("PUT", `/instances/${instanceId}/config`, { mode }),
-  // Replace the full mcp_servers list on a running instance. The core runs
-  // reconcileMCP against the new list — servers in the list but not
-  // currently connected are connected, servers currently connected but not
-  // in the list are disconnected. System entries (apteva-server / channels)
-  // must be included in `servers` or they will be reaped by reconcile.
+  // Replace the full mcp_servers list on a running instance. The core
+  // runs reconcileMCP against the list: names present get attached /
+  // kept, names absent get disconnected. Always send the complete
+  // desired list — a partial write will disconnect anything missing.
   setMCPServers: (instanceId: number, servers: MCPServerConfig[]) =>
-    request<{ status: string }>("PUT", `/instances/${instanceId}/config`, { mcp_servers: servers }),
+    request<{ status: string }>("PUT", `/instances/${instanceId}/config`, {
+      mcp_servers: servers,
+    }),
   approve: (instanceId: number, approved: boolean) =>
     request<{ status: string }>("POST", `/instances/${instanceId}/approve`, { approved }),
 

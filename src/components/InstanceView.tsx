@@ -54,6 +54,11 @@ export function InstanceView({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [view, setView] = useState<"activity" | "fleet" | "cards" | "memory">("activity");
+  // Whether the channels MCP is currently attached to this instance.
+  // When the user detaches it via the MCP panel the chat bridge stops
+  // receiving user messages — we gray out the chat column to make that
+  // state obvious instead of silently dropping typed messages.
+  const [channelsAttached, setChannelsAttached] = useState(true);
 
   // Track threads, tools, thoughts, events for the fleet graph
   const [graphThreads, setGraphThreads] = useState<Thread[]>(initialThreads);
@@ -79,6 +84,35 @@ export function InstanceView({
     seenHandledOrderRef.current = [];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instance.id]);
+
+  // Poll instance config for the channels MCP presence so the chat
+  // panel can gray itself out when an operator detaches channels from
+  // the MCP list. 5s cadence matches the MCP panel's own refresh so
+  // the two views stay in sync.
+  useEffect(() => {
+    if (instance.status !== "running") {
+      setChannelsAttached(false);
+      return;
+    }
+    let cancelled = false;
+    const refresh = () => {
+      core.config(instance.id)
+        .then((c) => {
+          if (cancelled) return;
+          const has = (c.mcp_servers || []).some(
+            (s) => s.name === "channels" || s.name === "apteva-channels",
+          );
+          setChannelsAttached(has);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const t = setInterval(refresh, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [instance.id, instance.status]);
 
   // Telemetry SSE — single EventSource for the whole instance view,
   // owned HERE (not inside ChatPanel) so the right panel (Activity,
@@ -317,12 +351,25 @@ export function InstanceView({
       <div className="flex-1 flex min-h-0">
         {/* Chat panel — hidden in fleet view but stays mounted for SSE */}
         <div className={`border-r border-border ${view === "fleet" ? "w-0 min-w-0 overflow-hidden" : "w-1/3 min-w-[300px]"}`}>
-          {instance.status === "running" ? (
-            <ChatPanel instanceId={instance.id} subscribe={subscribe} onEvent={handleEvent} />
-          ) : (
+          {instance.status !== "running" ? (
             <div className="flex items-center justify-center h-full text-text-muted text-sm">
               Instance is stopped. Start it to begin chatting.
             </div>
+          ) : !channelsAttached ? (
+            <div className="relative h-full">
+              <div className="pointer-events-none opacity-40 h-full">
+                <ChatPanel instanceId={instance.id} subscribe={subscribe} onEvent={handleEvent} />
+              </div>
+              <div className="absolute inset-0 flex items-center justify-center p-6">
+                <div className="max-w-xs text-center text-xs text-text-dim bg-bg-card/90 border border-border rounded-lg p-4">
+                  Chat is disabled because the <code className="text-text-muted">channels</code> MCP
+                  is not attached. Re-attach it from the MCP panel to restore
+                  chat.
+                </div>
+              </div>
+            </div>
+          ) : (
+            <ChatPanel instanceId={instance.id} subscribe={subscribe} onEvent={handleEvent} />
           )}
         </div>
 

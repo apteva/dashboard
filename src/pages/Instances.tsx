@@ -54,6 +54,10 @@ export function Instances() {
   // poll from core.status so the list reflects how active each instance is
   // without needing full thread data.
   const [liveStatus, setLiveStatus] = useState<Record<number, { threads: number; iter: number; rate: string } | null>>({});
+  // Per-instance list of sub-threads (excluding "main") so the card can
+  // show what's actually running — id + pace + iter. Refreshed on the
+  // same 5s cadence as status. Empty array = no sub-threads.
+  const [subThreads, setSubThreads] = useState<Record<number, Array<{ id: string; rate: string; iter: number }>>>({});
 
   // Live activity strip — driven by the all-instances SSE stream below.
   // Single connection, server-side fan-out, so the page scales to many
@@ -105,6 +109,7 @@ export function Instances() {
       list.forEach((inst) => {
         if (inst.status !== "running") {
           setLiveStatus((prev) => ({ ...prev, [inst.id]: null }));
+          setSubThreads((prev) => ({ ...prev, [inst.id]: [] }));
           return;
         }
         core
@@ -114,6 +119,18 @@ export function Instances() {
               ...prev,
               [inst.id]: { threads: s.threads, iter: s.iteration, rate: s.rate },
             }));
+          })
+          .catch(() => {});
+        // Thread list — only if status says there are sub-threads, else
+        // skip the extra request to keep the list scan cheap. Filter out
+        // "main" since it's already surfaced via liveStatus.
+        core
+          .threads(inst.id)
+          .then((threads) => {
+            const subs = (threads || [])
+              .filter((t) => t.id !== "main")
+              .map((t) => ({ id: t.id, rate: t.rate, iter: t.iteration }));
+            setSubThreads((prev) => ({ ...prev, [inst.id]: subs }));
           })
           .catch(() => {});
       });
@@ -496,6 +513,43 @@ export function Instances() {
                           <span className="opacity-50">stopped</span>
                         )}
                       </div>
+                      {/* Sub-agents — one pill per child thread with its
+                          pace. Collapses to "+N more" past a small
+                          display cap so a noisy parent doesn't blow up
+                          the row height. */}
+                      {(() => {
+                        const subs = subThreads[inst.id] || [];
+                        if (subs.length === 0) return null;
+                        const cap = 4;
+                        const shown = subs.slice(0, cap);
+                        const extra = subs.length - shown.length;
+                        return (
+                          <div className="flex items-center flex-wrap gap-1.5 mt-1.5">
+                            {shown.map((s) => (
+                              <span
+                                key={s.id}
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${
+                                  s.rate === "reactive" ? "bg-green/15 text-green" :
+                                  s.rate === "fast" ? "bg-accent/15 text-accent" :
+                                  s.rate === "normal" ? "bg-blue/15 text-blue" :
+                                  s.rate === "slow" ? "bg-border text-text-muted" :
+                                  s.rate === "sleep" ? "bg-red/10 text-red/70" :
+                                  "bg-border text-text-muted"
+                                }`}
+                                title={`${s.id} · iter #${s.iter} · pace ${s.rate}`}
+                              >
+                                <span className="font-mono">{s.id}</span>
+                                <span className="opacity-60">#{s.iter}</span>
+                              </span>
+                            ))}
+                            {extra > 0 && (
+                              <span className="text-[10px] text-text-dim px-1.5 py-0.5">
+                                +{extra} more
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
                       {/* Live activity strip — shows the current thought
                           or active tool from the all-instances SSE stream.
                           Always reserves a fixed slot so the row never

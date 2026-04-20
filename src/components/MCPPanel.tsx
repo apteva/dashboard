@@ -3,10 +3,10 @@ import { core, mcpServers, type MCPServer, type MCPServerConfig } from "../api";
 import { Modal } from "./Modal";
 import { useProjects } from "../hooks/useProjects";
 
-// System entries cores inject into every instance's mcp_servers list. We
-// hide them from the user-facing list but preserve them on every write so
-// reconcileMCP doesn't reap them.
-const SYSTEM_MCP_NAMES = new Set(["apteva-server", "apteva-channels", "channels"]);
+// MCPs the host has flagged as main-only (no_spawn=true) get a
+// "system" badge instead of the main/catalog toggle. Detaching them
+// disconnects the feature they provide — e.g. removing the channels
+// bridge grays out chat.
 
 interface Props {
   instanceId: number;
@@ -61,13 +61,8 @@ export function MCPPanel({ instanceId, running }: Props) {
 
   if (!running) return null;
 
-  // Partition: system entries stay invisible but we keep a reference so
-  // we can re-include them on every PUT.
-  const userAttached = attached.filter((s) => !SYSTEM_MCP_NAMES.has(s.name));
-  const systemAttached = attached.filter((s) => SYSTEM_MCP_NAMES.has(s.name));
-
-  // For the picker we hide rows that are already attached, by name, and
-  // rows that are clearly not wirable (no proxy_config).
+  // For the picker we hide rows that are already attached, by name,
+  // and rows that are clearly not wirable (no proxy_config).
   const attachedNames = new Set(attached.map((s) => s.name));
   const attachable = inventory.filter(
     (s) => !!s.proxy_config && !attachedNames.has(s.proxy_config.name),
@@ -77,8 +72,9 @@ export function MCPPanel({ instanceId, running }: Props) {
     setBusy(true);
     setError("");
     try {
-      // Always include system entries so core's reconcile doesn't reap them.
-      await core.setMCPServers(instanceId, [...systemAttached, ...next]);
+      // include_system=true: the server honors our full list including
+      // system entries. An absent system entry will be disconnected.
+      await core.setMCPServers(instanceId, next, true);
       load();
     } catch (err: any) {
       setError(err?.message || "Failed to update MCP servers");
@@ -100,14 +96,14 @@ export function MCPPanel({ instanceId, running }: Props) {
       // main but the user can flip it in the picker before clicking.
       main_access: pickerMainAccess,
     };
-    await writeList([...userAttached, entry]);
+    await writeList([...attached, entry]);
     setPicker(false);
     // Reset picker state so next open starts from the default.
     setPickerMainAccess(true);
   };
 
   const handleDetach = async (name: string) => {
-    await writeList(userAttached.filter((s) => s.name !== name));
+    await writeList(attached.filter((s) => s.name !== name));
   };
 
   // Flip the main_access flag on an already-attached entry. Core's
@@ -125,7 +121,7 @@ export function MCPPanel({ instanceId, running }: Props) {
     <div className="px-4 py-3 border-b border-border">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-text-muted font-bold uppercase tracking-wide text-[10px]">
-          MCP Servers ({userAttached.length})
+          MCP Servers ({attached.length})
         </h3>
         <button
           onClick={() => setPicker(true)}
@@ -138,13 +134,14 @@ export function MCPPanel({ instanceId, running }: Props) {
 
       {error && <div className="text-red text-[10px] mb-2">{error}</div>}
 
-      {userAttached.length === 0 ? (
+      {attached.length === 0 ? (
         <div className="text-text-dim text-[10px]">
           None attached. Click + add to wire one from this project's inventory.
         </div>
       ) : (
         <div className="space-y-1">
-          {userAttached.map((s) => {
+          {attached.map((s) => {
+            const isSystem = !!s.no_spawn;
             // Treat undefined as the legacy default: the core used to
             // default undefined to main-access for any row lacking the
             // flag. We show the badge accordingly but don't rewrite the
@@ -158,30 +155,40 @@ export function MCPPanel({ instanceId, running }: Props) {
                   }`}
                 />
                 <span className="text-text truncate flex-1">{s.name}</span>
-                <button
-                  onClick={() => handleToggleMode(s.name)}
-                  disabled={busy}
-                  className={`text-[9px] px-1.5 py-[1px] rounded transition-colors disabled:opacity-50 ${
-                    isMain
-                      ? "bg-accent/15 text-accent hover:bg-accent/25"
-                      : "bg-bg-hover text-text-dim hover:text-text"
-                  }`}
-                  title={
-                    isMain
-                      ? "Main access — tools visible to root thread. Click to switch to catalog."
-                      : "Catalog — sub-threads must spawn with mcp=\"" +
-                        s.name +
-                        "\" to use these tools. Click to promote to main."
-                  }
-                >
-                  {isMain ? "main" : "catalog"}
-                </button>
+                {isSystem && (
+                  <span
+                    className="text-[9px] px-1.5 py-[1px] rounded bg-blue/15 text-blue"
+                    title="System MCP — injected at startup. Removing disables the feature (e.g. channels controls the chat bridge)."
+                  >
+                    system
+                  </span>
+                )}
+                {!isSystem && (
+                  <button
+                    onClick={() => handleToggleMode(s.name)}
+                    disabled={busy}
+                    className={`text-[9px] px-1.5 py-[1px] rounded transition-colors disabled:opacity-50 ${
+                      isMain
+                        ? "bg-accent/15 text-accent hover:bg-accent/25"
+                        : "bg-bg-hover text-text-dim hover:text-text"
+                    }`}
+                    title={
+                      isMain
+                        ? "Main access — tools visible to root thread. Click to switch to catalog."
+                        : "Catalog — sub-threads must spawn with mcp=\"" +
+                          s.name +
+                          "\" to use these tools. Click to promote to main."
+                    }
+                  >
+                    {isMain ? "main" : "catalog"}
+                  </button>
+                )}
                 <span className="text-text-dim text-[10px]">{s.transport || "stdio"}</span>
                 <button
                   onClick={() => handleDetach(s.name)}
                   disabled={busy}
                   className="text-text-muted hover:text-red transition-colors disabled:opacity-50 text-[10px] px-1"
-                  title="Detach from this agent"
+                  title={isSystem ? `Remove ${s.name} from this agent` : "Detach from this agent"}
                 >
                   ×
                 </button>

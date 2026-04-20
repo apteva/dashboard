@@ -60,12 +60,55 @@ function formatToolTime(ms: number): string {
   return `${months[d.getMonth()]} ${String(d.getDate()).padStart(2, "0")} ${hh}:${mm}`;
 }
 
-// Noisy internal tools that shouldn't clutter the Tool Calls list — same
-// filter the ChatPanel uses. Keep this in sync with ChatPanel.hiddenTools.
+// Noisy internal tools that clutter the Tool Calls list. `pace` fires on
+// every iteration-rate change (very often), `send`/`done` are glue
+// calls, and `channels_*` is the outbound chat bridge — none of these
+// tell the operator anything meaningful. Spawn/evolve/remember are the
+// opposite: they're the agent's "big decisions" — which worker did it
+// create, what rule did it just bake in, what did it decide to remember —
+// and should always surface.
 const hiddenTools = new Set([
-  "pace", "done", "evolve", "remember", "send",
+  "pace", "done", "send",
   "channels_respond", "channels_status",
 ]);
+
+// fmtK compacts token counts for the context gauge. Mirrors the helper
+// used in FleetCards so both views read the same way.
+function fmtK(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  return String(n);
+}
+
+// previewArgs builds a short summary for tool calls that didn't pass a
+// `_reason` themselves. The agent calls spawn/evolve/remember with
+// self-explanatory args (id + directive, new directive, remembered text)
+// so the tool-call row is more useful showing a snippet of those than
+// just the tool name.
+function previewArgs(name: string, args: Record<string, any> | undefined): string {
+  if (!args) return "";
+  const trim = (s: any, n: number) => {
+    const str = String(s || "").trim().replace(/\s+/g, " ");
+    return str.length > n ? str.slice(0, n) + "…" : str;
+  };
+  switch (name) {
+    case "spawn": {
+      const id = args.id || "";
+      const directive = trim(args.directive || args.prompt, 80);
+      return id ? `spawn ${id}${directive ? " — " + directive : ""}` : "";
+    }
+    case "evolve":
+      return "evolve: " + trim(args.directive, 120);
+    case "remember":
+      return "remember: " + trim(args.text, 120);
+    case "update":
+      return "update " + (args.id || "") + (args.directive ? " — " + trim(args.directive, 80) : "");
+    case "kill":
+      return "kill " + (args.id || "");
+    default:
+      return "";
+  }
+}
 
 interface Props {
   instance: Instance;
@@ -78,6 +121,16 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [thoughts, setThoughts] = useState<ThoughtEntry[]>([]);
   const [tools, setTools] = useState<ToolEntry[]>([]);
+  // Per-thread context-window snapshot from the most recent llm.done on
+  // that thread. Lets us render a "used / max (pct)" gauge for main and
+  // every sub-thread so operators can see at a glance which threads are
+  // running hot on their input window.
+  const [ctxByThread, setCtxByThread] = useState<Record<string, { tokensIn: number; max: number; msgs: number }>>({});
+  // Per-thread cumulative token totals + cost — every sub-thread emits
+  // its own llm.done so we bucket them by thread_id here. Lets the UI
+  // show who's burning what instead of just a single instance-wide sum.
+  type ThreadUsage = { in: number; cached: number; out: number; cost: number; calls: number };
+  const [usageByThread, setUsageByThread] = useState<Record<string, ThreadUsage>>({});
   const [incomingEvents, setIncomingEvents] = useState<IncomingEvent[]>([]);
   const [thinking, setThinking] = useState<Record<string, boolean>>({}); // threadId → thinking
   const [mode, setMode] = useState<RunMode>(
@@ -92,6 +145,8 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
     setTools([]);
     setIncomingEvents([]);
     setThinking({});
+    setCtxByThread({});
+    setUsageByThread({});
   }, [instance.id]);
 
   // Re-render every 500ms for decay animation + GC of faded entries.
@@ -246,6 +301,41 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
         delete next[event.thread_id || "main"];
         return next;
       });
+      // Snapshot context-window stats for this thread. The llm.done
+      // payload carries tokens_in + max_context_tokens every turn, so
+      // we just overwrite the map entry and let the UI render the
+      // latest. `main` uses event.thread_id = "main" or empty depending
+      // on core version; normalise to "main" for the status gauge.
+      const tid = event.thread_id || "main";
+      const tokensIn = Number(data.tokens_in || 0);
+      const max = Number(data.max_context_tokens || 0);
+      const msgs = Number(data.context_msgs || 0);
+      if (tokensIn > 0 || max > 0) {
+        setCtxByThread((prev) => ({ ...prev, [tid]: { tokensIn, max, msgs } }));
+      }
+      // Cumulative token + cost per thread — add THIS turn's usage to
+      // the running total. Unlike ctxByThread (a snapshot overwritten
+      // every turn), this is a sum across every llm.done the thread
+      // has emitted so far.
+      const deltaIn = Number(data.tokens_in || 0);
+      const deltaCached = Number(data.tokens_cached || 0);
+      const deltaOut = Number(data.tokens_out || 0);
+      const deltaCost = Number(data.cost_usd || 0);
+      if (deltaIn > 0 || deltaOut > 0 || deltaCost > 0) {
+        setUsageByThread((prev) => {
+          const cur = prev[tid] || { in: 0, cached: 0, out: 0, cost: 0, calls: 0 };
+          return {
+            ...prev,
+            [tid]: {
+              in: cur.in + deltaIn,
+              cached: cur.cached + deltaCached,
+              out: cur.out + deltaOut,
+              cost: cur.cost + deltaCost,
+              calls: cur.calls + 1,
+            },
+          };
+        });
+      }
       setThoughts((prev) => {
         // Flip EVERY streaming entry for this thread, not just the last
         // one. The "one streaming entry per llm.done" invariant breaks
@@ -287,11 +377,15 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
     if (event.type === "tool.call" && toolName && !toolHidden) {
       const callId = String(data.id || event.id || "");
       const eventTime = event.time ? new Date(event.time).getTime() : Date.now();
+      // Prefer the agent-provided _reason (captured by core as data.reason)
+      // and fall back to a summary of the key args for spawn/evolve/remember
+      // so the row is still informative when the LLM didn't attach one.
+      const reason = data.reason || previewArgs(toolName, data.args);
       setTools((prev) => {
         // Dedup: skip if a tool entry with this id already exists
         if (callId && prev.some((t) => t.id === callId)) return prev;
         return [...prev, {
-          id: callId, name: toolName, reason: data.reason || "",
+          id: callId, name: toolName, reason,
           threadId: event.thread_id, done: false, time: eventTime,
         }].slice(-20);
       });
@@ -428,6 +522,46 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
             <span>model</span><span className="text-text truncate">{status.model}</span>
             <span>uptime</span><span className="text-text">{formatUptime(status.uptime_seconds)}</span>
             <span>memory</span><span className="text-text">{status.memories}</span>
+            {(() => {
+              const u = usageByThread["main"];
+              if (!u || u.calls === 0) return null;
+              return (
+                <>
+                  <span>tokens</span>
+                  <span
+                    className="text-text"
+                    title={`${u.in.toLocaleString()} in (${u.cached.toLocaleString()} cached) · ${u.out.toLocaleString()} out · ${u.calls} calls`}
+                  >
+                    {fmtK(u.in)} in · {fmtK(u.out)} out
+                  </span>
+                  <span>cost</span>
+                  <span className="text-text">${u.cost.toFixed(4)}</span>
+                </>
+              );
+            })()}
+            {(() => {
+              const c = ctxByThread["main"];
+              if (!c || c.tokensIn === 0) return null;
+              const pct = c.max > 0 ? Math.min(100, Math.round((c.tokensIn / c.max) * 100)) : 0;
+              const pctColor = pct >= 90 ? "text-red" : pct >= 70 ? "text-yellow-500" : "text-text";
+              const barColor = pct >= 90 ? "bg-red" : pct >= 70 ? "bg-yellow-500" : "bg-accent";
+              return (
+                <>
+                  <span>context</span>
+                  <span className="flex flex-col gap-0.5">
+                    <span className={pctColor}>
+                      {fmtK(c.tokensIn)}
+                      {c.max > 0 && <> / {fmtK(c.max)} ({pct}%)</>}
+                    </span>
+                    {c.max > 0 && (
+                      <span className="inline-block h-1 w-full bg-border rounded overflow-hidden">
+                        <span className={`block h-full ${barColor}`} style={{ width: `${pct}%` }} />
+                      </span>
+                    )}
+                  </span>
+                </>
+              );
+            })()}
           </div>
         )}
       </div>
@@ -488,6 +622,35 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
                       t.rate === "sleep" ? "bg-red/10 text-red/70" :
                       "bg-border text-text-muted"
                     }`}>{t.rate}</span>
+                    {(() => {
+                      const c = ctxByThread[t.id];
+                      if (!c || c.tokensIn === 0) return null;
+                      const pct = c.max > 0 ? Math.min(100, Math.round((c.tokensIn / c.max) * 100)) : 0;
+                      const color = pct >= 90 ? "text-red" : pct >= 70 ? "text-yellow-500" : "text-text-muted";
+                      const label = c.max > 0
+                        ? `${fmtK(c.tokensIn)}/${fmtK(c.max)} (${pct}%)`
+                        : fmtK(c.tokensIn);
+                      return (
+                        <span
+                          className={`shrink-0 text-[10px] ${color}`}
+                          title={`context: ${c.tokensIn.toLocaleString()}${c.max > 0 ? ` / ${c.max.toLocaleString()} tokens` : ""}`}
+                        >
+                          ctx {label}
+                        </span>
+                      );
+                    })()}
+                    {(() => {
+                      const u = usageByThread[t.id];
+                      if (!u || u.calls === 0) return null;
+                      return (
+                        <span
+                          className="shrink-0 text-[10px] text-text-dim"
+                          title={`${u.in.toLocaleString()} in (${u.cached.toLocaleString()} cached) · ${u.out.toLocaleString()} out · ${u.calls} llm calls`}
+                        >
+                          {fmtK(u.in + u.out)}tok · ${u.cost.toFixed(4)}
+                        </span>
+                      );
+                    })()}
                     {t.model && (
                       <span className="text-text-dim shrink-0 text-[10px]">
                         {t.model}
