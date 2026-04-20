@@ -591,10 +591,12 @@ export const mcpServers = {
 
   delete: (id: number) => request<any>("DELETE", `/mcp-servers/${id}`),
 
-  // Rename the canonical MCP server name. The new name is validated
-  // server-side (slug-like chars only) and must be unique per project.
-  rename: (id: number, name: string) =>
-    request<MCPServer>("PATCH", `/mcp-servers/${id}`, { name }),
+  // Update the display name (description) of an MCP server row. The
+  // canonical slug (MCPServer.name) is NOT touched — it's used as the
+  // tool-name prefix and mcp= spawn argument, so changing it would
+  // break already-running agents. This is a cosmetic label change only.
+  rename: (id: number, description: string) =>
+    request<MCPServer>("PATCH", `/mcp-servers/${id}`, { description }),
 
   start: (id: number) =>
     request<{ status: string; tool_count: number; tools: MCPTool[] }>("POST", `/mcp-servers/${id}/start`),

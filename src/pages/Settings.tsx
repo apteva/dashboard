@@ -728,13 +728,13 @@ function MCPServersTab() {
 
   const openRenameMCP = (s: MCPServer) => {
     setRenameMCP(s);
-    setRenameMCPText(s.name);
+    setRenameMCPText(s.description || s.name);
     setRenameMCPErr("");
   };
   const submitRenameMCP = async () => {
     if (!renameMCP) return;
     const next = renameMCPText.trim();
-    if (!next || next === renameMCP.name) { setRenameMCP(null); return; }
+    if (!next || next === (renameMCP.description || renameMCP.name)) { setRenameMCP(null); return; }
     setRenameMCPBusy(true);
     setRenameMCPErr("");
     try {
@@ -1678,22 +1678,20 @@ function MCPServersTab() {
         <div className="p-6 w-[480px] max-w-full space-y-3">
           <h2 className="text-text text-base font-bold">Rename MCP server</h2>
           <p className="text-text-dim text-xs leading-snug">
-            This name is the canonical identifier agents use — it appears
-            as the tool-name prefix and as the <code>mcp=</code> argument
-            when sub-threads spawn. Running sub-threads that reference the
-            old name will need to be re-spawned after rename.
+            Changes the display name only. The underlying slug
+            {renameMCP && (
+              <> — <code className="text-text-muted">{renameMCP.name}</code> — </>
+            )}
+            stays the same, so agents that reference this server keep
+            working.
           </p>
           <input
             value={renameMCPText}
             onChange={(e) => setRenameMCPText(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") submitRenameMCP(); }}
             autoFocus
-            placeholder="slug-like-name"
-            className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text font-mono focus:outline-none focus:border-accent"
+            className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
           />
-          <div className="text-text-dim text-[10px]">
-            letters, digits, <code>-</code>, <code>_</code>, <code>.</code> only
-          </div>
           {renameMCPErr && <div className="text-red text-xs">{renameMCPErr}</div>}
           <div className="flex justify-end gap-3 pt-1">
             <button
@@ -1705,7 +1703,7 @@ function MCPServersTab() {
             </button>
             <button
               onClick={submitRenameMCP}
-              disabled={renameMCPBusy || !renameMCPText.trim() || renameMCPText.trim() === renameMCP?.name}
+              disabled={renameMCPBusy || !renameMCPText.trim() || renameMCPText.trim() === (renameMCP?.description || renameMCP?.name)}
               className="px-4 py-2 bg-accent text-bg font-bold rounded-lg text-sm hover:bg-accent-hover disabled:opacity-50"
             >
               {renameMCPBusy ? "Saving…" : "Rename"}
