@@ -3,6 +3,7 @@ import { core, instances, type Instance, type RunMode, type Status, type Thread 
 import type { SubscribeFn } from "./InstanceView";
 import { MCPPanel } from "./MCPPanel";
 import { ComputerPanel } from "./ComputerPanel";
+import { Modal } from "./Modal";
 
 interface ThoughtEntry {
   threadId: string;
@@ -22,6 +23,16 @@ interface ToolEntry {
   durationMs?: number;
   success?: boolean;
   time: number;
+  // streaming lifecycle for a call the LLM is still writing:
+  //   state = "streaming" — tool_chunk deltas are still arriving, args partial.
+  //   state = "called"    — tool.call has fired, args complete, execution in flight.
+  //   state = "done"      — tool.result has landed.
+  // All tools (built-in like spawn/evolve AND MCP) go through the same
+  // `onToolChunk` path in core/thinker.go, so this applies uniformly.
+  state: "streaming" | "called" | "done";
+  streamingArgs?: string;        // accumulated raw JSON fragment from llm.tool_chunk
+  streamKey?: string;             // thread_id#iter#toolName — used to match chunks to the eventual tool.call
+  iteration?: number;
 }
 
 // IncomingEvent mirrors the CLI's "incoming events on thread" line — each
@@ -114,9 +125,14 @@ interface Props {
   instance: Instance;
   subscribe: SubscribeFn; // synchronous event fan-out from InstanceView's SSE
   onReload: () => void;
+  // Optional: open the ThreadDetailModal for a thread id. When set, each
+  // thread row in the Threads section becomes clickable and routes here.
+  // Leaving unset keeps the panel read-only (useful in contexts that
+  // don't render the detail modal).
+  onThreadOpen?: (threadId: string) => void;
 }
 
-export function ActivityPanel({ instance, subscribe, onReload }: Props) {
+export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: Props) {
   const [status, setStatus] = useState<Status | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [thoughts, setThoughts] = useState<ThoughtEntry[]>([]);
@@ -131,8 +147,19 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
   // show who's burning what instead of just a single instance-wide sum.
   type ThreadUsage = { in: number; cached: number; out: number; cost: number; calls: number };
   const [usageByThread, setUsageByThread] = useState<Record<string, ThreadUsage>>({});
+  // Kill-thread confirmation: stash the target thread id; Modal
+  // renders when non-null. Kept separate from other panel state so
+  // the destructive confirm has its own lifecycle.
+  const [killTargetId, setKillTargetId] = useState<string | null>(null);
+  const [killBusy, setKillBusy] = useState(false);
+  const [killErr, setKillErr] = useState("");
   const [incomingEvents, setIncomingEvents] = useState<IncomingEvent[]>([]);
   const [thinking, setThinking] = useState<Record<string, boolean>>({}); // threadId → thinking
+  // Thoughts are truncated to 150 chars in the panel to keep the rail
+  // readable. Clicking one expands it in place — state is keyed by
+  // threadId#iteration so the expansion survives re-renders even as
+  // the thoughts array grows and the slice(-6) window slides.
+  const [expandedThoughts, setExpandedThoughts] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<RunMode>(
     (instance.mode as RunMode) || "autonomous",
   );
@@ -374,6 +401,45 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
     const toolName = String(data.name || "");
     const toolHidden = hiddenTools.has(toolName) || toolName.startsWith("channels_");
 
+    // llm.tool_chunk arrives BEFORE tool.call — the LLM is still streaming the
+    // argument JSON. Same callback fires for built-ins (spawn, evolve) and MCP
+    // tools (core/thinker.go:1588 onToolChunk). We open a streaming entry on
+    // first chunk and accumulate, so the UI shows args materialising in real
+    // time instead of popping in only when the call is dispatched.
+    if (event.type === "llm.tool_chunk") {
+      const chunkTool = String(data.tool || "");
+      if (!chunkTool) return;
+      if (hiddenTools.has(chunkTool) || chunkTool.startsWith("channels_")) return;
+      const chunk = String(data.chunk || "");
+      const iter = Number(data.iteration) || 0;
+      const threadId = event.thread_id || "main";
+      const key = `${threadId}#${iter}#${chunkTool}`;
+      const now = event.time ? new Date(event.time).getTime() : Date.now();
+      setTools((prev) => {
+        const updated = [...prev];
+        // Match an existing streaming entry first (same thread+iter+tool).
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].state === "streaming" && updated[i].streamKey === key) {
+            updated[i] = {
+              ...updated[i],
+              streamingArgs: (updated[i].streamingArgs || "") + chunk,
+            };
+            return updated;
+          }
+        }
+        // First chunk for this (thread, iter, tool) — open a new entry.
+        return [...updated, {
+          id: "", name: chunkTool, reason: "",
+          threadId, done: false, time: now,
+          state: "streaming",
+          streamingArgs: chunk,
+          streamKey: key,
+          iteration: iter,
+        }].slice(-20);
+      });
+      return;
+    }
+
     if (event.type === "tool.call" && toolName && !toolHidden) {
       const callId = String(data.id || event.id || "");
       const eventTime = event.time ? new Date(event.time).getTime() : Date.now();
@@ -381,12 +447,35 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
       // and fall back to a summary of the key args for spawn/evolve/remember
       // so the row is still informative when the LLM didn't attach one.
       const reason = data.reason || previewArgs(toolName, data.args);
+      const iter = Number(data.iteration) || 0;
+      const threadId = event.thread_id || "main";
+      const streamKey = `${threadId}#${iter}#${toolName}`;
       setTools((prev) => {
-        // Dedup: skip if a tool entry with this id already exists
-        if (callId && prev.some((t) => t.id === callId)) return prev;
-        return [...prev, {
+        // Dedup: skip if a tool entry with this call id already exists.
+        if (callId && prev.some((t) => t.id === callId && t.state !== "streaming")) return prev;
+        const updated = [...prev];
+        // Upgrade a matching streaming entry in place instead of adding a
+        // second row. Matching by streamKey is tighter than name because a
+        // single LLM turn can emit two calls to the same tool with
+        // different args.
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].state === "streaming" && updated[i].streamKey === streamKey) {
+            updated[i] = {
+              ...updated[i],
+              id: callId,
+              reason,
+              state: "called",
+              time: eventTime,
+            };
+            return updated;
+          }
+        }
+        return [...updated, {
           id: callId, name: toolName, reason,
-          threadId: event.thread_id, done: false, time: eventTime,
+          threadId, done: false, time: eventTime,
+          state: "called",
+          iteration: iter,
+          streamKey,
         }].slice(-20);
       });
     }
@@ -398,13 +487,13 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
         // Match by stable call id first, fall back to name
         for (let i = updated.length - 1; i >= 0; i--) {
           if (callId && updated[i].id === callId) {
-            updated[i] = { ...updated[i], done: true, durationMs: data.duration_ms, success: data.success !== false };
+            updated[i] = { ...updated[i], done: true, state: "done", durationMs: data.duration_ms, success: data.success !== false };
             return updated;
           }
         }
         for (let i = updated.length - 1; i >= 0; i--) {
           if (!updated[i].done && updated[i].name === toolName) {
-            updated[i] = { ...updated[i], done: true, durationMs: data.duration_ms, success: data.success !== false };
+            updated[i] = { ...updated[i], done: true, state: "done", durationMs: data.duration_ms, success: data.success !== false };
             return updated;
           }
         }
@@ -605,7 +694,9 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
                 <div
                   key={t.id}
                   style={{ paddingLeft: `${indent}px` }}
-                  className="space-y-1"
+                  className={`space-y-1 ${onThreadOpen ? "cursor-pointer hover:bg-bg-hover/40 rounded px-1 -mx-1 transition-colors" : ""}`}
+                  onClick={onThreadOpen ? () => onThreadOpen(t.id) : undefined}
+                  title={onThreadOpen ? "Open thread — live events, history, and context" : undefined}
                 >
                   {/* Header row: id + iter + rate + (optional active-tool spinner) */}
                   <div className="flex items-center gap-1.5">
@@ -665,6 +756,19 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
                       <span className="text-accent tool-active-line shrink-0 ml-auto text-[10px]">
                         ⟳ {activeToolByThread[t.id]}
                       </span>
+                    )}
+                    {!isMain && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setKillErr("");
+                          setKillTargetId(t.id);
+                        }}
+                        className="ml-auto shrink-0 text-text-muted hover:text-red transition-colors text-[10px] px-1"
+                        title="Kill this sub-thread"
+                      >
+                        ✕
+                      </button>
                     )}
                   </div>
 
@@ -768,17 +872,47 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
         <div className="px-4 py-3 border-b border-border">
           <h3 className="text-text-muted font-bold mb-2 uppercase tracking-wide text-[10px]">Tool Calls</h3>
           <div className="space-y-1.5">
-            {tools.slice(-8).map((t) => {
+            {tools.slice(-8).map((t, idx) => {
               const ts = formatToolTime(t.time);
-              const opacity = t.done
+              const opacity = t.state === "done"
                 ? Math.max(0.05, 1 - (Date.now() - t.time) / TOOL_FADE_MS)
                 : 1;
-              if (t.done) {
+              // React key: id is only set after tool.call fires. During
+              // streaming we key off streamKey + index so the row is
+              // stable across chunk ticks.
+              const rowKey = t.id || t.streamKey || `idx-${idx}`;
+
+              // --- 1. streaming: args JSON materialising live ---
+              if (t.state === "streaming") {
+                const args = (t.streamingArgs || "").trim();
+                return (
+                  <div key={rowKey} className="min-w-0">
+                    <div className="flex items-center gap-1.5 tool-active-line min-w-0">
+                      <span className="text-yellow shrink-0 animate-pulse">◐</span>
+                      <span className="text-yellow shrink-0 font-mono">{t.name}</span>
+                      <span className="text-text-dim shrink-0">starting…</span>
+                    </div>
+                    {args && (
+                      <pre className="text-[10px] text-text-dim pl-[18px] font-mono whitespace-pre-wrap break-all max-h-20 overflow-y-auto leading-tight">
+                        {args}
+                      </pre>
+                    )}
+                    <div className="flex items-center gap-1.5 text-[10px] text-text-dim pl-[18px]">
+                      <span>{ts}</span>
+                      <span>·</span>
+                      <span className="truncate">{t.threadId || "main"}</span>
+                    </div>
+                  </div>
+                );
+              }
+
+              // --- 2. done: completed call, fades over TOOL_FADE_MS ---
+              if (t.state === "done") {
                 const dur = t.durationMs != null
                   ? t.durationMs >= 1000 ? `${(t.durationMs / 1000).toFixed(1)}s` : `${t.durationMs}ms`
                   : "";
                 return (
-                  <div key={t.id} className="min-w-0" style={{ opacity }}>
+                  <div key={rowKey} className="min-w-0" style={{ opacity }}>
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className={t.success ? "text-green" : "text-red"}>✓</span>
                       {t.reason ? (
@@ -796,8 +930,10 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
                   </div>
                 );
               }
+
+              // --- 3. called: args finalized, execution in flight ---
               return (
-                <div key={t.id} className="min-w-0">
+                <div key={rowKey} className="min-w-0">
                   <div className="flex items-center gap-1.5 tool-active-line min-w-0">
                     <span className="text-accent shrink-0">⟳</span>
                     {t.reason ? (
@@ -872,33 +1008,100 @@ export function ActivityPanel({ instance, subscribe, onReload }: Props) {
         <div className="px-4 py-3 flex-1">
           <h3 className="text-text-muted font-bold mb-2 uppercase tracking-wide text-[10px]">Thoughts</h3>
           <div className="space-y-2">
-            {thoughts.slice(-6).map((t, i) => (
-              <div key={i}>
-                <div className="flex items-center gap-1.5 mb-0.5">
-                  {t.streaming && (
-                    <span
-                      className="w-1.5 h-1.5 rounded-full animate-pulse"
-                      style={{ backgroundColor: t.reasoning ? "#a78bfa" : "var(--color-accent)" }}
-                    />
-                  )}
-                  {t.reasoning && (
-                    <span className="text-[9px] uppercase font-bold" style={{ color: "#a78bfa" }}>reasoning</span>
-                  )}
-                  <span className="text-text-muted">{t.threadId}</span>
-                  <span className="text-text-dim ml-auto">#{t.iteration}</span>
+            {thoughts.slice(-6).map((t, i) => {
+              const key = `${t.threadId}#${t.iteration}`;
+              const expanded = expandedThoughts.has(key);
+              const truncated = t.text.length > 150;
+              const display = expanded || !truncated ? t.text : t.text.slice(0, 150) + "...";
+              return (
+                <div key={i}>
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    {t.streaming && (
+                      <span
+                        className="w-1.5 h-1.5 rounded-full animate-pulse"
+                        style={{ backgroundColor: t.reasoning ? "#a78bfa" : "var(--color-accent)" }}
+                      />
+                    )}
+                    {t.reasoning && (
+                      <span className="text-[9px] uppercase font-bold" style={{ color: "#a78bfa" }}>reasoning</span>
+                    )}
+                    <span className="text-text-muted">{t.threadId}</span>
+                    <span className="text-text-dim ml-auto">#{t.iteration}</span>
+                  </div>
+                  <p
+                    onClick={
+                      truncated
+                        ? () =>
+                            setExpandedThoughts((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(key)) next.delete(key);
+                              else next.add(key);
+                              return next;
+                            })
+                        : undefined
+                    }
+                    className={`leading-relaxed ${t.streaming && !t.reasoning ? "text-text" : "text-text-dim"} ${truncated ? "cursor-pointer hover:text-text" : ""}`}
+                    style={t.streaming && t.reasoning ? { color: "#c4b5fd", fontStyle: "italic" } : undefined}
+                    title={truncated ? (expanded ? "Click to collapse" : "Click to expand") : undefined}
+                  >
+                    {display}
+                    {t.streaming && <span className="tool-cursor">▊</span>}
+                    {truncated && !t.streaming && (
+                      <span className="text-text-dim text-[9px] ml-1">
+                        {expanded ? "[collapse]" : "[expand]"}
+                      </span>
+                    )}
+                  </p>
                 </div>
-                <p
-                  className={`leading-relaxed ${t.streaming && !t.reasoning ? "text-text" : "text-text-dim"}`}
-                  style={t.streaming && t.reasoning ? { color: "#c4b5fd", fontStyle: "italic" } : undefined}
-                >
-                  {t.text.length > 150 ? t.text.slice(0, 150) + "..." : t.text}
-                  {t.streaming && <span className="tool-cursor">▊</span>}
-                </p>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
+
+      <Modal open={!!killTargetId} onClose={() => !killBusy && setKillTargetId(null)}>
+        <div className="p-6 w-[480px] max-w-full space-y-3">
+          <h2 className="text-text text-base font-bold">
+            Kill thread <code className="text-text-muted">{killTargetId}</code>?
+          </h2>
+          <p className="text-text-dim text-xs leading-snug">
+            The thread stops iterating immediately and is removed from
+            the persisted config so it won't respawn on the next boot.
+            Its children (if any) get killed too. This can't be undone —
+            you'd have to re-spawn from the parent directive.
+          </p>
+          {killErr && <div className="text-red text-xs">{killErr}</div>}
+          <div className="flex justify-end gap-3 pt-1">
+            <button
+              onClick={() => setKillTargetId(null)}
+              disabled={killBusy}
+              className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={async () => {
+                if (!killTargetId) return;
+                setKillBusy(true);
+                setKillErr("");
+                try {
+                  await core.killThread(instance.id, killTargetId);
+                  setThreads((prev) => prev.filter((x) => x.id !== killTargetId));
+                  setKillTargetId(null);
+                } catch (e: any) {
+                  setKillErr(e?.message || "kill failed");
+                } finally {
+                  setKillBusy(false);
+                }
+              }}
+              disabled={killBusy}
+              className="px-4 py-2 bg-red text-white font-bold rounded-lg text-sm hover:opacity-90 disabled:opacity-50"
+            >
+              {killBusy ? "Killing…" : "Kill"}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

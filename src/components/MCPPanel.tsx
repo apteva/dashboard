@@ -31,12 +31,19 @@ export function MCPPanel({ instanceId, running }: Props) {
   const [pickerMainAccess, setPickerMainAccess] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Sticky notice when a system MCP was just enabled on a running
+  // instance — the flag takes effect only on the next Start(), so we
+  // prompt the user to restart. Cleared when the modal is reopened or
+  // the user restarts.
+  const [restartNotice, setRestartNotice] = useState<string | null>(null);
 
+  // MCP list comes from GET /config on the server. When the instance
+  // is running this proxies to core; when stopped it falls back to
+  // config.json via serveStoppedInstanceData. Either way we render
+  // the same attached list so the user can still add/remove MCPs.
+  // Polling is disabled while stopped — nothing will change on its
+  // own there.
   const load = () => {
-    if (!running) {
-      setAttached([]);
-      return;
-    }
     core
       .config(instanceId)
       .then((c) => setAttached(c.mcp_servers || []))
@@ -59,13 +66,37 @@ export function MCPPanel({ instanceId, running }: Props) {
       .catch(() => setInventory([]));
   }, [picker, currentProject?.id]);
 
-  if (!running) return null;
+  // Render the panel for stopped instances too — add/remove still
+  // works because the server persists to config.json and the agent
+  // picks it up on next start.
 
   // For the picker we hide rows that are already attached, by name,
   // and rows that are clearly not wirable (no proxy_config).
   const attachedNames = new Set(attached.map((s) => s.name));
   const attachable = inventory.filter(
     (s) => !!s.proxy_config && !attachedNames.has(s.proxy_config.name),
+  );
+  // System MCPs are injected by the server at instance Start() based on
+  // the include_apteva_server / include_channels flags — they aren't in
+  // the project inventory. When one is missing from the attached list
+  // we surface it here so the user can re-enable it without having to
+  // recreate the instance. Name alias "apteva-channels" is kept in sync
+  // with the server-side detection (instances.go:1329).
+  const systemMCPMissing = [
+    {
+      name: "apteva-server" as const,
+      label: "Apteva server (gateway)",
+      hint: "Main gets the instance management tools (create instance, list threads, edit config).",
+    },
+    {
+      name: "channels" as const,
+      label: "Channels (chat bridge)",
+      hint: "Outbound user-facing chat / Slack / email. Without this, the agent can't reply to channel messages.",
+    },
+  ].filter(
+    (m) =>
+      !attachedNames.has(m.name) &&
+      !(m.name === "channels" && attachedNames.has("apteva-channels")),
   );
 
   const writeList = async (next: MCPServerConfig[]) => {
@@ -78,6 +109,24 @@ export function MCPPanel({ instanceId, running }: Props) {
       load();
     } catch (err: any) {
       setError(err?.message || "Failed to update MCP servers");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleEnableSystem = async (name: "apteva-server" | "channels", label: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await core.toggleSystemMCP(instanceId, name, true);
+      if (res.restart_required) {
+        setRestartNotice(
+          `${label} will attach on the next restart. Stop and start the instance to apply.`,
+        );
+      }
+      load();
+    } catch (err: any) {
+      setError(err?.message || `Failed to enable ${name}`);
     } finally {
       setBusy(false);
     }
@@ -97,9 +146,6 @@ export function MCPPanel({ instanceId, running }: Props) {
       main_access: pickerMainAccess,
     };
     await writeList([...attached, entry]);
-    setPicker(false);
-    // Reset picker state so next open starts from the default.
-    setPickerMainAccess(true);
   };
 
   const handleDetach = async (name: string) => {
@@ -133,6 +179,19 @@ export function MCPPanel({ instanceId, running }: Props) {
       </div>
 
       {error && <div className="text-red text-[10px] mb-2">{error}</div>}
+      {restartNotice && (
+        <div className="flex items-start gap-1.5 text-[10px] mb-2 text-yellow-500 bg-yellow-500/10 border border-yellow-500/30 rounded px-2 py-1.5">
+          <span className="shrink-0">⚠</span>
+          <span className="flex-1">{restartNotice}</span>
+          <button
+            onClick={() => setRestartNotice(null)}
+            className="shrink-0 text-text-muted hover:text-text"
+            title="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {attached.length === 0 ? (
         <div className="text-text-dim text-[10px]">
@@ -199,7 +258,13 @@ export function MCPPanel({ instanceId, running }: Props) {
       )}
 
       {/* Picker modal */}
-      <Modal open={picker} onClose={() => setPicker(false)}>
+      <Modal
+        open={picker}
+        onClose={() => {
+          setPicker(false);
+          setPickerMainAccess(true);
+        }}
+      >
         <div className="p-6 max-h-[70vh] flex flex-col min-w-[480px]">
           <div className="shrink-0 mb-4">
             <h3 className="text-text text-base font-bold">Attach MCP server</h3>
@@ -254,7 +319,42 @@ export function MCPPanel({ instanceId, running }: Props) {
           </div>
 
           <div className="flex-1 overflow-y-auto space-y-2">
-            {attachable.length === 0 && (
+            {/* System MCPs — apteva-server + channels. The server
+                injects these at Start() based on the include_* flags.
+                If they're not currently attached, expose an Enable
+                button here so a user who opted out at creation (or
+                detached later) can bring them back without recreating
+                the instance. */}
+            {systemMCPMissing.length > 0 && (
+              <div className="border border-blue/30 rounded-lg p-3 bg-blue/5">
+                <div className="text-[10px] text-blue uppercase tracking-wide font-bold mb-2">
+                  System MCPs
+                </div>
+                <div className="space-y-2">
+                  {systemMCPMissing.map((m) => (
+                    <button
+                      key={m.name}
+                      onClick={() => {
+                        handleEnableSystem(m.name, m.label);
+                      }}
+                      disabled={busy}
+                      className="w-full text-left border border-border bg-bg-card rounded-lg p-3 hover:border-blue transition-colors disabled:opacity-50"
+                    >
+                      <div className="flex items-center gap-2 text-sm font-bold">
+                        <span className="text-blue">+</span>
+                        <span className="text-text">{m.label}</span>
+                        <code className="text-[10px] px-1.5 py-0.5 rounded bg-bg-input text-text-muted font-mono">
+                          {m.name}
+                        </code>
+                        <span className="ml-auto text-[10px] text-text-dim">restart to apply</span>
+                      </div>
+                      <div className="text-[10px] text-text-muted mt-1">{m.hint}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {attachable.length === 0 && systemMCPMissing.length === 0 && (
               <p className="text-text-muted text-sm">
                 No unattached servers in this project. Add one in Settings → MCP Servers,
                 or connect a Composio integration.
@@ -313,7 +413,10 @@ export function MCPPanel({ instanceId, running }: Props) {
           </div>
           <div className="shrink-0 flex justify-end pt-3">
             <button
-              onClick={() => setPicker(false)}
+              onClick={() => {
+                setPicker(false);
+                setPickerMainAccess(true);
+              }}
               className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
             >
               Close

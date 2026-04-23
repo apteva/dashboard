@@ -1,11 +1,14 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useProjects } from "../hooks/useProjects";
+import { useAuth } from "../hooks/useAuth";
+import { AccountMenu } from "./AccountMenu";
 
 export function Layout() {
   const [version, setVersion] = useState("");
   const [versionTip, setVersionTip] = useState("");
   const { projects, currentProject, setCurrentProject } = useProjects();
+  const { user, logout } = useAuth();
 
   useEffect(() => {
     // /version now returns the full component breakdown — apteva (umbrella),
@@ -87,6 +90,12 @@ export function Layout() {
             </NavLink>
           ))}
         </div>
+        {/* Logged-in user + account menu (change password, logout). Rendered
+            above the version line so it sits in the same footer area. */}
+        {user && user !== false && (
+          <AccountMenu user={user} onLogout={logout} />
+        )}
+
         {version && (
           <div className="px-5 py-3 border-t border-border">
             <span

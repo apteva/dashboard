@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
-import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Instance, type Project, type CatalogStatus, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType } from "../api";
+import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Instance, type Project, type CatalogStatus, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow } from "../api";
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
+import { useAuth } from "../hooks/useAuth";
 
 interface Key {
   id: number;
@@ -11,10 +12,19 @@ interface Key {
 }
 
 
-type Tab = "projects" | "channels" | "integrations" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server";
+type Tab = "projects" | "channels" | "integrations" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
 
 export function Settings() {
   const [tab, setTab] = useState<Tab>("projects");
+  const { user } = useAuth();
+  // Solo-user mode: the Users tab is intentionally hidden. The server
+  // endpoints (/api/users*) still exist and stay admin-gated, so when
+  // we add real project-scoped multi-tenancy the tab can be flipped
+  // back on by restoring the conditional below.
+  //   const isAdmin = user && user !== false && user.id === 1;
+  // We still dereference `user` elsewhere on this page (AccountTab),
+  // so we keep the hook call but drop the derived flag.
+  void user;
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "projects", label: "Projects" },
@@ -27,6 +37,8 @@ export function Settings() {
     { id: "data", label: "Data" },
     { id: "server", label: "Server" },
     { id: "account", label: "Account" },
+    // Users tab hidden — solo mode. Re-enable with:
+    //   ...(isAdmin ? [{ id: "users" as Tab, label: "Users" }] : []),
   ];
 
   return (
@@ -63,6 +75,8 @@ export function Settings() {
         {tab === "data" && <DataTab />}
         {tab === "server" && <ServerTab />}
         {tab === "account" && <AccountTab />}
+        {/* Users tab body stays wired for when we re-enable it:
+            {tab === "users" && <UsersTab />} */}
       </div>
     </div>
   );
@@ -933,15 +947,17 @@ function MCPServersTab() {
       await mcpServers.setAllowedTools(scopeModal.server.id, allowed);
 
       // For remote rows, trigger a reconcile so Composio re-creates the
-      // upstream server with the new action set. Best-effort — we surface
-      // the update immediately on the UI regardless.
+      // upstream server with the new action set. Await it so upstream
+      // PATCH failures surface to the user instead of a silent mismatch
+      // between what the dashboard shows and what the hosted MCP exposes.
       if (
         scopeModal.server.source === "remote" &&
         scopeModal.server.provider_id
       ) {
-        integrations
-          .composioReconcile(scopeModal.server.provider_id, currentProject?.id)
-          .catch(() => {});
+        await integrations.composioReconcile(
+          scopeModal.server.provider_id,
+          currentProject?.id,
+        );
       }
       // Refresh cached tool list + allowed_tools for this row.
       setAllowedTools((prev) => ({ ...prev, [scopeModal.server.id]: allowed }));
@@ -975,8 +991,8 @@ function MCPServersTab() {
               <p className="text-text-muted text-xs mt-1">
                 You have {composioConns} active Composio connection
                 {composioConns === 1 ? "" : "s"} but no hosted MCP server row
-                yet. Click Sync to create (or refresh) the aggregate Composio
-                MCP endpoint for this project.
+                yet. Click Sync to create (or refresh) the per-toolkit
+                Composio MCP rows for this project.
               </p>
               {composioSyncError && (
                 <p className="text-red text-xs mt-2">{composioSyncError}</p>
@@ -1326,8 +1342,8 @@ function MCPServersTab() {
                     })()}
                   </button>
                 )}
-                {(s.source === "local" || s.source === "remote") &&
-                  s.connection_id > 0 && (
+                {((s.source === "local" && s.connection_id > 0) ||
+                  s.source === "remote") && (
                     <button
                       onClick={() => openScopeModal(s)}
                       className="text-sm text-text-muted hover:text-accent transition-colors"
@@ -1722,7 +1738,8 @@ function MCPServersTab() {
               <p className="text-text-muted text-sm mt-1">
                 Pick which tools this MCP server exposes. Only the ticked
                 tools are visible to instances that attach this server.
-                Untick everything to re-enable all tools.
+                Tick every tool (Select all) to clear the filter and expose
+                the whole catalog.
               </p>
               {scopeModal.server.source === "remote" && (
                 <p className="text-accent text-xs mt-2">
@@ -2679,11 +2696,71 @@ function ServerTab() {
 // ─── Account Tab ───
 
 function AccountTab() {
+  // Pull the authenticated profile straight from the auth hook —
+  // /auth/me returns {user_id, email, created_at} on every page load
+  // so we don't need our own fetch. Password-change modal state is
+  // local: open → collect current/new/confirm → POST /auth/password.
+  const { user, refresh } = useAuth();
+  const [showPwd, setShowPwd] = useState(false);
+  // Success banner state here so the page itself acknowledges the
+  // change; the modal's own banner is short-lived.
+  const [changed, setChanged] = useState(false);
+
+  // Handle the "user is still null" transient first so the rest of the
+  // render can assume a concrete profile.
+  if (user === null) {
+    return <p className="text-text-muted text-sm">Loading…</p>;
+  }
+  if (user === false) {
+    return <p className="text-text-muted text-sm">Not signed in.</p>;
+  }
+
+  const joined = user.createdAt ? new Date(user.createdAt).toLocaleDateString() : "";
+
   return (
     <div className="space-y-5 max-w-4xl">
       <div>
         <h2 className="text-text text-base font-bold">Account</h2>
         <p className="text-text-muted text-sm mt-1">Manage your account settings.</p>
+      </div>
+
+      {/* Profile — email + user id + joined date. Small read-only
+          card so the user always knows which account they're acting
+          under without having to check the sidebar. */}
+      <div className="border border-border rounded-lg p-5 bg-bg-card space-y-3">
+        <h3 className="text-text text-sm font-bold">Profile</h3>
+        <dl className="grid grid-cols-[120px_1fr] gap-y-2 gap-x-4 text-sm">
+          <dt className="text-text-muted">Email</dt>
+          <dd className="text-text font-mono break-all">{user.email}</dd>
+          <dt className="text-text-muted">User ID</dt>
+          <dd className="text-text font-mono">#{user.id}</dd>
+          {joined && (<>
+            <dt className="text-text-muted">Joined</dt>
+            <dd className="text-text-muted">{joined}</dd>
+          </>)}
+        </dl>
+      </div>
+
+      {/* Password — change via the same flow the sidebar AccountMenu
+          uses. Other sessions get revoked; the current session stays
+          alive. */}
+      <div className="border border-border rounded-lg p-5 bg-bg-card">
+        <h3 className="text-text text-sm font-bold mb-3">Password</h3>
+        <p className="text-text-muted text-sm mb-4">
+          Change your password. All other active sessions will be
+          signed out; this session stays logged in.
+        </p>
+        {changed && (
+          <div className="mb-3 text-green text-xs bg-green/10 border border-green/30 rounded px-3 py-2">
+            Password updated. Other sessions have been signed out.
+          </div>
+        )}
+        <button
+          onClick={() => setShowPwd(true)}
+          className="px-5 py-2.5 border border-border rounded-lg text-sm text-text-muted hover:text-accent hover:border-accent transition-colors"
+        >
+          Change password
+        </button>
       </div>
 
       <div className="border border-border rounded-lg p-5 bg-bg-card">
@@ -2698,7 +2775,85 @@ function AccountTab() {
           Log out
         </button>
       </div>
+
+      <AccountChangePasswordModal
+        open={showPwd}
+        onClose={() => setShowPwd(false)}
+        onChanged={() => { setChanged(true); refresh(); }}
+      />
     </div>
+  );
+}
+
+// Inline password-change modal for the Account tab. Mirrors the
+// sidebar ChangePasswordModal in AccountMenu but surfaces success
+// back to the tab (via onChanged) so the page can render its own
+// confirmation banner.
+function AccountChangePasswordModal({
+  open, onClose, onChanged,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const reset = () => { setCurrent(""); setNext(""); setConfirm(""); setErr(""); setBusy(false); };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr("");
+    if (next.length < 8) { setErr("New password must be at least 8 characters."); return; }
+    if (next !== confirm) { setErr("New password and confirmation don't match."); return; }
+    if (next === current) { setErr("New password must differ from the current one."); return; }
+    setBusy(true);
+    try {
+      await auth.changePassword(current, next);
+      onChanged();
+      reset();
+      onClose();
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={() => { reset(); onClose(); }}>
+      <form onSubmit={submit} className="space-y-3 text-xs p-5 max-w-md">
+        <h3 className="text-text text-sm font-bold">Change password</h3>
+        <label className="block">
+          <span className="text-text-muted">Current password</span>
+          <input type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)}
+            className="mt-1 w-full bg-bg-input border border-border rounded-lg px-3 py-1.5 text-text focus:outline-none focus:border-accent"
+            required autoFocus disabled={busy} />
+        </label>
+        <label className="block">
+          <span className="text-text-muted">New password</span>
+          <input type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} minLength={8}
+            className="mt-1 w-full bg-bg-input border border-border rounded-lg px-3 py-1.5 text-text focus:outline-none focus:border-accent"
+            required disabled={busy} />
+        </label>
+        <label className="block">
+          <span className="text-text-muted">Confirm new password</span>
+          <input type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} minLength={8}
+            className="mt-1 w-full bg-bg-input border border-border rounded-lg px-3 py-1.5 text-text focus:outline-none focus:border-accent"
+            required disabled={busy} />
+        </label>
+        {err && <div className="text-red text-[11px] bg-red/10 border border-red/30 rounded px-2 py-1">{err}</div>}
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" onClick={() => { reset(); onClose(); }} className="px-3 py-1.5 border border-border rounded-lg text-text-muted hover:text-text transition-colors" disabled={busy}>Cancel</button>
+          <button type="submit" className="px-3 py-1.5 bg-accent text-bg rounded-lg font-bold hover:bg-accent-hover transition-colors disabled:opacity-50" disabled={busy}>
+            {busy ? "Updating…" : "Update password"}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -2838,5 +2993,372 @@ function ProjectsTab() {
         </form>
       </Modal>
     </div>
+  );
+}
+
+// --- Users tab (admin-only) --------------------------------------------
+//
+// Table of every registered user with quick blast-radius counts,
+// "+ Add user" to mint a new account with an initial password, per-row
+// "Reset password" and "Delete" actions. Admin + self never get a
+// delete button (server also blocks both). Rendered only when the
+// calling user is the admin (user_id=1); the Settings tab is already
+// hidden for non-admins.
+function UsersTab() {
+  const [rows, setRows] = useState<UserRow[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [err, setErr] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [resetTarget, setResetTarget] = useState<UserRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<UserRow | null>(null);
+
+  const load = () => {
+    usersAPI.list()
+      .then((r) => { setRows(r || []); setLoaded(true); setErr(""); })
+      .catch((e) => { setErr(e?.message || String(e)); setLoaded(true); });
+  };
+
+  useEffect(() => { load(); }, []);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-text text-base font-bold">Users</h2>
+          <p className="text-text-muted text-xs mt-1">
+            Admin-only. Create additional accounts directly — no invite
+            flow. Share the initial password over a trusted channel;
+            the new user can change it from their own Account menu.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowAdd(true)}
+          className="px-3 py-1.5 bg-accent text-bg text-xs font-bold rounded-lg hover:bg-accent-hover transition-colors"
+        >
+          + Add user
+        </button>
+      </div>
+
+      {err && (
+        <div className="text-red text-xs bg-red/10 border border-red/30 rounded px-3 py-2">
+          {err}
+        </div>
+      )}
+
+      {!loaded ? (
+        <p className="text-text-muted text-xs">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="text-text-muted text-xs">No users yet.</p>
+      ) : (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <table className="w-full text-xs">
+            <thead className="bg-bg-hover text-text-muted">
+              <tr className="text-left">
+                <th className="px-3 py-2 font-normal">Email</th>
+                <th className="px-3 py-2 font-normal">Created</th>
+                <th className="px-3 py-2 font-normal text-right">Agents</th>
+                <th className="px-3 py-2 font-normal text-right">Keys</th>
+                <th className="px-3 py-2 font-normal text-right">Projects</th>
+                <th className="px-3 py-2 font-normal text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((u) => (
+                <tr key={u.id} className="border-t border-border">
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-text">{u.email}</span>
+                      {u.is_admin && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent uppercase tracking-wide">admin</span>
+                      )}
+                      {u.is_self && !u.is_admin && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-border text-text-muted uppercase tracking-wide">you</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-text-muted">{fmtDate(u.created_at)}</td>
+                  <td className="px-3 py-2 text-right text-text-muted">{u.agents}</td>
+                  <td className="px-3 py-2 text-right text-text-muted">{u.keys}</td>
+                  <td className="px-3 py-2 text-right text-text-muted">{u.projects}</td>
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      onClick={() => setResetTarget(u)}
+                      className="text-[10px] text-text-muted hover:text-accent transition-colors mr-3"
+                      title="Set a new password on behalf of this user"
+                    >
+                      Reset password
+                    </button>
+                    {!u.is_admin && !u.is_self && (
+                      <button
+                        onClick={() => setDeleteTarget(u)}
+                        className="text-[10px] text-text-muted hover:text-red transition-colors"
+                        title="Delete this user and everything they own"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <AddUserModal
+        open={showAdd}
+        onClose={() => { setShowAdd(false); load(); }}
+      />
+      <ResetPasswordModal
+        target={resetTarget}
+        onClose={() => setResetTarget(null)}
+      />
+      <DeleteUserModal
+        target={deleteTarget}
+        onClose={() => { setDeleteTarget(null); load(); }}
+      />
+    </div>
+  );
+}
+
+function fmtDate(iso: string): string {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleDateString();
+  } catch {
+    return iso;
+  }
+}
+
+function AddUserModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState<{ email: string; password: string } | null>(null);
+
+  const reset = () => {
+    setEmail(""); setPassword(""); setConfirm(""); setErr(""); setOk(null); setBusy(false);
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr("");
+    if (password.length < 8) { setErr("Password must be at least 8 characters."); return; }
+    if (password !== confirm) { setErr("Passwords don't match."); return; }
+    setBusy(true);
+    try {
+      await usersAPI.create(email.trim(), password);
+      setOk({ email: email.trim(), password });
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={() => { reset(); onClose(); }}>
+      <form onSubmit={submit} className="space-y-3 text-xs p-5 max-w-md">
+        <h3 className="text-text text-sm font-bold">Add user</h3>
+        {ok ? (
+          <div className="space-y-3">
+            <div className="text-green text-[11px] bg-green/10 border border-green/30 rounded px-3 py-2">
+              User <span className="font-mono">{ok.email}</span> created.
+            </div>
+            <div className="text-text-muted leading-relaxed">
+              Share this password with the user over a trusted channel.
+              It isn't stored anywhere we can show you again — if they
+              lose it, use <em>Reset password</em>.
+            </div>
+            <div className="bg-bg-input border border-border rounded px-3 py-2 font-mono text-text break-all">
+              {ok.password}
+            </div>
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => { reset(); onClose(); }}
+                className="px-3 py-1.5 bg-accent text-bg rounded-lg font-bold hover:bg-accent-hover transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <p className="text-text-muted leading-relaxed">
+              Creates a new user with the initial password you pick.
+              They'll be able to change it themselves after first login.
+            </p>
+            <label className="block">
+              <span className="text-text-muted">Email</span>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="mt-1 w-full bg-bg-input border border-border rounded-lg px-3 py-1.5 text-text focus:outline-none focus:border-accent"
+                required autoFocus disabled={busy}
+              />
+            </label>
+            <label className="block">
+              <span className="text-text-muted">Initial password</span>
+              <input
+                type="text"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                minLength={8}
+                className="mt-1 w-full bg-bg-input border border-border rounded-lg px-3 py-1.5 text-text font-mono focus:outline-none focus:border-accent"
+                required disabled={busy}
+              />
+            </label>
+            <label className="block">
+              <span className="text-text-muted">Confirm password</span>
+              <input
+                type="text"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                minLength={8}
+                className="mt-1 w-full bg-bg-input border border-border rounded-lg px-3 py-1.5 text-text font-mono focus:outline-none focus:border-accent"
+                required disabled={busy}
+              />
+            </label>
+            {err && <div className="text-red text-[11px] bg-red/10 border border-red/30 rounded px-2 py-1">{err}</div>}
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => { reset(); onClose(); }} className="px-3 py-1.5 border border-border rounded-lg text-text-muted hover:text-text transition-colors" disabled={busy}>Cancel</button>
+              <button type="submit" className="px-3 py-1.5 bg-accent text-bg rounded-lg font-bold hover:bg-accent-hover transition-colors disabled:opacity-50" disabled={busy}>
+                {busy ? "Creating…" : "Create user"}
+              </button>
+            </div>
+          </>
+        )}
+      </form>
+    </Modal>
+  );
+}
+
+function ResetPasswordModal({ target, onClose }: { target: UserRow | null; onClose: () => void }) {
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState(false);
+
+  useEffect(() => {
+    if (target) { setNext(""); setConfirm(""); setErr(""); setOk(false); setBusy(false); }
+  }, [target]);
+
+  if (!target) return null;
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr("");
+    if (next.length < 8) { setErr("Password must be at least 8 characters."); return; }
+    if (next !== confirm) { setErr("Passwords don't match."); return; }
+    setBusy(true);
+    try {
+      await usersAPI.resetPassword(target.id, next);
+      setOk(true);
+      setTimeout(onClose, 1500);
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open={!!target} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3 text-xs p-5 max-w-md">
+        <h3 className="text-text text-sm font-bold">Reset password for {target.email}</h3>
+        <p className="text-text-muted leading-relaxed">
+          Sets a new password without needing the current one. Every
+          active session for this user is signed out immediately.
+        </p>
+        <label className="block">
+          <span className="text-text-muted">New password</span>
+          <input type="text" value={next} onChange={(e) => setNext(e.target.value)} minLength={8}
+            className="mt-1 w-full bg-bg-input border border-border rounded-lg px-3 py-1.5 text-text font-mono focus:outline-none focus:border-accent"
+            required autoFocus disabled={busy || ok}
+          />
+        </label>
+        <label className="block">
+          <span className="text-text-muted">Confirm</span>
+          <input type="text" value={confirm} onChange={(e) => setConfirm(e.target.value)} minLength={8}
+            className="mt-1 w-full bg-bg-input border border-border rounded-lg px-3 py-1.5 text-text font-mono focus:outline-none focus:border-accent"
+            required disabled={busy || ok}
+          />
+        </label>
+        {err && <div className="text-red text-[11px] bg-red/10 border border-red/30 rounded px-2 py-1">{err}</div>}
+        {ok && <div className="text-green text-[11px] bg-green/10 border border-green/30 rounded px-2 py-1">Password reset. User signed out of all sessions.</div>}
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" onClick={onClose} className="px-3 py-1.5 border border-border rounded-lg text-text-muted hover:text-text transition-colors" disabled={busy}>Cancel</button>
+          <button type="submit" className="px-3 py-1.5 bg-accent text-bg rounded-lg font-bold hover:bg-accent-hover transition-colors disabled:opacity-50" disabled={busy || ok}>
+            {busy ? "Updating…" : "Reset password"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function DeleteUserModal({ target, onClose }: { target: UserRow | null; onClose: () => void }) {
+  const [counts, setCounts] = useState<{ agents: number; keys: number; projects: number; providers: number; connections: number; mcp_servers: number; subscriptions: number; channels: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    setCounts(null); setErr(""); setBusy(false);
+    if (!target) return;
+    usersAPI.preview(target.id)
+      .then((r) => setCounts(r.would_delete))
+      .catch((e) => setErr(e?.message || String(e)));
+  }, [target]);
+
+  if (!target) return null;
+
+  const confirm = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      await usersAPI.remove(target.id);
+      onClose();
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open={!!target} onClose={onClose}>
+      <div className="space-y-3 text-xs p-5 max-w-md">
+        <h3 className="text-text text-sm font-bold">Delete user {target.email}?</h3>
+        <p className="text-text-muted leading-relaxed">
+          Everything this user owns will be removed. Running cores are
+          stopped first. This can't be undone.
+        </p>
+        {counts ? (
+          <ul className="text-text-muted bg-bg-input border border-border rounded px-3 py-2 space-y-0.5">
+            <li>Agents: <span className="text-text">{counts.agents}</span></li>
+            <li>API keys: <span className="text-text">{counts.keys}</span></li>
+            <li>Projects: <span className="text-text">{counts.projects}</span></li>
+            <li>Providers: <span className="text-text">{counts.providers}</span></li>
+            <li>Connections: <span className="text-text">{counts.connections}</span></li>
+            <li>MCP servers: <span className="text-text">{counts.mcp_servers}</span></li>
+            <li>Subscriptions: <span className="text-text">{counts.subscriptions}</span></li>
+            <li>Channels: <span className="text-text">{counts.channels}</span></li>
+          </ul>
+        ) : (
+          <p className="text-text-dim">Loading preview…</p>
+        )}
+        {err && <div className="text-red text-[11px] bg-red/10 border border-red/30 rounded px-2 py-1">{err}</div>}
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" onClick={onClose} className="px-3 py-1.5 border border-border rounded-lg text-text-muted hover:text-text transition-colors" disabled={busy}>Cancel</button>
+          <button type="button" onClick={confirm} className="px-3 py-1.5 bg-red text-bg rounded-lg font-bold hover:bg-red/80 transition-colors disabled:opacity-50" disabled={busy || !counts}>
+            {busy ? "Deleting…" : "Delete user"}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }

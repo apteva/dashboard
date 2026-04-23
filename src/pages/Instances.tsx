@@ -57,7 +57,12 @@ export function Instances() {
   // Per-instance list of sub-threads (excluding "main") so the card can
   // show what's actually running — id + pace + iter. Refreshed on the
   // same 5s cadence as status. Empty array = no sub-threads.
-  const [subThreads, setSubThreads] = useState<Record<number, Array<{ id: string; rate: string; iter: number }>>>({});
+  const [subThreads, setSubThreads] = useState<Record<number, Array<{ id: string; rate: string; iter: number; mcpNames: string[] }>>>({});
+  // Per-instance MCP names attached to main (native access, not
+  // catalog-only). Sourced from core /threads where the "main" row
+  // carries its own mcp_names. Catalog-only MCPs show up on
+  // individual sub-thread rows instead, so we don't double-count.
+  const [mainMCPs, setMainMCPs] = useState<Record<number, string[]>>({});
 
   // Live activity strip — driven by the all-instances SSE stream below.
   // Single connection, server-side fan-out, so the page scales to many
@@ -109,7 +114,34 @@ export function Instances() {
       list.forEach((inst) => {
         if (inst.status !== "running") {
           setLiveStatus((prev) => ({ ...prev, [inst.id]: null }));
-          setSubThreads((prev) => ({ ...prev, [inst.id]: [] }));
+          // DO fetch threads + MCPs for stopped instances — the server
+          // falls back to config.json on disk via serveStoppedInstanceData,
+          // so the card can still show persisted sub-threads, attached
+          // MCPs, and directive even without a live core. Only the
+          // live /status (iter/rate) is absent; we handle that via the
+          // null liveStatus above, which renders as "stopped".
+          core
+            .threads(inst.id)
+            .then((threads) => {
+              const subs = (threads || [])
+                .filter((t) => t.id !== "main")
+                .map((t) => ({
+                  id: t.id,
+                  rate: "stopped",
+                  iter: 0,
+                  mcpNames: t.mcp_names || [],
+                }));
+              setSubThreads((prev) => ({ ...prev, [inst.id]: subs }));
+              const main = (threads || []).find((t) => t.id === "main");
+              setMainMCPs((prev) => ({
+                ...prev,
+                [inst.id]: (main && main.mcp_names) || [],
+              }));
+            })
+            .catch(() => {
+              setSubThreads((prev) => ({ ...prev, [inst.id]: [] }));
+              setMainMCPs((prev) => ({ ...prev, [inst.id]: [] }));
+            });
           return;
         }
         core
@@ -129,8 +161,18 @@ export function Instances() {
           .then((threads) => {
             const subs = (threads || [])
               .filter((t) => t.id !== "main")
-              .map((t) => ({ id: t.id, rate: t.rate, iter: t.iteration }));
+              .map((t) => ({
+                id: t.id,
+                rate: t.rate,
+                iter: t.iteration,
+                mcpNames: t.mcp_names || [],
+              }));
             setSubThreads((prev) => ({ ...prev, [inst.id]: subs }));
+            const main = (threads || []).find((t) => t.id === "main");
+            setMainMCPs((prev) => ({
+              ...prev,
+              [inst.id]: (main && main.mcp_names) || [],
+            }));
           })
           .catch(() => {});
       });
@@ -513,6 +555,24 @@ export function Instances() {
                           <span className="opacity-50">stopped</span>
                         )}
                       </div>
+                      {/* Main's MCPs — servers whose tools are live on
+                          the main thread's registry (main_access=true).
+                          Catalog-only servers don't show here; they
+                          appear on the worker that spawned with them. */}
+                      {(mainMCPs[inst.id] || []).length > 0 && (
+                        <div className="flex items-center flex-wrap gap-1 mt-1.5">
+                          <span className="text-[10px] text-text-dim">mcp:</span>
+                          {(mainMCPs[inst.id] || []).map((m) => (
+                            <span
+                              key={m}
+                              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-accent/10 text-accent font-mono"
+                              title={`main has direct access to ${m}`}
+                            >
+                              {m}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                       {/* Sub-agents — one pill per child thread with its
                           pace. Collapses to "+N more" past a small
                           display cap so a noisy parent doesn't blow up
@@ -525,23 +585,32 @@ export function Instances() {
                         const extra = subs.length - shown.length;
                         return (
                           <div className="flex items-center flex-wrap gap-1.5 mt-1.5">
-                            {shown.map((s) => (
-                              <span
-                                key={s.id}
-                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${
-                                  s.rate === "reactive" ? "bg-green/15 text-green" :
-                                  s.rate === "fast" ? "bg-accent/15 text-accent" :
-                                  s.rate === "normal" ? "bg-blue/15 text-blue" :
-                                  s.rate === "slow" ? "bg-border text-text-muted" :
-                                  s.rate === "sleep" ? "bg-red/10 text-red/70" :
-                                  "bg-border text-text-muted"
-                                }`}
-                                title={`${s.id} · iter #${s.iter} · pace ${s.rate}`}
-                              >
-                                <span className="font-mono">{s.id}</span>
-                                <span className="opacity-60">#{s.iter}</span>
-                              </span>
-                            ))}
+                            {shown.map((s) => {
+                              const mcps = s.mcpNames || [];
+                              const title = mcps.length
+                                ? `${s.id} · iter #${s.iter} · pace ${s.rate} · mcp: ${mcps.join(", ")}`
+                                : `${s.id} · iter #${s.iter} · pace ${s.rate}`;
+                              return (
+                                <span
+                                  key={s.id}
+                                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${
+                                    s.rate === "reactive" ? "bg-green/15 text-green" :
+                                    s.rate === "fast" ? "bg-accent/15 text-accent" :
+                                    s.rate === "normal" ? "bg-blue/15 text-blue" :
+                                    s.rate === "slow" ? "bg-border text-text-muted" :
+                                    s.rate === "sleep" ? "bg-red/10 text-red/70" :
+                                    "bg-border text-text-muted"
+                                  }`}
+                                  title={title}
+                                >
+                                  <span className="font-mono">{s.id}</span>
+                                  <span className="opacity-60">#{s.iter}</span>
+                                  {mcps.length > 0 && (
+                                    <span className="opacity-70">· {mcps.join("+")}</span>
+                                  )}
+                                </span>
+                              );
+                            })}
                             {extra > 0 && (
                               <span className="text-[10px] text-text-dim px-1.5 py-0.5">
                                 +{extra} more

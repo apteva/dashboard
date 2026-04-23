@@ -412,11 +412,19 @@ export function Integrations() {
     }
   };
 
-  // Open the tool picker for a freshly-created connection. The connection
-  // create path auto-registered one MCP server with every tool enabled —
-  // we locate that row and edit ITS allowed_tools rather than creating a
-  // second scoped MCP. If somehow no MCP row exists (shouldn't happen),
-  // fall back to reading the raw connection tools + creating a new one.
+  // Open the tool picker for a freshly-created connection.
+  //
+  // Local integrations: create path auto-registered one MCP server with
+  // every tool enabled — we locate that row by connection_id and edit
+  // its allowed_tools in place.
+  //
+  // Composio integrations: MCP rows are pooled per-toolkit (not
+  // per-connection) and carry source="remote". They're not linked via
+  // connection_id, so we match on (source="remote", name=toolkit slug,
+  // provider_id). The server-side /mcp-servers/:id/tools endpoint
+  // already fetches the full Composio action catalog for remote rows,
+  // and PUT /tools triggers the reconcile that rotates Composio's
+  // upstream server to pick up the new action set.
   const openPickerFor = async (c: ConnectionInfo) => {
     setPickerFor(c);
     setPickerMCPId(null);
@@ -427,7 +435,14 @@ export function Integrations() {
     setPickerLoading(true);
     try {
       const servers = await mcpServers.list(c.project_id || "");
-      const existing = (servers || []).find((s) => s.connection_id === c.id);
+      const existing = c.source === "composio"
+        ? (servers || []).find(
+            (s) =>
+              s.source === "remote" &&
+              s.name === c.app_slug &&
+              (c.provider_id == null || s.provider_id === c.provider_id),
+          )
+        : (servers || []).find((s) => s.connection_id === c.id);
       if (existing) {
         const info = await mcpServers.tools(existing.id);
         setPickerMCPId(existing.id);
@@ -438,9 +453,25 @@ export function Integrations() {
           ? new Set(info.allowed_tools)
           : new Set(info.tools.map((t) => t.name));
         setPickerSelected(current);
+      } else if (c.source === "composio") {
+        // Composio connection active but reconcile hasn't produced an
+        // MCP row yet — fall back to the raw toolkit action catalog so
+        // the user can still pick. On submit we skip the unknown
+        // pickerMCPId path; the reconcile will create the row with the
+        // chosen filter on the next boot.
+        const actions = await integrations.composioToolkitActions(c.app_slug);
+        setPickerTools(
+          (actions || []).map((a) => ({
+            name: a.slug,
+            description: a.description || a.name,
+          })),
+        );
+        // Default: tick all so an empty selection doesn't silently
+        // disable every tool — user can untick what they don't want.
+        setPickerSelected(new Set((actions || []).map((a) => a.slug)));
       } else {
-        // Fallback: no MCP row auto-created — use the raw connection tool
-        // catalog and create a new scoped MCP on submit.
+        // Local fallback: no MCP row auto-created — use the raw
+        // connection tool catalog and create a new scoped MCP on submit.
         const tools = await integrations.tools(c.id);
         setPickerTools(tools);
         setPickerSelected(new Set(tools.map((t) => t.name)));
@@ -470,9 +501,20 @@ export function Integrations() {
       const allowed = Array.from(pickerSelected);
       if (pickerMCPId != null) {
         // Edit the auto-created MCP row in place — no second MCP server.
+        // For Composio remote rows, the server's PUT /tools handler
+        // triggers a reconcile that rotates the upstream Composio
+        // server to the new action set.
         await mcpServers.setAllowedTools(pickerMCPId, allowed);
+      } else if (pickerFor.source === "composio") {
+        // Composio reconcile hasn't produced an MCP row yet (race
+        // between connection activation and the background reconcile).
+        // Refuse the save rather than silently dropping the selection —
+        // the user can re-open the picker in a moment and try again.
+        throw new Error(
+          "Composio is still provisioning this toolkit. Reload the page and try again in a few seconds.",
+        );
       } else {
-        // Fallback path (no auto-created MCP found) — create a scoped one.
+        // Local fallback (no auto-created MCP found) — create a scoped one.
         await integrations.createScopedMCP(
           pickerFor.id,
           `${pickerFor.app_slug}-${pickerFor.id}`,

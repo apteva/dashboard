@@ -94,7 +94,80 @@ export const auth = {
       window.location.href = "/login";
     }),
 
-  me: () => request<{ user_id: number }>("GET", "/auth/me"),
+  me: () =>
+    request<{ user_id: number; email: string; created_at: string }>("GET", "/auth/me"),
+
+  // POST /auth/password — change the logged-in user's password. The
+  // server revokes every OTHER active session for this user on
+  // success so a leaked cookie on another device stops working
+  // immediately. The cookie making the change keeps working.
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ status: string }>(
+      "POST",
+      "/auth/password",
+      { current_password: currentPassword, new_password: newPassword },
+    ),
+};
+
+// --- User administration ------------------------------------------------
+//
+// Admin-facing CRUD on the users table. Backing endpoints live at
+// /api/users; access is gated server-side (admin = user_id 1 today).
+// Non-admins calling list/create/delete get 403; GET /users/:id works
+// for self too, so the same API object serves the "view my profile"
+// surface.
+
+export interface UserRow {
+  id: number;
+  email: string;
+  created_at: string;
+  agents: number;
+  keys: number;
+  projects: number;
+  providers?: number;
+  connections?: number;
+  mcp_servers?: number;
+  subscriptions?: number;
+  channels?: number;
+  is_admin: boolean;
+  is_self: boolean;
+}
+
+export interface UserDeletePreview {
+  user: { id: number; email: string };
+  would_delete: {
+    agents: number;
+    keys: number;
+    projects: number;
+    providers: number;
+    connections: number;
+    mcp_servers: number;
+    subscriptions: number;
+    channels: number;
+  };
+}
+
+export const users = {
+  list: () => request<UserRow[]>("GET", "/users"),
+  create: (email: string, password: string) =>
+    request<{ id: number; email: string; created_at: string }>(
+      "POST",
+      "/users",
+      { email, password },
+    ),
+  get: (id: number) => request<UserRow>("GET", `/users/${id}`),
+  // dry_run=true returns the blast-radius preview without deleting.
+  preview: (id: number) =>
+    request<UserDeletePreview>("DELETE", `/users/${id}?dry_run=1`),
+  remove: (id: number) => request<{ status: string }>("DELETE", `/users/${id}`),
+  // Admin-side password reset: no current-password check, revokes every
+  // session of the target user so they must log in again.
+  resetPassword: (id: number, newPassword: string) =>
+    request<{ status: string }>(
+      "PATCH",
+      `/users/${id}/password`,
+      { new_password: newPassword },
+    ),
 
   createKey: (name: string) =>
     request<{ id: number; key: string; prefix: string }>("POST", "/auth/keys", { name }),
@@ -742,6 +815,74 @@ export interface Thread {
   age: string;
 }
 
+// One message in a thread's live context window, as exposed by
+// GET /threads/:id/context. Mirrors core's Message struct — assistant
+// turns may carry tool_calls, user turns may carry tool_results. `parts`
+// appears on multimodal turns (image/audio). Everything optional so we
+// don't choke on shape drift from core.
+export interface ThreadContextMessage {
+  role: string;
+  content?: string;
+  parts?: Array<{
+    type: string;
+    text?: string;
+    image_url?: { url: string; detail?: string };
+    input_audio?: { data: string; format: string };
+    audio_url?: { url: string; mime_type?: string };
+  }>;
+  tool_calls?: Array<{ id?: string; name?: string; arguments?: any }>;
+  tool_results?: Array<{ id?: string; content?: string; image?: any }>;
+}
+
+// Bytes-per-section of the system prompt (messages[0].Content). "Other"
+// catches any text between markers we don't recognise so the total
+// always reconciles. Numbers are raw character counts, not tokens —
+// token-exact counts require a per-model tokenizer.
+export interface SystemBreakdown {
+  base: number;
+  core_tools: number;
+  retrieved_tools: number;
+  mcp_servers: number;
+  mcp_tool_docs: number;
+  providers: number;
+  active_threads: number;
+  safety_mode: number;
+  skills: number;
+  blob_hint: number;
+  previous_context: number;
+  directive: number;
+  other: number;
+  total: number;
+}
+
+// One entry in the tools[] payload the provider receives. `kind`
+// separates core loop tools from main-access MCP tools and locals so
+// the user can see which category is costing them bytes.
+export interface NativeToolSize {
+  name: string;
+  kind: "core" | "mcp" | "local";
+  bytes: number;
+}
+
+// A role=system message that lives AFTER messages[0]. The canonical
+// case is the [memories] block appended each iteration; any other
+// per-turn system injection shows up here too.
+export interface ExtraSystemBlock {
+  preview: string;
+  bytes: number;
+}
+
+export interface PromptComposition {
+  system: SystemBreakdown;
+  native_tools: NativeToolSize[];
+  native_bytes: number;
+  extra_system: ExtraSystemBlock[];
+  extra_bytes: number;
+  conv_bytes: number;
+  grand_total: number;
+  model_max_tokens?: number;
+}
+
 // Telemetry event — unified format from core
 export interface TelemetryEvent {
   id: string;
@@ -788,6 +929,38 @@ export interface MCPServerConfig {
 export const core = {
   status: (instanceId: number) => request<Status>("GET", `/instances/${instanceId}/status`),
   threads: (instanceId: number) => request<Thread[]>("GET", `/instances/${instanceId}/threads`),
+
+  // Kill a sub-thread by ID. Core stops its goroutine + removes it
+  // from the persisted config so it won't respawn next boot. Rejected
+  // server-side for id="main" — operators can't kill the root thread.
+  killThread: (instanceId: number, threadId: string) =>
+    request<{ status: string; id: string }>(
+      "DELETE",
+      `/instances/${instanceId}/threads/${encodeURIComponent(threadId)}`,
+    ),
+
+  // Fetch the live context window of a thread — the exact messages array
+  // that will be sent to the LLM on the next iteration. Useful for
+  // understanding token pressure and debugging why the model said what
+  // it said. The slice is copied server-side so repeated calls are
+  // cheap; individual message fields are a live snapshot (may change on
+  // the next iteration). Also includes a `composition` breakdown —
+  // bytes per section of the system prompt + per-tool sizes of the
+  // tools[] payload + rolled-up conversation bytes — so the UI can
+  // show "where the 12k comes from" at a glance.
+  threadContext: (instanceId: number, threadId: string) =>
+    request<{
+      id: string;
+      iteration: number;
+      model: string;
+      count: number;
+      total_chars: number;
+      messages: ThreadContextMessage[];
+      composition: PromptComposition;
+    }>(
+      "GET",
+      `/instances/${instanceId}/threads/${encodeURIComponent(threadId)}/context`,
+    ),
   // GET /instances/:id/config — proxied to the core. The core responds with
   // the current in-memory config including the live mcp_servers list (each
   // entry annotated with `connected: true`).
@@ -829,6 +1002,22 @@ export const core = {
     request<{ status: string }>("PUT", `/instances/${instanceId}/config`, {
       mcp_servers: servers,
     }),
+  // Flip the include_apteva_server / include_channels flag on an
+  // instance. Use this to re-enable a system MCP that was opted out at
+  // creation (or previously detached). Takes effect on the next start
+  // of the instance — the response's restart_required field indicates
+  // whether the caller needs to prompt for a restart to apply it.
+  toggleSystemMCP: (
+    instanceId: number,
+    name: "apteva-server" | "channels",
+    enable: boolean,
+  ) =>
+    request<{
+      name: string;
+      enable: boolean;
+      previous: boolean;
+      restart_required: boolean;
+    }>("POST", `/instances/${instanceId}/system-mcp`, { name, enable }),
   approve: (instanceId: number, approved: boolean) =>
     request<{ status: string }>("POST", `/instances/${instanceId}/approve`, { approved }),
 
@@ -1001,7 +1190,54 @@ export const telemetry = {
   stream: (instanceId: number): EventSource => {
     return new EventSource(`${BASE}/telemetry/stream?instance_id=${instanceId}`);
   },
+
+  // Project-scoped aggregate — ranks every instance in the project by
+  // cost/tokens/errors over the period. Empty projectId scopes to every
+  // instance the current user owns.
+  projectStats: (projectId: string | undefined, period: string = "24h") => {
+    const params = new URLSearchParams({ period });
+    if (projectId) params.set("project_id", projectId);
+    return request<InstanceStats[]>("GET", `/telemetry/project-stats?${params}`);
+  },
+
+  // Project-scoped timeline — buckets of cost with a per-instance
+  // breakdown keyed by stringified instance id.
+  projectTimeline: (projectId: string | undefined, period: string = "24h") => {
+    const params = new URLSearchParams({ period });
+    if (projectId) params.set("project_id", projectId);
+    return request<ProjectTimelineBucket[]>("GET", `/telemetry/project-timeline?${params}`);
+  },
 };
+
+// Per-instance aggregate over a period. Sorted by cost desc on the
+// server. Instances with zero events in the window are omitted.
+export interface InstanceStats {
+  instance_id: number;
+  name: string;
+  status: string;
+  llm_calls: number;
+  tokens_in: number;
+  tokens_out: number;
+  tokens_cached: number;
+  cost: number;
+  errors: number;
+  tool_calls: number;
+  avg_duration_ms: number;
+  distinct_threads: number;
+}
+
+// One bucket of the project timeline. cost_by_instance / calls_by_instance
+// are keyed by stringified instance_id (JSON object keys must be strings).
+export interface ProjectTimelineBucket {
+  time: string;
+  cost: number;
+  tokens_in: number;
+  tokens_out: number;
+  llm_calls: number;
+  errors: number;
+  cost_by_instance: Record<string, number>;
+  calls_by_instance: Record<string, number>;
+}
 
 // --- Apteva Apps framework ---
 
