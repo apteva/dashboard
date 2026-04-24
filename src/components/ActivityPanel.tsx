@@ -417,11 +417,16 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
       // one iteration get their own streaming rows rather than merging.
       // Older cores emit no id — we fall back to tool name only then.
       const chunkCallID = String(data.id || "");
-      const key = `${threadId}#${iter}#${chunkTool}#${chunkCallID}`;
+      // Match on (thread, tool, callID) — iteration is intentionally
+      // excluded because tool.call telemetry omits it (ToolCallData has
+      // no iteration field), so keying on iter would split rows that
+      // belong to the same call. callID alone disambiguates parallel
+      // calls; (thread, tool) is a safety net when callID is empty.
+      const key = `${threadId}#${chunkTool}#${chunkCallID}`;
       const now = event.time ? new Date(event.time).getTime() : Date.now();
       setTools((prev) => {
         const updated = [...prev];
-        // Match an existing streaming entry first (same thread+iter+tool).
+        // Match an existing streaming entry first (same thread+tool+id).
         for (let i = updated.length - 1; i >= 0; i--) {
           if (updated[i].state === "streaming" && updated[i].streamKey === key) {
             updated[i] = {
@@ -431,7 +436,7 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
             return updated;
           }
         }
-        // First chunk for this (thread, iter, tool) — open a new entry.
+        // First chunk for this (thread, tool, id) — open a new entry.
         return [...updated, {
           id: "", name: chunkTool, reason: "",
           threadId, done: false, time: now,
@@ -453,10 +458,9 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
       const reason = data.reason || previewArgs(toolName, data.args);
       const iter = Number(data.iteration) || 0;
       const threadId = event.thread_id || "main";
-      // Same key shape as llm.tool_chunk so the streaming row gets upgraded
-      // in place. data.id here is the upstream tool_call id set by the
-      // provider (matches what llm.tool_chunk emits for the same call).
-      const streamKey = `${threadId}#${iter}#${toolName}#${callId}`;
+      // Same key shape as llm.tool_chunk (no iteration — tool.call
+      // telemetry doesn't carry it).
+      const streamKey = `${threadId}#${toolName}#${callId}`;
       setTools((prev) => {
         // Dedup: skip if a tool entry with this call id already exists.
         if (callId && prev.some((t) => t.id === callId && t.state !== "streaming")) return prev;

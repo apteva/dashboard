@@ -47,6 +47,11 @@ export function InstanceView({
   // Top-level event-id dedup for handleEvent. Bounded at 500.
   const seenHandledEventsRef = useRef<Set<string>>(new Set());
   const seenHandledOrderRef = useRef<string[]>([]);
+  // Live events (llm.tool_chunk, etc.) have no event.id — dedup them
+  // by a (type|thread|time|tool|chunk-prefix) hash so StrictMode's
+  // double-mount SSE doesn't feed every chunk through twice.
+  const seenLiveRef = useRef<Set<string>>(new Set());
+  const seenLiveOrderRef = useRef<string[]>([]);
   const subscribe: SubscribeFn = useCallback((cb) => {
     listenersRef.current.add(cb);
     return () => { listenersRef.current.delete(cb); };
@@ -84,6 +89,8 @@ export function InstanceView({
     setThreadLiveEvents({});
     seenHandledEventsRef.current = new Set();
     seenHandledOrderRef.current = [];
+    seenLiveRef.current = new Set();
+    seenLiveOrderRef.current = [];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instance.id]);
 
@@ -157,6 +164,28 @@ export function InstanceView({
       if (seenHandledOrderRef.current.length > 500) {
         const old = seenHandledOrderRef.current.shift();
         if (old) seenHandledEventsRef.current.delete(old);
+      }
+    } else {
+      // Live event (no id). Build a best-effort dedup key. Collisions
+      // would require two live events with identical type + thread +
+      // timestamp + tool + first 40 chars of payload — vanishingly
+      // unlikely in practice.
+      const d = event.data || {};
+      const key = [
+        event.type,
+        event.thread_id || "",
+        event.time || "",
+        String((d as any).tool || (d as any).name || ""),
+        String((d as any).id || ""),
+        String((d as any).chunk || "").slice(0, 40),
+        String((d as any).text || "").slice(0, 40),
+      ].join("|");
+      if (seenLiveRef.current.has(key)) return;
+      seenLiveRef.current.add(key);
+      seenLiveOrderRef.current.push(key);
+      if (seenLiveOrderRef.current.length > 1000) {
+        const old = seenLiveOrderRef.current.shift();
+        if (old) seenLiveRef.current.delete(old);
       }
     }
     // Fan out to every subscribed panel synchronously — no React batching.
