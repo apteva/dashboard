@@ -413,7 +413,11 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
       const chunk = String(data.chunk || "");
       const iter = Number(data.iteration) || 0;
       const threadId = event.thread_id || "main";
-      const key = `${threadId}#${iter}#${chunkTool}`;
+      // Include the per-call id so two parallel calls of the same tool in
+      // one iteration get their own streaming rows rather than merging.
+      // Older cores emit no id — we fall back to tool name only then.
+      const chunkCallID = String(data.id || "");
+      const key = `${threadId}#${iter}#${chunkTool}#${chunkCallID}`;
       const now = event.time ? new Date(event.time).getTime() : Date.now();
       setTools((prev) => {
         const updated = [...prev];
@@ -449,7 +453,10 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
       const reason = data.reason || previewArgs(toolName, data.args);
       const iter = Number(data.iteration) || 0;
       const threadId = event.thread_id || "main";
-      const streamKey = `${threadId}#${iter}#${toolName}`;
+      // Same key shape as llm.tool_chunk so the streaming row gets upgraded
+      // in place. data.id here is the upstream tool_call id set by the
+      // provider (matches what llm.tool_chunk emits for the same call).
+      const streamKey = `${threadId}#${iter}#${toolName}#${callId}`;
       setTools((prev) => {
         // Dedup: skip if a tool entry with this call id already exists.
         if (callId && prev.some((t) => t.id === callId && t.state !== "streaming")) return prev;
