@@ -400,6 +400,14 @@ export interface ConnectionInfo {
   project_id?: string;
   tool_count: number;
   created_at: string;
+  // Populated server-side when this connection is a member of a
+  // credential-group suite. `is_group_child` means its credentials
+  // live on a sibling master row; `external_project_id` is the id of
+  // the upstream project the child is pinned to (e.g. OmniKit project
+  // id). Both are absent for legacy single-key connections.
+  group_id?: string;
+  is_group_child?: boolean;
+  external_project_id?: string;
 }
 
 // Response shape when a connection create kicks off an OAuth flow (local
@@ -447,9 +455,93 @@ export interface CatalogStatus {
 }
 
 export const integrations = {
-  catalog: (q?: string) => {
-    const params = q ? `?q=${encodeURIComponent(q)}` : "";
+  catalog: (q?: string, opts?: { collapseGroups?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (q) qs.set("q", q);
+    // When collapseGroups is true the server hides apps that are
+    // members of a credential group — the UI shows one suite card
+    // instead of the per-app cards. Use listGroups() to fetch the
+    // group metadata alongside.
+    if (opts?.collapseGroups) qs.set("group", "1");
+    const params = qs.toString() ? `?${qs.toString()}` : "";
     return request<AppSummary[]>("GET", `/integrations/catalog${params}`);
+  },
+
+  // Credential-group (suite) catalog — OmniKit, SocialCast, ...
+  listGroups: () =>
+    request<Array<{
+      id: string;
+      name: string;
+      logo?: string | null;
+      description?: string;
+      members: Array<{ slug: string; name: string; tool_count: number; logo?: string | null }>;
+      has_account_scope: boolean;
+      has_project_scope: boolean;
+    }>>("GET", "/integrations/groups"),
+
+  getGroup: (id: string) =>
+    request<{
+      summary: {
+        id: string;
+        name: string;
+        logo?: string | null;
+        description?: string;
+        members: Array<{ slug: string; name: string; tool_count: number; logo?: string | null }>;
+        has_account_scope: boolean;
+        has_project_scope: boolean;
+      };
+      discovery?: unknown;
+      account_scope?: { credential_fields: Array<{ name: string; label: string; description?: string; type?: string }> };
+      project_scope?: { credential_fields: Array<{ name: string; label: string; description?: string; type?: string }> };
+    }>("GET", `/integrations/groups/${id}`),
+
+  // Add or replace an account-wide credential for a suite. Runs
+  // discovery and returns the cached project list; UI shows a matrix.
+  addGroupMaster: (groupId: string, credentials: Record<string, string>, projectId?: string) =>
+    request<{ master_id: number; projects: Array<{ id: string; label: string }> }>(
+      "POST",
+      `/integrations/groups/${groupId}/master`,
+      { credentials, project_id: projectId || "" },
+    ),
+
+  getGroupMaster: (groupId: string, projectId?: string) => {
+    const params = projectId ? `?project_id=${projectId}` : "";
+    return request<{
+      master: { id: number; project_id: string; name: string; credentials_masked: Record<string, string> } | null;
+      projects?: Array<{ id: string; label: string }>;
+      children?: Array<{ id: number; app_slug: string; name: string; project_id: string }>;
+    }>("GET", `/integrations/groups/${groupId}/master${params}`);
+  },
+
+  refreshGroupProjects: (groupId: string, projectId?: string) =>
+    request<{ projects: Array<{ id: string; label: string }> }>(
+      "POST",
+      `/integrations/groups/${groupId}/master/refresh`,
+      { project_id: projectId || "" },
+    ),
+
+  // Fan out the suite credential into project-scoped connections.
+  // Each selection creates one child connections row bound to the
+  // (app, external project) pair.
+  enableGroupApps: (
+    groupId: string,
+    selections: Array<{ app_slug: string; external_project_id: string; label?: string }>,
+    opts?: { projectId?: string; replace?: boolean },
+  ) =>
+    request<{
+      created: Array<{ id: number; app_slug: string; project_id: string; name: string }>;
+      already_exists: number;
+      removed: number[];
+    }>("POST", `/integrations/groups/${groupId}/master/enable`, {
+      project_id: opts?.projectId || "",
+      selections,
+      replace: !!opts?.replace,
+    }),
+
+  // Cascade-delete master + every child bound to it.
+  deleteGroupMaster: (groupId: string, projectId?: string) => {
+    const params = projectId ? `?project_id=${projectId}` : "";
+    return request<{ removed: number }>("DELETE", `/integrations/groups/${groupId}/master${params}`);
   },
 
   catalogStatus: () => request<CatalogStatus>("GET", "/integrations/catalog/status"),
@@ -937,6 +1029,33 @@ export const core = {
     request<{ status: string; id: string }>(
       "DELETE",
       `/instances/${instanceId}/threads/${encodeURIComponent(threadId)}`,
+    ),
+
+  // Clear the thread's history without killing it: wipes session.jsonl,
+  // resets in-memory messages to just the system prompt, preserves the
+  // thread's iteration counter + identity. Works for main as well — the
+  // only way to unstick main short of a full instance reset.
+  resetThread: (instanceId: number, threadId: string) =>
+    request<{ status: string; id: string; count: number }>(
+      "POST",
+      `/instances/${instanceId}/threads/${encodeURIComponent(threadId)}/reset`,
+    ),
+
+  // Reset agent state — any combination of history (session.jsonl + in-memory
+  // messages + history/ dir), threads (kill all sub-threads + clear from
+  // config), or memory. history+threads is the "unstick everything" option.
+  resetInstance: (
+    instanceId: number,
+    opts: { history?: boolean; threads?: boolean; memory?: boolean },
+  ) =>
+    request<{ status: string }>(
+      "PUT",
+      `/instances/${instanceId}/config`,
+      { reset: {
+        ...(opts.history ? { history: true } : {}),
+        ...(opts.threads ? { threads: true } : {}),
+        ...(opts.memory ? { memory: true } : {}),
+      } },
     ),
 
   // Fetch the live context window of a thread — the exact messages array

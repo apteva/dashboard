@@ -15,6 +15,9 @@ interface Props {
   thread: Thread | null;
   instanceId: number;
   liveEvents: TelemetryEvent[]; // live SSE events filtered to this thread
+  // Called after a successful kill so the parent can refresh the thread list.
+  // Optional — when omitted the modal just closes itself.
+  onKilled?: () => void;
 }
 
 type Tab = "live" | "history" | "context";
@@ -32,13 +35,17 @@ interface ContextSnapshot {
   fetchedAt: number; // ms epoch — surfaced so the user knows how fresh the snapshot is
 }
 
-export function ThreadDetailModal({ open, onClose, thread, instanceId, liveEvents }: Props) {
+export function ThreadDetailModal({ open, onClose, thread, instanceId, liveEvents, onKilled }: Props) {
   const [tab, setTab] = useState<Tab>("live");
   const [history, setHistory] = useState<TelemetryEvent[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [ctx, setCtx] = useState<ContextSnapshot | null>(null);
   const [ctxLoading, setCtxLoading] = useState(false);
   const [ctxError, setCtxError] = useState("");
+  const [killBusy, setKillBusy] = useState(false);
+  const [confirmKill, setConfirmKill] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll live feed
@@ -144,7 +151,85 @@ export function ThreadDetailModal({ open, onClose, thread, instanceId, liveEvent
                 thread.rate === "sleep" ? "bg-border text-text-dim" : "bg-border text-text-muted"
               }`}>{thread.rate}</span>
             </div>
-            <button onClick={onClose} className="text-text-muted hover:text-text text-sm">x</button>
+            <div className="flex items-center gap-2">
+              {confirmReset ? (
+                <>
+                  <span className="text-[10px] text-text-dim">Reset history?</span>
+                  <button
+                    onClick={async () => {
+                      setResetBusy(true);
+                      try {
+                        const resp = await core.resetThread(instanceId, thread.id);
+                        setConfirmReset(false);
+                        setCtx((prev) => prev ? { ...prev, count: resp.count, messages: prev.messages.slice(0, 1), total_chars: 0, fetchedAt: Date.now() } : prev);
+                        setHistory([]);
+                      } finally {
+                        setResetBusy(false);
+                      }
+                    }}
+                    disabled={resetBusy}
+                    className="px-2 py-0.5 border border-yellow rounded text-[10px] text-yellow hover:bg-yellow hover:text-bg transition-colors disabled:opacity-50"
+                  >
+                    {resetBusy ? "…" : "confirm"}
+                  </button>
+                  <button
+                    onClick={() => setConfirmReset(false)}
+                    disabled={resetBusy}
+                    className="text-[10px] text-text-muted hover:text-text"
+                  >
+                    cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setConfirmReset(true)}
+                  className="px-2 py-0.5 border border-border rounded text-[10px] text-text-muted hover:text-yellow hover:border-yellow transition-colors"
+                  title="Wipe this thread's conversation history; keep the thread alive"
+                >
+                  reset
+                </button>
+              )}
+              {thread.id !== "main" && (
+                confirmKill ? (
+                  <>
+                    <span className="text-[10px] text-text-dim">Kill thread?</span>
+                    <button
+                      onClick={async () => {
+                        setKillBusy(true);
+                        try {
+                          await core.killThread(instanceId, thread.id);
+                          setConfirmKill(false);
+                          if (onKilled) onKilled();
+                          onClose();
+                        } finally {
+                          setKillBusy(false);
+                        }
+                      }}
+                      disabled={killBusy}
+                      className="px-2 py-0.5 border border-red rounded text-[10px] text-red hover:bg-red hover:text-bg transition-colors disabled:opacity-50"
+                    >
+                      {killBusy ? "…" : "confirm"}
+                    </button>
+                    <button
+                      onClick={() => setConfirmKill(false)}
+                      disabled={killBusy}
+                      className="text-[10px] text-text-muted hover:text-text"
+                    >
+                      cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => setConfirmKill(true)}
+                    className="px-2 py-0.5 border border-border rounded text-[10px] text-text-muted hover:text-red hover:border-red transition-colors"
+                    title="Kill this sub-thread (removes from config; will not respawn)"
+                  >
+                    kill
+                  </button>
+                )
+              )}
+              <button onClick={onClose} className="text-text-muted hover:text-text text-sm">x</button>
+            </div>
           </div>
           {/* Meta row */}
           <div className="flex items-center gap-3 mt-2 text-[10px] text-text-dim">

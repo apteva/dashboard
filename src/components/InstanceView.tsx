@@ -52,6 +52,8 @@ export function InstanceView({
     return () => { listenersRef.current.delete(cb); };
   }, []);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [view, setView] = useState<"activity" | "fleet" | "cards" | "memory">("activity");
   // Whether the channels MCP is currently attached to this instance.
@@ -305,6 +307,13 @@ export function InstanceView({
             Config
           </button>
           <button
+            onClick={() => setShowResetConfirm(true)}
+            className="px-2.5 py-1 border border-border rounded-lg text-xs text-text-muted hover:text-yellow hover:border-yellow transition-colors"
+            title="Wipe conversation history and kill all sub-threads"
+          >
+            Reset
+          </button>
+          <button
             onClick={() => setShowDeleteConfirm(true)}
             className="px-2.5 py-1 border border-border rounded-lg text-xs text-text-muted hover:text-red hover:border-red transition-colors"
           >
@@ -318,6 +327,42 @@ export function InstanceView({
           iteration across main + sub-threads contributes. Mirrors the
           CLI/TUI token strip. */}
       <LiveStatsBar instanceId={instance.id} subscribe={subscribe} />
+
+      {/* Reset confirmation */}
+      <Modal open={showResetConfirm} onClose={() => setShowResetConfirm(false)}>
+        <div className="p-6">
+          <h3 className="text-text text-lg font-bold mb-2">Reset Agent</h3>
+          <p className="text-text-dim text-sm mb-6">
+            Wipe <span className="text-text font-bold">{instance.name}</span>'s conversation history and kill every sub-thread?
+            Directive, MCP servers, and integrations are kept. This cannot be undone.
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() => setShowResetConfirm(false)}
+              className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
+              disabled={resetBusy}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={async () => {
+                setResetBusy(true);
+                try {
+                  await core.resetInstance(instance.id, { history: true, threads: true });
+                  setShowResetConfirm(false);
+                  onReload();
+                } finally {
+                  setResetBusy(false);
+                }
+              }}
+              disabled={resetBusy}
+              className="px-4 py-2 bg-yellow text-bg rounded-lg text-sm font-bold hover:opacity-80 transition-opacity disabled:opacity-50"
+            >
+              {resetBusy ? "resetting…" : "Reset"}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Delete confirmation */}
       <Modal open={showDeleteConfirm} onClose={() => setShowDeleteConfirm(false)}>
@@ -409,6 +454,11 @@ export function InstanceView({
         thread={graphThreads.find((t) => t.id === selectedThreadId) || null}
         instanceId={instance.id}
         liveEvents={selectedThreadId ? (threadLiveEvents[selectedThreadId] || []) : []}
+        onKilled={() => {
+          if (selectedThreadId) {
+            setGraphThreads((prev) => prev.filter((t) => t.id !== selectedThreadId));
+          }
+        }}
       />
     </div>
   );

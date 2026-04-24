@@ -877,7 +877,7 @@ function MCPServersTab() {
       setExpandedTools((prev) => ({ ...prev, [id]: result.tools }));
       load();
     } catch (err: any) {
-      alert(err.message || "Failed to start");
+      setError(err.message || "Failed to start");
     }
   };
 
@@ -929,7 +929,7 @@ function MCPServersTab() {
       );
       setScopeModal({ server, allTools: tools, selected });
     } catch (err: any) {
-      alert(`Failed to load tool list: ${err.message || err}`);
+      setError(`Failed to load tool list: ${err.message || err}`);
     }
   };
 
@@ -964,7 +964,7 @@ function MCPServersTab() {
       setScopeModal(null);
       load();
     } catch (err: any) {
-      alert(`Save failed: ${err.message || err}`);
+      setError(`Save failed: ${err.message || err}`);
     } finally {
       setScopeSaving(false);
     }

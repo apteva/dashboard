@@ -14,8 +14,21 @@ import {
   type InviteResponse,
 } from "../api";
 import { Modal } from "../components/Modal";
+import { SuiteConnect } from "../components/SuiteConnect";
 import { useNavigate } from "react-router-dom";
 import { useProjects } from "../hooks/useProjects";
+
+// Credential-group suite summary — from GET /integrations/groups.
+// The dashboard collapses each suite into a single catalog card.
+type SuiteSummary = {
+  id: string;
+  name: string;
+  logo?: string | null;
+  description?: string;
+  members: Array<{ slug: string; name: string; tool_count: number; logo?: string | null }>;
+  has_account_scope: boolean;
+  has_project_scope: boolean;
+};
 
 type SourceTab = "local" | "composio";
 
@@ -53,6 +66,11 @@ export function Integrations() {
   // Local catalog state
   const [localSearch, setLocalSearch] = useState("");
   const [localApps, setLocalApps] = useState<AppSummary[]>([]);
+  // Credential-group (suite) cards rendered above the flat catalog.
+  // One card per suite (OmniKit, SocialCast, ...). Clicking opens
+  // the SuiteConnect modal.
+  const [suites, setSuites] = useState<SuiteSummary[]>([]);
+  const [activeSuite, setActiveSuite] = useState<SuiteSummary | null>(null);
   const [selectedLocalApp, setSelectedLocalApp] = useState<AppDetail | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [connName, setConnName] = useState("");
@@ -93,7 +111,13 @@ export function Integrations() {
 
   const loadLocalApps = useCallback(() => {
     if (!hasLocal) return;
-    integrations.catalog(localSearch).then(setLocalApps).catch(() => {});
+    // Ask the server to hide apps that are members of a credential
+    // group; the suite list below renders one card per group instead.
+    // Falls back silently on older servers that don't support group=1.
+    integrations.catalog(localSearch, { collapseGroups: true }).then(setLocalApps).catch(() => {});
+    // Suites come from a parallel endpoint so the cards can coexist
+    // with the flat catalog grid.
+    integrations.listGroups().then(setSuites).catch(() => setSuites([]));
   }, [localSearch, hasLocal]);
 
   const loadComposioApps = useCallback(
@@ -662,8 +686,42 @@ export function Integrations() {
                         }`}
                       />
                       <div>
-                        <span className="text-text text-base font-bold">{c.name}</span>
-                        <span className="text-text-muted text-sm ml-2">{c.app_name}</span>
+                        {/*
+                          For suite children we lead with the app name
+                          (the actual service — "OmniKit Storage") and
+                          demote the project label to a dim subtitle.
+                          For legacy connections we keep the old order:
+                          user-chosen name first, app kind as subtitle.
+                          A middle-dot is rendered between the two so
+                          they're visually separated regardless of
+                          viewport width.
+                        */}
+                        {c.is_group_child ? (
+                          <>
+                            <span className="text-text text-base font-bold">{c.app_name}</span>
+                            <span className="text-text-muted text-sm ml-2">· {c.name}</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-text text-base font-bold">{c.name}</span>
+                            <span className="text-text-muted text-sm ml-2">· {c.app_name}</span>
+                          </>
+                        )}
+                        {/*
+                          Fan-out chip — only visible on connections that
+                          came from a suite enable action. Shows the
+                          upstream project (OmniKit project id, SocialCast
+                          workspace id) so the user can tell the 6 OmniKit
+                          Storage rows apart at a glance.
+                        */}
+                        {c.is_group_child && c.external_project_id && (
+                          <span
+                            className="ml-2 text-xs px-1.5 py-0.5 rounded bg-bg-hover text-text-dim font-mono"
+                            title={`Suite child — pinned to project ${c.external_project_id}`}
+                          >
+                            • {c.external_project_id}
+                          </span>
+                        )}
                       </div>
                       <span
                         className={`text-xs px-1.5 py-0.5 rounded ${
@@ -719,13 +777,11 @@ export function Integrations() {
                 className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent mb-4"
                 placeholder="Search apps..."
               />
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {(localApps || []).map((app) => {
-                  // Count existing local connections for this app in the
-                  // current project. Local apps support multiple
-                  // connections (e.g. two SocialCast accounts), so we
-                  // show the count as a badge and keep the card clickable
-                  // to add another.
+              {(() => {
+                // Shared per-app card renderer — used from the merged
+                // sort below. Kept as a local closure so it captures
+                // `connections` + `selectLocalApp` without prop drilling.
+                const renderLocalAppCard = (app: AppSummary) => {
                   const connectedCount = (connections || []).filter(
                     (c) => c.app_slug === app.slug && c.source === "local",
                   ).length;
@@ -745,19 +801,79 @@ export function Integrations() {
                           <span className="text-text text-sm font-bold">{app.name}</span>
                         </div>
                         {connectedCount === 1 && <span className="text-green text-xs shrink-0">connected</span>}
-                        {connectedCount > 1 && <span className="text-green text-xs shrink-0">{connectedCount} connections</span>}
+                        {connectedCount > 1 && (
+                          <span className="text-green text-xs shrink-0">{connectedCount} connections</span>
+                        )}
                       </div>
-                      <p className="text-text-muted text-xs leading-relaxed line-clamp-2">
-                        {app.description}
-                      </p>
+                      <p className="text-text-muted text-xs leading-relaxed line-clamp-2">{app.description}</p>
                       <div className="flex items-center gap-2 mt-2">
                         <span className="text-text-dim text-xs">{app.tool_count} tools</span>
                       </div>
                     </button>
                   );
-                })}
-              </div>
-              {localApps.length === 0 && <p className="text-text-muted text-sm">No apps found.</p>}
+                };
+                return (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {(() => {
+                  type SuiteItem = { kind: "suite"; sortName: string; suite: SuiteSummary };
+                  type AppItem = { kind: "app"; sortName: string; app: AppSummary };
+                  const items: Array<SuiteItem | AppItem> = [
+                    ...(suites || []).map<SuiteItem>((s) => ({
+                      kind: "suite",
+                      sortName: s.name.toLowerCase(),
+                      suite: s,
+                    })),
+                    ...(localApps || []).map<AppItem>((a) => ({
+                      kind: "app",
+                      sortName: a.name.toLowerCase(),
+                      app: a,
+                    })),
+                  ];
+                  items.sort((a, b) => a.sortName.localeCompare(b.sortName));
+                  return items.map((item) => {
+                    if (item.kind === "suite") {
+                      const suite = item.suite;
+                      const connectedCount = (connections || []).filter((c) =>
+                        suite.members.some((m) => m.slug === c.app_slug),
+                      ).length;
+                      return (
+                        <button
+                          key={`suite:${suite.id}`}
+                          onClick={() => setActiveSuite(suite)}
+                          className={`border rounded-lg p-4 text-left transition-colors ${
+                            connectedCount > 0
+                              ? "border-green bg-bg-card"
+                              : "border-border bg-bg-card hover:border-accent"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 mb-2">
+                            {suite.logo && <img src={suite.logo} alt="" className="w-6 h-6 rounded" />}
+                            <div className="flex-1 min-w-0">
+                              <span className="text-text text-sm font-bold">{suite.name}</span>
+                              <span className="text-text-muted text-xs ml-2">
+                                suite · {suite.members.length} services
+                              </span>
+                            </div>
+                            {connectedCount > 0 && (
+                              <span className="text-green text-xs shrink-0">{connectedCount} connected</span>
+                            )}
+                          </div>
+                          <p className="text-text-muted text-xs leading-relaxed line-clamp-2">{suite.description}</p>
+                        </button>
+                      );
+                    }
+                    // kind === "app" — fall through to the original
+                    // per-app card below.
+                    return renderLocalAppCard(item.app);
+                  });
+                })()}
+
+                  </div>
+                );
+              })()}
+              {localApps.length === 0 && suites.length === 0 && (
+                <p className="text-text-muted text-sm">No apps found.</p>
+              )}
             </section>
           )}
 
@@ -1081,6 +1197,24 @@ export function Integrations() {
           </div>
         )}
       </div>
+
+      {/*
+        SuiteConnect modal: opens from a suite card in the catalog grid.
+        Always project-scoped output (one child connection per service ×
+        project cell). The master credential is invisible plumbing.
+      */}
+      {activeSuite && (
+        <SuiteConnect
+          group={activeSuite}
+          projectId={currentProject?.id}
+          onClose={() => setActiveSuite(null)}
+          onConnectionsChanged={() => {
+            // Refresh the flat connections list after fan-out so the
+            // new "service • project" rows show up immediately.
+            integrations.connections(currentProject?.id).then(setConnections).catch(() => {});
+          }}
+        />
+      )}
 
       <Modal open={!!pickerFor} onClose={() => !pickerBusy && setPickerFor(null)}>
         <div className="p-6 w-[620px] max-w-full space-y-3">
