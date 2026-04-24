@@ -107,6 +107,18 @@ export const auth = {
       "/auth/password",
       { current_password: currentPassword, new_password: newPassword },
     ),
+
+  // Personal API keys for this user. Backed by /auth/keys — server scopes
+  // each key to the calling user via the session cookie. The raw key is
+  // only returned by createKey; subsequent listKeys only exposes the prefix.
+  createKey: (name: string) =>
+    request<{ id: number; key: string; prefix: string }>("POST", "/auth/keys", { name }),
+
+  listKeys: () =>
+    request<Array<{ id: number; name: string; key_prefix: string; created_at: string }>>("GET", "/auth/keys"),
+
+  deleteKey: (id: number) =>
+    request<any>("DELETE", `/auth/keys/${id}`),
 };
 
 // --- User administration ------------------------------------------------
@@ -169,14 +181,6 @@ export const users = {
       { new_password: newPassword },
     ),
 
-  createKey: (name: string) =>
-    request<{ id: number; key: string; prefix: string }>("POST", "/auth/keys", { name }),
-
-  listKeys: () =>
-    request<Array<{ id: number; name: string; key_prefix: string; created_at: string }>>("GET", "/auth/keys"),
-
-  deleteKey: (id: number) =>
-    request<any>("DELETE", `/auth/keys/${id}`),
 };
 
 // Provider types (catalog)
