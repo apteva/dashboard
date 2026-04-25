@@ -1445,6 +1445,7 @@ export interface MarketplaceEntry {
   official: boolean;
   category: string;
   installed: boolean;
+  builtin: boolean;
 }
 
 export interface AppRow {

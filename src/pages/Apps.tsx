@@ -182,7 +182,8 @@ function MarketplaceCard({ entry, onInstall }: { entry: MarketplaceEntry; onInst
           <span className="text-text font-medium">{entry.display_name}</span>
           <span className="text-text-dim text-xs">v{entry.version}</span>
           {entry.official && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue/15 text-blue">official</span>}
-          {entry.installed && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green/15 text-green">installed</span>}
+          {entry.builtin && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue/15 text-blue">built-in</span>}
+          {entry.installed && !entry.builtin && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green/15 text-green">installed</span>}
         </div>
         <p className="text-text-muted text-xs mt-1 line-clamp-2">{entry.description}</p>
         <div className="flex items-center gap-1 mt-2 flex-wrap">
@@ -195,9 +196,10 @@ function MarketplaceCard({ entry, onInstall }: { entry: MarketplaceEntry; onInst
         <button
           onClick={onInstall}
           disabled={entry.installed}
+          title={entry.builtin ? "Bundled into apteva-server — always available" : ""}
           className="px-2 py-1 border border-accent rounded text-[11px] text-accent hover:bg-accent hover:text-bg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          {entry.installed ? "installed" : "install"}
+          {entry.builtin ? "built-in" : entry.installed ? "installed" : "install"}
         </button>
         <a
           href={entry.repo}
