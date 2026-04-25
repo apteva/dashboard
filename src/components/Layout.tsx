@@ -40,6 +40,7 @@ export function Layout() {
   const navItems = [
     { to: "/", label: "Agents" },
     { to: "/integrations", label: "Integrations" },
+    { to: "/apps", label: "Apps" },
     { to: "/analytics", label: "Analytics" },
     { to: "/settings", label: "Settings" },
   ];

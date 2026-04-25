@@ -1376,7 +1376,151 @@ export interface AppManifest {
 
 export const apps = {
   manifest: () => request<AppManifest[]>("GET", "/apps/manifest"),
+
+  // --- v2 Apps system (sidecar-based, see github.com/apteva/app-sdk) ---
+
+  list: (projectId?: string) => {
+    const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    return request<AppRow[]>("GET", `/apps${q}`);
+  },
+
+  preview: (manifestUrl?: string, manifestYaml?: string) =>
+    request<AppPreview>("POST", "/apps/preview", {
+      ...(manifestUrl ? { manifest_url: manifestUrl } : {}),
+      ...(manifestYaml ? { manifest_yaml: manifestYaml } : {}),
+    }),
+
+  install: (opts: AppInstallOptions) =>
+    request<{ install_id: number; app_id: number; status: string; next_step: string }>(
+      "POST",
+      "/apps/install",
+      {
+        ...(opts.manifestUrl ? { manifest_url: opts.manifestUrl } : {}),
+        ...(opts.manifestYaml ? { manifest_yaml: opts.manifestYaml } : {}),
+        ...(opts.repo ? { repo: opts.repo } : {}),
+        ...(opts.ref ? { ref: opts.ref } : {}),
+        project_id: opts.projectId || "",
+        config: opts.config || {},
+        upgrade_policy: opts.upgradePolicy || "manual",
+      },
+    ),
+
+  uninstall: (installId: number) =>
+    request<{ status: string }>("DELETE", `/apps/installs/${installId}`),
+
+  setStatus: (
+    installId: number,
+    status: "running" | "disabled" | "error",
+    opts?: { serviceName?: string; sidecarUrl?: string },
+  ) =>
+    request<{ status: string }>("PUT", `/apps/installs/${installId}/status`, {
+      status,
+      ...(opts?.serviceName ? { service_name: opts.serviceName } : {}),
+      ...(opts?.sidecarUrl ? { sidecar_url: opts.sidecarUrl } : {}),
+    }),
+
+  bindInstances: (installId: number, instanceIds: number[]) =>
+    request<{ status: string; bound: number[] }>(
+      "PUT",
+      `/apps/installs/${installId}/instances`,
+      { instance_ids: instanceIds },
+    ),
+
+  marketplace: (registryUrl?: string) => {
+    const q = registryUrl ? `?registry_url=${encodeURIComponent(registryUrl)}` : "";
+    return request<{ registry_url: string; apps: MarketplaceEntry[] }>("GET", `/apps/marketplace${q}`);
+  },
 };
+
+export interface MarketplaceEntry {
+  name: string;
+  display_name: string;
+  version: string;
+  description: string;
+  author: string;
+  repo: string;
+  manifest_url: string;
+  icon: string;
+  tags: string[];
+  official: boolean;
+  category: string;
+  installed: boolean;
+}
+
+export interface AppRow {
+  install_id: number;
+  app_id: number;
+  name: string;
+  display_name: string;
+  version: string;
+  description: string;
+  icon: string;
+  project_id: string;
+  status: "pending" | "running" | "error" | "disabled";
+  source: "git" | "registry" | "builtin" | "manual";
+  upgrade_policy: "manual" | "auto-patch" | "auto-minor";
+  permissions: string[];
+  surfaces: AppSurfaces;
+  ui_panels?: AppUIPanel[];
+}
+
+export interface AppUIPanel {
+  slot: string;   // "instance.tab" | "instance.status" | "settings.app" | "sidebar.widget"
+  label: string;
+  icon: string;
+  entry: string;  // path served by sidecar (e.g. "/ui/StatusPanel.html")
+}
+
+export interface AppSurfaces {
+  mcp_tools: boolean;
+  http_routes: boolean;
+  ui_panel: boolean;
+  ui_page: boolean;
+  ui_app: boolean;
+  channels: boolean;
+  workers: boolean;
+  prompt_fragments: boolean;
+}
+
+export interface AppPreview {
+  manifest: AppManifestV2;
+  surfaces: AppSurfaces;
+}
+
+export interface AppManifestV2 {
+  schema: string;
+  name: string;
+  display_name: string;
+  version: string;
+  description: string;
+  author: string;
+  homepage?: string;
+  icon?: string;
+  tags?: string[];
+  scopes: string[];
+  requires: { permissions: string[]; mcp_tools_at_runtime?: string[] };
+  provides: {
+    http_routes?: { prefix: string }[];
+    mcp_tools?: { name: string; description: string }[];
+    prompt_fragments?: { file: string; position: string }[];
+    ui_panels?: { slot: string; label: string; icon?: string; entry: string }[];
+    ui_pages?: { path: string; label: string; icon?: string; entry: string }[];
+    ui_app?: { domain_template: string; auth: string };
+    channels?: { name: string; capabilities: string[] }[];
+    workers?: { name: string; schedule: string }[];
+  };
+  upgrade_policy: string;
+}
+
+export interface AppInstallOptions {
+  manifestUrl?: string;
+  manifestYaml?: string;
+  repo?: string;
+  ref?: string;
+  projectId?: string;
+  config?: Record<string, string>;
+  upgradePolicy?: "manual" | "auto-patch" | "auto-minor";
+}
 
 // --- channel-chat app ---
 //

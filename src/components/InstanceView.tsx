@@ -10,6 +10,7 @@ import { InjectPanel } from "./InjectPanel";
 import { FleetGraph, type FleetEvent } from "./FleetGraph";
 import { FleetCards } from "./FleetCards";
 import { ThreadDetailModal } from "./ThreadDetailModal";
+import { AppPanels } from "./AppPanels";
 import { Modal } from "./Modal";
 import { LiveStatsBar } from "./LiveStatsBar";
 
@@ -60,7 +61,7 @@ export function InstanceView({
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
-  const [view, setView] = useState<"activity" | "fleet" | "cards" | "memory">("activity");
+  const [view, setView] = useState<"activity" | "fleet" | "cards" | "memory" | "apps">("activity");
   // Whether the channels MCP is currently attached to this instance.
   // When the user detaches it via the MCP panel the chat bridge stops
   // receiving user messages — we gray out the chat column to make that
@@ -292,7 +293,7 @@ export function InstanceView({
           <h1 className="text-text text-sm font-bold">{instance.name}</h1>
           {/* View toggle */}
           <div className="flex border border-border rounded-lg overflow-hidden ml-4">
-            {(["activity", "fleet", "cards", "memory"] as const).map((v) => (
+            {(["activity", "fleet", "cards", "memory", "apps"] as const).map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
@@ -356,6 +357,16 @@ export function InstanceView({
           iteration across main + sub-threads contributes. Mirrors the
           CLI/TUI token strip. */}
       <LiveStatsBar instanceId={instance.id} subscribe={subscribe} />
+
+      {/* Status-slot panels — apps register here to surface a thin
+          live strip (e.g. the Status app's current message). Renders
+          nothing if no app contributes a panel for this slot. */}
+      <AppPanels
+        slot="instance.status"
+        instanceId={instance.id}
+        projectId={instance.project_id || undefined}
+        className="px-4 py-2 space-y-1.5"
+      />
 
       {/* Reset confirmation */}
       <Modal open={showResetConfirm} onClose={() => setShowResetConfirm(false)}>
@@ -466,6 +477,15 @@ export function InstanceView({
                   Start the agent to view its memory.
                 </div>
               )
+            ) : view === "apps" ? (
+              <div className="h-full overflow-auto p-3 space-y-3">
+                <AppPanels
+                  slot="instance.tab"
+                  instanceId={instance.id}
+                  projectId={instance.project_id || undefined}
+                  className="space-y-3"
+                />
+              </div>
             ) : (
               <FleetCards threads={graphThreads} subscribe={subscribe} activeTools={graphActiveTools} thoughts={graphThoughts} />
             )}

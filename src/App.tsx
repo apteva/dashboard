@@ -9,6 +9,7 @@ import { Instance } from "./pages/Instance";
 import { Integrations } from "./pages/Integrations";
 import { Analytics } from "./pages/Analytics";
 import { Settings } from "./pages/Settings";
+import { Apps } from "./pages/Apps";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { authenticated } = useAuth();
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="/integrations" element={<Integrations />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/apps" element={<Apps />} />
           </Route>
         </Routes>
       </AuthProvider>
