@@ -607,9 +607,10 @@ function PreviewAndConfigure({
         </div>
       </div>
       <p className="text-text-dim text-[10px]">
-        Note: install creates a <code>pending</code> row. An operator deploys
-        the runtime image via the orchestrator and flips the status to
-        <code> running</code> to mount the app.
+        Apteva clones the repo and runs <code>go build</code> on this host.
+        First install of a version takes ~30–60s while dependencies download;
+        subsequent installs are cached. Status will flip to{" "}
+        <code>running</code> once the sidecar passes its health check.
       </p>
     </div>
   );
