@@ -201,11 +201,12 @@ export function MCPPanel({ instanceId, running }: Props) {
         <div className="space-y-1">
           {attached.map((s) => {
             const isSystem = !!s.no_spawn;
-            // Treat undefined as the legacy default: the core used to
-            // default undefined to main-access for any row lacking the
-            // flag. We show the badge accordingly but don't rewrite the
-            // row on load — the user flips it explicitly.
-            const isMain = s.main_access !== false;
+            // Core's zero-value for main_access is false (catalog). Mirror
+            // that: undefined / absent = catalog. Only an explicit true
+            // in the stored config promotes the row to main's registry.
+            // Keeping these aligned avoids "shows as main in UI but
+            // behaves as catalog at runtime" confusion.
+            const isMain = s.main_access === true;
             return (
               <div key={s.name} className="flex items-center gap-1.5">
                 <span
