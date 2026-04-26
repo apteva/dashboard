@@ -436,6 +436,14 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
             return updated;
           }
         }
+        // Defensive: late chunk arriving AFTER tool.call/result has been
+        // recorded for the same key. Some providers emit trailing arg
+        // deltas as the tool_call block closes — without this guard
+        // we'd open a new "streaming" row that never gets resolved,
+        // showing up as a ghost ◐ next to the real ✓ for the same call.
+        if (updated.some((t) => t.streamKey === key && t.state !== "streaming")) {
+          return prev;
+        }
         // First chunk for this (thread, tool, id) — open a new entry.
         return [...updated, {
           id: "", name: chunkTool, reason: "",
@@ -476,6 +484,25 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
               id: callId,
               reason,
               state: "called",
+              time: eventTime,
+            };
+            return updated;
+          }
+        }
+        // Fallback for legacy / non-conforming providers that emit
+        // chunks with an empty callID but tool.call with a real id.
+        // The chunk's streamKey ends in `#<tool>#` (empty trailing
+        // segment); upgrade that one rather than letting it linger as
+        // a ghost ◐ next to the real ✓ for the same call.
+        const emptyIDStreamKey = `${threadId}#${toolName}#`;
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].state === "streaming" && updated[i].streamKey === emptyIDStreamKey) {
+            updated[i] = {
+              ...updated[i],
+              id: callId,
+              reason,
+              state: "called",
+              streamKey,
               time: eventTime,
             };
             return updated;

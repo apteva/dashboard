@@ -193,9 +193,16 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
       // optimistic insert, no dedup needed. The row will show up
       // naturally in <200 ms once the SSE delivers.
       setInput("");
-      // Reset textarea height.
+      // Reset textarea height + restore focus. The textarea no longer
+      // disables on `sending` so the browser shouldn't have blurred,
+      // but we refocus explicitly here as a defensive measure for
+      // anything else (modal autoFocus, scroll-into-view) that might
+      // steal focus during the round-trip.
       const el = document.getElementById("chat-input") as HTMLTextAreaElement | null;
-      if (el) el.style.height = "auto";
+      if (el) {
+        el.style.height = "auto";
+        el.focus();
+      }
     } catch (e) {
       setError(errMsg(e));
     } finally {
@@ -367,7 +374,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
                   ? 'Click "Connect to chat" to talk with the agent'
                   : "Message the agent…"
             }
-            disabled={!chatId || sending || !connected}
+            disabled={!chatId || !connected}
             autoFocus={!!chatId}
           />
           <button
