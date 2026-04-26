@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { marked } from "marked";
-import { chat, instances, type ChatMessageRow, type TelemetryEvent } from "../api";
+import { chat, type ChatMessageRow, type TelemetryEvent } from "../api";
 import { ChatStatusDot } from "./ChatStatusDot";
 import { markChatSeen } from "../state/chatNotifications";
+import { chatConnections } from "../state/chatConnections";
 import type { SubscribeFn } from "./InstanceView";
 
 // Markdown setup — marked.parse is synchronous with async: false. Chat
@@ -123,94 +124,55 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
     return () => { cancelled = true; };
   }, [chatId]);
 
-  // --- 3. Subscribe to live updates (only while the user is connected)
+  // --- 3. Hook into the global chat-connections manager ----------------
   //
-  // The SSE subscription is what makes the chat channel "active" from
-  // the agent's POV — channel-chat's hub counts subscribers, and
-  // chatChannel.IsActive() gates whether the channels MCP advertises
-  // chat. Gating on the `connected` flag lets the user explicitly go
-  // offline (agent stops seeing chat as a target) without closing the
-  // whole page.
-  // Track whether we've signalled "connected" for the current SSE
-  // session, so we fire exactly one "user connected" event per
-  // actual open and one "user disconnected" on close/toggle. Refs
-  // rather than state because we don't want a re-render loop.
-  const lastSignalRef = useRef<boolean | null>(null);
-
+  // The SSE no longer lives inside this component. The Layout-level
+  // chatConnections singleton owns one EventSource per chat the user
+  // has marked connected, so navigating away from this instance does
+  // NOT close the connection — the agent keeps seeing chat as IsActive
+  // and can ping the user while they're on another page. ChatPanel is
+  // a viewer for the singleton's state.
+  //
+  // Three things to wire:
+  //   1. connect/disconnect toggle → manager.connect/disconnect
+  //      (also persists intent in localStorage and emits the
+  //      [chat] user connected/disconnected events to the agent).
+  //   2. Live messages → subscribeMessages, which replays buffered
+  //      messages with id > sinceRef so a panel mount that comes
+  //      after some messages already arrived doesn't miss them.
+  //   3. SSE open state → subscribeState for the presence dot.
   useEffect(() => {
-    if (!chatId || !connected) {
-      setSseOpen(false);
-      // Fire the disconnect signal ONLY on a real transition
-      // (connected was previously true). Initial mount with
-      // connected=false hits this branch but lastSignalRef is still
-      // null → skipped.
-      if (lastSignalRef.current === true) {
-        lastSignalRef.current = false;
-        instances.sendEvent(instanceId, "[chat] user disconnected from chat", "main").catch(() => {});
-      } else {
-        lastSignalRef.current = false;
-      }
-      return;
+    if (!chatId) return;
+    if (connected) {
+      chatConnections.connect(chatId, instanceId);
+    } else {
+      chatConnections.disconnect(chatId, instanceId);
     }
-    const es = chat.stream(chatId, sinceRef.current);
-    es.onopen = () => {
-      // Now — and ONLY now — the hub has counted our subscription,
-      // so chatChannel.IsActive() returns true for the next
-      // tools/list call. Sending the "user connected" signal from
-      // onopen eliminates the race where the signal arrived at
-      // core first, the agent woke, checked channels, and saw
-      // [none] because the SSE subscription hadn't registered yet.
-      setSseOpen(true);
-      if (lastSignalRef.current !== true) {
-        lastSignalRef.current = true;
-        instances.sendEvent(instanceId, "[chat] user connected to chat", "main").catch(() => {});
-      }
-    };
-    es.onmessage = (e) => {
-      try {
-        const row: ChatMessageRow = JSON.parse(e.data);
-        if (row.id <= sinceRef.current) return;
-        sinceRef.current = row.id;
-        setMessages((prev) => [...prev, row]);
-        // Live messages while the panel is open + tab is visible count
-        // as "seen" — this keeps the global tray quiet for the chat the
-        // user is actively reading. A backgrounded tab still gets the
-        // tray badge + (if enabled) a desktop notification.
-        if (typeof document === "undefined" || document.visibilityState === "visible") {
-          markChatSeen(chatId, row.id);
-        }
-      } catch {
-        // malformed frame — ignore
-      }
-    };
-    es.onerror = () => {
-      // EventSource auto-reconnects with its own backoff; mark the
-      // dot as "reconnecting" until onopen fires again. Don't fire
-      // a disconnect signal here — the agent shouldn't flap on a
-      // transient network blip.
-      setSseOpen(false);
-    };
-    return () => {
-      es.close();
-      setSseOpen(false);
-      // Component unmount / instance switch / user toggled off:
-      // tell the agent the user is gone. The guard in the !connected
-      // branch above will re-emit cleanly for explicit toggles.
-      if (lastSignalRef.current === true) {
-        lastSignalRef.current = false;
-        instances.sendEvent(instanceId, "[chat] user disconnected from chat", "main").catch(() => {});
-      }
-    };
   }, [chatId, connected, instanceId]);
 
-  // Persist the connected choice across reloads.
   useEffect(() => {
-    try {
-      localStorage.setItem(`chat.connected.${instanceId}`, connected ? "1" : "0");
-    } catch {
-      // storage disabled — ignore, in-memory state still drives UI
-    }
-  }, [connected, instanceId]);
+    if (!chatId) return;
+    setSseOpen(chatConnections.isOpen(chatId));
+    return chatConnections.subscribeState(chatId, () => {
+      setSseOpen(chatConnections.isOpen(chatId));
+    });
+  }, [chatId]);
+
+  useEffect(() => {
+    if (!chatId) return;
+    return chatConnections.subscribeMessages(chatId, sinceRef.current, (row) => {
+      if (row.id <= sinceRef.current) return;
+      sinceRef.current = row.id;
+      setMessages((prev) => [...prev, row]);
+      // Live messages while the panel is open + tab is visible count
+      // as "seen" — this keeps the global tray quiet for the chat the
+      // user is actively reading. A backgrounded tab still gets the
+      // tray badge + (if enabled) a desktop notification.
+      if (typeof document === "undefined" || document.visibilityState === "visible") {
+        markChatSeen(chatId, row.id);
+      }
+    });
+  }, [chatId]);
 
   // --- 4. Auto-scroll on new messages -----------------------------------
   useEffect(() => {

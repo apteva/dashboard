@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useNotifications, type Notification } from "../state/notifications";
-import { markChatSeen, setDesktopNotificationsEnabled, desktopNotificationsEnabled } from "../state/chatNotifications";
+import { markChatSeen, markAllChatsSeen, setDesktopNotificationsEnabled, desktopNotificationsEnabled } from "../state/chatNotifications";
 
 function formatRelative(iso: string): string {
   const ts = Date.parse(iso);
@@ -32,11 +32,22 @@ function sourceLabel(n: Notification): string {
 }
 
 export function NotificationsTray() {
-  const { items, unreadCount, markAllRead, remove } = useNotifications();
+  const { items, unreadCount, remove } = useNotifications();
   const [open, setOpen] = useState(false);
   const [desktopOn, setDesktopOn] = useState(desktopNotificationsEnabled());
   const ref = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+
+  // Reflect unread count into the browser tab title so it shows up in
+  // pinned tabs / window switchers / cmd-tab. Standard "(N) Apteva"
+  // pattern (Slack/Gmail/Discord); the original title is captured once
+  // on first mount and restored when the count drops back to 0.
+  useEffect(() => {
+    const original = document.title.replace(/^\(\d+\)\s+/, "");
+    document.title = unreadCount > 0
+      ? `(${unreadCount > 99 ? "99+" : unreadCount}) ${original}`
+      : original;
+  }, [unreadCount]);
 
   // Click-outside to close the dropdown.
   useEffect(() => {
@@ -63,13 +74,8 @@ export function NotificationsTray() {
   function routeTo(n: Notification): void {
     if (n.ref?.kind === "instance-chat") {
       navigate(`/instances/${n.ref.instanceId}`);
-      // The chat panel itself advances the watermark when it loads
-      // visible messages; we also fire a markChatSeen here using the
-      // notification's underlying chat id so the tray clears
-      // immediately on click rather than waiting for the panel to
-      // mount + render.
       const chatId = n.id.startsWith("chat:") ? n.id.slice(5) : "";
-      if (chatId) markChatSeen(chatId, Number.MAX_SAFE_INTEGER);
+      if (chatId && n.latestId) markChatSeen(chatId, n.latestId);
     }
     setOpen(false);
   }
@@ -102,7 +108,7 @@ export function NotificationsTray() {
             <span className="text-text font-medium text-sm">Notifications</span>
             {items.length > 0 && (
               <button
-                onClick={() => markAllRead()}
+                onClick={() => markAllChatsSeen()}
                 className="text-text-muted hover:text-text text-xs"
               >
                 mark all read
@@ -144,8 +150,8 @@ export function NotificationsTray() {
                       onClick={(e) => {
                         e.stopPropagation();
                         remove(n.id);
-                        if (n.id.startsWith("chat:")) {
-                          markChatSeen(n.id.slice(5), Number.MAX_SAFE_INTEGER);
+                        if (n.id.startsWith("chat:") && n.latestId) {
+                          markChatSeen(n.id.slice(5), n.latestId);
                         }
                       }}
                       className="text-text-dim hover:text-text text-xs px-1"

@@ -23,18 +23,30 @@ function getWatermark(chatId: string): number {
   }
 }
 
-/** Advance the watermark and remove the matching notification entry.
- * Idempotent: if the new id is below the existing watermark, no-op. */
-export function markChatSeen(chatId: string, latestId: number): void {
-  if (latestId <= 0) return;
-  const cur = getWatermark(chatId);
-  if (latestId <= cur) return;
+function setWatermark(chatId: string, latestId: number): void {
   try {
     localStorage.setItem(WATERMARK_KEY(chatId), String(latestId));
   } catch {
-    // localStorage may throw in private mode; we'll re-mark on next message.
+    // localStorage may throw in private mode; the server-backed
+    // watermark covers persistence in that case.
+  }
+}
+
+/** Advance the watermark (localStorage instant + server eventual) and
+ * remove the matching notification entry. Idempotent: if the new id is
+ * below the existing watermark, no-op locally; the server is monotonic
+ * so a redundant POST is harmless. */
+export function markChatSeen(chatId: string, latestId: number): void {
+  if (latestId <= 0) return;
+  const cur = getWatermark(chatId);
+  if (latestId > cur) {
+    setWatermark(chatId, latestId);
   }
   notifications.remove(`chat:${chatId}`);
+  // Fire-and-forget server sync — failures are tolerable because
+  // localStorage already reflects the new state for this device, and
+  // the next /unread-summary will reconcile.
+  void chat.markSeen(chatId, latestId).catch(() => {});
 }
 
 function previewFor(role: string, content: string): string {
@@ -71,6 +83,7 @@ function buildNotification(
     ts: latestAt,
     count,
     unread: count > 0,
+    latestId,
     ref: { kind: "instance-chat", instanceId },
   };
 }
@@ -116,18 +129,35 @@ async function seed(): Promise<void> {
   let summary: UnreadSummaryRow[];
   try {
     summary = await chat.unreadSummary();
-  } catch {
-    return; // server hasn't shipped the endpoint yet, or auth missing
+    console.log("[NOTIF-DEBUG] seed got", summary.length, "rows");
+  } catch (e) {
+    console.warn("[NOTIF-DEBUG] seed failed", e);
+    return;
   }
   for (const row of summary) {
     state.chatToInstance.set(row.chat_id, {
       id: row.instance_id,
       name: row.instance_name,
     });
+    // Reconcile localStorage with the server's view, clamped to the
+    // server's real latest_id. A localStorage value above latest_id
+    // is a data corruption artifact (e.g. an old build that wrote
+    // Number.MAX_SAFE_INTEGER as a "fully read" sentinel) — we treat
+    // the server's latest as the ceiling so the next message can show
+    // up as unread again.
+    const local = getWatermark(row.chat_id);
+    const ceiling = row.latest_id;
+    const serverWM = Math.min(row.last_seen_id, ceiling);
+    const candidate = Math.max(serverWM, local);
+    const watermark = candidate > ceiling ? ceiling : candidate;
+    if (watermark !== local) setWatermark(row.chat_id, watermark);
     if (row.latest_id <= 0) continue;
     if (row.latest_role === "system" || row.latest_role === "") continue;
-    const watermark = getWatermark(row.chat_id);
-    if (row.latest_id <= watermark) continue;
+    if (row.latest_id <= watermark) {
+      // Watermark caught up — drop any stale entry the tray was holding.
+      notifications.remove(`chat:${row.chat_id}`);
+      continue;
+    }
     const count = row.latest_id - watermark;
     notifications.upsert(
       buildNotification(
@@ -144,17 +174,35 @@ async function seed(): Promise<void> {
   }
 }
 
+/** Mark every chat-source notification read at once. Used by the tray's
+ * "mark all read" button. Advances each chat's watermark to its current
+ * known latest message id and clears the entries. */
+export function markAllChatsSeen(): void {
+  const items = notifications.getSnapshot();
+  for (const n of items) {
+    if (!n.id.startsWith("chat:")) continue;
+    if (!n.latestId) continue;
+    const chatId = n.id.slice(5);
+    markChatSeen(chatId, n.latestId);
+  }
+}
+
 function ingest(msg: ChatMessageRow): void {
-  if (msg.role === "system") return;
+  if (msg.role === "system") {
+    console.log("[NOTIF-DEBUG] ingest skip system role");
+    return;
+  }
   const meta = state.chatToInstance.get(msg.chat_id);
-  // If we don't know the instance yet (chat created mid-session),
-  // refresh the cache opportunistically.
   if (!meta) {
+    console.log("[NOTIF-DEBUG] ingest unknown chat", msg.chat_id, "-> reseeding");
     void seed();
     return;
   }
   const watermark = getWatermark(msg.chat_id);
-  if (msg.id <= watermark) return;
+  if (msg.id <= watermark) {
+    console.log("[NOTIF-DEBUG] ingest below watermark id=", msg.id, "wm=", watermark, "-> skip");
+    return;
+  }
   const existing = notifications.getSnapshot().find((n) => n.id === `chat:${msg.chat_id}`);
   const count = (existing?.count || 0) + 1;
   const notif = buildNotification(
@@ -167,6 +215,7 @@ function ingest(msg: ChatMessageRow): void {
     msg.created_at,
     count,
   );
+  console.log("[NOTIF-DEBUG] ingest UPSERTING", notif.id, "count=", count, "preview=", notif.preview);
   notifications.upsert(notif);
   if (msg.role === "agent") maybeDesktopNotify(notif);
 }
@@ -178,23 +227,24 @@ function startSSE(): () => void {
 
   const open = () => {
     if (closed) return;
+    console.log("[NOTIF-DEBUG] opening wildcard SSE");
     es = chat.streamUser();
     es.onopen = () => {
+      console.log("[NOTIF-DEBUG] wildcard SSE OPEN");
       backoff = 500; // reset on successful connect
     };
     es.onmessage = (ev) => {
       if (!ev.data) return;
       try {
         const msg = JSON.parse(ev.data) as ChatMessageRow;
+        console.log("[NOTIF-DEBUG] received SSE msg id=", msg.id, "role=", msg.role, "chat=", msg.chat_id);
         ingest(msg);
-      } catch {
-        // ignore unparseable
+      } catch (e) {
+        console.warn("[NOTIF-DEBUG] failed to parse SSE frame", e);
       }
     };
-    es.onerror = () => {
-      // Browser auto-retries on some network errors but not auth failures
-      // (401 closes the stream permanently). Manual reopen with backoff
-      // covers both — caps at 30s so a logged-out tab doesn't spin.
+    es.onerror = (e) => {
+      console.warn("[NOTIF-DEBUG] wildcard SSE error, will retry", e);
       es?.close();
       if (closed) return;
       setTimeout(open, backoff);
@@ -205,6 +255,7 @@ function startSSE(): () => void {
   open();
 
   return () => {
+    console.log("[NOTIF-DEBUG] wildcard SSE shutdown");
     closed = true;
     es?.close();
   };

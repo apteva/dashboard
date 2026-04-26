@@ -1600,6 +1600,15 @@ export const chat = {
   // badges show up before the SSE has a chance to fire its first event.
   unreadSummary: (): Promise<UnreadSummaryRow[]> =>
     request<UnreadSummaryRow[]>("GET", "/apps/channel-chat/unread-summary"),
+
+  // markSeen advances the persistent per-chat read watermark. Server
+  // is monotonic, so it's safe to fire from many tabs at once. Returns
+  // the watermark in effect after the call so the client can reconcile.
+  markSeen: (chatId: string, lastSeenId: number): Promise<{ last_seen_id: number }> =>
+    request<{ last_seen_id: number }>("POST", "/apps/channel-chat/seen", {
+      chat_id: chatId,
+      last_seen_id: lastSeenId,
+    }),
 };
 
 export interface UnreadSummaryRow {
@@ -1611,4 +1620,5 @@ export interface UnreadSummaryRow {
   latest_role: string;     // user | agent | system | "" if no messages
   latest_preview: string;
   latest_at: string;
+  last_seen_id: number;
 }

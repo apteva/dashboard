@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { instances, core, providers as providersAPI, type Instance, type Thread, type TelemetryEvent, type Provider, type ProviderDetail, type ModelInfo } from "../api";
 
 export type EventListener = (event: TelemetryEvent) => void;
@@ -634,17 +634,32 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
     } finally { setSaving(false); }
   };
 
+  // Some providers (Fireworks, OpenRouter) return the same model id under
+  // multiple "tier" variants — first-occurrence wins so the dropdown
+  // stays stable + react keys are unique.
+  const uniqueModels = useMemo(() => {
+    if (!models) return undefined;
+    const seen = new Set<string>();
+    const out: typeof models = [];
+    for (const m of models) {
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      out.push(m);
+    }
+    return out;
+  }, [models]);
+
   const modelSelect = (label: string, value: string, onChange: (v: string) => void) => (
     <div className="flex items-center gap-2">
       <span className="text-text-muted text-xs w-16 shrink-0">{label}</span>
-      {models ? (
+      {uniqueModels ? (
         <select
           value={value}
           onChange={(e) => onChange(e.target.value)}
           className="flex-1 bg-bg-input border border-border rounded-lg px-2 py-1.5 text-xs text-text font-mono focus:outline-none focus:border-accent"
         >
           <option value="">— not set —</option>
-          {models.map((m) => (
+          {uniqueModels.map((m) => (
             <option key={m.id} value={m.id}>{m.id}</option>
           ))}
         </select>

@@ -19,6 +19,10 @@ export interface Notification {
   count: number;
   /** True when the user hasn't acknowledged this notification yet. */
   unread: boolean;
+  /** Highest underlying-event id this entry represents. For chat,
+   * this is the message id; "mark read" advances the watermark to
+   * exactly this value (not MAX, not infinity). */
+  latestId: number;
   /** Optional click target. Layout-agnostic — consumers route on it. */
   ref?: { kind: "instance-chat"; instanceId: number };
 }

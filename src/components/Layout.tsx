@@ -5,6 +5,7 @@ import { useAuth } from "../hooks/useAuth";
 import { AccountMenu } from "./AccountMenu";
 import { NotificationsTray } from "./NotificationsTray";
 import { startChatNotifications } from "../state/chatNotifications";
+import { chatConnections } from "../state/chatConnections";
 
 export function Layout() {
   const [version, setVersion] = useState("");
@@ -13,11 +14,36 @@ export function Layout() {
   const { user, logout } = useAuth();
 
   // Boot the global notifications source once the user is logged in.
-  // Cleanup tears down the SSE + storage listener; remounting on login
-  // changes (e.g. account switch) is handled by useAuth.
+  //
+  // We deliberately do NOT call chatConnections.stopAll() in cleanup.
+  // React StrictMode in dev double-fires this effect (mount → cleanup →
+  // remount), and tearing down the per-chat SSEs on every cleanup
+  // pass would emit a [chat] user disconnected event to the agent and
+  // immediately reconnect — confusing the agent's channel-availability
+  // reasoning. SSEs are torn down naturally when the browser tab
+  // closes; explicit logout calls chatConnections.stopAll() directly
+  // (see the logout button below).
+  //
+  // The notifications driver (startChatNotifications) is safe to bounce
+  // — its cleanup is just an SSE close + localStorage listener removal,
+  // no agent-visible side effects.
   useEffect(() => {
     if (!user || user === false) return;
-    return startChatNotifications();
+    const stopNotifs = startChatNotifications();
+    chatConnections.resumeFromStorage();
+    return () => {
+      stopNotifs();
+    };
+  }, [user]);
+
+  // Logout teardown — when user transitions from authenticated to false,
+  // close every open chat SSE so the agent sees the user as gone.
+  // Distinct from the StrictMode-induced cleanup above which preserves
+  // connections.
+  useEffect(() => {
+    if (user === false) {
+      chatConnections.stopAll();
+    }
   }, [user]);
 
   useEffect(() => {
