@@ -3,12 +3,22 @@ import { useEffect, useState } from "react";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
 import { AccountMenu } from "./AccountMenu";
+import { NotificationsTray } from "./NotificationsTray";
+import { startChatNotifications } from "../state/chatNotifications";
 
 export function Layout() {
   const [version, setVersion] = useState("");
   const [versionTip, setVersionTip] = useState("");
   const { projects, currentProject, setCurrentProject } = useProjects();
   const { user, logout } = useAuth();
+
+  // Boot the global notifications source once the user is logged in.
+  // Cleanup tears down the SSE + storage listener; remounting on login
+  // changes (e.g. account switch) is handled by useAuth.
+  useEffect(() => {
+    if (!user || user === false) return;
+    return startChatNotifications();
+  }, [user]);
 
   useEffect(() => {
     // /version now returns the full component breakdown — apteva (umbrella),
@@ -110,8 +120,16 @@ export function Layout() {
       </nav>
 
       {/* Main content */}
-      <main className="flex-1 overflow-hidden">
-        <Outlet />
+      <main className="flex-1 overflow-hidden flex flex-col">
+        {/* Slim top bar — global controls. Currently just the
+            notifications tray; placeholder for future search,
+            user-shortcut, or quick-create surfaces. */}
+        <div className="h-10 border-b border-border flex items-center justify-end px-3 flex-shrink-0">
+          <NotificationsTray />
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <Outlet />
+        </div>
       </main>
     </div>
   );

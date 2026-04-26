@@ -1588,4 +1588,27 @@ export const chat = {
     const qs = `chat_id=${encodeURIComponent(chatId)}&since=${since}`;
     return new EventSource(`${BASE}/apps/channel-chat/stream?${qs}`);
   },
+
+  // streamUser opens the wildcard SSE that emits every message for any
+  // chat the authenticated user owns. Drives the global notifications
+  // tray; not used by per-chat panels.
+  streamUser: (): EventSource => {
+    return new EventSource(`${BASE}/apps/channel-chat/stream?scope=user`);
+  },
+
+  // unreadSummary seeds the notifications tray on dashboard mount so
+  // badges show up before the SSE has a chance to fire its first event.
+  unreadSummary: (): Promise<UnreadSummaryRow[]> =>
+    request<UnreadSummaryRow[]>("GET", "/apps/channel-chat/unread-summary"),
 };
+
+export interface UnreadSummaryRow {
+  chat_id: string;
+  instance_id: number;
+  instance_name: string;
+  title: string;
+  latest_id: number;
+  latest_role: string;     // user | agent | system | "" if no messages
+  latest_preview: string;
+  latest_at: string;
+}

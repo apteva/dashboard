@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { marked } from "marked";
 import { chat, instances, type ChatMessageRow, type TelemetryEvent } from "../api";
 import { ChatStatusDot } from "./ChatStatusDot";
+import { markChatSeen } from "../state/chatNotifications";
 import type { SubscribeFn } from "./InstanceView";
 
 // Markdown setup — marked.parse is synchronous with async: false. Chat
@@ -114,6 +115,9 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
         setMessages(rows);
         const maxId = rows.reduce((m, r) => (r.id > m ? r.id : m), 0);
         sinceRef.current = maxId;
+        // Reading the chat clears its tray entry across this tab AND
+        // every other tab open to the same chat (storage event).
+        if (maxId > 0) markChatSeen(chatId, maxId);
       })
       .catch((e) => !cancelled && setError(errMsg(e)));
     return () => { cancelled = true; };
@@ -168,6 +172,13 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
         if (row.id <= sinceRef.current) return;
         sinceRef.current = row.id;
         setMessages((prev) => [...prev, row]);
+        // Live messages while the panel is open + tab is visible count
+        // as "seen" — this keeps the global tray quiet for the chat the
+        // user is actively reading. A backgrounded tab still gets the
+        // tray badge + (if enabled) a desktop notification.
+        if (typeof document === "undefined" || document.visibilityState === "visible") {
+          markChatSeen(chatId, row.id);
+        }
       } catch {
         // malformed frame — ignore
       }
