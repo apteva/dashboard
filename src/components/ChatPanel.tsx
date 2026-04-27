@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { marked } from "marked";
 import { chat, type ChatMessageRow, type TelemetryEvent } from "../api";
 import { ChatStatusDot } from "./ChatStatusDot";
-import { markChatSeen } from "../state/chatNotifications";
+import { markChatSeen, focusChat } from "../state/chatNotifications";
 import { chatConnections } from "../state/chatConnections";
 import type { SubscribeFn } from "./InstanceView";
 
@@ -27,6 +27,63 @@ interface Props {
   onEvent?: (event: TelemetryEvent) => void;
 }
 
+// LiveTool — one tool call surfaced inline in the chat timeline.
+// Distinct from any chat row; lives only in component state and is
+// keyed by provider call_id. Tracks the streaming → called → done
+// lifecycle plus enough metadata (thread, reason, duration) to
+// render "who is doing what" between agent messages.
+//
+// startedAt is fixed at first-sight and never moves, so the tool's
+// position in the interleaved timeline is stable even as state
+// transitions in (re-renders only update icon / reason / duration).
+interface LiveTool {
+  id: string;             // call_id from the provider, or thread:name fallback
+  threadId: string;       // "main" or sub-thread id — rendered so user can tell who's acting
+  name: string;           // tool slug
+  reason: string;         // the agent's free-text _reason at call time
+  state: "streaming" | "called" | "done";
+  success?: boolean;      // only on done
+  durationMs?: number;    // only on done
+  startedAt: number;      // canonical sort key for the timeline
+  doneAt?: number;        // ms timestamp; for cap-eviction policy
+}
+
+// Tools we hide from the chat timeline. Pure agent housekeeping:
+//   pace — sleep-rate adjustments fire constantly
+//   done — thread terminator
+// Everything else surfaces. `send` (inter-thread dispatch) is
+// included because it's the "main is talking to leader" signal — the
+// dispatch side of [from:main] events the receiving thread shows.
+// Without it the chat reads as one-sided: you'd see thread-x's
+// "[from:main]" land but never see main initiating the conversation.
+// channels_respond is also visible — on sub-threads it's "who
+// answered the user", on main it's slightly redundant with the
+// produced message but still surfaces the routing signal.
+const HIDDEN_TOOLS = new Set(["pace", "done"]);
+
+// Cap on retained tool entries. Once exceeded we drop the oldest
+// completed entry. In-flight (streaming/called) entries are never
+// dropped — losing them mid-flight would leave the timeline with a
+// "started but never finished" state we couldn't reason about.
+const MAX_LIVE_TOOLS = 200;
+
+// enforceCap drops the oldest completed entries when the map exceeds
+// MAX_LIVE_TOOLS. Mutates and returns the same map for callsite
+// brevity. No-op when under the cap, so the common case stays cheap.
+function enforceCap(m: Map<string, LiveTool>): Map<string, LiveTool> {
+  if (m.size <= MAX_LIVE_TOOLS) return m;
+  const done = [...m.values()]
+    .filter((t) => t.state === "done")
+    .sort((a, b) => (a.doneAt || a.startedAt) - (b.doneAt || b.startedAt));
+  let toDrop = m.size - MAX_LIVE_TOOLS;
+  for (const t of done) {
+    if (toDrop <= 0) break;
+    m.delete(t.id);
+    toDrop--;
+  }
+  return m;
+}
+
 // ChatPanel — DB-backed conversation view for a single instance.
 //
 // Previous implementation reconstructed chat state from a telemetry
@@ -45,6 +102,14 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   const [showClearModal, setShowClearModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Ephemeral tool-activity strip. NEVER enters `messages` — that's
+  // the previous implementation's mistake. The strip is pinned above
+  // the input; in-flight tools appear there, completed ones fade out.
+  // Keyed by call id (falls back to thread:name when id is absent
+  // mid-stream), so the same tool transitions cleanly through its
+  // streaming → called → done lifecycle without duplicating rows.
+  const [liveTools, setLiveTools] = useState<Map<string, LiveTool>>(() => new Map());
 
   // Explicit connect/disconnect. Persistence across reloads is handled
   // by remembering the last choice in localStorage — so a user who
@@ -116,9 +181,12 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
         setMessages(rows);
         const maxId = rows.reduce((m, r) => (r.id > m ? r.id : m), 0);
         sinceRef.current = maxId;
-        // Reading the chat clears its tray entry across this tab AND
-        // every other tab open to the same chat (storage event).
-        if (maxId > 0) markChatSeen(chatId, maxId);
+        // Reading the chat clears its tray entry — but ONLY if the
+        // tab is actually visible. A backgrounded tab that finishes
+        // its history fetch shouldn't silently mark messages read
+        // before the user has had a chance to see them.
+        const visible = typeof document === "undefined" || document.visibilityState === "visible";
+        if (maxId > 0 && visible) markChatSeen(chatId, maxId);
       })
       .catch((e) => !cancelled && setError(errMsg(e)));
     return () => { cancelled = true; };
@@ -174,12 +242,141 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
     });
   }, [chatId]);
 
+  // Claim "focused chat" on the notifications driver whenever the
+  // panel is mounted AND the tab is visible. The wildcard SSE that
+  // feeds the tray skips messages for the focused chat (and silently
+  // advances the watermark), so a user staring at the chat panel never
+  // sees a tray badge for messages that are already on screen — even
+  // when the per-chat SSE isn't connected (Connect toggle off).
+  useEffect(() => {
+    if (!chatId || typeof document === "undefined") return;
+    let release: (() => void) | null = null;
+    const apply = () => {
+      const visible = document.visibilityState === "visible";
+      if (visible && !release) {
+        release = focusChat(chatId);
+      } else if (!visible && release) {
+        release();
+        release = null;
+      }
+    };
+    apply();
+    document.addEventListener("visibilitychange", apply);
+    return () => {
+      document.removeEventListener("visibilitychange", apply);
+      if (release) release();
+    };
+  }, [chatId]);
+
   // --- 4. Auto-scroll on new messages -----------------------------------
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  // --- 4b. Live tool activity (interleaved into the timeline) -----------
+  //
+  // Subscribe to the per-instance telemetry SSE and track every
+  // tool call across every thread. The timeline render below sorts
+  // these alongside DB messages by timestamp, so the user sees an
+  // accurate "agent said X, then leader-thread did Y, then agent
+  // said Z" reading order.
+  //
+  // Importantly, tools and messages are kept in SEPARATE state
+  // shapes. The previous broken implementation tried to derive
+  // chat state from the telemetry firehose; that was the ordering
+  // bug. Here we never copy a tool into messages or vice versa —
+  // they only meet at render time, sorted by timestamp.
+  //
+  // Three event types drive the lifecycle:
+  //   llm.tool_chunk → first chunk creates a "streaming" entry. We
+  //                    don't render args (intentional — args were
+  //                    the noisy bit), only the name + thread.
+  //   tool.call      → args finalised, executor running. Carries
+  //                    the agent's free-text `reason` — the human-
+  //                    readable "why".
+  //   tool.result    → finished. Success/error + duration.
+  //
+  // Filter: only the housekeeping set (pace/done/send). Everything
+  // else, on every thread, surfaces — that's the user's "who is
+  // doing what" requirement.
+  useEffect(() => {
+    return subscribe((ev) => {
+      if (ev.type === "llm.tool_chunk") {
+        const name = String(ev.data?.tool || "");
+        if (!name || HIDDEN_TOOLS.has(name)) return;
+        const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
+        setLiveTools((prev) => {
+          if (prev.has(id)) return prev; // already tracked, ignore further chunks
+          const next = new Map(prev);
+          next.set(id, {
+            id,
+            threadId: ev.thread_id || "main",
+            name,
+            reason: "",
+            state: "streaming",
+            startedAt: Date.parse(ev.time) || Date.now(),
+          });
+          return enforceCap(next);
+        });
+        return;
+      }
+
+      if (ev.type === "tool.call") {
+        const name = String(ev.data?.name || "");
+        if (!name || HIDDEN_TOOLS.has(name)) return;
+        const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
+        const reason = String(ev.data?.reason || "");
+        setLiveTools((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(id);
+          next.set(id, {
+            id,
+            threadId: existing?.threadId || ev.thread_id || "main",
+            name,
+            reason,
+            state: "called",
+            startedAt: existing?.startedAt ?? (Date.parse(ev.time) || Date.now()),
+          });
+          return enforceCap(next);
+        });
+        return;
+      }
+
+      if (ev.type === "tool.result") {
+        const name = String(ev.data?.name || ev.data?.tool || "");
+        if (!name || HIDDEN_TOOLS.has(name)) return;
+        const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
+        const isError = !!ev.data?.is_error;
+        const durationMs =
+          typeof ev.data?.duration_ms === "number" ? ev.data.duration_ms : undefined;
+        setLiveTools((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(id);
+          next.set(id, {
+            id,
+            threadId: existing?.threadId || ev.thread_id || "main",
+            name,
+            reason: existing?.reason || "",
+            state: "done",
+            success: !isError,
+            durationMs,
+            startedAt: existing?.startedAt ?? (Date.parse(ev.time) || Date.now()),
+            doneAt: Date.now(),
+          });
+          return enforceCap(next);
+        });
+        return;
+      }
+    });
+  }, [subscribe]);
+
+  // Reset tool list when switching chats / instances. Otherwise stale
+  // entries from a previous instance briefly leak into the new view.
+  useEffect(() => {
+    setLiveTools(new Map());
+  }, [instanceId, chatId]);
 
   // --- 5. Send handler ---------------------------------------------------
   const handleSend = useCallback(async () => {
@@ -208,7 +405,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
     } finally {
       setSending(false);
     }
-  }, [input, chatId, sending]);
+  }, [input, chatId, sending, connected]);
 
   // --- 6. Clear history -------------------------------------------------
   const handleClear = async () => {
@@ -227,6 +424,43 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
     () => [...messages].sort((a, b) => a.id - b.id),
     [messages],
   );
+
+  // Interleaved timeline of messages + tools.
+  //
+  // The merge happens at render time only — tools and messages keep
+  // their own state shapes throughout. We never copy between them, so
+  // there's no double-source-of-truth problem and reordering can't
+  // produce duplicates.
+  //
+  // Ordering rule: timestamp, ascending. Messages use `created_at`
+  // (DB-assigned), tools use `startedAt` (telemetry `time` at first-
+  // sight, fixed across state transitions). When ts ties, messages
+  // win — the user's reply at the same moment as a tool call should
+  // visually anchor before the tool, since the tool was triggered by
+  // the message.
+  const timeline = useMemo(() => {
+    type Item =
+      | { kind: "msg"; ts: number; msg: ChatMessageRow }
+      | { kind: "tool"; ts: number; tool: LiveTool };
+    const items: Item[] = [];
+    for (const m of orderedMessages) {
+      items.push({ kind: "msg", ts: Date.parse(m.created_at) || 0, msg: m });
+    }
+    for (const t of liveTools.values()) {
+      items.push({ kind: "tool", ts: t.startedAt, tool: t });
+    }
+    items.sort((a, b) => {
+      if (a.ts !== b.ts) return a.ts - b.ts;
+      // Tie-break: messages before tools, then stable-by-id.
+      if (a.kind !== b.kind) return a.kind === "msg" ? -1 : 1;
+      if (a.kind === "msg" && b.kind === "msg") return a.msg.id - b.msg.id;
+      if (a.kind === "tool" && b.kind === "tool") {
+        return a.tool.id < b.tool.id ? -1 : 1;
+      }
+      return 0;
+    });
+    return items;
+  }, [orderedMessages, liveTools]);
 
   return (
     <div className="flex flex-col h-full min-w-0">
@@ -332,9 +566,13 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
             No messages yet. Say hi.
           </p>
         )}
-        {orderedMessages.map((msg) => (
-          <MessageRow key={msg.id} msg={msg} />
-        ))}
+        {timeline.map((item) =>
+          item.kind === "msg" ? (
+            <MessageRow key={`m${item.msg.id}`} msg={item.msg} />
+          ) : (
+            <ToolRow key={`t${item.tool.id}`} t={item.tool} />
+          ),
+        )}
       </div>
 
       {/* Input */}
@@ -371,7 +609,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
               !chatId
                 ? "Loading…"
                 : !connected
-                  ? 'Click "Connect to chat" to talk with the agent'
+                  ? "Connect to chat…"
                   : "Message the agent…"
             }
             disabled={!chatId || !connected}
@@ -463,6 +701,54 @@ function MessageRow({ msg }: { msg: ChatMessageRow }) {
         dangerouslySetInnerHTML={{ __html: html }}
       />
       {msg.status === "streaming" && <span className="tool-cursor">▊</span>}
+    </div>
+  );
+}
+
+// ToolRow — inline tool indicator rendered between messages in the
+// chat timeline. Visually subdued (smaller, dimmer, indented) so it
+// reads as background activity, not as a primary turn. Layout:
+//
+//   ⟳ thread · tool_name → agent's reason                    (1.2s)
+//
+// Thread id is always shown so the operator can tell whether main is
+// busy, a sub-thread spawned a helper, etc. Tool slug stays in a
+// fixed-width column so eye scan remains alignable across rows.
+function ToolRow({ t }: { t: LiveTool }) {
+  const icon =
+    t.state === "streaming"
+      ? <span className="text-yellow shrink-0 animate-pulse">◐</span>
+      : t.state === "called"
+      ? <span className="text-accent shrink-0">⟳</span>
+      : <span className={`shrink-0 ${t.success ? "text-green" : "text-red"}`}>{t.success ? "✓" : "✗"}</span>;
+
+  const labelEl =
+    t.state === "streaming"
+      ? <span className="text-text-dim italic">starting…</span>
+      : t.reason
+      ? <span className="text-text-dim truncate" title={t.reason}>{t.reason}</span>
+      : null;
+
+  const dur =
+    t.state === "done" && t.durationMs != null
+      ? t.durationMs >= 1000
+        ? `${(t.durationMs / 1000).toFixed(1)}s`
+        : `${t.durationMs}ms`
+      : "";
+
+  return (
+    <div className="flex items-center gap-1.5 min-w-0 leading-tight pl-3 text-[10px]">
+      {icon}
+      <span
+        className="text-text-dim shrink-0"
+        title={`thread: ${t.threadId}`}
+      >
+        {t.threadId}
+      </span>
+      <span className="text-text-dim shrink-0">·</span>
+      <span className="text-text-muted shrink-0 font-mono">{t.name}</span>
+      {labelEl}
+      {dur && <span className="text-text-dim shrink-0">({dur})</span>}
     </div>
   );
 }

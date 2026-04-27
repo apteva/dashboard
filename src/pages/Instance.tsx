@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { instances, core, type Instance as InstanceType, type Thread } from "../api";
 import { InstanceView } from "../components/InstanceView";
+import { chatConnections } from "../state/chatConnections";
+import { forgetChat } from "../state/chatNotifications";
 
 // Instance is the per-id wrapper. Resolves :id from the URL, fetches the
 // instance metadata + preloaded threads, and hands off to InstanceView.
@@ -61,7 +63,7 @@ export function Instance() {
             No agent with id <code className="text-text">#{instanceId}</code> in this project.
           </p>
           <button
-            onClick={() => navigate("/")}
+            onClick={() => navigate("/agents")}
             className="mt-4 px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
           >
             ← Back to agents
@@ -77,7 +79,16 @@ export function Instance() {
       initialThreads={preloadedThreads}
       onDelete={async () => {
         await instances.delete(instance.id);
-        navigate("/");
+        // Drop every dashboard-side trace of the deleted instance:
+        //   · live SSE + chat.connected.<id> localStorage intent
+        //     (otherwise the connection 404-loops forever and
+        //     resumeFromStorage revives it on next page load).
+        //   · notifications-tray watermark + any pending badge entry
+        //     for the default chat (otherwise a new instance with the
+        //     same id later would inherit a stale "last seen" point).
+        chatConnections.forgetInstance(instance.id);
+        forgetChat(`default-${instance.id}`);
+        navigate("/agents");
       }}
       onReload={load}
     />

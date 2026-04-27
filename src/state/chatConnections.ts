@@ -172,6 +172,37 @@ class ChatConnectionsManager {
     }
   }
 
+  /** Drop every trace of an instance after the user deletes it: close
+   * any live SSE, remove the record, clear the persisted "wants to
+   * reconnect" intent so resumeFromStorage doesn't revive it on the
+   * next page load. The agent send is suppressed because the instance
+   * is already gone server-side. */
+  forgetInstance(instanceId: number): void {
+    try {
+      localStorage.removeItem(INTENT_KEY(instanceId));
+    } catch {
+      // unavailable in private mode etc.
+    }
+    for (const c of Array.from(this.byChat.values())) {
+      if (c.instanceId !== instanceId) continue;
+      if (c.retryTimer !== null) {
+        clearTimeout(c.retryTimer);
+        c.retryTimer = null;
+      }
+      if (c.es) {
+        c.es.close();
+        c.es = null;
+      }
+      c.closed = true;
+      c.open = false;
+      // Skip signaling [chat] disconnected — the instance no longer
+      // exists, the event would 404.
+      c.signaledConnected = false;
+      this.byChat.delete(c.chatId);
+    }
+    this.notifyAll();
+  }
+
   // ---- Internals -----------------------------------------------------
 
   private persistIntent(instanceId: number, on: boolean): void {

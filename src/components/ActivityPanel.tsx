@@ -78,8 +78,21 @@ function formatToolTime(ms: number): string {
 // opposite: they're the agent's "big decisions" — which worker did it
 // create, what rule did it just bake in, what did it decide to remember —
 // and should always surface.
+// Tools we suppress from the Tool Calls list. `pace` and `done` are
+// pure agent housekeeping (sleep tuning, thread terminator) that
+// would otherwise dominate the rail without telling the operator
+// anything. `channels_respond` and `channels_status` are how the
+// agent puts text into chat — the messages already render in the
+// chat panel, so showing the tool call too is redundant noise.
+//
+// `send` is intentionally NOT hidden: it's the inter-thread dispatch
+// event ("main is talking to leader", "leader is talking to a
+// worker"), exactly the signal the operator wants to see. It used to
+// be hidden as "glue" but that was the wrong tradeoff — without it
+// you only see the receiver side ([from:X] in IncomingEvents) and
+// can't tell who initiated the conversation.
 const hiddenTools = new Set([
-  "pace", "done", "send",
+  "pace", "done",
   "channels_respond", "channels_status",
 ]);
 
@@ -557,6 +570,42 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
       setThreads((prev) => prev.filter((t) => t.id !== event.thread_id));
     }
 
+    // thread.renamed: name-only changes have old_id == new_id; id renames
+    // also cascade through children's parent_id. We normalize both cases
+    // here so the UI doesn't need a separate "name change" code path.
+    if (event.type === "thread.renamed") {
+      const oldID = String(data.old_id || event.thread_id || "");
+      const newID = String(data.new_id || oldID);
+      const newName = String(data.name || "");
+      setThreads((prev) => prev.map((t) => {
+        if (t.id === oldID) {
+          return { ...t, id: newID, name: newName };
+        }
+        if (oldID !== newID && t.parent_id === oldID) {
+          return { ...t, parent_id: newID };
+        }
+        return t;
+      }));
+      // For id renames, migrate the per-thread lookup state so context +
+      // usage badges follow the new id. Name-only changes are no-ops here.
+      if (oldID !== newID) {
+        setCtxByThread((prev) => {
+          if (!(oldID in prev)) return prev;
+          const next = { ...prev };
+          next[newID] = next[oldID];
+          delete next[oldID];
+          return next;
+        });
+        setUsageByThread((prev) => {
+          if (!(oldID in prev)) return prev;
+          const next = { ...prev };
+          next[newID] = next[oldID];
+          delete next[oldID];
+          return next;
+        });
+      }
+    }
+
     if (event.type === "mode.changed" && data.mode) {
       setMode(data.mode as RunMode);
     }
@@ -739,7 +788,12 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
                   {/* Header row: id + iter + rate + (optional active-tool spinner) */}
                   <div className="flex items-center gap-1.5">
                     {(t.depth || 0) > 0 && <span className="text-text-dim">├</span>}
-                    <span className="text-text font-bold truncate">{t.id}</span>
+                    <span
+                      className="text-text font-bold truncate"
+                      title={t.name && t.name !== t.id ? `id: ${t.id}` : undefined}
+                    >
+                      {t.name || t.id}
+                    </span>
                     <span className="text-text-muted shrink-0 text-[10px]">
                       #{t.iteration}
                     </span>
@@ -851,9 +905,11 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
                       <span className="text-[9px] text-text-dim shrink-0 uppercase tracking-wide">
                         tool:
                       </span>
-                      {/* Prefer the free-text reason over the slug everywhere.
-                          The slug stays in the title attribute so power users
-                          can still see exactly which tool fired. */}
+                      {/* Show both the tool slug AND the agent's free-text
+                          reason. Slug is the technical identity (mono, dim,
+                          shrink-0 so it never gets eaten by truncation); the
+                          reason is the "why" the agent gave at call time and
+                          is the truncatable element. */}
                       {lastTool.done ? (
                         <>
                           <span
@@ -863,12 +919,14 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
                           >
                             ✓
                           </span>
-                          <span
-                            className="text-text-dim truncate"
-                            title={lastTool.name}
-                          >
-                            {lastTool.reason || lastTool.name}
+                          <span className="text-text-muted shrink-0 font-mono text-[10px]">
+                            {lastTool.name}
                           </span>
+                          {lastTool.reason && (
+                            <span className="text-text-dim truncate" title={lastTool.reason}>
+                              {lastTool.reason}
+                            </span>
+                          )}
                           {lastTool.durationMs != null && (
                             <span className="text-text-muted shrink-0">
                               (
@@ -884,12 +942,14 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
                           <span className="text-accent tool-active-line shrink-0">
                             ⟳
                           </span>
-                          <span
-                            className="text-accent truncate"
-                            title={lastTool.name}
-                          >
-                            {lastTool.reason || lastTool.name}
+                          <span className="text-accent shrink-0 font-mono text-[10px]">
+                            {lastTool.name}
                           </span>
+                          {lastTool.reason && (
+                            <span className="text-accent truncate opacity-80" title={lastTool.reason}>
+                              {lastTool.reason}
+                            </span>
+                          )}
                         </>
                       )}
                     </div>
@@ -953,10 +1013,11 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
                   <div key={rowKey} className="min-w-0" style={{ opacity }}>
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className={t.success ? "text-green" : "text-red"}>✓</span>
-                      {t.reason ? (
-                        <span className="text-text truncate" title={`${t.name}${dur ? ` (${dur})` : ""}`}>{t.reason}</span>
-                      ) : (
-                        <span className="text-text-dim truncate">{t.name}</span>
+                      <span className="text-text-muted shrink-0 font-mono text-[10px]">
+                        {t.name}
+                      </span>
+                      {t.reason && (
+                        <span className="text-text truncate" title={t.reason}>{t.reason}</span>
                       )}
                       {dur && <span className="text-text-muted shrink-0">({dur})</span>}
                     </div>
@@ -974,10 +1035,11 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
                 <div key={rowKey} className="min-w-0">
                   <div className="flex items-center gap-1.5 tool-active-line min-w-0">
                     <span className="text-accent shrink-0">⟳</span>
-                    {t.reason ? (
-                      <span className="text-accent truncate" title={t.name}>{t.reason}</span>
-                    ) : (
-                      <span className="text-accent truncate">{t.name}</span>
+                    <span className="text-accent shrink-0 font-mono text-[10px]">
+                      {t.name}
+                    </span>
+                    {t.reason && (
+                      <span className="text-accent truncate opacity-80" title={t.reason}>{t.reason}</span>
                     )}
                   </div>
                   <div className="flex items-center gap-1.5 text-[10px] text-text-dim pl-[18px]">

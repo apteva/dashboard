@@ -23,6 +23,25 @@ function getWatermark(chatId: string): number {
   }
 }
 
+// Set of chat ids the user is *currently viewing* in a mounted, visible
+// ChatPanel. Messages for these chats bypass the tray entirely — the
+// user sees them in the panel itself, no badge needed. The watermark
+// advances automatically when a new message arrives for a focused
+// chat, so unmounting + reloading doesn't reintroduce the badge.
+const focusedChats = new Set<string>();
+
+/** ChatPanel calls this when it mounts (and tab is visible) to claim
+ * focus on a chat. Returns a release fn for the unmount cleanup. */
+export function focusChat(chatId: string): () => void {
+  focusedChats.add(chatId);
+  // The tray may already be holding a stale entry for this chat from
+  // before mount — clear it on focus too.
+  notifications.remove(`chat:${chatId}`);
+  return () => {
+    focusedChats.delete(chatId);
+  };
+}
+
 function setWatermark(chatId: string, latestId: number): void {
   try {
     localStorage.setItem(WATERMARK_KEY(chatId), String(latestId));
@@ -30,6 +49,21 @@ function setWatermark(chatId: string, latestId: number): void {
     // localStorage may throw in private mode; the server-backed
     // watermark covers persistence in that case.
   }
+}
+
+/** Drop every trace of a chat from the tray + localStorage. Called on
+ * instance delete so the watermark and any pending badge entry don't
+ * outlive the chat — otherwise a new instance with the same numeric id
+ * (rare but possible after wipes) would inherit a stale "last seen"
+ * point and silently miss the first messages. */
+export function forgetChat(chatId: string): void {
+  try {
+    localStorage.removeItem(WATERMARK_KEY(chatId));
+  } catch {
+    // localStorage unavailable; nothing to clean up there.
+  }
+  notifications.remove(`chat:${chatId}`);
+  focusedChats.delete(chatId);
 }
 
 /** Advance the watermark (localStorage instant + server eventual) and
@@ -129,10 +163,8 @@ async function seed(): Promise<void> {
   let summary: UnreadSummaryRow[];
   try {
     summary = await chat.unreadSummary();
-    console.log("[NOTIF-DEBUG] seed got", summary.length, "rows");
-  } catch (e) {
-    console.warn("[NOTIF-DEBUG] seed failed", e);
-    return;
+  } catch {
+    return; // server hasn't shipped the endpoint yet, or auth missing
   }
   for (const row of summary) {
     state.chatToInstance.set(row.chat_id, {
@@ -188,21 +220,24 @@ export function markAllChatsSeen(): void {
 }
 
 function ingest(msg: ChatMessageRow): void {
-  if (msg.role === "system") {
-    console.log("[NOTIF-DEBUG] ingest skip system role");
-    return;
-  }
+  if (msg.role === "system") return;
   const meta = state.chatToInstance.get(msg.chat_id);
   if (!meta) {
-    console.log("[NOTIF-DEBUG] ingest unknown chat", msg.chat_id, "-> reseeding");
+    // Chat we don't know yet (e.g. created mid-session) — refresh
+    // the cache and let the next delivery land.
     void seed();
     return;
   }
-  const watermark = getWatermark(msg.chat_id);
-  if (msg.id <= watermark) {
-    console.log("[NOTIF-DEBUG] ingest below watermark id=", msg.id, "wm=", watermark, "-> skip");
+  // If the user is currently viewing this chat, the tray must not
+  // badge — they'll see the message in the panel itself. Auto-mark
+  // the watermark too so a later reload doesn't pop a stale badge
+  // for messages already on screen.
+  if (focusedChats.has(msg.chat_id)) {
+    markChatSeen(msg.chat_id, msg.id);
     return;
   }
+  const watermark = getWatermark(msg.chat_id);
+  if (msg.id <= watermark) return;
   const existing = notifications.getSnapshot().find((n) => n.id === `chat:${msg.chat_id}`);
   const count = (existing?.count || 0) + 1;
   const notif = buildNotification(
@@ -215,7 +250,6 @@ function ingest(msg: ChatMessageRow): void {
     msg.created_at,
     count,
   );
-  console.log("[NOTIF-DEBUG] ingest UPSERTING", notif.id, "count=", count, "preview=", notif.preview);
   notifications.upsert(notif);
   if (msg.role === "agent") maybeDesktopNotify(notif);
 }
@@ -227,24 +261,19 @@ function startSSE(): () => void {
 
   const open = () => {
     if (closed) return;
-    console.log("[NOTIF-DEBUG] opening wildcard SSE");
     es = chat.streamUser();
     es.onopen = () => {
-      console.log("[NOTIF-DEBUG] wildcard SSE OPEN");
       backoff = 500; // reset on successful connect
     };
     es.onmessage = (ev) => {
       if (!ev.data) return;
       try {
-        const msg = JSON.parse(ev.data) as ChatMessageRow;
-        console.log("[NOTIF-DEBUG] received SSE msg id=", msg.id, "role=", msg.role, "chat=", msg.chat_id);
-        ingest(msg);
-      } catch (e) {
-        console.warn("[NOTIF-DEBUG] failed to parse SSE frame", e);
+        ingest(JSON.parse(ev.data) as ChatMessageRow);
+      } catch {
+        // ignore unparseable
       }
     };
-    es.onerror = (e) => {
-      console.warn("[NOTIF-DEBUG] wildcard SSE error, will retry", e);
+    es.onerror = () => {
       es?.close();
       if (closed) return;
       setTimeout(open, backoff);
@@ -255,7 +284,6 @@ function startSSE(): () => void {
   open();
 
   return () => {
-    console.log("[NOTIF-DEBUG] wildcard SSE shutdown");
     closed = true;
     es?.close();
   };

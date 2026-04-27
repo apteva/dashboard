@@ -74,7 +74,9 @@ export function Layout() {
   }, []);
 
   const navItems = [
-    { to: "/", label: "Agents" },
+    { to: "/", label: "Overview" },
+    { to: "/agents", label: "Agents" },
+    { to: "/chat", label: "Chat" },
     { to: "/integrations", label: "Integrations" },
     { to: "/apps", label: "Apps" },
     { to: "/analytics", label: "Analytics" },

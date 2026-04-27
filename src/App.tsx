@@ -4,6 +4,8 @@ import { ProjectProvider } from "./hooks/useProjects";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
 import { Connect } from "./pages/Connect";
+import { Dashboard } from "./pages/Dashboard";
+import { Chat } from "./pages/Chat";
 import { Instances } from "./pages/Instances";
 import { Instance } from "./pages/Instance";
 import { Integrations } from "./pages/Integrations";
@@ -42,7 +44,10 @@ export default function App() {
               </ProtectedRoute>
             }
           >
-            <Route path="/" element={<Instances />} />
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/agents" element={<Instances />} />
+            <Route path="/chat" element={<Chat />} />
+            <Route path="/chat/:chatId" element={<Chat />} />
             <Route path="/instances/:id" element={<Instance />} />
             <Route path="/integrations" element={<Integrations />} />
             <Route path="/analytics" element={<Analytics />} />

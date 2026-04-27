@@ -19,9 +19,11 @@ import { LiveStatsBar } from "./LiveStatsBar";
 // modal. Used by the /instances/:id route to render whichever instance the
 // user navigated to.
 //
-// onDelete is called after a successful delete so the parent can navigate
-// back to the instances list. onReload is called after lifecycle actions
-// (start/stop) so the parent can refresh its instance metadata.
+// onDelete runs the API call + parent-side cleanup. The modal awaits
+// it, so it must reject (not just return) on failure — otherwise the
+// modal would close with no error message. onReload is called after
+// lifecycle actions (start/stop) so the parent can refresh its
+// instance metadata.
 export function InstanceView({
   instance,
   onDelete,
@@ -29,7 +31,7 @@ export function InstanceView({
   initialThreads = [],
 }: {
   instance: Instance;
-  onDelete: () => void;
+  onDelete: () => void | Promise<void>;
   onReload: () => void;
   initialThreads?: Thread[];
 }) {
@@ -58,6 +60,8 @@ export function InstanceView({
     return () => { listenersRef.current.delete(cb); };
   }, []);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
@@ -218,6 +222,32 @@ export function InstanceView({
       setGraphThreads((prev) => prev.filter((t) => t.id !== event.thread_id));
       setGraphActiveTools((prev) => { const n = { ...prev }; delete n[event.thread_id]; return n; });
       setGraphThoughts((prev) => { const n = { ...prev }; delete n[event.thread_id]; return n; });
+    }
+    if (event.type === "thread.renamed") {
+      const oldID = String(data.old_id || event.thread_id || "");
+      const newID = String(data.new_id || oldID);
+      const newName = String(data.name || "");
+      setGraphThreads((prev) => prev.map((t) => {
+        if (t.id === oldID) return { ...t, id: newID, name: newName };
+        if (oldID !== newID && t.parent_id === oldID) return { ...t, parent_id: newID };
+        return t;
+      }));
+      if (oldID !== newID) {
+        setGraphActiveTools((prev) => {
+          if (!(oldID in prev)) return prev;
+          const n = { ...prev };
+          n[newID] = n[oldID];
+          delete n[oldID];
+          return n;
+        });
+        setGraphThoughts((prev) => {
+          if (!(oldID in prev)) return prev;
+          const n = { ...prev };
+          n[newID] = n[oldID];
+          delete n[oldID];
+          return n;
+        });
+      }
     }
 
     // Track active tools — keep visible for 3s after completion
@@ -404,21 +434,63 @@ export function InstanceView({
         </div>
       </Modal>
 
-      {/* Delete confirmation */}
-      <Modal open={showDeleteConfirm} onClose={() => setShowDeleteConfirm(false)}>
+      {/* Delete confirmation. Mirrors the Reset modal: busy state
+          disables the buttons, errors surface inline. The modal stays
+          open until the API call resolves so a failure doesn't get
+          swallowed by an immediate close + navigate. onDelete is the
+          parent's "happy path" — we only call it when the API succeeds. */}
+      <Modal
+        open={showDeleteConfirm}
+        onClose={() => {
+          if (deleteBusy) return;
+          setShowDeleteConfirm(false);
+          setDeleteError(null);
+        }}
+      >
         <div className="p-6">
           <h3 className="text-text text-lg font-bold mb-2">Delete Agent</h3>
-          <p className="text-text-dim text-sm mb-6">
-            Delete <span className="text-text font-bold">{instance.name}</span>? This cannot be undone.
+          <p className="text-text-dim text-sm mb-4">
+            Delete <span className="text-text font-bold">{instance.name}</span>?
+            All conversation history, telemetry, files, and chat messages
+            for this agent will be removed. This cannot be undone.
           </p>
+          {deleteError && (
+            <p className="text-red text-sm mb-4 break-words">{deleteError}</p>
+          )}
           <div className="flex justify-end gap-3">
-            <button onClick={() => setShowDeleteConfirm(false)}
-              className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors">
+            <button
+              onClick={() => {
+                setShowDeleteConfirm(false);
+                setDeleteError(null);
+              }}
+              disabled={deleteBusy}
+              className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors disabled:opacity-50"
+            >
               Cancel
             </button>
-            <button onClick={() => { setShowDeleteConfirm(false); onDelete(); }}
-              className="px-4 py-2 bg-red text-bg rounded-lg text-sm font-bold hover:opacity-80 transition-opacity">
-              Delete
+            <button
+              onClick={async () => {
+                setDeleteBusy(true);
+                setDeleteError(null);
+                try {
+                  await onDelete();
+                  // Parent navigates away on success; this component
+                  // unmounts before reaching the finally block in the
+                  // happy path. Closing the modal here is harmless if
+                  // navigation does happen, defensive if it doesn't.
+                  setShowDeleteConfirm(false);
+                } catch (err) {
+                  setDeleteError(
+                    err instanceof Error ? err.message : "Failed to delete agent",
+                  );
+                } finally {
+                  setDeleteBusy(false);
+                }
+              }}
+              disabled={deleteBusy}
+              className="px-4 py-2 bg-red text-bg rounded-lg text-sm font-bold hover:opacity-80 transition-opacity disabled:opacity-50"
+            >
+              {deleteBusy ? "deleting…" : "Delete"}
             </button>
           </div>
         </div>
@@ -534,7 +606,17 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const provKey = (p: Provider) => p.type === "llm" ? p.name.toLowerCase() : p.type.toLowerCase();
+  // provKey collapses a Provider's display name to the kebab-case
+  // identifier the backend uses everywhere (createProviderByName,
+  // FetchModels, isLLMKey, config.json's providers[i].name). Without
+  // the space-to-hyphen substitution, "OpenCode Go" lowercased to
+  // "opencode go" — which matches NO case in the core dispatch, so
+  // selecting it as default silently dropped the provider from the pool
+  // and the agent fell back to whatever was first in config order.
+  const provKey = (p: Provider) => {
+    const raw = p.type === "llm" ? p.name : p.type;
+    return raw.toLowerCase().trim().replace(/\s+/g, "-");
+  };
 
   useEffect(() => {
     if (!open) return;

@@ -2,7 +2,7 @@
 // every other path (refresh on /instances/42 no longer collides with the
 // server's /instances/ prefix match). Static assets and the SPA catchall
 // route through `/` on the server.
-const BASE = "/api";
+export const BASE = "/api";
 
 // Soft auth-invalidation signal. AuthProvider registers a callback at
 // mount that flips its context state to `authenticated = false`. When
@@ -900,6 +900,7 @@ export interface Status {
 
 export interface Thread {
   id: string;
+  name?: string; // human-readable label, separate from id; empty = render id
   parent_id?: string;
   depth?: number;
   directive: string;
@@ -1330,7 +1331,22 @@ export const telemetry = {
     if (projectId) params.set("project_id", projectId);
     return request<ProjectTimelineBucket[]>("GET", `/telemetry/project-timeline?${params}`);
   },
+
+  // Project-scoped tool breakdown — top-N tools by call count over
+  // the period, with success/error split. Sorted by calls desc.
+  projectTools: (projectId: string | undefined, period: string = "24h") => {
+    const params = new URLSearchParams({ period });
+    if (projectId) params.set("project_id", projectId);
+    return request<ProjectToolStat[]>("GET", `/telemetry/project-tools?${params}`);
+  },
 };
+
+export interface ProjectToolStat {
+  name: string;
+  calls: number;
+  errors: number;
+  agents: number;
+}
 
 // Per-instance aggregate over a period. Sorted by cost desc on the
 // server. Instances with zero events in the window are omitted.
