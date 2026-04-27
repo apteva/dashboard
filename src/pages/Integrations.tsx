@@ -687,40 +687,28 @@ export function Integrations() {
                       />
                       <div>
                         {/*
-                          For suite children we lead with the app name
-                          (the actual service — "OmniKit Storage") and
-                          demote the project label to a dim subtitle.
-                          For legacy connections we keep the old order:
+                          Suite children: render as one continuous
+                          headline ("OmniKit Messaging Alexa") so the
+                          row matches the corresponding MCP server's
+                          name. The external project id is technical
+                          and lives in the title-tooltip rather than
+                          a visible chip — it adds noise without
+                          helping the operator pick a row.
+                          Legacy single-app connections keep the
                           user-chosen name first, app kind as subtitle.
-                          A middle-dot is rendered between the two so
-                          they're visually separated regardless of
-                          viewport width.
                         */}
                         {c.is_group_child ? (
-                          <>
-                            <span className="text-text text-base font-bold">{c.app_name}</span>
-                            <span className="text-text-muted text-sm ml-2">· {c.name}</span>
-                          </>
+                          <span
+                            className="text-text text-base font-bold"
+                            title={c.external_project_id ? `Suite child — pinned to project ${c.external_project_id}` : undefined}
+                          >
+                            {c.app_name} {c.name}
+                          </span>
                         ) : (
                           <>
                             <span className="text-text text-base font-bold">{c.name}</span>
                             <span className="text-text-muted text-sm ml-2">· {c.app_name}</span>
                           </>
-                        )}
-                        {/*
-                          Fan-out chip — only visible on connections that
-                          came from a suite enable action. Shows the
-                          upstream project (OmniKit project id, SocialCast
-                          workspace id) so the user can tell the 6 OmniKit
-                          Storage rows apart at a glance.
-                        */}
-                        {c.is_group_child && c.external_project_id && (
-                          <span
-                            className="ml-2 text-xs px-1.5 py-0.5 rounded bg-bg-hover text-text-dim font-mono"
-                            title={`Suite child — pinned to project ${c.external_project_id}`}
-                          >
-                            • {c.external_project_id}
-                          </span>
                         )}
                       </div>
                       <span

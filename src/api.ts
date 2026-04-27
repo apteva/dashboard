@@ -1462,6 +1462,11 @@ export interface MarketplaceEntry {
   category: string;
   installed: boolean;
   builtin: boolean;
+  // Surfaces are server-resolved by fetching manifest_url with a 1h
+  // cache. Empty / zero values are normal for offline runs or apps
+  // whose manifests can't be fetched — the dashboard treats missing
+  // counts as "unknown" rather than "zero".
+  surfaces: AppSurfaces;
 }
 
 export interface AppRow {
@@ -1489,14 +1494,31 @@ export interface AppUIPanel {
 }
 
 export interface AppSurfaces {
-  mcp_tools: boolean;
-  http_routes: boolean;
-  ui_panel: boolean;
-  ui_page: boolean;
+  kind: string;                    // service | source | static
+  mcp_tool_count: number;
+  mcp_tool_names?: string[];
+  http_route_count: number;
+  http_routes?: string[];
+  ui_panel_count: number;
+  ui_page_count: number;
   ui_app: boolean;
-  channels: boolean;
-  workers: boolean;
-  prompt_fragments: boolean;
+  ui_app_mount?: string;
+  channel_count: number;
+  channel_names?: string[];
+  worker_count: number;
+  prompt_fragment_count: number;
+  permissions?: string[];
+  config_keys?: string[];
+  required_apps?: AppDependency[];
+}
+
+export interface AppDependency {
+  name: string;
+  version?: string;
+  reason?: string;
+  optional?: boolean;
+  manifest_url?: string;
+  installed?: boolean;
 }
 
 export interface AppPreview {

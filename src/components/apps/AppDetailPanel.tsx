@@ -1,0 +1,358 @@
+// Side panel that slides in from the right when a marketplace or
+// installed app card is clicked. Single component for both contexts —
+// `mode` decides which actions surface ("install" vs "uninstall"). The
+// data shape is unified: from the marketplace we get a MarketplaceEntry
+// (with a server-resolved `surfaces` block); from the installed list we
+// pass an AppRow. Both have the fields we render here.
+//
+// Closes via ESC, the X button, or backdrop click. Backdrop is a thin
+// dim overlay rather than a full opaque scrim — the page underneath
+// stays readable so the user keeps context.
+
+import { useEffect } from "react";
+import type { AppRow, AppSurfaces, MarketplaceEntry } from "../../api";
+import { AppSurfaceBadges } from "./AppSurfaceBadges";
+
+type Mode = "marketplace" | "installed";
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+  mode: Mode;
+  entry?: MarketplaceEntry;
+  install?: AppRow;
+  onInstall?: () => void;
+  onUninstall?: () => void;
+}
+
+interface View {
+  name: string;
+  display_name: string;
+  description: string;
+  version: string;
+  icon: string;
+  repo: string;
+  manifestUrl?: string;
+  surfaces?: AppSurfaces;
+  installed: boolean;
+  category?: string;
+  tags?: string[];
+  status?: string;
+}
+
+function viewFromProps(p: Props): View | null {
+  if (p.mode === "marketplace" && p.entry) {
+    const e = p.entry;
+    return {
+      name: e.name,
+      display_name: e.display_name,
+      description: e.description,
+      version: e.version,
+      icon: e.icon,
+      repo: e.repo,
+      manifestUrl: e.manifest_url,
+      surfaces: e.surfaces,
+      installed: e.installed,
+      category: e.category,
+      tags: e.tags,
+    };
+  }
+  if (p.mode === "installed" && p.install) {
+    const i = p.install;
+    return {
+      name: i.name,
+      display_name: i.display_name || i.name,
+      description: i.description,
+      version: i.version,
+      icon: i.icon,
+      repo: "",
+      surfaces: i.surfaces,
+      installed: true,
+      status: i.status,
+    };
+  }
+  return null;
+}
+
+export function AppDetailPanel(props: Props) {
+  const view = viewFromProps(props);
+  // ESC to close. Re-bind on each open so the listener doesn't leak.
+  useEffect(() => {
+    if (!props.open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [props.open, props.onClose]);
+
+  if (!props.open || !view) return null;
+  const s = view.surfaces;
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 bg-black/30 z-40"
+        onClick={props.onClose}
+        aria-hidden="true"
+      />
+      <aside
+        className="fixed right-0 top-0 h-full w-full sm:w-[480px] bg-bg-card border-l border-border z-50 flex flex-col shadow-xl"
+        role="dialog"
+        aria-label={`${view.display_name} details`}
+      >
+        {/* Header — pinned, always visible. */}
+        <div className="flex items-start gap-3 px-5 py-4 border-b border-border flex-shrink-0">
+          {view.icon && (
+            <img
+              src={view.icon}
+              alt=""
+              className="w-10 h-10 rounded bg-bg-input p-0.5 flex-shrink-0"
+              onError={(e) => ((e.target as HTMLImageElement).style.display = "none")}
+            />
+          )}
+          <div className="flex-1 min-w-0">
+            <h2 className="text-text text-base font-bold truncate">
+              {view.display_name}
+            </h2>
+            <p className="text-text-muted text-xs mt-0.5 font-mono">
+              {view.name} · v{view.version}
+              {view.status && (
+                <span className="ml-2 px-1.5 py-0.5 rounded bg-bg-hover">{view.status}</span>
+              )}
+            </p>
+          </div>
+          <button
+            onClick={props.onClose}
+            className="text-text-muted hover:text-text text-xl leading-none flex-shrink-0"
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Body — scrolls. */}
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+          {view.description && (
+            <section>
+              <p className="text-text-dim text-sm leading-relaxed whitespace-pre-line">
+                {view.description}
+              </p>
+            </section>
+          )}
+
+          {s && (
+            <section>
+              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+                Surfaces
+              </h3>
+              <AppSurfaceBadges surfaces={s} />
+            </section>
+          )}
+
+          {s?.mcp_tool_names && s.mcp_tool_names.length > 0 && (
+            <section>
+              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+                MCP tools ({s.mcp_tool_names.length})
+              </h3>
+              <ul className="space-y-1 text-sm font-mono">
+                {s.mcp_tool_names.map((t) => (
+                  <li key={t} className="text-text-dim">
+                    {t}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {s?.http_routes && s.http_routes.length > 0 && (
+            <section>
+              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+                HTTP routes
+              </h3>
+              <ul className="space-y-1 text-sm font-mono">
+                {s.http_routes.map((r) => (
+                  <li key={r} className="text-text-dim">
+                    {r}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {s?.channel_names && s.channel_names.length > 0 && (
+            <section>
+              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+                Channels
+              </h3>
+              <ul className="space-y-1 text-sm font-mono">
+                {s.channel_names.map((c) => (
+                  <li key={c} className="text-text-dim">
+                    {c}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {s?.required_apps && s.required_apps.length > 0 && (
+            <section>
+              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+                Dependencies
+              </h3>
+              <ul className="space-y-1.5 text-sm">
+                {s.required_apps.map((d) => {
+                  const status = d.installed
+                    ? "installed"
+                    : d.optional
+                      ? "optional"
+                      : "missing";
+                  const cls = d.installed
+                    ? "text-green"
+                    : d.optional
+                      ? "text-text-muted"
+                      : "text-red";
+                  const glyph = d.installed ? "✓" : d.optional ? "~" : "✗";
+                  return (
+                    <li key={d.name} className="flex items-start gap-2">
+                      <span className={`font-mono ${cls}`}>{glyph}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-text font-medium">{d.name}</span>
+                          {d.version && (
+                            <span className="text-[10px] text-text-dim font-mono">{d.version}</span>
+                          )}
+                          <span className={`text-[10px] uppercase tracking-wide ${cls}`}>
+                            {status}
+                          </span>
+                        </div>
+                        {d.reason && (
+                          <p className="text-text-dim text-xs mt-0.5">{d.reason}</p>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+              {s.required_apps.some((d) => !d.installed && !d.optional) && (
+                <p className="text-text-dim text-[11px] mt-2">
+                  Missing required apps will be installed automatically alongside this one.
+                </p>
+              )}
+            </section>
+          )}
+
+          {s?.permissions && s.permissions.length > 0 && (
+            <section>
+              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+                Permissions required
+              </h3>
+              <ul className="space-y-1 text-sm font-mono">
+                {s.permissions.map((p) => (
+                  <li key={p} className="text-amber-200">
+                    {p}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {s?.config_keys && s.config_keys.length > 0 && (
+            <section>
+              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+                Configuration
+              </h3>
+              <p className="text-text-dim text-xs mb-1">
+                Asks for these at install time:
+              </p>
+              <ul className="space-y-1 text-sm font-mono">
+                {s.config_keys.map((k) => (
+                  <li key={k} className="text-text-dim">
+                    {k}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {(view.tags && view.tags.length > 0) && (
+            <section>
+              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+                Tags
+              </h3>
+              <div className="flex flex-wrap gap-1">
+                {view.tags.map((t) => (
+                  <span
+                    key={t}
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-muted"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {(view.repo || view.manifestUrl) && (
+            <section className="border-t border-border pt-4">
+              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+                Links
+              </h3>
+              <ul className="space-y-1 text-sm">
+                {view.repo && (
+                  <li>
+                    <a
+                      href={view.repo}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-accent hover:underline"
+                    >
+                      Repository ↗
+                    </a>
+                  </li>
+                )}
+                {view.manifestUrl && (
+                  <li>
+                    <a
+                      href={view.manifestUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-accent hover:underline"
+                    >
+                      Manifest ↗
+                    </a>
+                  </li>
+                )}
+              </ul>
+            </section>
+          )}
+        </div>
+
+        {/* Footer — primary actions. */}
+        <div className="border-t border-border px-5 py-3 flex-shrink-0 flex gap-2">
+          {props.mode === "marketplace" && !view.installed && (
+            <button
+              onClick={props.onInstall}
+              className="flex-1 px-3 py-2 bg-accent text-bg rounded font-bold text-sm hover:opacity-80"
+            >
+              Install
+            </button>
+          )}
+          {props.mode === "marketplace" && view.installed && (
+            <div className="flex-1 px-3 py-2 bg-bg-hover text-text-muted rounded text-sm text-center">
+              Already installed
+            </div>
+          )}
+          {props.mode === "installed" && (
+            <button
+              onClick={props.onUninstall}
+              className="flex-1 px-3 py-2 border border-red text-red rounded font-bold text-sm hover:bg-red/10"
+            >
+              Uninstall
+            </button>
+          )}
+        </div>
+      </aside>
+    </>
+  );
+}

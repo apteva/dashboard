@@ -100,12 +100,11 @@ export function AgentsGrid() {
 function AgentTile({ instance, unread }: { instance: Instance; unread: number }) {
   const running = instance.status === "running";
   const dot = running ? "bg-green" : "bg-text-dim";
-  const border = running ? "border-border" : "border-border-dim";
 
   return (
     <Link
       to={`/instances/${instance.id}`}
-      className={`relative block border ${border} rounded-md p-2.5 hover:bg-bg-hover transition-colors group`}
+      className={`relative block rounded-md p-2.5 bg-bg-card hover:bg-bg-hover transition-colors group ${running ? "" : "opacity-60"}`}
       title={`${instance.name} · ${instance.status}`}
     >
       <div className="flex items-center gap-1.5 mb-1">

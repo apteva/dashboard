@@ -51,15 +51,15 @@ interface LiveTool {
 // Tools we hide from the chat timeline. Pure agent housekeeping:
 //   pace — sleep-rate adjustments fire constantly
 //   done — thread terminator
+//   channels_respond — IS the response; surfacing it as a separate
+//     tool call is pure noise (the user already sees the message it
+//     produced as an assistant turn).
 // Everything else surfaces. `send` (inter-thread dispatch) is
 // included because it's the "main is talking to leader" signal — the
 // dispatch side of [from:main] events the receiving thread shows.
 // Without it the chat reads as one-sided: you'd see thread-x's
 // "[from:main]" land but never see main initiating the conversation.
-// channels_respond is also visible — on sub-threads it's "who
-// answered the user", on main it's slightly redundant with the
-// produced message but still surfaces the routing signal.
-const HIDDEN_TOOLS = new Set(["pace", "done"]);
+const HIDDEN_TOOLS = new Set(["pace", "done", "channels_respond"]);
 
 // Cap on retained tool entries. Once exceeded we drop the oldest
 // completed entry. In-flight (streaming/called) entries are never

@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { apps, type AppRow, type AppPreview, type MarketplaceEntry } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { Modal } from "../components/Modal";
+import { AppSurfaceBadges } from "../components/apps/AppSurfaceBadges";
+import { AppDetailPanel } from "../components/apps/AppDetailPanel";
 
 type Tab = "installed" | "marketplace";
 
@@ -20,6 +22,10 @@ export function Apps() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [installModal, setInstallModal] = useState<{ manifestUrl?: string } | null>(null);
+  // Side-panel state — single component, two contexts (a marketplace
+  // entry vs. an installed app row). Only one is non-null at a time.
+  const [detailEntry, setDetailEntry] = useState<MarketplaceEntry | null>(null);
+  const [detailInstall, setDetailInstall] = useState<AppRow | null>(null);
 
   const refreshInstalled = () => {
     setLoading(true);
@@ -96,7 +102,12 @@ export function Apps() {
         ) : (
           <div className="space-y-2">
             {rows.map((r) => (
-              <AppCard key={r.install_id} app={r} onChange={refreshInstalled} />
+              <AppCard
+                key={r.install_id}
+                app={r}
+                onChange={refreshInstalled}
+                onOpenDetails={() => setDetailInstall(r)}
+              />
             ))}
           </div>
         )
@@ -106,6 +117,7 @@ export function Apps() {
           registryURL={registryURL}
           loading={loading}
           onInstall={(e) => setInstallModal({ manifestUrl: e.manifest_url })}
+          onOpenDetails={(e) => setDetailEntry(e)}
         />
       )}
 
@@ -122,17 +134,47 @@ export function Apps() {
           else refreshMarketplace();
         }}
       />
+
+      <AppDetailPanel
+        open={detailEntry !== null}
+        mode="marketplace"
+        entry={detailEntry ?? undefined}
+        onClose={() => setDetailEntry(null)}
+        onInstall={() => {
+          if (!detailEntry) return;
+          setInstallModal({ manifestUrl: detailEntry.manifest_url });
+          setDetailEntry(null);
+        }}
+      />
+      <AppDetailPanel
+        open={detailInstall !== null}
+        mode="installed"
+        install={detailInstall ?? undefined}
+        onClose={() => setDetailInstall(null)}
+        onUninstall={async () => {
+          if (!detailInstall) return;
+          if (!confirm(`Uninstall ${detailInstall.display_name || detailInstall.name}?`)) return;
+          try {
+            await apps.uninstall(detailInstall.install_id);
+            setDetailInstall(null);
+            refreshInstalled();
+          } catch (e: any) {
+            alert(e.message || "uninstall failed");
+          }
+        }}
+      />
     </div>
   );
 }
 
 function MarketplaceView({
-  entries, registryURL, loading, onInstall,
+  entries, registryURL, loading, onInstall, onOpenDetails,
 }: {
   entries: MarketplaceEntry[];
   registryURL: string;
   loading: boolean;
   onInstall: (e: MarketplaceEntry) => void;
+  onOpenDetails: (e: MarketplaceEntry) => void;
 }) {
   if (loading) return <div className="text-text-dim text-sm">Loading marketplace…</div>;
   if (entries.length === 0) {
@@ -157,7 +199,12 @@ function MarketplaceView({
           <div className="text-text-muted text-xs uppercase tracking-wide mb-2">{cat}</div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {byCategory[cat].map((e) => (
-              <MarketplaceCard key={e.name} entry={e} onInstall={() => onInstall(e)} />
+              <MarketplaceCard
+                key={e.name}
+                entry={e}
+                onInstall={() => onInstall(e)}
+                onOpenDetails={() => onOpenDetails(e)}
+              />
             ))}
           </div>
         </div>
@@ -167,9 +214,28 @@ function MarketplaceView({
   );
 }
 
-function MarketplaceCard({ entry, onInstall }: { entry: MarketplaceEntry; onInstall: () => void }) {
+function MarketplaceCard({
+  entry, onInstall, onOpenDetails,
+}: {
+  entry: MarketplaceEntry;
+  onInstall: () => void;
+  onOpenDetails: () => void;
+}) {
+  // Card body is clickable → opens the side panel. Action buttons
+  // stop propagation so install / repo don't accidentally open it too.
   return (
-    <div className="border border-border rounded-lg p-3 flex items-start gap-3">
+    <div
+      className="border border-border rounded-lg p-3 flex items-start gap-3 cursor-pointer hover:border-border-strong transition-colors"
+      onClick={onOpenDetails}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpenDetails();
+        }
+      }}
+    >
       {entry.icon ? (
         <img src={entry.icon} alt="" className="w-10 h-10 rounded bg-bg-input p-1 flex-shrink-0" onError={(ev) => { (ev.currentTarget as HTMLImageElement).style.display = "none"; }} />
       ) : (
@@ -186,13 +252,9 @@ function MarketplaceCard({ entry, onInstall }: { entry: MarketplaceEntry; onInst
           {entry.installed && !entry.builtin && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green/15 text-green">installed</span>}
         </div>
         <p className="text-text-muted text-xs mt-1 line-clamp-2">{entry.description}</p>
-        <div className="flex items-center gap-1 mt-2 flex-wrap">
-          {entry.tags?.map((t) => (
-            <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-bg-input text-text-muted">{t}</span>
-          ))}
-        </div>
+        <AppSurfaceBadges surfaces={entry.surfaces} className="mt-2" />
       </div>
-      <div className="flex flex-col gap-1.5 flex-shrink-0">
+      <div className="flex flex-col gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
         <button
           onClick={onInstall}
           disabled={entry.installed}
@@ -214,7 +276,13 @@ function MarketplaceCard({ entry, onInstall }: { entry: MarketplaceEntry; onInst
   );
 }
 
-function AppCard({ app, onChange }: { app: AppRow; onChange: () => void }) {
+function AppCard({
+  app, onChange, onOpenDetails,
+}: {
+  app: AppRow;
+  onChange: () => void;
+  onOpenDetails: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [showMount, setShowMount] = useState(false);
@@ -255,7 +323,6 @@ function AppCard({ app, onChange }: { app: AppRow; onChange: () => void }) {
     }
   };
 
-  const surfaceTags = surfaceLabels(app.surfaces);
   const statusColor =
     app.status === "running"
       ? "bg-green/15 text-green"
@@ -266,7 +333,18 @@ function AppCard({ app, onChange }: { app: AppRow; onChange: () => void }) {
           : "bg-yellow/15 text-yellow";
 
   return (
-    <div className="border border-border rounded-lg p-3 flex items-start gap-3">
+    <div
+      className="border border-border rounded-lg p-3 flex items-start gap-3 cursor-pointer hover:border-border-strong transition-colors"
+      onClick={onOpenDetails}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpenDetails();
+        }
+      }}
+    >
       {app.icon ? (
         <img src={app.icon} alt="" className="w-10 h-10 rounded bg-bg-input p-1 flex-shrink-0" />
       ) : (
@@ -293,15 +371,9 @@ function AppCard({ app, onChange }: { app: AppRow; onChange: () => void }) {
           )}
         </div>
         <p className="text-text-muted text-xs mt-1 line-clamp-2">{app.description}</p>
-        <div className="flex items-center gap-1 mt-2 flex-wrap">
-          {surfaceTags.map((t) => (
-            <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-bg-input text-text-muted">
-              {t}
-            </span>
-          ))}
-        </div>
+        <AppSurfaceBadges surfaces={app.surfaces} className="mt-2" />
       </div>
-      <div className="flex flex-col gap-1.5 flex-shrink-0">
+      <div className="flex flex-col gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
         {showMount ? (
           <span className="flex items-center gap-1 bg-accent/10 border border-accent/40 rounded px-2 py-1 flex-wrap max-w-[280px]">
             <input
@@ -369,18 +441,9 @@ function AppCard({ app, onChange }: { app: AppRow; onChange: () => void }) {
   );
 }
 
-function surfaceLabels(s: AppRow["surfaces"]): string[] {
-  const out: string[] = [];
-  if (s.mcp_tools) out.push("MCP tools");
-  if (s.http_routes) out.push("HTTP");
-  if (s.ui_panel) out.push("UI panel");
-  if (s.ui_page) out.push("UI page");
-  if (s.ui_app) out.push("Standalone UI");
-  if (s.channels) out.push("Channels");
-  if (s.workers) out.push("Workers");
-  if (s.prompt_fragments) out.push("Prompt");
-  return out;
-}
+// surfaceLabels was the old text-only renderer; AppSurfaceBadges
+// (components/apps) replaces it with coloured pills. Kept removed
+// rather than commented to keep the file lean.
 
 function InstallModal({
   open,

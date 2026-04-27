@@ -62,10 +62,11 @@ export function SuiteConnect({ group, projectId, onClose, onConnectionsChanged }
   // credential can reach every service in its suite (OmniKit project
   // keys authorize Storage + Jobs + Social alike) — checking multiple
   // fans out one connection row per service, all backed by the same
-  // key. Default to every member selected so the common "enable all"
-  // flow is one click.
+  // key. Default to NOTHING selected: most operators only need one or
+  // two services, and "all of OmniKit" is too broad a tool surface to
+  // pre-commit to.
   const [projectMembers, setProjectMembers] = useState<Set<string>>(
-    () => new Set(group.members.map((m) => m.slug)),
+    () => new Set(),
   );
   const [projectConnName, setProjectConnName] = useState("");
 
@@ -171,16 +172,12 @@ export function SuiteConnect({ group, projectId, onClose, onConnectionsChanged }
       const resp = await integrations.addGroupMaster(group.id, creds, projectId);
       setMasterId(resp.master_id);
       setProjects(resp.projects || []);
-      // Seed every cell checked by default if nothing was connected
-      // before — matches the "enable all" expectation for the first
-      // time a suite is connected. User can uncheck in the matrix.
-      const fresh = new Set<string>();
-      for (const m of group.members) {
-        for (const p of resp.projects || []) {
-          fresh.add(fingerprint(m.slug, p.id));
-        }
-      }
-      setSelected(fresh);
+      // Default: nothing selected. The matrix is for explicit opt-in —
+      // pre-checking everything pre-commits the agent to the suite's
+      // entire tool surface (e.g. all 15 OmniKit services × every
+      // project), which is almost never what you want. The operator
+      // ticks the cells they actually need.
+      setSelected(new Set());
       setFocusedProject((resp.projects || [])[0]?.id || "");
     } catch (err) {
       setCredsError((err as Error)?.message || "failed");

@@ -14,6 +14,29 @@ interface Key {
 
 type Tab = "projects" | "channels" | "integrations" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
 
+// GlobeIcon — Lucide-style outline glyph used for "global" provider
+// scope. Inherits color via currentColor; sized to sit inline next to
+// 10px text without nudging the line height.
+function GlobeIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="M2 12h20" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </svg>
+  );
+}
+
 export function Settings() {
   const [tab, setTab] = useState<Tab>("projects");
   const { user } = useAuth();
@@ -595,8 +618,8 @@ function ProvidersTab() {
               {" "}
               Showing providers scoped to project <b>{currentProject.name}</b>{" "}
               plus any{" "}
-              <span className="inline-flex items-center gap-1 px-1 py-0 rounded bg-yellow/20 text-yellow border border-yellow/40 text-[10px] font-bold align-middle">
-                <span aria-hidden>🌐</span> global
+              <span className="inline-flex items-center gap-1 px-1.5 py-0 rounded bg-bg-hover text-text-muted text-[10px] align-middle">
+                <GlobeIcon /> global
               </span>{" "}
               providers shared across all your projects. Tick{" "}
               <i>Make global</i> in the credential modal to share a key
@@ -632,27 +655,25 @@ function ProvidersTab() {
                       <div className="flex items-center gap-1.5 shrink-0">
                         {(() => {
                           const p = getActive(pt.name);
-                          // Global providers get a brighter, distinct
-                          // badge (yellow) so they read at a glance —
-                          // they're often shared/personal credentials
-                          // the operator wants to spot quickly when
-                          // jumping between projects. Project-scoped
-                          // is the common case so it stays muted.
+                          // Global vs project badges share the same
+                          // shape/weight — only the leading glyph
+                          // differentiates them, so they read as
+                          // siblings instead of one shouting at you.
                           const isGlobal = !p?.project_id;
                           if (isGlobal) {
                             return (
                               <span
-                                className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-yellow/20 text-yellow border border-yellow/40 flex items-center gap-1"
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-muted flex items-center gap-1"
                                 title="Global — shared with every project. To make this project-only, deactivate then re-activate without checking 'Make global'."
                               >
-                                <span aria-hidden>🌐</span>
+                                <GlobeIcon />
                                 global
                               </span>
                             );
                           }
                           return (
                             <span
-                              className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent"
+                              className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-muted"
                               title={`Scoped to project ${p?.project_id ?? ""}`}
                             >
                               project
