@@ -593,11 +593,17 @@ function ProvidersTab() {
           {currentProject ? (
             <>
               {" "}
-              Scoped to project <b>{currentProject.name}</b>. Unscoped providers
-              are visible in every project.
+              Showing providers scoped to project <b>{currentProject.name}</b>{" "}
+              plus any{" "}
+              <span className="inline-flex items-center gap-1 px-1 py-0 rounded bg-yellow/20 text-yellow border border-yellow/40 text-[10px] font-bold align-middle">
+                <span aria-hidden>🌐</span> global
+              </span>{" "}
+              providers shared across all your projects. Tick{" "}
+              <i>Make global</i> in the credential modal to share a key
+              everywhere; otherwise it stays project-only.
             </>
           ) : (
-            <> Without a selected project, new providers are unscoped (visible everywhere).</>
+            <> Without a selected project, new providers are unscoped — global by default.</>
           )}
         </p>
       </div>
@@ -620,20 +626,36 @@ function ProvidersTab() {
                   }`}
                   onClick={() => active ? undefined : handleActivate(pt)}
                 >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-text text-sm font-bold">{pt.name}</span>
+                  <div className="flex items-center justify-between mb-1 gap-2 min-w-0">
+                    <span className="text-text text-sm font-bold truncate">{pt.name}</span>
                     {active && (
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 shrink-0">
                         {(() => {
                           const p = getActive(pt.name);
-                          const scope = p?.project_id ? "project" : "global";
+                          // Global providers get a brighter, distinct
+                          // badge (yellow) so they read at a glance —
+                          // they're often shared/personal credentials
+                          // the operator wants to spot quickly when
+                          // jumping between projects. Project-scoped
+                          // is the common case so it stays muted.
+                          const isGlobal = !p?.project_id;
+                          if (isGlobal) {
+                            return (
+                              <span
+                                className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-yellow/20 text-yellow border border-yellow/40 flex items-center gap-1"
+                                title="Global — shared with every project. To make this project-only, deactivate then re-activate without checking 'Make global'."
+                              >
+                                <span aria-hidden>🌐</span>
+                                global
+                              </span>
+                            );
+                          }
                           return (
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                              scope === "project"
-                                ? "bg-accent/20 text-accent"
-                                : "bg-bg-hover text-text-dim"
-                            }`}>
-                              {scope}
+                            <span
+                              className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent"
+                              title={`Scoped to project ${p?.project_id ?? ""}`}
+                            >
+                              project
                             </span>
                           );
                         })()}
