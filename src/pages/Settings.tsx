@@ -488,6 +488,12 @@ function ProvidersTab() {
   const [configuring, setConfiguring] = useState<ProviderTypeInfo | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
+  // makeGlobal — when true, this provider is created with project_id=""
+  // (visible across every project the user owns). When false, it's
+  // scoped to currentProject. The list endpoint always returns the
+  // union of project-scoped + globals, so a global created here will
+  // immediately show up everywhere with the "global" scope badge.
+  const [makeGlobal, setMakeGlobal] = useState(false);
 
   const load = () => {
     providers.list(currentProject?.id).then(setProviderList).catch(() => {});
@@ -498,18 +504,28 @@ function ProvidersTab() {
   const isActive = (name: string) => providerList.some((p) => p.name === name);
   const getActive = (name: string) => providerList.find((p) => p.name === name);
 
+  // Resolve "where does this provider belong" — global when the
+  // checkbox is set OR when no project is currently selected (no
+  // project context to scope to). Otherwise, the current project.
+  const targetProjectID = (): string =>
+    makeGlobal || !currentProject ? "" : currentProject.id;
+
   const handleActivate = async (pt: ProviderTypeInfo) => {
     if (!pt.requires_credentials) {
-      // No credentials needed — activate immediately (scoped to current project)
+      // No credentials needed — activate immediately. Honour the
+      // makeGlobal toggle too (it persists across credential-less
+      // activations within this tab session).
       try {
-        await providers.create(pt.type, pt.name, {}, pt.id, currentProject?.id);
+        await providers.create(pt.type, pt.name, {}, pt.id, targetProjectID());
         load();
       } catch {}
       return;
     }
-    // Open credential form
+    // Open credential form. Reset the toggle to project-scoped by
+    // default — globals are an explicit opt-in per provider.
     setConfiguring(pt);
     setFields({});
+    setMakeGlobal(false);
     setError("");
   };
 
@@ -528,9 +544,10 @@ function ProvidersTab() {
     }
 
     try {
-      await providers.create(configuring.type, configuring.name, data, configuring.id, currentProject?.id);
+      await providers.create(configuring.type, configuring.name, data, configuring.id, targetProjectID());
       setConfiguring(null);
       setFields({});
+      setMakeGlobal(false);
       load();
     } catch (err: any) {
       setError(err.message || "Failed");
@@ -664,6 +681,28 @@ function ProvidersTab() {
                 />
               </div>
             ))}
+
+            {/* Scope toggle. Default off (project-scoped). When on, the
+                provider is created with project_id="" — visible to every
+                project the user owns. Useful for personal LLM / API keys
+                you don't want to re-enter per project. */}
+            {currentProject && (
+              <label className="flex items-start gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={makeGlobal}
+                  onChange={(e) => setMakeGlobal(e.target.checked)}
+                  className="mt-1 accent-accent"
+                />
+                <span className="text-sm text-text-muted leading-snug">
+                  <span className="text-text">Make global</span> — share these credentials with every project, not just <b>{currentProject.name}</b>.
+                  <br />
+                  <span className="text-[11px] text-text-dim">
+                    Project-scoped credentials override globals when both exist.
+                  </span>
+                </span>
+              </label>
+            )}
 
             {error && <div className="text-red text-sm">{error}</div>}
 
