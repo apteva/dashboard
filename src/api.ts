@@ -1479,6 +1479,8 @@ export interface AppRow {
   icon: string;
   project_id: string;
   status: "pending" | "running" | "error" | "disabled";
+  status_message?: string;  // live phase string while pending — "Cloning…", "Building…", etc.
+  error_message?: string;
   source: "git" | "registry" | "builtin" | "manual";
   upgrade_policy: "manual" | "auto-patch" | "auto-minor";
   permissions: string[];

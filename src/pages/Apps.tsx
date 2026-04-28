@@ -77,6 +77,19 @@ export function Apps() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, currentProject?.id]);
 
+  // While any install is mid-build, poll every 2s so the dashboard
+  // shows the live phase string ("Cloning…", "Building…", "Starting…")
+  // and flips to running/error without a manual refresh.
+  useEffect(() => {
+    if (tab !== "installed") return;
+    const anyPending = rows.some((r) => r.status === "pending");
+    if (!anyPending) return;
+    const id = setInterval(() => {
+      apps.list(currentProject?.id).then(setRows).catch(() => {});
+    }, 2000);
+    return () => clearInterval(id);
+  }, [tab, rows, currentProject?.id]);
+
   return (
     <div className="flex flex-col h-full">
       <div className="border-b border-border px-6 py-4 flex items-start justify-between">
@@ -381,7 +394,13 @@ function AppCard({
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue/15 text-blue">builtin</span>
           )}
         </div>
-        <p className="text-text-muted text-xs mt-1 line-clamp-2">{app.description}</p>
+        {app.status === "pending" && app.status_message ? (
+          <p className="text-accent text-xs mt-1 italic">{app.status_message}</p>
+        ) : app.status === "error" && app.error_message ? (
+          <p className="text-red text-xs mt-1 line-clamp-2" title={app.error_message}>{app.error_message}</p>
+        ) : (
+          <p className="text-text-muted text-xs mt-1 line-clamp-2">{app.description}</p>
+        )}
         <AppSurfaceBadges surfaces={app.surfaces} className="mt-2" />
       </div>
       <div className="flex flex-col gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
