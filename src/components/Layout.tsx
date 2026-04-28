@@ -6,6 +6,7 @@ import { AccountMenu } from "./AccountMenu";
 import { NotificationsTray } from "./NotificationsTray";
 import { startChatNotifications } from "../state/chatNotifications";
 import { chatConnections } from "../state/chatConnections";
+import { apps } from "../api";
 
 export function Layout() {
   const [version, setVersion] = useState("");
@@ -73,15 +74,49 @@ export function Layout() {
       .catch(() => {});
   }, []);
 
-  const navItems = [
+  // Built-in nav entries always present.
+  const baseNav = [
     { to: "/", label: "Overview" },
     { to: "/agents", label: "Agents" },
     { to: "/chat", label: "Chat" },
     { to: "/integrations", label: "Integrations" },
+  ];
+  // App-contributed entries from any installed app declaring a
+  // `provides.ui_panels` entry with slot=project.page. Each one
+  // becomes a sidebar link to /apps/<name>/page rendered via
+  // AppProjectPage. Fetched per project so installs scoped to one
+  // project don't bleed into another's sidebar.
+  const [appNav, setAppNav] = useState<{ to: string; label: string }[]>([]);
+  useEffect(() => {
+    apps
+      .list(currentProject?.id)
+      .then((rows) => {
+        const out: { to: string; label: string }[] = [];
+        for (const r of rows) {
+          if (r.status !== "running") continue;
+          for (const p of r.ui_panels || []) {
+            if (p.slot === "project.page") {
+              out.push({
+                to: `/apps/${r.name}/page`,
+                label: p.label || r.display_name || r.name,
+              });
+            }
+          }
+        }
+        setAppNav(out);
+      })
+      .catch(() => setAppNav([]));
+  }, [currentProject?.id]);
+
+  // Sidebar nav: base entries, then app-contributed pages, then the
+  // platform-management entries (Apps marketplace, Analytics,
+  // Settings) at the bottom.
+  const tailNav = [
     { to: "/apps", label: "Apps" },
     { to: "/analytics", label: "Analytics" },
     { to: "/settings", label: "Settings" },
   ];
+  const navItems = [...baseNav, ...appNav, ...tailNav];
 
   return (
     <div className="flex h-screen bg-bg">
