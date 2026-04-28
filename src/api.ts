@@ -1502,7 +1502,6 @@ export interface AppSurfaces {
   http_route_count: number;
   http_routes?: string[];
   ui_panel_count: number;
-  ui_page_count: number;
   ui_app: boolean;
   ui_app_mount?: string;
   channel_count: number;
@@ -1545,7 +1544,6 @@ export interface AppManifestV2 {
     mcp_tools?: { name: string; description: string }[];
     prompt_fragments?: { file: string; position: string }[];
     ui_panels?: { slot: string; label: string; icon?: string; entry: string }[];
-    ui_pages?: { path: string; label: string; icon?: string; entry: string }[];
     ui_app?: { domain_template: string; auth: string };
     channels?: { name: string; capabilities: string[] }[];
     workers?: { name: string; schedule: string }[];

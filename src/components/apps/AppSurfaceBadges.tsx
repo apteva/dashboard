@@ -77,14 +77,6 @@ export function AppSurfaceBadges({ surfaces, className }: Props) {
       title: `${surfaces.ui_panel_count} dashboard panel(s)`,
     });
   }
-  if (surfaces.ui_page_count > 0) {
-    items.push({
-      label: "pages",
-      count: surfaces.ui_page_count,
-      className: "bg-purple/10 text-purple-200/80",
-      title: `${surfaces.ui_page_count} top-nav page(s)`,
-    });
-  }
   if (surfaces.mcp_tool_count > 0) {
     items.push({
       label: "tools",

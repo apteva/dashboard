@@ -1,16 +1,17 @@
 // AppProjectPage — generic mount point for any installed app's
 // `provides.ui_panels` entry with slot=project.page. The route is
-// /apps/:name/page; the panel is iframed full-pane, scoped to the
-// current project.
+// /apps/:name/page.
 //
-// Same iframe machinery as instance.tab but without instance_id.
-// The app's panel reads project_id from the URL query (and any
-// other contextual hints we may add later — e.g. team_id).
+// First-party apps register a React component in nativePanels.tsx;
+// we mount that directly so it inherits theme tokens, router, auth.
+// Apps without a registration fall back to an iframe served by the
+// sidecar — same trust boundary the v1 panels relied on.
 
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apps, type AppRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
+import { getNativePanel } from "../components/apps/nativePanels";
 
 export function AppProjectPage() {
   const { name } = useParams<{ name: string }>();
@@ -65,9 +66,23 @@ export function AppProjectPage() {
     );
   }
 
-  // Build the iframe URL. install_id + project_id are passed so the
-  // panel can scope reads/writes correctly. instance_id is omitted —
-  // this is project-level, not instance-level.
+  // First-party path: render the registered React component so the
+  // panel lives inside our component tree and inherits theme + router.
+  const Native = getNativePanel(app.name, "project.page");
+  if (Native) {
+    return (
+      <div className="h-full">
+        <Native
+          appName={app.name}
+          installId={app.install_id}
+          projectId={currentProject?.id || ""}
+        />
+      </div>
+    );
+  }
+
+  // Iframe fallback for apps with no native registration. install_id
+  // + project_id flow as URL params so the panel can scope reads.
   const params = new URLSearchParams({
     install_id: String(app.install_id),
     project_id: currentProject?.id || "",

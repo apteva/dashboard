@@ -1,19 +1,18 @@
 import { useEffect, useState } from "react";
 import { apps, type AppRow } from "../api";
+import { getNativePanel } from "./apps/nativePanels";
 
 // AppPanels mounts every running App's `ui_panels` whose slot matches
-// the requested slot. Panels are iframed (third-party trust) at
-// /api/apps/<name><entry>?install_id=…&instance_id=…&token=…. The
-// sidecar's static handler serves the bundled HTML/JS.
+// the requested slot. First-party apps with a registered React
+// component render inline (no iframe, theme inherited); third-party
+// apps fall back to an iframe served by the sidecar.
 //
 // Supported slots:
+//   project.page    — full-pane page scoped to the current project
+//                     (mounted via AppProjectPage, not this component)
 //   instance.tab    — full-pane content under the instance detail tabs
 //   instance.status — small status strip on the instance detail header
 //   settings.app    — embedded into the Apps tab's per-install detail page
-//   sidebar.widget  — narrow sidebar widget (not consumed yet)
-//
-// Each panel iframe gets a postMessage protocol later; for v1 it just
-// reads the URL params and talks to /api/apps/<name>/* directly.
 export function AppPanels({
   slot,
   instanceId,
@@ -69,10 +68,38 @@ export function AppPanels({
   return (
     <div className={className}>
       {panels.map((p) => (
-        <AppPanelFrame key={`${p.installId}#${p.entry}`} panel={p} instanceId={instanceId} />
+        <AppPanelMount
+          key={`${p.installId}#${p.entry}`}
+          panel={p}
+          instanceId={instanceId}
+          projectId={projectId || ""}
+        />
       ))}
     </div>
   );
+}
+
+function AppPanelMount({
+  panel,
+  instanceId,
+  projectId,
+}: {
+  panel: PanelInstance;
+  instanceId?: number;
+  projectId: string;
+}) {
+  const Native = getNativePanel(panel.appName, panel.slot);
+  if (Native) {
+    return (
+      <Native
+        appName={panel.appName}
+        installId={panel.installId}
+        projectId={projectId}
+        instanceId={instanceId}
+      />
+    );
+  }
+  return <AppPanelFrame panel={panel} instanceId={instanceId} />;
 }
 
 export interface PanelInstance {
