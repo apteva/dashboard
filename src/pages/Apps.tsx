@@ -7,6 +7,29 @@ import { AppDetailPanel } from "../components/apps/AppDetailPanel";
 
 type Tab = "installed" | "marketplace";
 
+// AppIcon — renders the manifest icon, falls back to a single-letter
+// avatar when the URL is missing or 404s. Both the marketplace card
+// and the installed-app card share this so we don't end up with the
+// browser's default broken-image glyph.
+function AppIcon({ url, name }: { url?: string; name: string }) {
+  const [broken, setBroken] = useState(false);
+  if (!url || broken) {
+    return (
+      <div className="w-10 h-10 rounded bg-bg-input text-text-dim flex items-center justify-center flex-shrink-0">
+        {name.charAt(0).toUpperCase()}
+      </div>
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt=""
+      className="w-10 h-10 rounded bg-bg-input p-1 flex-shrink-0"
+      onError={() => setBroken(true)}
+    />
+  );
+}
+
 // The Apps tab — sidecar-based v2 Apps. Lists every install visible
 // to the current project (own installs + globals), shows surfaces +
 // status, and lets the user install a new one from a manifest URL.
@@ -236,13 +259,7 @@ function MarketplaceCard({
         }
       }}
     >
-      {entry.icon ? (
-        <img src={entry.icon} alt="" className="w-10 h-10 rounded bg-bg-input p-1 flex-shrink-0" onError={(ev) => { (ev.currentTarget as HTMLImageElement).style.display = "none"; }} />
-      ) : (
-        <div className="w-10 h-10 rounded bg-bg-input text-text-dim flex items-center justify-center flex-shrink-0">
-          {entry.display_name.charAt(0).toUpperCase()}
-        </div>
-      )}
+      <AppIcon url={entry.icon} name={entry.display_name} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-text font-medium">{entry.display_name}</span>
@@ -345,13 +362,7 @@ function AppCard({
         }
       }}
     >
-      {app.icon ? (
-        <img src={app.icon} alt="" className="w-10 h-10 rounded bg-bg-input p-1 flex-shrink-0" />
-      ) : (
-        <div className="w-10 h-10 rounded bg-bg-input text-text-dim flex items-center justify-center flex-shrink-0">
-          {app.display_name.charAt(0).toUpperCase()}
-        </div>
-      )}
+      <AppIcon url={app.icon} name={app.display_name} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-text font-medium">{app.display_name}</span>
