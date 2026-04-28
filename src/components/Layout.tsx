@@ -147,22 +147,30 @@ export function Layout() {
         )}
 
         <div className="flex-1 py-3">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === "/"}
-              className={({ isActive }) =>
-                `block px-5 py-3 text-sm transition-colors ${
-                  isActive
-                    ? "text-accent bg-bg-hover border-r-2 border-accent"
-                    : "text-text-muted hover:text-text hover:bg-bg-hover"
-                }`
-              }
-            >
-              {item.label}
-            </NavLink>
-          ))}
+          {navItems.map((item) => {
+            // Use exact-match for any nav entry that could be a prefix
+            // of a more-specific one. Without this, /apps lights up as
+            // active when you're on /apps/storage/page (and same for /).
+            const isPrefixOfAnother = navItems.some(
+              (other) => other !== item && other.to.startsWith(item.to + (item.to === "/" ? "" : "/")),
+            );
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.to === "/" || isPrefixOfAnother}
+                className={({ isActive }) =>
+                  `block px-5 py-3 text-sm transition-colors ${
+                    isActive
+                      ? "text-accent bg-bg-hover border-r-2 border-accent"
+                      : "text-text-muted hover:text-text hover:bg-bg-hover"
+                  }`
+                }
+              >
+                {item.label}
+              </NavLink>
+            );
+          })}
         </div>
         {/* Logged-in user + account menu (change password, logout). Rendered
             above the version line so it sits in the same footer area. */}
