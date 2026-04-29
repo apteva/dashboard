@@ -13,6 +13,7 @@
 import type { ComponentType } from "react";
 import { StoragePanel } from "./StoragePanel";
 import { CrmPanel } from "./CrmPanel";
+import { MediaPanel } from "./MediaPanel";
 
 export interface NativePanelProps {
   appName: string;
@@ -30,6 +31,9 @@ const REGISTRY: Record<string, SlotMap> = {
   },
   crm: {
     "project.page": CrmPanel,
+  },
+  media: {
+    "project.page": MediaPanel,
   },
 };
 
