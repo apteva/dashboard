@@ -169,9 +169,15 @@ export function Apps() {
         onClose={() => setInstallModal(null)}
         projectId={currentProject?.id}
         onInstalled={() => {
+          // Switch to Installed so the user sees the row appear in
+          // pending state with live status_message ("Cloning…",
+          // "Downloading dependencies…", "Linking…") instead of
+          // staring at a Marketplace card that just flipped to
+          // "Installed". The poll loop on the Installed tab does the
+          // rest.
           setInstallModal(null);
-          if (tab === "installed") refreshInstalled();
-          else refreshMarketplace();
+          setTab("installed");
+          refreshInstalled();
         }}
       />
 
