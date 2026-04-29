@@ -32,6 +32,44 @@ if (!result.success) {
   process.exit(1);
 }
 
+// Step 2.5: Vendor bundles for panel importmap.
+//
+// Panels live in each app's repo and are loaded dynamically via
+// `import(<panel.entry>)`. They reference React with bare specifiers
+// (`import { useState } from "react"`) and rely on the importmap in
+// index.html to resolve those to the dashboard's bundled copy.
+// Without this, every panel would either bundle its own React (size +
+// version skew) or break.
+console.log("Building vendor (react, react/jsx-runtime) for panel importmap...");
+mkdirSync("./dist/vendor", { recursive: true });
+const vendor = await Bun.build({
+  entrypoints: [
+    "./vendor/react.entry.ts",
+    "./vendor/react-jsx-runtime.entry.ts",
+  ],
+  outdir: "./dist/vendor",
+  target: "browser",
+  format: "esm",
+  minify: true,
+  splitting: false,
+  naming: "[name].mjs",
+});
+if (!vendor.success) {
+  console.error("Vendor build failed:");
+  for (const log of vendor.logs) console.error(log);
+  process.exit(1);
+}
+// Bun's `[name]` keeps the `.entry` segment — rename to clean filenames
+// the importmap can address.
+const { renameSync, existsSync } = await import("fs");
+const renames: [string, string][] = [
+  ["./dist/vendor/react.entry.mjs", "./dist/vendor/react.mjs"],
+  ["./dist/vendor/react-jsx-runtime.entry.mjs", "./dist/vendor/react-jsx-runtime.mjs"],
+];
+for (const [from, to] of renames) {
+  if (existsSync(from)) renameSync(from, to);
+}
+
 // Step 3: Generate index.html with hashed paths
 const jsOutput = result.outputs.find((o) => o.path.endsWith(".js"));
 const jsFile = jsOutput ? jsOutput.path.split("/").pop() : "main.js";
@@ -47,6 +85,15 @@ const html = `<!DOCTYPE html>
     <link rel="preload" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=block" as="style" />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=block" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css" />
+    <!-- Importmap so dynamically-loaded panel modules import React from the host -->
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "/vendor/react.mjs",
+          "react/jsx-runtime": "/vendor/react-jsx-runtime.mjs"
+        }
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

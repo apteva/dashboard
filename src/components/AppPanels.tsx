@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { apps, type AppRow } from "../api";
-import { getNativePanel } from "./apps/nativePanels";
+import { resolvePanelComponent } from "./apps/nativePanels";
 
 // AppPanels mounts every running App's `ui_panels` whose slot matches
 // the requested slot. First-party apps with a registered React
@@ -88,7 +88,7 @@ function AppPanelMount({
   instanceId?: number;
   projectId: string;
 }) {
-  const Native = getNativePanel(panel.appName, panel.slot);
+  const Native = resolvePanelComponent(panel.appName, panel.entry);
   if (Native) {
     return (
       <Native

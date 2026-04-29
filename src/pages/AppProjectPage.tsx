@@ -11,7 +11,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apps, type AppRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
-import { getNativePanel } from "../components/apps/nativePanels";
+import { resolvePanelComponent } from "../components/apps/nativePanels";
 
 export function AppProjectPage() {
   const { name } = useParams<{ name: string }>();
@@ -66,9 +66,10 @@ export function AppProjectPage() {
     );
   }
 
-  // First-party path: render the registered React component so the
-  // panel lives inside our component tree and inherits theme + router.
-  const Native = getNativePanel(app.name, "project.page");
+  // Native path: dynamically import the panel module the app's
+  // sidecar serves at panel.entry. The component lives inside our
+  // React tree, inherits the importmap'd React + theme + router.
+  const Native = resolvePanelComponent(app.name, panel.entry);
   if (Native) {
     return (
       <div className="h-full">
