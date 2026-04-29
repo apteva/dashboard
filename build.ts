@@ -34,6 +34,15 @@ const result = await Bun.build({
     "react-dom",
     "react-dom/client",
   ],
+  // NODE_ENV=production so JSX compiles to `jsx()` from the prod
+  // runtime (vendor/react-jsx-runtime.mjs exports Fragment / jsx /
+  // jsxs). Without this, Bun emits `jsxDEV()` from the dev runtime
+  // — which the importmap routes to the same vendor file that
+  // doesn't export jsxDEV → SyntaxError on every component load.
+  // Also strips React's dev-only warnings = smaller bundle.
+  define: {
+    "process.env.NODE_ENV": '"production"',
+  },
   naming: {
     entry: "[name]-[hash].[ext]",
     chunk: "[name]-[hash].[ext]",

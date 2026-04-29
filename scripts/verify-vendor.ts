@@ -107,7 +107,21 @@ async function checkMainBundleHasOneReact(): Promise<void> {
     );
     process.exit(1);
   }
+  // The vendor jsx-runtime exposes `jsx` / `jsxs` only — no `jsxDEV`.
+  // If main was built without NODE_ENV=production, Bun emits
+  // `jsxDEV()` calls from the dev runtime, the importmap routes
+  // /react/jsx-dev-runtime to the same prod vendor file, and the
+  // browser throws "does not provide an export named 'jsxDEV'"
+  // before the dashboard even renders.
+  if (/from\s*"react\/jsx-dev-runtime"/.test(main) || /jsx-dev-runtime/.test(main)) {
+    console.error(
+      `✗ ${mainJs} imports "react/jsx-dev-runtime" — main was built without NODE_ENV=production. ` +
+      `Set define: { "process.env.NODE_ENV": '"production"' } in the main Bun.build call so JSX compiles to the prod runtime.`,
+    );
+    process.exit(1);
+  }
   console.log(`✓ main bundle (${mainJs}) does NOT inline React or react-dom — single instance via importmap.`);
+  console.log(`✓ main bundle uses prod JSX runtime (no jsxDEV calls).`);
 }
 
 async function main() {
