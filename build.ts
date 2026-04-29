@@ -127,11 +127,17 @@ const vendor = await Bun.build({
   splitting: false,
   naming: "[name].mjs",
   define: { "process.env.NODE_ENV": '"production"' },
-  // jsx-runtime + react-dom both internally `require('react')` —
-  // externalize so they pick up vendor/react.mjs via the importmap
-  // at runtime instead of bundling their own (which would defeat
-  // the whole single-instance setup).
-  external: ["react", "react/jsx-runtime", "react/jsx-dev-runtime"],
+  // Externalize "react" ONLY — these vendors all import React
+  // internally and we want them to share the single instance via
+  // the importmap. Crucially DO NOT externalize "react/jsx-runtime"
+  // / "react-dom" / "react-dom/client" themselves: those bare
+  // specifiers route to THIS file via the importmap at runtime,
+  // so externalizing them creates a self-import cycle and the
+  // bundle's `import * as Mod from "<self>"` returns an empty
+  // module — every named export comes back undefined. That's the
+  // bug behind "fj is not a function" / "Cannot read properties
+  // of undefined (reading 'S')" — vendor file imported itself.
+  external: ["react"],
 })
 if (!vendor.success) {
   console.error("Vendor build failed:");

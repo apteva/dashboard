@@ -47,7 +47,7 @@ await $`bun run build.ts`.quiet();
 
 console.log("Syncing dashboard → server/dashboard/...");
 await $`rm -rf ../server/dashboard && mkdir -p ../server/dashboard`.quiet();
-await $`bash -c 'cp dist/*.html dist/*.js dist/*.css ../server/dashboard/ 2>/dev/null'`.quiet().nothrow();
+await $`cp -r dist/. ../server/dashboard/`.quiet().nothrow();
 
 console.log("Building apteva-server...");
 await $`cd ../server && go build -ldflags="-X main.Version=${VERSION}" -o apteva-server .`;
@@ -163,7 +163,7 @@ watch("./src", { recursive: true }, (_event, filename) => {
       await $`bun run build.ts`.quiet();
       // Sync to server embed dir so next server restart picks it up
       await $`rm -rf ../server/dashboard && mkdir -p ../server/dashboard`.quiet();
-      await $`bash -c 'cp dist/*.html dist/*.js dist/*.css ../server/dashboard/ 2>/dev/null'`.quiet().nothrow();
+      await $`cp -r dist/. ../server/dashboard/`.quiet().nothrow();
       console.log("  Rebuild complete.");
     } catch (e) {
       console.error("  Rebuild failed:", e);

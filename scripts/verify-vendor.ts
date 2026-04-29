@@ -41,6 +41,16 @@ async function entryExpectsNames(): Promise<string[]> {
   return out;
 }
 
+// selfImportSpecifier — what bare specifier should this vendor
+// .mjs NEVER import (because it IS that specifier at runtime via
+// the importmap)?
+const SELF_IMPORTS: Record<string, string> = {
+  "react.mjs":               "react",
+  "react-jsx-runtime.mjs":   "react/jsx-runtime",
+  "react-dom.mjs":           "react-dom",
+  "react-dom-client.mjs":    "react-dom/client",
+};
+
 async function checkBundle(
   builtPath: string,
   expectedNames: string[],
@@ -49,6 +59,50 @@ async function checkBundle(
   if (!existsSync(builtPath)) {
     throw new Error(`vendor build missing: ${builtPath} — run \`bun run build\` first`);
   }
+
+  // Self-import detection. A vendor file that the importmap maps
+  // bare-specifier X → /vendor/X.mjs must not contain `from "X"`
+  // — that creates a runtime cycle where the file imports itself
+  // and every named export comes back undefined. Catches the
+  // "fj is not a function" class of bug at build time.
+  const fname = builtPath.split("/").pop() || "";
+  const self = SELF_IMPORTS[fname];
+  const src = await readFile(builtPath, "utf8");
+  if (self) {
+    const re = new RegExp(`from\\s*["']${self.replace(/[\/]/g, "\\/")}["']`);
+    if (re.test(src)) {
+      console.error(
+        `✗ ${builtPath} imports "${self}" — but the importmap maps that bare specifier ` +
+        `to this same file. The bundle would resolve its own import to itself at runtime, ` +
+        `and every named export would come back undefined. ` +
+        `Remove "${self}" from build.ts vendor build's external list.`,
+      );
+      process.exit(1);
+    }
+  }
+  // The importmap only resolves the four bare specifiers in
+  // SELF_IMPORTS. Any *other* bare "react"-package specifier left in
+  // the bundle (e.g. "react/jsx-runtime.js", "react/cjs/…") will 404
+  // in the browser. Bun's `external: ["react"]` is package-aware and
+  // can leak subpaths through — this catches that.
+  const ALLOWED = new Set(Object.values(SELF_IMPORTS));
+  const importRe = /from\s*["']([^"']+)["']/g;
+  let m: RegExpExecArray | null;
+  while ((m = importRe.exec(src)) !== null) {
+    const spec = m[1];
+    if (spec.startsWith(".") || spec.startsWith("/")) continue;
+    const isReactPkg = spec === "react" || spec.startsWith("react/") ||
+                       spec === "react-dom" || spec.startsWith("react-dom/");
+    if (isReactPkg && !ALLOWED.has(spec)) {
+      console.error(
+        `✗ ${builtPath} imports "${spec}" — the browser importmap only resolves ` +
+        `${[...ALLOWED].map((x) => `"${x}"`).join(", ")}. This specifier will 404 at runtime. ` +
+        `Use a relative path in the vendor entry so Bun bundles it instead of treating it as part of the externalized package.`,
+      );
+      process.exit(1);
+    }
+  }
+
   const mod = await import(pathToFileURL(builtPath).href);
   const present = new Set(Object.keys(mod));
   const missing = expectedNames.filter((n) => !present.has(n));

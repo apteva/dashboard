@@ -23,6 +23,11 @@ const VENDOR = join(HERE, "..", "vendor");
 
 interface VendorPlan {
   module: string;       // npm module name (e.g. "react")
+  importPath?: string;  // override: what the entry should `import` from
+                        // (Bun keeps subpath specifiers like
+                        // "react/jsx-runtime" as bare imports even
+                        // outside the external list — work around by
+                        // importing the literal file path)
   outFile: string;      // entry filename (vendor/<x>.entry.ts)
   notes: string;        // top-of-file comment
 }
@@ -37,6 +42,12 @@ const PLANS: VendorPlan[] = [
   },
   {
     module: "react/jsx-runtime",
+    // Bun's `external: ["react"]` is package-aware — it keeps every
+    // "react/*" subpath bare too. So we can't import "react/jsx-runtime"
+    // (self-import via importmap) OR "react/jsx-runtime.js" (still a
+    // bare specifier the browser can't resolve). Use a relative path
+    // into node_modules so Bun treats it as a local file and inlines it.
+    importPath: "../node_modules/react/jsx-runtime.js",
     outFile: "react-jsx-runtime.entry.ts",
     notes: `// Re-export every name react/jsx-runtime exposes. Auto-generated.`,
   },
@@ -90,7 +101,7 @@ async function main() {
     lines.push(plan.notes);
     lines.push("");
     lines.push(`// @ts-ignore — CJS module, both default + named exposed at runtime.`);
-    lines.push(`import * as Mod from "${plan.module}";`);
+    lines.push(`import * as Mod from "${plan.importPath ?? plan.module}";`);
     lines.push(`export default (Mod as any).default ?? (Mod as any);`);
     for (const k of valid) {
       lines.push(`export const ${k} = (Mod as any).${k};`);
