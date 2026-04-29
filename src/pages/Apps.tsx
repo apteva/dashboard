@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import { apps, type AppRow, type AppPreview, type MarketplaceEntry } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { Modal } from "../components/Modal";
@@ -215,41 +216,120 @@ function MarketplaceView({
   onInstall: (e: MarketplaceEntry) => void;
   onOpenDetails: (e: MarketplaceEntry) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<string>("all");
+
   if (loading) return <div className="text-text-dim text-sm">Loading marketplace…</div>;
   if (entries.length === 0) {
     return (
-      <div className="border border-border rounded-lg p-8 text-center">
+      <div className="border border-border rounded-lg p-8 text-center max-w-2xl mx-auto">
         <p className="text-text-muted text-sm">Marketplace is empty.</p>
         <p className="text-text-dim text-xs mt-1">Configured registry: <span className="font-mono">{registryURL}</span></p>
       </div>
     );
   }
-  // Group by category for a tidier layout.
-  const byCategory: Record<string, MarketplaceEntry[]> = {};
-  entries.forEach((e) => {
+
+  // Distinct categories for the chip row, ordered by population.
+  const categoryCounts: Record<string, number> = {};
+  for (const e of entries) {
     const k = e.category || "other";
-    (byCategory[k] = byCategory[k] || []).push(e);
+    categoryCounts[k] = (categoryCounts[k] || 0) + 1;
+  }
+  const categories = Object.keys(categoryCounts).sort(
+    (a, b) => categoryCounts[b] - categoryCounts[a],
+  );
+
+  // Apply text + category filter. Search hits name, display_name,
+  // description, and tags so "video" finds Media even though that
+  // word isn't in the name.
+  const q = query.trim().toLowerCase();
+  const filtered = entries.filter((e) => {
+    if (category !== "all" && (e.category || "other") !== category) return false;
+    if (!q) return true;
+    const hay = [
+      e.name, e.display_name, e.description,
+      ...(e.tags || []),
+    ].join(" ").toLowerCase();
+    return hay.includes(q);
   });
-  const order = Object.keys(byCategory).sort();
+
   return (
     <div className="space-y-5">
-      {order.map((cat) => (
-        <div key={cat}>
-          <div className="text-text-muted text-xs uppercase tracking-wide mb-2">{cat}</div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-3">
-            {byCategory[cat].map((e) => (
-              <MarketplaceCard
-                key={e.name}
-                entry={e}
-                onInstall={() => onInstall(e)}
-                onOpenDetails={() => onOpenDetails(e)}
-              />
-            ))}
-          </div>
+      {/* Search + category chips */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search apps…"
+          className="bg-bg-input border border-border rounded px-3 py-1.5 text-sm flex-1 min-w-[200px] max-w-md"
+        />
+        <div className="flex flex-wrap gap-1.5">
+          <CategoryChip
+            label="all"
+            count={entries.length}
+            active={category === "all"}
+            onClick={() => setCategory("all")}
+          />
+          {categories.map((c) => (
+            <CategoryChip
+              key={c}
+              label={c}
+              count={categoryCounts[c]}
+              active={category === c}
+              onClick={() => setCategory(c)}
+            />
+          ))}
         </div>
-      ))}
-      <p className="text-text-dim text-[10px]">Registry: <span className="font-mono">{registryURL}</span></p>
+      </div>
+
+      {/* Result grid */}
+      {filtered.length === 0 ? (
+        <div className="text-text-muted text-sm text-center py-12">
+          No apps match. Try a different search or category.
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 2xl:grid-cols-6 gap-3">
+          {filtered.map((e) => (
+            <MarketplaceCard
+              key={e.name}
+              entry={e}
+              onInstall={() => onInstall(e)}
+              onOpenDetails={() => onOpenDetails(e)}
+            />
+          ))}
+        </div>
+      )}
+
+      <p className="text-text-dim text-[10px]">
+        Registry: <span className="font-mono">{registryURL}</span>
+        {" · "}
+        {filtered.length} of {entries.length} apps
+      </p>
     </div>
+  );
+}
+
+// CategoryChip — the small toggle pills above the grid. Single-line,
+// click flips it active. Mirrors how WP, the Notion gallery, and most
+// app marketplaces handle category filtering.
+function CategoryChip({
+  label, count, active, onClick,
+}: {
+  label: string; count: number; active: boolean; onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`px-2.5 py-1 text-xs rounded-full border transition-colors capitalize ${
+        active
+          ? "bg-accent text-bg border-accent"
+          : "border-border text-text-muted hover:text-text hover:border-accent/40"
+      }`}
+    >
+      {label} <span className="opacity-60">({count})</span>
+    </button>
   );
 }
 
@@ -260,11 +340,12 @@ function MarketplaceCard({
   onInstall: () => void;
   onOpenDetails: () => void;
 }) {
-  // Card body is clickable → opens the side panel. Action buttons
-  // stop propagation so install / repo don't accidentally open it too.
+  // Vertical "tile" card: icon + name on top, description in the
+  // middle, install button at the bottom. Same shape as WordPress
+  // plugins / Notion gallery / VSCode extension marketplace cards.
   return (
     <div
-      className="border border-border rounded-lg p-3 flex items-start gap-3 cursor-pointer hover:border-border-strong transition-colors"
+      className="border border-border rounded-lg p-4 flex flex-col gap-2 cursor-pointer hover:border-accent/60 transition-colors min-h-[200px]"
       onClick={onOpenDetails}
       role="button"
       tabIndex={0}
@@ -275,37 +356,58 @@ function MarketplaceCard({
         }
       }}
     >
-      <AppIcon url={entry.icon} name={entry.display_name} />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-text font-medium">{entry.display_name}</span>
-          <span className="text-text-dim text-xs">v{entry.version}</span>
-          {entry.official && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue/15 text-blue">official</span>}
-          {entry.builtin && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue/15 text-blue">built-in</span>}
-          {entry.installed && !entry.builtin && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green/15 text-green">installed</span>}
+      <div className="flex items-start gap-3">
+        <BigAppIcon url={entry.icon} name={entry.display_name} />
+        <div className="flex-1 min-w-0">
+          <div className="text-text font-medium truncate">{entry.display_name}</div>
+          <div className="text-text-dim text-[11px] mt-0.5">v{entry.version}</div>
         </div>
-        <p className="text-text-muted text-xs mt-1 line-clamp-2">{entry.description}</p>
-        <AppSurfaceBadges surfaces={entry.surfaces} className="mt-2" />
       </div>
-      <div className="flex flex-col gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
-        <button
-          onClick={onInstall}
-          disabled={entry.installed}
-          title={entry.builtin ? "Bundled into apteva-server — always available" : ""}
-          className="px-2 py-1 border border-accent rounded text-[11px] text-accent hover:bg-accent hover:text-bg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          {entry.builtin ? "built-in" : entry.installed ? "installed" : "install"}
-        </button>
-        <a
-          href={entry.repo}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="px-2 py-1 text-[11px] text-text-muted hover:text-text text-center"
-        >
-          repo ↗
-        </a>
+      <div className="flex flex-wrap gap-1">
+        {entry.official && <Pill className="bg-blue/15 text-blue">official</Pill>}
+        {entry.builtin && <Pill className="bg-blue/15 text-blue">built-in</Pill>}
+        {entry.installed && !entry.builtin && <Pill className="bg-green/15 text-green">installed</Pill>}
       </div>
+      <p className="text-text-muted text-xs line-clamp-3 flex-1">{entry.description}</p>
+      <button
+        onClick={(e) => { e.stopPropagation(); onInstall(); }}
+        disabled={entry.installed}
+        title={entry.builtin ? "Bundled into apteva-server — always available" : ""}
+        className="mt-auto w-full px-3 py-1.5 border border-accent rounded text-xs text-accent hover:bg-accent hover:text-bg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+      >
+        {entry.builtin ? "Built-in" : entry.installed ? "Installed" : "Install"}
+      </button>
     </div>
+  );
+}
+
+// BigAppIcon — 48px tile icon for the marketplace + installed grids.
+// Falls back to a single-letter avatar so missing icons don't leave
+// holes (handful of registry entries don't ship icon.png).
+function BigAppIcon({ url, name }: { url?: string; name: string }) {
+  const [broken, setBroken] = useState(false);
+  if (!url || broken) {
+    return (
+      <div className="w-12 h-12 rounded-lg bg-bg-input text-text-dim flex items-center justify-center flex-shrink-0 text-xl font-medium">
+        {name.charAt(0).toUpperCase()}
+      </div>
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt=""
+      className="w-12 h-12 rounded-lg bg-bg-input p-1 flex-shrink-0 object-contain"
+      onError={() => setBroken(true)}
+    />
+  );
+}
+
+function Pill({ className, children }: { className?: string; children: React.ReactNode }) {
+  return (
+    <span className={`text-[10px] px-1.5 py-0.5 rounded ${className || "bg-border text-text-muted"}`}>
+      {children}
+    </span>
   );
 }
 
@@ -365,9 +467,17 @@ function AppCard({
           ? "bg-border text-text-dim"
           : "bg-yellow/15 text-yellow";
 
+  // Vertical tile, mirrors MarketplaceCard. Top: icon + name +
+  // version. Middle: pills (status, scope, builtin) + description
+  // OR live install progress. Bottom: Open button (when there's a
+  // project.page panel) + Uninstall, or the inline mount/remove
+  // confirmation when one of those flows is active.
+  const projectPagePanel = (app.ui_panels || []).find((p) => p.slot === "project.page");
+  const showOpen = app.status === "running" && !!projectPagePanel;
+
   return (
     <div
-      className="border border-border rounded-lg p-3 flex items-start gap-3 cursor-pointer hover:border-border-strong transition-colors"
+      className="border border-border rounded-lg p-4 flex flex-col gap-2 cursor-pointer hover:border-accent/60 transition-colors min-h-[200px]"
       onClick={onOpenDetails}
       role="button"
       tabIndex={0}
@@ -378,98 +488,97 @@ function AppCard({
         }
       }}
     >
-      <AppIcon url={app.icon} name={app.display_name} />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-text font-medium">{app.display_name}</span>
-          <span className="text-text-dim text-xs">v{app.version}</span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor}`}>{app.status}</span>
-          {app.project_id ? (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent" title={`project ${app.project_id}`}>
-              project
-            </span>
-          ) : (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-border text-text-muted" title="server-wide install">
-              global
-            </span>
-          )}
-          {app.source === "builtin" && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue/15 text-blue">builtin</span>
-          )}
+      <div className="flex items-start gap-3">
+        <BigAppIcon url={app.icon} name={app.display_name} />
+        <div className="flex-1 min-w-0">
+          <div className="text-text font-medium truncate">{app.display_name}</div>
+          <div className="text-text-dim text-[11px] mt-0.5">v{app.version}</div>
         </div>
-        {app.status === "pending" ? (
-          <p className="text-accent text-xs mt-1 italic flex items-center gap-1.5">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-pulse flex-shrink-0" />
-            <span className="truncate">{app.status_message || "Installing…"}</span>
-          </p>
-        ) : app.status === "error" && app.error_message ? (
-          <p className="text-red text-xs mt-1 line-clamp-2" title={app.error_message}>{app.error_message}</p>
-        ) : (
-          <p className="text-text-muted text-xs mt-1 line-clamp-2">{app.description}</p>
-        )}
-        <AppSurfaceBadges surfaces={app.surfaces} className="mt-2" />
       </div>
-      <div className="flex flex-col gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+      <div className="flex flex-wrap gap-1">
+        <Pill className={statusColor}>{app.status}</Pill>
+        {app.project_id ? (
+          <Pill className="bg-accent/10 text-accent">project</Pill>
+        ) : (
+          <Pill className="bg-border text-text-muted">global</Pill>
+        )}
+        {app.source === "builtin" && <Pill className="bg-blue/15 text-blue">built-in</Pill>}
+      </div>
+      {app.status === "pending" ? (
+        <p className="text-accent text-xs italic flex items-center gap-1.5 flex-1">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-pulse flex-shrink-0" />
+          <span className="line-clamp-3">{app.status_message || "Installing…"}</span>
+        </p>
+      ) : app.status === "error" && app.error_message ? (
+        <p className="text-red text-xs line-clamp-3 flex-1" title={app.error_message}>{app.error_message}</p>
+      ) : (
+        <p className="text-text-muted text-xs line-clamp-3 flex-1">{app.description}</p>
+      )}
+      <div className="mt-auto flex flex-col gap-1.5" onClick={(e) => e.stopPropagation()}>
         {showMount ? (
-          <span className="flex items-center gap-1 bg-accent/10 border border-accent/40 rounded px-2 py-1 flex-wrap max-w-[280px]">
+          <div className="bg-accent/10 border border-accent/40 rounded p-2 flex flex-wrap items-center gap-1">
             <input
               type="text"
               value={mountUrl}
               onChange={(e) => setMountUrl(e.target.value)}
               placeholder="http://127.0.0.1:8080"
-              className="flex-1 min-w-[160px] bg-bg-input border border-border rounded px-1 py-0.5 text-[11px] font-mono text-text"
+              className="basis-full bg-bg-input border border-border rounded px-1 py-0.5 text-[11px] font-mono text-text"
             />
             <button onClick={mount} disabled={busy} className="text-[10px] text-accent font-medium hover:underline disabled:opacity-50">
               {busy ? "…" : "mount"}
             </button>
             <button onClick={() => setShowMount(false)} disabled={busy} className="text-[10px] text-text-muted hover:text-text">cancel</button>
             {mountError && <span className="basis-full text-[10px] text-red">{mountError}</span>}
-          </span>
+          </div>
         ) : confirmRemove ? (
-          <span className="flex items-center gap-1 bg-red/10 border border-red/40 rounded px-2 py-1">
-            <button
-              onClick={remove}
-              disabled={busy}
-              className="text-[10px] text-red font-medium hover:underline disabled:opacity-50"
-            >
+          <div className="bg-red/10 border border-red/40 rounded p-2 flex items-center gap-2">
+            <span className="text-[11px] text-red flex-1">Uninstall?</span>
+            <button onClick={remove} disabled={busy} className="text-[11px] text-red font-medium hover:underline disabled:opacity-50">
               {busy ? "…" : "confirm"}
             </button>
-            <button
-              onClick={() => setConfirmRemove(false)}
-              disabled={busy}
-              className="text-[10px] text-text-muted hover:text-text"
-            >
+            <button onClick={() => setConfirmRemove(false)} disabled={busy} className="text-[11px] text-text-muted hover:text-text">
               cancel
             </button>
-          </span>
+          </div>
         ) : (
           <>
-            {(app.status === "pending" || app.status === "disabled" || app.status === "error") && app.source !== "builtin" && (
-              <button
-                onClick={() => setShowMount(true)}
-                className="px-2 py-1 border border-accent rounded text-[11px] text-accent hover:bg-accent hover:text-bg transition-colors"
-                title="Mount a running sidecar by URL (local dev). For orchestrator-deployed apps this is set automatically."
+            {showOpen && (
+              <Link
+                to={`/apps/${app.name}/page`}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full px-3 py-1.5 border border-accent rounded text-xs text-accent hover:bg-accent hover:text-bg transition-colors text-center"
               >
-                mount…
-              </button>
+                Open
+              </Link>
             )}
-            {app.status === "running" && (
-              <button
-                onClick={disable}
-                disabled={busy}
-                className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-yellow hover:border-yellow transition-colors"
-              >
-                disable
-              </button>
-            )}
-            {app.source !== "builtin" && (
-              <button
-                onClick={() => setConfirmRemove(true)}
-                className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-red hover:border-red transition-colors"
-              >
-                uninstall
-              </button>
-            )}
+            <div className="flex items-center gap-1.5">
+              {(app.status === "pending" || app.status === "disabled" || app.status === "error") && app.source !== "builtin" && (
+                <button
+                  onClick={() => setShowMount(true)}
+                  className="flex-1 px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-accent hover:border-accent transition-colors"
+                  title="Mount a running sidecar by URL (local dev)"
+                >
+                  Mount…
+                </button>
+              )}
+              {app.status === "running" && app.source !== "builtin" && (
+                <button
+                  onClick={disable}
+                  disabled={busy}
+                  className="flex-1 px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-yellow hover:border-yellow transition-colors"
+                >
+                  Disable
+                </button>
+              )}
+              {app.source !== "builtin" && (
+                <button
+                  onClick={() => setConfirmRemove(true)}
+                  className="flex-1 px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-red hover:border-red transition-colors"
+                >
+                  Uninstall
+                </button>
+              )}
+            </div>
           </>
         )}
       </div>
