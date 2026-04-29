@@ -59,6 +59,10 @@ if (!vendor.success) {
   for (const log of vendor.logs) console.error(log);
   process.exit(1);
 }
+
+// Run after Bun's name-rewriting step (rename below) so the verifier
+// imports react.mjs at its final path. Inserted later — see the
+// renames block.
 // Bun's `[name]` keeps the `.entry` segment — rename to clean filenames
 // the importmap can address.
 const { renameSync, existsSync } = await import("fs");
@@ -68,6 +72,24 @@ const renames: [string, string][] = [
 ];
 for (const [from, to] of renames) {
   if (existsSync(from)) renameSync(from, to);
+}
+
+// Verify the built vendor/react.mjs actually exports every name the
+// entry promised. Runs against the Bun runtime that produced it; a
+// failure here means a typo in vendor/react.entry.ts (or a React
+// API that genuinely went away) — better to fail the dashboard
+// build now than ship broken panels.
+{
+  const verifyURL = new URL("./scripts/verify-vendor.ts", import.meta.url).pathname;
+  const proc = Bun.spawn(["bun", "run", verifyURL], {
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const code = await proc.exited;
+  if (code !== 0) {
+    console.error("vendor verification failed");
+    process.exit(code);
+  }
 }
 
 // Step 3: Generate index.html with hashed paths
