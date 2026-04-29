@@ -90,7 +90,8 @@ const html = `<!DOCTYPE html>
       {
         "imports": {
           "react": "/vendor/react.mjs",
-          "react/jsx-runtime": "/vendor/react-jsx-runtime.mjs"
+          "react/jsx-runtime": "/vendor/react-jsx-runtime.mjs",
+          "react/jsx-dev-runtime": "/vendor/react-jsx-runtime.mjs"
         }
       }
     </script>
