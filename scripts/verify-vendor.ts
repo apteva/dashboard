@@ -41,31 +41,39 @@ async function entryExpectsNames(): Promise<string[]> {
   return out;
 }
 
-async function main() {
-  if (!existsSync(BUILT)) {
-    throw new Error(`vendor build missing: ${BUILT} — run \`bun run build\` first`);
+async function checkBundle(
+  builtPath: string,
+  expectedNames: string[],
+  spotCheck: { name: string; kind: "function" | "any" },
+): Promise<void> {
+  if (!existsSync(builtPath)) {
+    throw new Error(`vendor build missing: ${builtPath} — run \`bun run build\` first`);
   }
-  const expected = await entryExpectsNames();
-  const mod = await import(pathToFileURL(BUILT).href);
+  const mod = await import(pathToFileURL(builtPath).href);
   const present = new Set(Object.keys(mod));
-
-  const missing: string[] = [];
-  for (const name of expected) {
-    if (!present.has(name)) missing.push(name);
-  }
+  const missing = expectedNames.filter((n) => !present.has(n));
   if (missing.length > 0) {
-    console.error(`vendor build missing ${missing.length} expected export(s):`);
+    console.error(`✗ ${builtPath} missing ${missing.length} expected export(s):`);
     for (const m of missing) console.error("  ✗ " + m);
     process.exit(1);
   }
-  console.log(`✓ vendor/react.mjs exports all ${expected.length} names the entry promises.`);
-
-  // Spot-check the runtime API too — defaults shouldn't be undefined.
-  if (typeof (mod as any).useState !== "function") {
-    console.error("✗ vendor/react.mjs's useState isn't a function — CJS interop broken");
+  console.log(`✓ ${builtPath.replace(/^.*\/dist\//, "dist/")} exports all ${expectedNames.length} names the entry promises.`);
+  if (spotCheck.kind === "function" && typeof (mod as any)[spotCheck.name] !== "function") {
+    console.error(`✗ ${builtPath}'s ${spotCheck.name} isn't a function — CJS interop broken`);
     process.exit(1);
   }
-  console.log("✓ runtime spot-check: useState resolves to a function.");
+  console.log(`  └ runtime spot-check: ${spotCheck.name} present (${typeof (mod as any)[spotCheck.name]}).`);
+}
+
+async function main() {
+  // The main React bundle.
+  const reactExpected = await entryExpectsNames();
+  await checkBundle(BUILT, reactExpected, { name: "useState", kind: "function" });
+
+  // The jsx-runtime bundle. Enumerated by hand — Fragment / jsx /
+  // jsxs are React's stable runtime exports.
+  const jsxBuilt = join(HERE, "..", "dist", "vendor", "react-jsx-runtime.mjs");
+  await checkBundle(jsxBuilt, ["Fragment", "jsx", "jsxs"], { name: "jsx", kind: "function" });
 }
 
 await main();
