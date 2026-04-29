@@ -97,6 +97,7 @@ if (!vendorReact.success) {
 const vendor = await Bun.build({
   entrypoints: [
     "./vendor/react-jsx-runtime.entry.ts",
+    "./vendor/react-dom.entry.ts",
     "./vendor/react-dom-client.entry.ts",
   ],
   outdir: "./dist/vendor",
@@ -127,6 +128,7 @@ const { renameSync, existsSync } = await import("fs");
 const renames: [string, string][] = [
   ["./dist/vendor/react.entry.mjs", "./dist/vendor/react.mjs"],
   ["./dist/vendor/react-jsx-runtime.entry.mjs", "./dist/vendor/react-jsx-runtime.mjs"],
+  ["./dist/vendor/react-dom.entry.mjs", "./dist/vendor/react-dom.mjs"],
   ["./dist/vendor/react-dom-client.entry.mjs", "./dist/vendor/react-dom-client.mjs"],
 ];
 for (const [from, to] of renames) {
@@ -173,7 +175,7 @@ const html = `<!DOCTYPE html>
           "react": "/vendor/react.mjs",
           "react/jsx-runtime": "/vendor/react-jsx-runtime.mjs",
           "react/jsx-dev-runtime": "/vendor/react-jsx-runtime.mjs",
-          "react-dom": "/vendor/react-dom-client.mjs",
+          "react-dom": "/vendor/react-dom.mjs",
           "react-dom/client": "/vendor/react-dom-client.mjs"
         }
       }

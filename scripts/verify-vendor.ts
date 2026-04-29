@@ -134,10 +134,20 @@ async function main() {
   const jsxBuilt = join(HERE, "..", "dist", "vendor", "react-jsx-runtime.mjs");
   await checkBundle(jsxBuilt, ["Fragment", "jsx", "jsxs"], { name: "jsx", kind: "function" });
 
-  // The react-dom/client bundle. Just createRoot + hydrateRoot —
-  // the only react-dom APIs the dashboard uses.
-  const reactDomBuilt = join(HERE, "..", "dist", "vendor", "react-dom-client.mjs");
-  await checkBundle(reactDomBuilt, ["createRoot", "hydrateRoot"], { name: "createRoot", kind: "function" });
+  // The react-dom/client bundle (createRoot, hydrateRoot —
+  // mounting APIs).
+  const reactDomClientBuilt = join(HERE, "..", "dist", "vendor", "react-dom-client.mjs");
+  await checkBundle(reactDomClientBuilt, ["createRoot", "hydrateRoot"], { name: "createRoot", kind: "function" });
+
+  // The react-dom bundle (createPortal, flushSync, preload, etc.
+  // — distinct from react-dom/client). Tooltip libraries, dialogs,
+  // anything using portals consumes this.
+  const reactDomBuilt = join(HERE, "..", "dist", "vendor", "react-dom.mjs");
+  await checkBundle(
+    reactDomBuilt,
+    ["createPortal", "flushSync", "version"],
+    { name: "createPortal", kind: "function" },
+  );
 
   // No React inlined into main.js (panel-host React identity check).
   await checkMainBundleHasOneReact();
