@@ -65,6 +65,51 @@ async function checkBundle(
   console.log(`  └ runtime spot-check: ${spotCheck.name} present (${typeof (mod as any)[spotCheck.name]}).`);
 }
 
+async function checkMainBundleHasOneReact(): Promise<void> {
+  // React relies on a single module-level dispatcher; if the main
+  // bundle inlined its own React, panels (which import React via
+  // the importmap → /vendor/react.mjs) end up with a different
+  // dispatcher and every hook call throws "Invalid hook call …
+  // more than one copy of React in the same app."
+  //
+  // Tell-tale: any `var ... = require_react()` style CJS wrapper
+  // means Bun bundled React inline. With externalize working, all
+  // mentions of React in the main bundle should be plain
+  // `import * as X from "react"` ESM external statements only.
+  const distDir = join(HERE, "..", "dist");
+  const fs = await import("fs/promises");
+  const entries = await fs.readdir(distDir);
+  const mainJs = entries.find((f) => /^main-.*\.js$/.test(f));
+  if (!mainJs) {
+    console.error("✗ no main-*.js in dist — build didn't run?");
+    process.exit(1);
+  }
+  const main = await readFile(join(distDir, mainJs), "utf8");
+  // React's prod CJS source contains a unique warning string about
+  // version mismatch — only present when react.production was
+  // bundled inline. The warning string in react-dom is different,
+  // so this won't false-positive on a properly-externalized build.
+  const reactInlineMarker = '"react" and "react-dom" packages must have the exact same version';
+  if (main.includes(reactInlineMarker)) {
+    console.error(
+      `✗ ${mainJs} inlines React (found react/cjs version-mismatch warning text). ` +
+      `Bun's external option didn't propagate to a transitive require. ` +
+      `Make sure react-dom is also in external + has its own vendor entry.`,
+    );
+    process.exit(1);
+  }
+  // react-dom's same warning lives in its own source; assert it
+  // dropped too once react-dom is externalized.
+  const reactDomInlineMarker = '"react-dom-client.development.js"';
+  if (main.includes(reactDomInlineMarker)) {
+    console.error(
+      `✗ ${mainJs} inlines react-dom — externalize "react-dom" + "react-dom/client" in build.ts.`,
+    );
+    process.exit(1);
+  }
+  console.log(`✓ main bundle (${mainJs}) does NOT inline React or react-dom — single instance via importmap.`);
+}
+
 async function main() {
   // The main React bundle.
   const reactExpected = await entryExpectsNames();
@@ -74,6 +119,14 @@ async function main() {
   // jsxs are React's stable runtime exports.
   const jsxBuilt = join(HERE, "..", "dist", "vendor", "react-jsx-runtime.mjs");
   await checkBundle(jsxBuilt, ["Fragment", "jsx", "jsxs"], { name: "jsx", kind: "function" });
+
+  // The react-dom/client bundle. Just createRoot + hydrateRoot —
+  // the only react-dom APIs the dashboard uses.
+  const reactDomBuilt = join(HERE, "..", "dist", "vendor", "react-dom-client.mjs");
+  await checkBundle(reactDomBuilt, ["createRoot", "hydrateRoot"], { name: "createRoot", kind: "function" });
+
+  // No React inlined into main.js (panel-host React identity check).
+  await checkMainBundleHasOneReact();
 }
 
 await main();

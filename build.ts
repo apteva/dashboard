@@ -10,6 +10,16 @@ console.log("Building CSS...");
 await $`bunx @tailwindcss/cli -i ./src/index.css -o ./dist/style.css --minify`.quiet();
 
 // Step 2: Bundle JS/TSX
+//
+// Externalize React so the host and every dynamically-imported
+// panel resolve to the SAME React instance via the importmap.
+// Without this the main bundle ships its own copy of React, the
+// panel imports another copy from /vendor/react.mjs, hooks from
+// the panel hit a null dispatcher in the host's render context,
+// and the browser throws "Invalid hook call. … You might have
+// more than one copy of React in the same app." React's hook
+// system relies on a module-level dispatcher pointer — that only
+// works when every component that calls a hook shares one React.
 console.log("Building JS...");
 const result = await Bun.build({
   entrypoints: ["./src/main.tsx"],
@@ -17,6 +27,13 @@ const result = await Bun.build({
   target: "browser",
   minify: true,
   sourcemap: "linked",
+  external: [
+    "react",
+    "react/jsx-runtime",
+    "react/jsx-dev-runtime",
+    "react-dom",
+    "react-dom/client",
+  ],
   naming: {
     entry: "[name]-[hash].[ext]",
     chunk: "[name]-[hash].[ext]",
@@ -42,10 +59,36 @@ if (!result.success) {
 // version skew) or break.
 console.log("Building vendor (react, react/jsx-runtime) for panel importmap...");
 mkdirSync("./dist/vendor", { recursive: true });
+// Split into two builds so we can externalize "react" for the
+// jsx-runtime and react-dom entries (they'll resolve "react" via
+// the importmap → /vendor/react.mjs at runtime, sharing the one
+// React instance) while NOT externalizing "react" for the entry
+// that's *supposed* to BE that one React. If we used a single
+// build with external: ["react", …], vendor/react.mjs would end
+// up importing "react" externally and the importmap would route
+// that bare specifier back to /vendor/react.mjs — a cycle.
+const vendorReact = await Bun.build({
+  entrypoints: ["./vendor/react.entry.ts"],
+  outdir: "./dist/vendor",
+  target: "browser",
+  format: "esm",
+  minify: true,
+  splitting: false,
+  naming: "[name].mjs",
+  define: { "process.env.NODE_ENV": '"production"' },
+  // No `external` — this entry IS the React the importmap points
+  // every other consumer at, so it must contain React's source.
+});
+if (!vendorReact.success) {
+  console.error("Vendor (react) build failed:");
+  for (const log of vendorReact.logs) console.error(log);
+  process.exit(1);
+}
+
 const vendor = await Bun.build({
   entrypoints: [
-    "./vendor/react.entry.ts",
     "./vendor/react-jsx-runtime.entry.ts",
+    "./vendor/react-dom-client.entry.ts",
   ],
   outdir: "./dist/vendor",
   target: "browser",
@@ -53,7 +96,13 @@ const vendor = await Bun.build({
   minify: true,
   splitting: false,
   naming: "[name].mjs",
-});
+  define: { "process.env.NODE_ENV": '"production"' },
+  // jsx-runtime + react-dom both internally `require('react')` —
+  // externalize so they pick up vendor/react.mjs via the importmap
+  // at runtime instead of bundling their own (which would defeat
+  // the whole single-instance setup).
+  external: ["react", "react/jsx-runtime", "react/jsx-dev-runtime"],
+})
 if (!vendor.success) {
   console.error("Vendor build failed:");
   for (const log of vendor.logs) console.error(log);
@@ -69,6 +118,7 @@ const { renameSync, existsSync } = await import("fs");
 const renames: [string, string][] = [
   ["./dist/vendor/react.entry.mjs", "./dist/vendor/react.mjs"],
   ["./dist/vendor/react-jsx-runtime.entry.mjs", "./dist/vendor/react-jsx-runtime.mjs"],
+  ["./dist/vendor/react-dom-client.entry.mjs", "./dist/vendor/react-dom-client.mjs"],
 ];
 for (const [from, to] of renames) {
   if (existsSync(from)) renameSync(from, to);
@@ -113,7 +163,9 @@ const html = `<!DOCTYPE html>
         "imports": {
           "react": "/vendor/react.mjs",
           "react/jsx-runtime": "/vendor/react-jsx-runtime.mjs",
-          "react/jsx-dev-runtime": "/vendor/react-jsx-runtime.mjs"
+          "react/jsx-dev-runtime": "/vendor/react-jsx-runtime.mjs",
+          "react-dom": "/vendor/react-dom-client.mjs",
+          "react-dom/client": "/vendor/react-dom-client.mjs"
         }
       }
     </script>
