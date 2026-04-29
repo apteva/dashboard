@@ -125,21 +125,21 @@ export function Apps() {
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-5 max-w-4xl">
+      <div className="flex-1 overflow-y-auto p-6 space-y-6">
       {error && <div className="text-red text-sm">{error}</div>}
 
       {tab === "installed" ? (
         loading ? (
           <div className="text-text-dim text-sm">Loading…</div>
         ) : rows.length === 0 ? (
-          <div className="border border-border rounded-lg p-8 text-center">
+          <div className="border border-border rounded-lg p-8 text-center max-w-2xl mx-auto">
             <p className="text-text-muted text-sm">No apps installed yet.</p>
             <p className="text-text-dim text-xs mt-1">
               Browse the <button onClick={() => setTab("marketplace")} className="text-accent hover:underline">Marketplace</button> tab or click <span className="text-accent">+ Install from URL</span>.
             </p>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-3">
             {rows.map((r) => (
               <AppCard
                 key={r.install_id}
@@ -236,7 +236,7 @@ function MarketplaceView({
       {order.map((cat) => (
         <div key={cat}>
           <div className="text-text-muted text-xs uppercase tracking-wide mb-2">{cat}</div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-3">
             {byCategory[cat].map((e) => (
               <MarketplaceCard
                 key={e.name}
