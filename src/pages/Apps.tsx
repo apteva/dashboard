@@ -83,10 +83,13 @@ export function Apps() {
   useEffect(() => {
     if (tab !== "installed") return;
     const anyPending = rows.some((r) => r.status === "pending");
+    // 1s while pending so the live status_message (Downloading X /
+    // Building: Y / Linking…) the supervisor pushes from `go build`
+    // output appears responsive instead of stuck.
     if (!anyPending) return;
     const id = setInterval(() => {
       apps.list(currentProject?.id).then(setRows).catch(() => {});
-    }, 2000);
+    }, 1000);
     return () => clearInterval(id);
   }, [tab, rows, currentProject?.id]);
 
@@ -394,8 +397,11 @@ function AppCard({
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue/15 text-blue">builtin</span>
           )}
         </div>
-        {app.status === "pending" && app.status_message ? (
-          <p className="text-accent text-xs mt-1 italic">{app.status_message}</p>
+        {app.status === "pending" ? (
+          <p className="text-accent text-xs mt-1 italic flex items-center gap-1.5">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-pulse flex-shrink-0" />
+            <span className="truncate">{app.status_message || "Installing…"}</span>
+          </p>
         ) : app.status === "error" && app.error_message ? (
           <p className="text-red text-xs mt-1 line-clamp-2" title={app.error_message}>{app.error_message}</p>
         ) : (
