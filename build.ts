@@ -5,6 +5,26 @@ import { rmSync, mkdirSync } from "fs";
 rmSync("./dist", { recursive: true, force: true });
 mkdirSync("./dist", { recursive: true });
 
+// Step 0.5: Code-gen the vendor entry files from React's actual
+// runtime surface so we never miss an internal symbol. See
+// scripts/gen-vendor-entries.ts — the generator enumerates every
+// key Object.keys(require(<module>)) returns and emits a TS file
+// that re-exports each as a real ESM named export. Stops the
+// "does not provide an export named X" / "Cannot read properties
+// of undefined" class of bug for good.
+console.log("Generating vendor entry files...");
+{
+  const proc = Bun.spawn(["bun", "run", "./scripts/gen-vendor-entries.ts"], {
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const code = await proc.exited;
+  if (code !== 0) {
+    console.error("vendor entry generation failed");
+    process.exit(code);
+  }
+}
+
 // Step 1: Build Tailwind CSS
 console.log("Building CSS...");
 await $`bunx @tailwindcss/cli -i ./src/index.css -o ./dist/style.css --minify`.quiet();

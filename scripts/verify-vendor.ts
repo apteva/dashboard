@@ -124,30 +124,37 @@ async function checkMainBundleHasOneReact(): Promise<void> {
   console.log(`✓ main bundle uses prod JSX runtime (no jsxDEV calls).`);
 }
 
-async function main() {
-  // The main React bundle.
-  const reactExpected = await entryExpectsNames();
-  await checkBundle(BUILT, reactExpected, { name: "useState", kind: "function" });
-
-  // The jsx-runtime bundle. Enumerated by hand — Fragment / jsx /
-  // jsxs are React's stable runtime exports.
-  const jsxBuilt = join(HERE, "..", "dist", "vendor", "react-jsx-runtime.mjs");
-  await checkBundle(jsxBuilt, ["Fragment", "jsx", "jsxs"], { name: "jsx", kind: "function" });
-
-  // The react-dom/client bundle (createRoot, hydrateRoot —
-  // mounting APIs).
-  const reactDomClientBuilt = join(HERE, "..", "dist", "vendor", "react-dom-client.mjs");
-  await checkBundle(reactDomClientBuilt, ["createRoot", "hydrateRoot"], { name: "createRoot", kind: "function" });
-
-  // The react-dom bundle (createPortal, flushSync, preload, etc.
-  // — distinct from react-dom/client). Tooltip libraries, dialogs,
-  // anything using portals consumes this.
-  const reactDomBuilt = join(HERE, "..", "dist", "vendor", "react-dom.mjs");
-  await checkBundle(
-    reactDomBuilt,
-    ["createPortal", "flushSync", "version"],
-    { name: "createPortal", kind: "function" },
+// nodeKeys returns the names Object.keys(require(<module>)) returns
+// for the given npm module. Same approach the entry generator uses
+// — runs node out-of-process so React's load isn't influenced by
+// Bun's module loader. The verifier uses this to compare what the
+// vendor build actually emitted against what React actually
+// exposes at runtime — caught any drift between the two.
+async function nodeKeys(mod: string): Promise<string[]> {
+  const proc = Bun.spawn(
+    ["node", "-e", `console.log(JSON.stringify(Object.keys(require('${mod}'))))`],
+    { stdout: "pipe" },
   );
+  await proc.exited;
+  const out = await new Response(proc.stdout).text();
+  return JSON.parse(out.trim()) as string[];
+}
+
+async function main() {
+  // For each vendor file, compare against the matching upstream
+  // module's runtime keys. Hand-pick the spot-check name (the
+  // verifier confirms it resolves to a function — runtime
+  // sanity).
+  const checks: { built: string; mod: string; spot: string }[] = [
+    { built: BUILT, mod: "react", spot: "useState" },
+    { built: join(HERE, "..", "dist", "vendor", "react-jsx-runtime.mjs"), mod: "react/jsx-runtime", spot: "jsx" },
+    { built: join(HERE, "..", "dist", "vendor", "react-dom.mjs"), mod: "react-dom", spot: "createPortal" },
+    { built: join(HERE, "..", "dist", "vendor", "react-dom-client.mjs"), mod: "react-dom/client", spot: "createRoot" },
+  ];
+  for (const c of checks) {
+    const expected = (await nodeKeys(c.mod)).filter((k) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k));
+    await checkBundle(c.built, expected, { name: c.spot, kind: "function" });
+  }
 
   // No React inlined into main.js (panel-host React identity check).
   await checkMainBundleHasOneReact();
