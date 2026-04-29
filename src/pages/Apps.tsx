@@ -340,12 +340,13 @@ function MarketplaceCard({
   onInstall: () => void;
   onOpenDetails: () => void;
 }) {
-  // Vertical "tile" card: icon + name on top, description in the
-  // middle, install button at the bottom. Same shape as WordPress
-  // plugins / Notion gallery / VSCode extension marketplace cards.
+  // Vertical "tile" card: icon + name on top, badges, description,
+  // surfaces + tags, install button at the bottom. Same shape as
+  // WordPress plugins / VSCode marketplace cards.
+  const topTags = (entry.tags || []).slice(0, 3);
   return (
     <div
-      className="border border-border rounded-lg p-4 flex flex-col gap-2 cursor-pointer hover:border-accent/60 transition-colors min-h-[200px]"
+      className="border border-border rounded-lg p-4 flex flex-col gap-2 cursor-pointer hover:border-accent/60 transition-colors min-h-[260px]"
       onClick={onOpenDetails}
       role="button"
       tabIndex={0}
@@ -360,15 +361,28 @@ function MarketplaceCard({
         <BigAppIcon url={entry.icon} name={entry.display_name} />
         <div className="flex-1 min-w-0">
           <div className="text-text font-medium truncate">{entry.display_name}</div>
-          <div className="text-text-dim text-[11px] mt-0.5">v{entry.version}</div>
+          <div className="text-text-dim text-[11px] mt-0.5 truncate">
+            v{entry.version}{entry.author ? ` · ${entry.author}` : ""}
+          </div>
         </div>
       </div>
       <div className="flex flex-wrap gap-1">
+        {entry.category && (
+          <Pill className="bg-accent/10 text-accent capitalize">{entry.category}</Pill>
+        )}
         {entry.official && <Pill className="bg-blue/15 text-blue">official</Pill>}
         {entry.builtin && <Pill className="bg-blue/15 text-blue">built-in</Pill>}
         {entry.installed && !entry.builtin && <Pill className="bg-green/15 text-green">installed</Pill>}
       </div>
       <p className="text-text-muted text-xs line-clamp-3 flex-1">{entry.description}</p>
+      <AppSurfaceBadges surfaces={entry.surfaces} className="!gap-1" />
+      {topTags.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {topTags.map((t) => (
+            <span key={t} className="text-[10px] text-text-dim">#{t}</span>
+          ))}
+        </div>
+      )}
       <button
         onClick={(e) => { e.stopPropagation(); onInstall(); }}
         disabled={entry.installed}
@@ -477,7 +491,7 @@ function AppCard({
 
   return (
     <div
-      className="border border-border rounded-lg p-4 flex flex-col gap-2 cursor-pointer hover:border-accent/60 transition-colors min-h-[200px]"
+      className="border border-border rounded-lg p-4 flex flex-col gap-2 cursor-pointer hover:border-accent/60 transition-colors min-h-[260px]"
       onClick={onOpenDetails}
       role="button"
       tabIndex={0}
@@ -513,6 +527,9 @@ function AppCard({
         <p className="text-red text-xs line-clamp-3 flex-1" title={app.error_message}>{app.error_message}</p>
       ) : (
         <p className="text-text-muted text-xs line-clamp-3 flex-1">{app.description}</p>
+      )}
+      {app.status !== "pending" && (
+        <AppSurfaceBadges surfaces={app.surfaces} className="!gap-1" />
       )}
       <div className="mt-auto flex flex-col gap-1.5" onClick={(e) => e.stopPropagation()}>
         {showMount ? (
