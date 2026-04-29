@@ -55,7 +55,21 @@ export function Apps() {
     setLoading(true);
     apps
       .list(currentProject?.id)
-      .then(setRows)
+      .then((rows) => {
+        // Detect status flips to running so we can ping the Layout
+        // sidebar to refresh — a freshly-running app may have a
+        // project.page panel that should appear in the nav now.
+        // Cheap to fire on every refresh; Layout debounces via
+        // refreshAppNav's natural single-fetch behaviour.
+        setRows((prev) => {
+          const wasRunning = new Set(prev.filter((r) => r.status === "running").map((r) => r.install_id));
+          const nowRunning = rows.filter((r) => r.status === "running").map((r) => r.install_id);
+          const changed = nowRunning.some((id) => !wasRunning.has(id))
+            || nowRunning.length !== wasRunning.size;
+          if (changed) window.dispatchEvent(new CustomEvent("apteva:apps-changed"));
+          return rows;
+        });
+      })
       .catch((e) => setError(e.message || "failed"))
       .finally(() => setLoading(false));
   };
@@ -89,7 +103,19 @@ export function Apps() {
     // output appears responsive instead of stuck.
     if (!anyPending) return;
     const id = setInterval(() => {
-      apps.list(currentProject?.id).then(setRows).catch(() => {});
+      apps.list(currentProject?.id).then((next) => {
+        setRows((prev) => {
+          // Same trick as refreshInstalled: notify Layout when an
+          // install transitions to running so the sidebar updates
+          // without a page reload.
+          const wasRunning = new Set(prev.filter((r) => r.status === "running").map((r) => r.install_id));
+          const nowRunning = next.filter((r) => r.status === "running").map((r) => r.install_id);
+          if (nowRunning.some((id) => !wasRunning.has(id)) || nowRunning.length !== wasRunning.size) {
+            window.dispatchEvent(new CustomEvent("apteva:apps-changed"));
+          }
+          return next;
+        });
+      }).catch(() => {});
     }, 1000);
     return () => clearInterval(id);
   }, [tab, rows, currentProject?.id]);

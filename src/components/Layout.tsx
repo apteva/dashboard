@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
 import { AccountMenu } from "./AccountMenu";
@@ -86,8 +86,15 @@ export function Layout() {
   // becomes a sidebar link to /apps/<name>/page rendered via
   // AppProjectPage. Fetched per project so installs scoped to one
   // project don't bleed into another's sidebar.
+  //
+  // Refresh policy: load on project switch, and again whenever the
+  // window dispatches an "apteva:apps-changed" event. The Apps page
+  // fires that event after install/uninstall + while polling pending
+  // rows, so a freshly-installed app's sidebar entry appears the
+  // instant the install flips to running. A 5s background poll is
+  // there as a safety net for events we somehow miss.
   const [appNav, setAppNav] = useState<{ to: string; label: string }[]>([]);
-  useEffect(() => {
+  const refreshAppNav = useCallback(() => {
     apps
       .list(currentProject?.id)
       .then((rows) => {
@@ -107,6 +114,16 @@ export function Layout() {
       })
       .catch(() => setAppNav([]));
   }, [currentProject?.id]);
+  useEffect(() => {
+    refreshAppNav();
+    const onAppsChanged = () => refreshAppNav();
+    window.addEventListener("apteva:apps-changed", onAppsChanged);
+    const id = setInterval(refreshAppNav, 5000);
+    return () => {
+      window.removeEventListener("apteva:apps-changed", onAppsChanged);
+      clearInterval(id);
+    };
+  }, [refreshAppNav]);
 
   // Sidebar nav: base entries, then app-contributed pages, then the
   // platform-management entries (Apps marketplace, Analytics,
