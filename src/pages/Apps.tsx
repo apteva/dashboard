@@ -504,6 +504,21 @@ function AppCard({
     }
   };
 
+  const upgrade = async () => {
+    setBusy(true);
+    try {
+      await apps.upgrade(app.install_id);
+      onChange();
+    } catch (e: any) {
+      alert(e.message || "upgrade failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateAvailable =
+    !!app.available_version && !!app.version && app.available_version !== app.version;
+
   const statusColor =
     app.status === "running"
       ? "bg-green/15 text-green"
@@ -538,7 +553,12 @@ function AppCard({
         <BigAppIcon url={app.icon} name={app.display_name} />
         <div className="flex-1 min-w-0">
           <div className="text-text font-medium truncate">{app.display_name}</div>
-          <div className="text-text-dim text-[11px] mt-0.5">v{app.version}</div>
+          <div className="text-text-dim text-[11px] mt-0.5">
+            v{app.version}
+            {updateAvailable && (
+              <span className="text-yellow"> → v{app.available_version}</span>
+            )}
+          </div>
         </div>
       </div>
       <div className="flex flex-wrap gap-1">
@@ -549,6 +569,7 @@ function AppCard({
           <Pill className="bg-border text-text-muted">global</Pill>
         )}
         {app.source === "builtin" && <Pill className="bg-blue/15 text-blue">built-in</Pill>}
+        {updateAvailable && <Pill className="bg-yellow/15 text-yellow">update available</Pill>}
       </div>
       {app.status === "pending" ? (
         <p className="text-accent text-xs italic flex items-center gap-1.5 flex-1">
@@ -601,6 +622,16 @@ function AppCard({
               </Link>
             )}
             <div className="flex items-center gap-1.5">
+              {updateAvailable && (
+                <button
+                  onClick={upgrade}
+                  disabled={busy}
+                  className="flex-1 px-2 py-1 border border-yellow rounded text-[11px] text-yellow hover:bg-yellow hover:text-bg transition-colors disabled:opacity-50"
+                  title={`Upgrade to v${app.available_version}`}
+                >
+                  {busy ? "…" : `Update → v${app.available_version}`}
+                </button>
+              )}
               {(app.status === "pending" || app.status === "disabled" || app.status === "error") && app.source !== "builtin" && (
                 <button
                   onClick={() => setShowMount(true)}

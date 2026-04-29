@@ -1424,6 +1424,9 @@ export const apps = {
   uninstall: (installId: number) =>
     request<{ status: string }>("DELETE", `/apps/installs/${installId}`),
 
+  upgrade: (installId: number) =>
+    request<{ status: string; version: string }>("POST", `/apps/installs/${installId}/upgrade`),
+
   setStatus: (
     installId: number,
     status: "running" | "disabled" | "error",
@@ -1475,6 +1478,7 @@ export interface AppRow {
   name: string;
   display_name: string;
   version: string;
+  available_version?: string;
   description: string;
   icon: string;
   project_id: string;
