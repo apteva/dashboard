@@ -767,6 +767,20 @@ function InstallModal({
     }
   };
 
+  // refetchPreflight is invoked by RolePicker after an inline create
+  // (new connection or new app install). We re-fetch preflight to
+  // populate the now-existing candidate; the picker auto-binds via
+  // its own onChange callback after the refresh resolves.
+  const refetchPreflight = async () => {
+    if (!manifestUrl) return;
+    try {
+      const pf = await apps.preflight(manifestUrl, undefined, projectId);
+      setPreflight(pf);
+    } catch (e: any) {
+      setError(e.message || "preflight refresh failed");
+    }
+  };
+
   // Required roles must have a non-null binding before we let the
   // user submit. Optional roles can be null (operator declined).
   const requiredRolesUnbound = (preflight?.roles || []).filter(
@@ -838,6 +852,8 @@ function InstallModal({
             setConfig={setConfig}
             error={error}
             installing={installing}
+            projectId={projectId}
+            refetchPreflight={refetchPreflight}
             onBack={() => { setPreview(null); setPreflight(null); }}
             onConfirm={doInstall}
           />
@@ -851,60 +867,82 @@ function InstallModal({
 // candidates exist) or a hint with an "Install …" affordance. The
 // optional/required distinction shows up as a checkbox prefix; when
 // unchecked the binding is null (operator declined the optional dep).
+// RolePicker — one row per requires.integrations entry. Three states:
+//
+//   1. has candidates → radio select (or checkbox+select for optional)
+//   2. no candidates, kind=integration → inline "Connect <provider>" form
+//      that talks to /connections directly with created_via=app_install
+//   3. no candidates, kind=app → inline "Install <app>" affordance that
+//      kicks off the marketplace install via apps.install(manifestUrl)
+//      with the registry's URL for that app
+//
+// On a successful sub-action, we call onCandidatesRefresh which the
+// parent uses to re-fetch preflight + auto-bind to whatever was just
+// created.
 function RolePicker({
   role,
   value,
   onChange,
+  projectId,
+  onCandidatesRefresh,
 }: {
   role: PreflightRole;
   value: number | null;
   onChange: (v: number | null) => void;
+  projectId?: string;
+  onCandidatesRefresh: () => Promise<void>;
 }) {
   const cands =
     role.kind === "integration" ? role.integration_candidates || [] : role.app_candidates || [];
   const hasCands = cands.length > 0;
   const optedIn = !role.required && value != null;
-  const showSelect = role.required || optedIn;
+  // Optional + no candidate but user checked the box → show inline create.
+  const [optInWithoutCands, setOptInWithoutCands] = useState(false);
+  const showInlineCreate = (role.required && !hasCands) || (!role.required && optInWithoutCands && !hasCands);
 
   const label = role.label || role.role;
+
   return (
-    <div className="space-y-1">
+    <div className={`border rounded p-3 space-y-2 ${role.required ? "border-yellow/40" : "border-border"}`}>
       <div className="flex items-center gap-2 text-xs">
         {!role.required && (
           <input
             type="checkbox"
-            checked={optedIn}
+            checked={optedIn || (optInWithoutCands && !hasCands)}
             onChange={(e) => {
               if (e.target.checked) {
-                // First candidate; user can change in the select.
                 if (hasCands) {
                   const c = cands[0] as PreflightConnectionCandidate | PreflightAppCandidate;
                   onChange("connection_id" in c ? c.connection_id : c.install_id);
                 } else {
-                  onChange(null);
+                  setOptInWithoutCands(true);
                 }
               } else {
                 onChange(null);
+                setOptInWithoutCands(false);
               }
             }}
           />
         )}
         <span className="text-text font-medium">{label}</span>
         {role.required ? (
-          <span className="text-yellow text-[10px]">required</span>
+          <span className="text-yellow text-[10px] uppercase">required</span>
         ) : (
-          <span className="text-text-dim text-[10px]">optional</span>
+          <span className="text-text-dim text-[10px] uppercase">optional</span>
+        )}
+        {role.capabilities && role.capabilities.length > 0 && (
+          <span className="ml-auto text-text-dim text-[10px] truncate" title={role.capabilities.join(", ")}>
+            {role.capabilities.join(", ")}
+          </span>
         )}
       </div>
-      {role.hint && (!hasCands || !showSelect) && (
-        <div className="text-text-dim text-[11px] italic">{role.hint}</div>
+
+      {role.hint && !showInlineCreate && (
+        <div className="text-text-muted text-[11px]">{role.hint}</div>
       )}
-      {role.capabilities && role.capabilities.length > 0 && (
-        <div className="text-text-dim text-[10px]">
-          capabilities: {role.capabilities.join(", ")}
-        </div>
-      )}
-      {showSelect && hasCands && (
+
+      {/* Has candidates — show a select (or radio if exactly one). */}
+      {hasCands && (role.required || optedIn) && (
         <select
           value={value ?? 0}
           onChange={(e) => onChange(Number(e.target.value) || null)}
@@ -923,13 +961,228 @@ function RolePicker({
               ))}
         </select>
       )}
-      {role.required && !hasCands && (
-        <div className="text-red text-[11px]">
-          No compatible {role.kind === "integration" ? "connection" : "app"} found.
-          Install one first:{" "}
-          <span className="font-mono">{(role.compatible || []).join(", ")}</span>
-        </div>
+
+      {/* No candidates — show inline create form. */}
+      {showInlineCreate && role.kind === "integration" && (
+        <InlineConnectIntegration
+          slugs={role.compatible || []}
+          projectId={projectId}
+          onConnected={async (connId) => {
+            await onCandidatesRefresh();
+            onChange(connId);
+          }}
+        />
       )}
+      {showInlineCreate && role.kind === "app" && (
+        <InlineInstallApp
+          appNames={role.compatible || []}
+          projectId={projectId}
+          onInstalled={async (installId) => {
+            await onCandidatesRefresh();
+            onChange(installId);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// InlineConnectIntegration — embedded connect form for the install
+// modal. Loads the catalog detail for the first compatible slug
+// (multi-slug roles render a switcher), renders the credential
+// fields, POSTs to /connections with created_via=app_install so no
+// auto-MCP is created.
+function InlineConnectIntegration({
+  slugs,
+  projectId,
+  onConnected,
+}: {
+  slugs: string[];
+  projectId?: string;
+  onConnected: (connId: number) => Promise<void>;
+}) {
+  const [chosenSlug, setChosenSlug] = useState(slugs[0] || "");
+  const [detail, setDetail] = useState<AppDetail | null>(null);
+  const [creds, setCreds] = useState<Record<string, string>>({});
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!chosenSlug) return;
+    setDetail(null);
+    integrations.app(chosenSlug)
+      .then((d) => {
+        setDetail(d);
+        // Default name = "{App Name}" — operator can edit. Auto-pick
+        // the first non-oauth2 auth type so the form has fields.
+        if (!name) setName(d.name);
+      })
+      .catch((e) => setError(e?.message || "load failed"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chosenSlug]);
+
+  const submit = async () => {
+    if (!detail) return;
+    setBusy(true);
+    setError("");
+    try {
+      // Pick the simplest auth type that has credential_fields.
+      // OAuth2 needs a redirect dance not worth doing inline; skip.
+      const types = detail.auth?.types || [];
+      const authType = types.find((t) => t !== "oauth2") || types[0] || "api_key";
+      const result = await integrations.connect(
+        detail.slug,
+        name.trim() || detail.name,
+        creds,
+        authType,
+        projectId,
+        undefined,
+        "app_install", // Tag so server skips auto-MCP creation.
+      );
+      // The /connections endpoint returns either ConnectionInfo
+      // (api_key path) or ConnectCreateResponse (oauth path with
+      // redirect_url). Inline-connect path is api_key only.
+      const conn = result as { id?: number; connection?: { id: number } };
+      const id = conn.id || conn.connection?.id;
+      if (!id) {
+        setError("connection created but id missing in response");
+        return;
+      }
+      await onConnected(id);
+    } catch (e: any) {
+      setError(e?.message || "connect failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!detail) {
+    return <div className="text-text-dim text-[11px]">Loading {chosenSlug}…</div>;
+  }
+  if (!detail.auth?.credential_fields?.length) {
+    return (
+      <div className="text-red text-[11px]">
+        {detail.name} doesn't expose simple credential fields (likely OAuth-only). Install it from the Integrations page first.
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-bg-input border border-border rounded p-2 space-y-2">
+      {slugs.length > 1 && (
+        <select
+          value={chosenSlug}
+          onChange={(e) => setChosenSlug(e.target.value)}
+          className="w-full bg-bg border border-border rounded px-2 py-1 text-[11px]"
+        >
+          {slugs.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+      )}
+      <div className="text-[11px] text-text-muted">Connect {detail.name} — credentials are encrypted server-side.</div>
+      <input
+        type="text"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="connection name"
+        className="w-full bg-bg border border-border rounded px-2 py-1 text-[11px]"
+      />
+      {detail.auth.credential_fields.map((f) => (
+        <div key={f.name}>
+          <label className="text-text-dim text-[10px]">{f.label || f.name}</label>
+          <input
+            type="password"
+            value={creds[f.name] || ""}
+            onChange={(e) => setCreds({ ...creds, [f.name]: e.target.value })}
+            className="w-full bg-bg border border-border rounded px-2 py-1 text-[11px] font-mono"
+          />
+          {f.description && <div className="text-text-dim text-[10px] mt-0.5">{f.description}</div>}
+        </div>
+      ))}
+      {error && <div className="text-red text-[10px]">{error}</div>}
+      <button
+        onClick={submit}
+        disabled={busy}
+        className="w-full px-2 py-1 text-[11px] bg-accent text-bg rounded font-bold disabled:opacity-50"
+      >
+        {busy ? "Connecting…" : `Connect ${detail.name}`}
+      </button>
+    </div>
+  );
+}
+
+// InlineInstallApp — embedded install affordance for kind=app deps.
+// Looks up the registry, installs the first compatible app via the
+// existing apps.install with the manifest URL from the registry,
+// then refreshes candidates so the parent can auto-bind.
+function InlineInstallApp({
+  appNames,
+  projectId,
+  onInstalled,
+}: {
+  appNames: string[];
+  projectId?: string;
+  onInstalled: (installId: number) => Promise<void>;
+}) {
+  const targetName = appNames[0] || "";
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [registryEntry, setRegistryEntry] = useState<MarketplaceEntry | null>(null);
+
+  useEffect(() => {
+    if (!targetName) return;
+    apps.marketplace()
+      .then((r) => {
+        const entry = (r.apps || []).find((a) => a.name === targetName);
+        if (!entry) {
+          setError(`${targetName} isn't in the registry`);
+          return;
+        }
+        setRegistryEntry(entry);
+      })
+      .catch((e) => setError(e?.message || "registry lookup failed"));
+  }, [targetName]);
+
+  const submit = async () => {
+    if (!registryEntry) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await apps.install({
+        manifestUrl: registryEntry.manifest_url,
+        projectId,
+      });
+      await onInstalled(result.install_id);
+    } catch (e: any) {
+      setError(e?.message || "install failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!targetName) {
+    return <div className="text-text-dim text-[11px]">No compatible app declared.</div>;
+  }
+  if (error && !registryEntry) {
+    return <div className="text-red text-[11px]">{error}</div>;
+  }
+  if (!registryEntry) {
+    return <div className="text-text-dim text-[11px]">Looking up {targetName} in the registry…</div>;
+  }
+
+  return (
+    <div className="bg-bg-input border border-border rounded p-2 space-y-2">
+      <div className="text-[11px] text-text-muted">
+        Install <span className="text-text font-medium">{registryEntry.display_name}</span> v{registryEntry.version} so this dep can be wired.
+      </div>
+      {error && <div className="text-red text-[10px]">{error}</div>}
+      <button
+        onClick={submit}
+        disabled={busy}
+        className="w-full px-2 py-1 text-[11px] bg-accent text-bg rounded font-bold disabled:opacity-50"
+      >
+        {busy ? "Installing…" : `Install ${registryEntry.display_name}`}
+      </button>
     </div>
   );
 }
@@ -972,6 +1225,8 @@ function PreviewAndConfigure({
   installing,
   onBack,
   onConfirm,
+  projectId,
+  refetchPreflight,
 }: {
   preview: AppPreview;
   preflight: AppPreflight | null;
@@ -986,6 +1241,8 @@ function PreviewAndConfigure({
   installing: boolean;
   onBack: () => void;
   onConfirm: () => void;
+  projectId?: string;
+  refetchPreflight: () => Promise<void>;
 }) {
   const m = preview.manifest;
   return (
@@ -1050,6 +1307,8 @@ function PreviewAndConfigure({
               role={r}
               value={bindings[r.role] ?? null}
               onChange={(v) => setBindings({ ...bindings, [r.role]: v })}
+              projectId={projectId}
+              onCandidatesRefresh={refetchPreflight}
             />
           ))}
         </div>

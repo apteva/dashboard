@@ -571,6 +571,7 @@ export const integrations = {
     authType?: string,
     projectId?: string,
     oauth?: { client_id?: string; client_secret?: string },
+    createdVia?: "integration" | "app_install",
   ) =>
     request<ConnectionInfo | ConnectCreateResponse>("POST", "/connections", {
       source: "local",
@@ -581,6 +582,7 @@ export const integrations = {
       project_id: projectId || "",
       ...(oauth?.client_id ? { client_id: oauth.client_id } : {}),
       ...(oauth?.client_secret ? { client_secret: oauth.client_secret } : {}),
+      ...(createdVia ? { created_via: createdVia } : {}),
     }),
 
   // Create an additional MCP server row over an existing connection
