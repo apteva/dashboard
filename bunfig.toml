@@ -1,0 +1,4 @@
+# bun test configuration. Preload sets up the happy-dom DOM globals
+# (window, document, EventSource shim) so React hook tests can run.
+[test]
+preload = ["./test/setup.ts"]
