@@ -13,6 +13,25 @@ import {
   type ConnectCreateResponse,
   type InviteResponse,
 } from "../api";
+
+// AppLogo — wraps <img> with an onError that hides the element so a
+// missing favicon doesn't render a broken-image glyph + fire a noisy
+// React reconciler log entry. Many integration JSONs point at
+// www.google.com/s2/favicons?domain=… which 404s when Google's cache
+// has nothing for the host; before this component, every miss
+// produced ~30 stack frames of D8/GG/F8 chatter in the console.
+function AppLogo({ src, className }: { src?: string; className?: string }) {
+  const [broken, setBroken] = useState(false);
+  if (!src || broken) return null;
+  return (
+    <img
+      src={src}
+      alt=""
+      className={className}
+      onError={() => setBroken(true)}
+    />
+  );
+}
 import { Modal } from "../components/Modal";
 import { SuiteConnect } from "../components/SuiteConnect";
 import { useNavigate } from "react-router-dom";
@@ -784,7 +803,7 @@ export function Integrations() {
                       }`}
                     >
                       <div className="flex items-center gap-3 mb-2">
-                        {app.logo && <img src={app.logo} alt="" className="w-6 h-6 rounded" />}
+                        <AppLogo src={app.logo} className="w-6 h-6 rounded" />
                         <div className="flex-1 min-w-0">
                           <span className="text-text text-sm font-bold">{app.name}</span>
                         </div>
@@ -835,7 +854,7 @@ export function Integrations() {
                           }`}
                         >
                           <div className="flex items-center gap-3 mb-2">
-                            {suite.logo && <img src={suite.logo} alt="" className="w-6 h-6 rounded" />}
+                            <AppLogo src={suite.logo} className="w-6 h-6 rounded" />
                             <div className="flex-1 min-w-0">
                               <span className="text-text text-sm font-bold">{suite.name}</span>
                               <span className="text-text-muted text-xs ml-2">
@@ -901,7 +920,7 @@ export function Integrations() {
                       }`}
                     >
                       <div className="flex items-center gap-3 mb-2">
-                        {app.logo && <img src={app.logo} alt="" className="w-6 h-6 rounded" />}
+                        <AppLogo src={app.logo} className="w-6 h-6 rounded" />
                         <div className="flex-1 min-w-0">
                           <span className="text-text text-sm font-bold">{app.name}</span>
                           <span className="text-text-dim text-xs ml-1.5">{app.slug}</span>
@@ -1040,9 +1059,7 @@ export function Integrations() {
           <div className="w-96 border-l border-border overflow-y-auto p-6">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                {selectedLocalApp.logo && (
-                  <img src={selectedLocalApp.logo} alt="" className="w-8 h-8 rounded" />
-                )}
+                <AppLogo src={selectedLocalApp.logo} className="w-8 h-8 rounded" />
                 <h2 className="text-text text-base font-bold">{selectedLocalApp.name}</h2>
               </div>
               <button

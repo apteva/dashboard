@@ -318,6 +318,7 @@ export function SuiteConnect({ group, projectId, onClose, onConnectionsChanged }
           <img
             src={group.logo}
             alt=""
+            onError={(e) => { e.currentTarget.style.display = "none"; }}
             className="w-8 h-8 rounded flex-shrink-0 bg-bg-input p-0.5"
           />
         )}
