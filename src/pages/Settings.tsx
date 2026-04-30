@@ -1586,6 +1586,7 @@ function MCPServersTab() {
                     const canTest =
                       (s.source === "local" && s.connection_id > 0) ||
                       s.source === "remote" ||
+                      s.source === "app" ||
                       (s.source === "custom" && s.status === "running");
                     return (
                       <div
