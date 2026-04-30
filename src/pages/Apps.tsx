@@ -1,6 +1,15 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { apps, type AppRow, type AppPreview, type MarketplaceEntry } from "../api";
+import {
+  apps,
+  type AppRow,
+  type AppPreview,
+  type AppPreflight,
+  type MarketplaceEntry,
+  type PreflightRole,
+  type PreflightConnectionCandidate,
+  type PreflightAppCandidate,
+} from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { Modal } from "../components/Modal";
 import { AppSurfaceBadges } from "../components/apps/AppSurfaceBadges";
@@ -685,11 +694,15 @@ function InstallModal({
 }) {
   const [manifestUrl, setManifestUrl] = useState("");
   const [preview, setPreview] = useState<AppPreview | null>(null);
+  const [preflight, setPreflight] = useState<AppPreflight | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [error, setError] = useState("");
   const [installing, setInstalling] = useState(false);
   const [config, setConfig] = useState<Record<string, string>>({});
   const [scope, setScope] = useState<"project" | "global">("project");
+  // bindings: role → connection_id | install_id | null. Built by the
+  // role pickers; sent verbatim to apps.install on submit.
+  const [bindings, setBindings] = useState<Record<string, number | null>>({});
 
   // When the modal opens with a marketplace-pre-filled URL, kick off
   // preview automatically — saves a click and matches "install from
@@ -698,11 +711,19 @@ function InstallModal({
     if (open && initialManifestUrl && initialManifestUrl !== manifestUrl) {
       setManifestUrl(initialManifestUrl);
       setPreview(null);
-      // Trigger preview after URL state settles.
+      setPreflight(null);
+      // Trigger preview + preflight in parallel after URL state settles.
       setTimeout(() => {
         setPreviewing(true);
-        apps.preview(initialManifestUrl)
-          .then((p) => setPreview(p))
+        Promise.all([
+          apps.preview(initialManifestUrl),
+          apps.preflight(initialManifestUrl, undefined, projectId),
+        ])
+          .then(([p, pf]) => {
+            setPreview(p);
+            setPreflight(pf);
+            setBindings(seedBindings(pf));
+          })
           .catch((e) => setError(e.message || "preview failed"))
           .finally(() => setPreviewing(false));
       }, 0);
@@ -711,6 +732,8 @@ function InstallModal({
       // Reset when closed so the next open is clean.
       setManifestUrl("");
       setPreview(null);
+      setPreflight(null);
+      setBindings({});
       setError("");
       setConfig({});
     }
@@ -720,6 +743,8 @@ function InstallModal({
   const reset = () => {
     setManifestUrl("");
     setPreview(null);
+    setPreflight(null);
+    setBindings({});
     setError("");
     setConfig({});
   };
@@ -728,8 +753,13 @@ function InstallModal({
     setError("");
     setPreviewing(true);
     try {
-      const p = await apps.preview(manifestUrl);
+      const [p, pf] = await Promise.all([
+        apps.preview(manifestUrl),
+        apps.preflight(manifestUrl, undefined, projectId),
+      ]);
       setPreview(p);
+      setPreflight(pf);
+      setBindings(seedBindings(pf));
     } catch (e: any) {
       setError(e.message || "preview failed");
     } finally {
@@ -737,8 +767,15 @@ function InstallModal({
     }
   };
 
+  // Required roles must have a non-null binding before we let the
+  // user submit. Optional roles can be null (operator declined).
+  const requiredRolesUnbound = (preflight?.roles || []).filter(
+    (r) => r.required && (bindings[r.role] == null || bindings[r.role] === 0),
+  );
+  const canInstall = !!preview && requiredRolesUnbound.length === 0;
+
   const doInstall = async () => {
-    if (!preview) return;
+    if (!preview || !canInstall) return;
     setError("");
     setInstalling(true);
     try {
@@ -746,6 +783,7 @@ function InstallModal({
         manifestUrl,
         projectId: scope === "global" ? "" : projectId,
         config,
+        bindings,
       });
       reset();
       onInstalled();
@@ -790,13 +828,17 @@ function InstallModal({
         ) : (
           <PreviewAndConfigure
             preview={preview}
+            preflight={preflight}
+            bindings={bindings}
+            setBindings={setBindings}
+            canInstall={canInstall}
             scope={scope}
             setScope={setScope}
             config={config}
             setConfig={setConfig}
             error={error}
             installing={installing}
-            onBack={() => setPreview(null)}
+            onBack={() => { setPreview(null); setPreflight(null); }}
             onConfirm={doInstall}
           />
         )}
@@ -805,8 +847,123 @@ function InstallModal({
   );
 }
 
+// RolePicker renders one preflight role as either a select (when
+// candidates exist) or a hint with an "Install …" affordance. The
+// optional/required distinction shows up as a checkbox prefix; when
+// unchecked the binding is null (operator declined the optional dep).
+function RolePicker({
+  role,
+  value,
+  onChange,
+}: {
+  role: PreflightRole;
+  value: number | null;
+  onChange: (v: number | null) => void;
+}) {
+  const cands =
+    role.kind === "integration" ? role.integration_candidates || [] : role.app_candidates || [];
+  const hasCands = cands.length > 0;
+  const optedIn = !role.required && value != null;
+  const showSelect = role.required || optedIn;
+
+  const label = role.label || role.role;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-2 text-xs">
+        {!role.required && (
+          <input
+            type="checkbox"
+            checked={optedIn}
+            onChange={(e) => {
+              if (e.target.checked) {
+                // First candidate; user can change in the select.
+                if (hasCands) {
+                  const c = cands[0] as PreflightConnectionCandidate | PreflightAppCandidate;
+                  onChange("connection_id" in c ? c.connection_id : c.install_id);
+                } else {
+                  onChange(null);
+                }
+              } else {
+                onChange(null);
+              }
+            }}
+          />
+        )}
+        <span className="text-text font-medium">{label}</span>
+        {role.required ? (
+          <span className="text-yellow text-[10px]">required</span>
+        ) : (
+          <span className="text-text-dim text-[10px]">optional</span>
+        )}
+      </div>
+      {role.hint && (!hasCands || !showSelect) && (
+        <div className="text-text-dim text-[11px] italic">{role.hint}</div>
+      )}
+      {role.capabilities && role.capabilities.length > 0 && (
+        <div className="text-text-dim text-[10px]">
+          capabilities: {role.capabilities.join(", ")}
+        </div>
+      )}
+      {showSelect && hasCands && (
+        <select
+          value={value ?? 0}
+          onChange={(e) => onChange(Number(e.target.value) || null)}
+          className="w-full bg-bg-input border border-border rounded px-2 py-1 text-xs text-text"
+        >
+          {role.kind === "integration"
+            ? (role.integration_candidates || []).map((c) => (
+                <option key={c.connection_id} value={c.connection_id}>
+                  {c.name} ({c.app_slug})
+                </option>
+              ))
+            : (role.app_candidates || []).map((c) => (
+                <option key={c.install_id} value={c.install_id}>
+                  {c.display_name}
+                </option>
+              ))}
+        </select>
+      )}
+      {role.required && !hasCands && (
+        <div className="text-red text-[11px]">
+          No compatible {role.kind === "integration" ? "connection" : "app"} found.
+          Install one first:{" "}
+          <span className="font-mono">{(role.compatible || []).join(", ")}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// seedBindings pre-populates the bindings map from preflight: required
+// roles auto-pick the first compatible candidate; optional roles
+// auto-pick when exactly one candidate exists. Operator can change in
+// the UI before submit.
+function seedBindings(pf: AppPreflight | null): Record<string, number | null> {
+  const out: Record<string, number | null> = {};
+  if (!pf) return out;
+  for (const r of pf.roles) {
+    const cands = r.kind === "integration" ? r.integration_candidates : r.app_candidates;
+    if (cands && cands.length === 1) {
+      const c = cands[0] as PreflightConnectionCandidate | PreflightAppCandidate;
+      out[r.role] = "connection_id" in c ? c.connection_id : c.install_id;
+    } else if (cands && cands.length > 1 && r.required) {
+      // Required + multiple candidates → pick first; user can change.
+      const c = cands[0] as PreflightConnectionCandidate | PreflightAppCandidate;
+      out[r.role] = "connection_id" in c ? c.connection_id : c.install_id;
+    } else {
+      // No candidates, or optional w/ multiple — start unbound.
+      out[r.role] = null;
+    }
+  }
+  return out;
+}
+
 function PreviewAndConfigure({
   preview,
+  preflight,
+  bindings,
+  setBindings,
+  canInstall,
   scope,
   setScope,
   config,
@@ -817,6 +974,10 @@ function PreviewAndConfigure({
   onConfirm,
 }: {
   preview: AppPreview;
+  preflight: AppPreflight | null;
+  bindings: Record<string, number | null>;
+  setBindings: (b: Record<string, number | null>) => void;
+  canInstall: boolean;
   scope: "project" | "global";
   setScope: (s: "project" | "global") => void;
   config: Record<string, string>;
@@ -878,6 +1039,22 @@ function PreviewAndConfigure({
           (gdrive_sheet picker, etc.) come once the catalog ships. */}
       {/* For preview/v1 we just rely on the user pasting values. */}
 
+      {/* Integration role pickers — one per requires.integrations entry.
+          Required roles must be bound; optional roles render a checkbox. */}
+      {preflight && preflight.roles.length > 0 && (
+        <div className="border border-border rounded p-3 space-y-3">
+          <div className="text-text-muted text-xs">Dependencies</div>
+          {preflight.roles.map((r) => (
+            <RolePicker
+              key={r.role}
+              role={r}
+              value={bindings[r.role] ?? null}
+              onChange={(v) => setBindings({ ...bindings, [r.role]: v })}
+            />
+          ))}
+        </div>
+      )}
+
       {error && <div className="text-red text-xs">{error}</div>}
 
       <div className="flex justify-between items-center pt-2">
@@ -887,7 +1064,8 @@ function PreviewAndConfigure({
         <div className="flex gap-2">
           <button
             onClick={onConfirm}
-            disabled={installing}
+            disabled={installing || !canInstall}
+            title={canInstall ? "" : "Bind all required dependencies first"}
             className="px-3 py-1.5 text-sm bg-accent text-bg rounded font-bold disabled:opacity-50"
           >
             {installing ? "Installing…" : "Install"}

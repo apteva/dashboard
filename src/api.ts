@@ -1406,6 +1406,22 @@ export const apps = {
       ...(manifestYaml ? { manifest_yaml: manifestYaml } : {}),
     }),
 
+  // preflight returns the same manifest as preview() plus the role
+  // breakdown for requires.integrations: which connections / installed
+  // apps are compatible candidates per role. The dashboard's install
+  // modal renders one picker per role and submits the resulting
+  // bindings JSON to install().
+  preflight: (
+    manifestUrl?: string,
+    manifestYaml?: string,
+    projectId?: string,
+  ) =>
+    request<AppPreflight>("POST", "/apps/install/preflight", {
+      ...(manifestUrl ? { manifest_url: manifestUrl } : {}),
+      ...(manifestYaml ? { manifest_yaml: manifestYaml } : {}),
+      project_id: projectId || "",
+    }),
+
   install: (opts: AppInstallOptions) =>
     request<{ install_id: number; app_id: number; status: string; next_step: string }>(
       "POST",
@@ -1418,6 +1434,7 @@ export const apps = {
         project_id: opts.projectId || "",
         config: opts.config || {},
         upgrade_policy: opts.upgradePolicy || "manual",
+        ...(opts.bindings ? { bindings: opts.bindings } : {}),
       },
     ),
 
@@ -1563,6 +1580,43 @@ export interface AppInstallOptions {
   projectId?: string;
   config?: Record<string, string>;
   upgradePolicy?: "manual" | "auto-patch" | "auto-minor";
+  // bindings: role → connection_id (kind=integration) or install_id
+  // (kind=app), or null when the user opted out of an optional dep.
+  // Required deps must have a non-null target; the server validates.
+  bindings?: Record<string, number | null>;
+}
+
+// Preflight response — drives the install modal's role-picker step.
+// One entry per requires.integrations role in the manifest.
+export interface PreflightRole {
+  role: string;
+  kind: "integration" | "app";
+  label?: string;
+  required: boolean;
+  hint?: string;
+  capabilities?: string[];
+  compatible?: string[];
+  integration_candidates?: PreflightConnectionCandidate[];
+  app_candidates?: PreflightAppCandidate[];
+  can_create_new: boolean;
+}
+
+export interface PreflightConnectionCandidate {
+  connection_id: number;
+  app_slug: string;
+  name: string;
+  status: string;
+}
+
+export interface PreflightAppCandidate {
+  install_id: number;
+  app_name: string;
+  display_name: string;
+}
+
+export interface AppPreflight {
+  manifest: AppManifestV2;
+  roles: PreflightRole[];
 }
 
 // --- channel-chat app ---
