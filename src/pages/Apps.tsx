@@ -2,9 +2,11 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import {
   apps,
+  integrations,
   type AppRow,
   type AppPreview,
   type AppPreflight,
+  type AppDetail,
   type MarketplaceEntry,
   type PreflightRole,
   type PreflightConnectionCandidate,
