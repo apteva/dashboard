@@ -626,7 +626,7 @@ function AppCard({
                 <button
                   onClick={upgrade}
                   disabled={busy}
-                  className="flex-1 px-2 py-1 border border-yellow rounded text-[11px] text-yellow hover:bg-yellow hover:text-bg transition-colors disabled:opacity-50"
+                  className="flex-1 px-2 py-1 border border-yellow rounded text-[11px] text-yellow hover:bg-bg-hover transition-colors disabled:opacity-50"
                   title={`Upgrade to v${app.available_version}`}
                 >
                   {busy ? "…" : `Update → v${app.available_version}`}
