@@ -790,13 +790,19 @@ function InstallModal({
     }
   };
 
-  // Required roles must have either a non-null binding OR a pending
-  // intent that will produce one. Optional roles can be null.
+  // Required roles must have either a non-null binding OR (for
+  // kind=app) a pending install_app intent — the intent gets
+  // resolved by doInstall before the parent install runs. For
+  // kind=integration there's no intent path: the operator must hit
+  // the inline Connect button to mint the connection synchronously,
+  // which writes the binding directly.
   const requiredRolesUnbound = (preflight?.roles || []).filter((r) => {
     if (!r.required) return false;
     const hasBinding = bindings[r.role] != null && bindings[r.role] !== 0;
-    const hasIntent = !!intents[r.role];
-    return !hasBinding && !hasIntent;
+    if (hasBinding) return false;
+    const intent = intents[r.role];
+    if (intent && intent.kind === "install_app") return false;
+    return true;
   });
   const canInstall = !!preview && requiredRolesUnbound.length === 0;
 
@@ -809,51 +815,31 @@ function InstallModal({
     setInstalling(true);
     setInstallStep("");
     try {
-      // Resolve intents first: install dep apps + create new
-      // connections. Each one writes its result back into bindings
-      // before the parent install fires.
+      // Resolve install_app intents — connection intents are
+      // already-resolved (the Connect button creates them
+      // synchronously and writes the binding before the operator
+      // can click Install). Apps deps install here in sequence,
+      // their result_id written back to bindings before the parent
+      // install fires.
       const finalBindings: Record<string, number | null> = { ...bindings };
-
-      // Snapshot the registry once so multiple install_app intents
-      // share one round-trip.
       let registryCache: MarketplaceEntry[] | null = null;
-
       for (const role of preflight?.roles || []) {
         const intent = intents[role.role];
-        if (!intent) continue;
-        // Skip if the role already has a binding (e.g. operator
-        // typed creds, then realised they had an existing one).
+        if (!intent || intent.kind !== "install_app") continue;
         if (finalBindings[role.role] != null && finalBindings[role.role] !== 0) continue;
 
-        if (intent.kind === "connect") {
-          setInstallStep(`Connecting ${intent.slug}…`);
-          const res = await integrations.connect(
-            intent.slug,
-            intent.name.trim() || intent.slug,
-            intent.creds,
-            intent.authType,
-            scope === "global" ? "" : projectId,
-            undefined,
-            "app_install",
-          );
-          const conn = res as { id?: number; connection?: { id: number } };
-          const id = conn.id || conn.connection?.id;
-          if (!id) throw new Error(`connection created but id missing in response`);
-          finalBindings[role.role] = id;
-        } else if (intent.kind === "install_app") {
-          setInstallStep(`Installing ${intent.appName}…`);
-          if (!registryCache) {
-            const r = await apps.marketplace();
-            registryCache = r.apps || [];
-          }
-          const entry = registryCache.find((a) => a.name === intent.appName);
-          if (!entry) throw new Error(`${intent.appName} not in registry`);
-          const r = await apps.install({
-            manifestUrl: entry.manifest_url,
-            projectId: scope === "global" ? "" : projectId,
-          });
-          finalBindings[role.role] = r.install_id;
+        setInstallStep(`Installing ${intent.appName}…`);
+        if (!registryCache) {
+          const r = await apps.marketplace();
+          registryCache = r.apps || [];
         }
+        const entry = registryCache.find((a) => a.name === intent.appName);
+        if (!entry) throw new Error(`${intent.appName} not in registry`);
+        const r = await apps.install({
+          manifestUrl: entry.manifest_url,
+          projectId: scope === "global" ? "" : projectId,
+        });
+        finalBindings[role.role] = r.install_id;
       }
 
       // Now install the parent with all bindings resolved.
@@ -922,6 +908,7 @@ function InstallModal({
             installing={installing}
             installStep={installStep}
             projectId={projectId}
+            refetchPreflight={refetchPreflight}
             onBack={() => { setPreview(null); setPreflight(null); setIntents({}); }}
             onConfirm={doInstall}
           />
@@ -961,19 +948,23 @@ function RolePicker({
   onChange,
   intent,
   setIntent,
+  projectId,
+  onConnected,
 }: {
   role: PreflightRole;
   value: number | null;
   onChange: (v: number | null) => void;
   intent: RoleIntent | null;
   setIntent: (i: RoleIntent | null) => void;
+  projectId?: string;
+  onConnected: (connId: number) => void;
 }) {
   const cands =
     role.kind === "integration" ? role.integration_candidates || [] : role.app_candidates || [];
   const hasCands = cands.length > 0;
   const optedIn = !role.required && (value != null || intent != null);
-  // Optional + no candidate: opting in just sets the intent (no form
-  // for kind=app — registry lookup gives us all we need).
+  // kind=integration: synchronous Connect button before parent install
+  // kind=app: stores an intent, parent install handler resolves it
   const showCredentialForm =
     role.kind === "integration" && !hasCands && (role.required || optedIn);
   const showAppOptInHint =
@@ -994,18 +985,17 @@ function RolePicker({
                   const c = cands[0] as PreflightConnectionCandidate | PreflightAppCandidate;
                   onChange("connection_id" in c ? c.connection_id : c.install_id);
                 } else if (role.kind === "app") {
-                  // For kind=app, the intent fully describes the
-                  // sub-action — no form needed. Resolve the manifest
-                  // URL via the registry now (lazy: parent supplies
-                  // it on submit).
+                  // Set install_app intent; the parent's Install
+                  // handler runs the install before the parent.
                   setIntent({
                     kind: "install_app",
-                    manifestUrl: "",  // resolved on submit
+                    manifestUrl: "",
                     appName: (role.compatible || [])[0] || "",
                   });
                 }
-                // kind=integration with no candidate keeps intent
-                // null until the operator types into the form below.
+                // kind=integration with no candidate: form below renders
+                // when optedIn flips true; the Connect button handles
+                // creation synchronously and writes the binding.
               } else {
                 onChange(null);
                 setIntent(null);
@@ -1030,7 +1020,6 @@ function RolePicker({
         <div className="text-text-muted text-[11px]">{role.hint}</div>
       )}
 
-      {/* Has candidates — select. */}
       {hasCands && (role.required || optedIn) && (
         <select
           value={value ?? 0}
@@ -1051,16 +1040,18 @@ function RolePicker({
         </select>
       )}
 
-      {/* No candidates, kind=integration → embedded credential form. */}
+      {/* No candidates, kind=integration → embedded form with a Connect
+          button that fires before the main install. */}
       {showCredentialForm && (
         <InlineConnectIntegration
           slugs={role.compatible || []}
-          intent={intent && intent.kind === "connect" ? intent : null}
-          setIntent={(i) => setIntent(i)}
+          projectId={projectId}
+          onConnected={onConnected}
         />
       )}
 
-      {/* No candidates, kind=app → just a "will install on Install" note. */}
+      {/* No candidates, kind=app → opting in queues an install_app
+          intent; resolved when the user clicks the main Install. */}
       {showAppOptInHint && (
         <div className="text-text-muted text-[11px]">
           {(role.compatible || [])[0]} will be installed when you click Install.
@@ -1070,24 +1061,32 @@ function RolePicker({
   );
 }
 
-// InlineConnectIntegration — credential form embedded in the install
-// modal. Updates the parent's RoleIntent on every keystroke; the
-// actual /connections POST runs from the parent's main Install
-// handler so the operator sees one progress indicator, not two.
+// InlineConnectIntegration — embedded credential form with an
+// explicit Connect button. The connection is created BEFORE the
+// parent install fires (vs. the kind=app path which waits and
+// installs the dep alongside the parent).
 //
-// Renders nothing actionable on its own — no Connect button — which
-// is the whole point: the install flow is one click.
+// Why split the two: connections often involve sensitive creds the
+// operator wants to verify land + work before committing to the
+// rest of the install. Once the connection exists in the project,
+// the parent install proceeds with a clean binding. Apps (kind=app)
+// don't have that round-trip — registry → install is a deterministic
+// sequence with no per-call surprises, so bundling it into the
+// parent Install button is the right call.
 function InlineConnectIntegration({
   slugs,
-  intent,
-  setIntent,
+  projectId,
+  onConnected,
 }: {
   slugs: string[];
-  intent: { kind: "connect"; slug: string; name: string; creds: Record<string, string>; authType: string } | null;
-  setIntent: (i: RoleIntent | null) => void;
+  projectId?: string;
+  onConnected: (connId: number) => void;
 }) {
-  const [chosenSlug, setChosenSlug] = useState(intent?.slug || slugs[0] || "");
+  const [chosenSlug, setChosenSlug] = useState(slugs[0] || "");
   const [detail, setDetail] = useState<AppDetail | null>(null);
+  const [creds, setCreds] = useState<Record<string, string>>({});
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -1096,24 +1095,41 @@ function InlineConnectIntegration({
     integrations.app(chosenSlug)
       .then((d) => {
         setDetail(d);
-        // Initialize the intent so a default name + auth type land
-        // in the parent's state even before the user types creds.
-        // Helps the install validator know "yes, an intent exists."
-        const types = d.auth?.types || [];
-        const authType = types.find((t) => t !== "oauth2") || types[0] || "api_key";
-        if (!intent || intent.slug !== d.slug) {
-          setIntent({
-            kind: "connect",
-            slug: d.slug,
-            name: d.name,
-            creds: {},
-            authType,
-          });
-        }
+        if (!name) setName(d.name);
       })
       .catch((e) => setError(e?.message || "load failed"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chosenSlug]);
+
+  const submit = async () => {
+    if (!detail) return;
+    setBusy(true);
+    setError("");
+    try {
+      const types = detail.auth?.types || [];
+      const authType = types.find((t) => t !== "oauth2") || types[0] || "api_key";
+      const result = await integrations.connect(
+        detail.slug,
+        name.trim() || detail.name,
+        creds,
+        authType,
+        projectId,
+        undefined,
+        "app_install",
+      );
+      const conn = result as { id?: number; connection?: { id: number } };
+      const id = conn.id || conn.connection?.id;
+      if (!id) {
+        setError("connection created but id missing in response");
+        return;
+      }
+      onConnected(id);
+    } catch (e: any) {
+      setError(e?.message || "connect failed");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (!detail) {
     return <div className="text-text-dim text-[11px]">Loading {chosenSlug}…</div>;
@@ -1125,15 +1141,6 @@ function InlineConnectIntegration({
       </div>
     );
   }
-
-  const update = (patch: Partial<{ name: string; creds: Record<string, string> }>) => {
-    if (!intent) return;
-    setIntent({
-      ...intent,
-      ...patch,
-      creds: patch.creds || intent.creds,
-    });
-  };
 
   return (
     <div className="bg-bg-input border border-border rounded p-2 space-y-2">
@@ -1151,8 +1158,8 @@ function InlineConnectIntegration({
       </div>
       <input
         type="text"
-        value={intent?.name || ""}
-        onChange={(e) => update({ name: e.target.value })}
+        value={name}
+        onChange={(e) => setName(e.target.value)}
         placeholder="connection name"
         className="w-full bg-bg border border-border rounded px-2 py-1 text-[11px]"
       />
@@ -1161,14 +1168,21 @@ function InlineConnectIntegration({
           <label className="text-text-dim text-[10px]">{f.label || f.name}</label>
           <input
             type="password"
-            value={(intent?.creds || {})[f.name] || ""}
-            onChange={(e) => update({ creds: { ...(intent?.creds || {}), [f.name]: e.target.value } })}
+            value={creds[f.name] || ""}
+            onChange={(e) => setCreds({ ...creds, [f.name]: e.target.value })}
             className="w-full bg-bg border border-border rounded px-2 py-1 text-[11px] font-mono"
           />
           {f.description && <div className="text-text-dim text-[10px] mt-0.5">{f.description}</div>}
         </div>
       ))}
       {error && <div className="text-red text-[10px]">{error}</div>}
+      <button
+        onClick={submit}
+        disabled={busy}
+        className="w-full px-2 py-1 text-[11px] bg-accent text-bg rounded font-bold disabled:opacity-50"
+      >
+        {busy ? "Connecting…" : `Connect ${detail.name}`}
+      </button>
     </div>
   );
 }
@@ -1214,6 +1228,8 @@ function PreviewAndConfigure({
   installStep,
   onBack,
   onConfirm,
+  projectId,
+  refetchPreflight,
 }: {
   preview: AppPreview;
   preflight: AppPreflight | null;
@@ -1232,6 +1248,7 @@ function PreviewAndConfigure({
   onBack: () => void;
   onConfirm: () => void;
   projectId?: string;
+  refetchPreflight: () => Promise<void>;
 }) {
   const m = preview.manifest;
   return (
@@ -1298,6 +1315,15 @@ function PreviewAndConfigure({
               onChange={(v) => setBindings({ ...bindings, [r.role]: v })}
               intent={intents[r.role] ?? null}
               setIntent={(i) => setIntents({ ...intents, [r.role]: i })}
+              projectId={projectId}
+              onConnected={async (connId) => {
+                // Connection just landed in the DB. Refresh
+                // candidates so the role's select can pick it; then
+                // bind it explicitly so the operator sees the new
+                // option pre-selected.
+                await refetchPreflight();
+                setBindings({ ...bindings, [r.role]: connId });
+              }}
             />
           ))}
         </div>
