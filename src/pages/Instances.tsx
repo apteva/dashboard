@@ -82,18 +82,34 @@ export function Instances() {
   const [renameDraft, setRenameDraft] = useState("");
   const [renameError, setRenameError] = useState("");
 
+  // load() is also called by imperative callsites below (rename
+  // commit, start/stop, delete) where the response is the user's
+  // intent and no cancellation is needed. The polling effect uses a
+  // ref-tracked generation so its async responses don't write into a
+  // newer project's state — see the effect below.
+  const loadGen = useRef(0);
   const load = () => {
+    const myGen = loadGen.current;
     instances
       .list(projectId)
       .then((items) => {
+        // Drop the response if a new project was selected (or the
+        // component unmounted) since this fetch fired.
+        if (myGen !== loadGen.current) return;
         setList(items || []);
         setLoaded(true);
       })
-      .catch(() => setLoaded(true));
+      .catch(() => {
+        if (myGen !== loadGen.current) return;
+        setLoaded(true);
+      });
   };
 
   useEffect(() => {
     if (!projectId) return;
+    // Bump the generation so any in-flight load() from the previous
+    // projectId stops writing state.
+    loadGen.current += 1;
     setList([]);
     setLoaded(false);
     setLiveStatus({});

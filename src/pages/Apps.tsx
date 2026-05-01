@@ -97,28 +97,60 @@ export function Apps() {
       .finally(() => setLoading(false));
   };
 
+  // Initial load + reload when tab or project changes. The cancelled
+  // flag prevents the older fetch's response from overwriting state
+  // when the user flips tabs or switches project mid-flight.
   useEffect(() => {
-    if (tab === "installed") refreshInstalled();
-    else refreshMarketplace();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    let cancelled = false;
+    setLoading(true);
+    const run = async () => {
+      try {
+        if (tab === "installed") {
+          const next = await apps.list(currentProject?.id);
+          if (cancelled) return;
+          setRows((prev) => {
+            const wasRunning = new Set(prev.filter((r) => r.status === "running").map((r) => r.install_id));
+            const nowRunning = next.filter((r) => r.status === "running").map((r) => r.install_id);
+            const changed = nowRunning.some((id) => !wasRunning.has(id))
+              || nowRunning.length !== wasRunning.size;
+            if (changed) window.dispatchEvent(new CustomEvent("apteva:apps-changed"));
+            return next;
+          });
+        } else {
+          const r = await apps.marketplace();
+          if (cancelled) return;
+          setMarketplace(r.apps);
+          setRegistryURL(r.registry_url);
+        }
+      } catch (e: any) {
+        if (cancelled) return;
+        setError(e?.message || "failed");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    run();
+    return () => { cancelled = true; };
   }, [tab, currentProject?.id]);
 
-  // While any install is mid-build, poll every 2s so the dashboard
+  // While any install is mid-build, poll every second so the dashboard
   // shows the live phase string ("Cloning…", "Building…", "Starting…")
   // and flips to running/error without a manual refresh.
+  //
+  // Pins to the projectId in scope at effect-run time. If the user
+  // switches projects mid-poll, the cancelled flag stops the in-flight
+  // setState; the new effect run starts polling against the new
+  // project's pending installs from scratch.
   useEffect(() => {
     if (tab !== "installed") return;
     const anyPending = rows.some((r) => r.status === "pending");
-    // 1s while pending so the live status_message (Downloading X /
-    // Building: Y / Linking…) the supervisor pushes from `go build`
-    // output appears responsive instead of stuck.
     if (!anyPending) return;
+    let cancelled = false;
+    const projectId = currentProject?.id;
     const id = setInterval(() => {
-      apps.list(currentProject?.id).then((next) => {
+      apps.list(projectId).then((next) => {
+        if (cancelled) return;
         setRows((prev) => {
-          // Same trick as refreshInstalled: notify Layout when an
-          // install transitions to running so the sidebar updates
-          // without a page reload.
           const wasRunning = new Set(prev.filter((r) => r.status === "running").map((r) => r.install_id));
           const nowRunning = next.filter((r) => r.status === "running").map((r) => r.install_id);
           if (nowRunning.some((id) => !wasRunning.has(id)) || nowRunning.length !== wasRunning.size) {
@@ -128,7 +160,10 @@ export function Apps() {
         });
       }).catch(() => {});
     }, 1000);
-    return () => clearInterval(id);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [tab, rows, currentProject?.id]);
 
   return (

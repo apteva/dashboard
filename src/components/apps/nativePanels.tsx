@@ -16,8 +16,8 @@
 // real React component with no sandbox, but the platform proxy + the
 // install token still gate every API call the panel makes.
 
-import { lazy, Suspense } from "react";
-import type { ComponentType, LazyExoticComponent } from "react";
+import { Component, lazy, Suspense } from "react";
+import type { ComponentType, LazyExoticComponent, ReactNode } from "react";
 
 export interface NativePanelProps {
   appName: string;
@@ -56,14 +56,89 @@ export function resolvePanelComponent(
   }
   const Lazy = cached;
 
-  // Wrap the lazy component so callers don't have to remember Suspense.
+  // Wrap the lazy component in Suspense + a panel-scoped error
+  // boundary. The boundary catches both module-import failures (panel
+  // .mjs missing, syntax error, missing default export) and runtime
+  // throws inside the panel's render tree, so a broken sidecar app
+  // doesn't take down the surrounding dashboard view. The user sees
+  // a small contained error card with the panel name; everything
+  // around it (sidebar, header, other tabs) keeps working.
   const Wrapped: ComponentType<NativePanelProps> = (props) => (
-    <Suspense fallback={<div className="p-6 text-text-dim text-sm">Loading panel…</div>}>
-      <Lazy {...props} />
-    </Suspense>
+    <PanelErrorBoundary appName={appName} entry={entry}>
+      <Suspense fallback={<div className="p-6 text-text-dim text-sm">Loading panel…</div>}>
+        <Lazy {...props} />
+      </Suspense>
+    </PanelErrorBoundary>
   );
   Wrapped.displayName = `NativePanel(${appName})`;
   return Wrapped;
+}
+
+// PanelErrorBoundary — confines a panel module's failure modes to its
+// own card. React class component because hooks can't catch render
+// errors. Resets when the (appName, entry) pair changes — that's how
+// "uninstall + reinstall" or app-version bumps recover without a full
+// page reload (the cache.delete path on the host re-issues the entry,
+// which propagates as a new key here).
+interface PanelErrorBoundaryProps {
+  appName: string;
+  entry: string;
+  children: ReactNode;
+}
+interface PanelErrorBoundaryState {
+  err: Error | null;
+}
+class PanelErrorBoundary extends Component<PanelErrorBoundaryProps, PanelErrorBoundaryState> {
+  state: PanelErrorBoundaryState = { err: null };
+
+  static getDerivedStateFromError(err: Error): PanelErrorBoundaryState {
+    return { err };
+  }
+
+  componentDidUpdate(prev: PanelErrorBoundaryProps) {
+    // App version bumped or operator switched between apps — clear
+    // the captured error so the new module gets a fresh attempt
+    // instead of staying stuck on the previous failure.
+    if (prev.appName !== this.props.appName || prev.entry !== this.props.entry) {
+      if (this.state.err) this.setState({ err: null });
+    }
+  }
+
+  componentDidCatch(err: Error, info: { componentStack?: string }) {
+    // Surface the failure once; the user-visible card carries the
+    // app name + message so support can correlate.
+    console.error(
+      `[panel ${this.props.appName}] crashed: ${err.message}`,
+      info.componentStack || "",
+    );
+  }
+
+  render() {
+    if (this.state.err) {
+      return (
+        <div className="p-4">
+          <div className="rounded border border-border bg-bg-card p-4 max-w-2xl">
+            <div className="text-text font-medium text-sm mb-1">
+              The {this.props.appName} panel crashed.
+            </div>
+            <div className="text-text-dim text-xs mb-3">
+              The rest of the dashboard is unaffected. See the browser console for the full stack trace.
+            </div>
+            <pre className="text-xs text-text-muted whitespace-pre-wrap break-words bg-bg-input rounded p-2 max-h-40 overflow-auto">
+              {this.state.err.message}
+            </pre>
+            <button
+              onClick={() => this.setState({ err: null })}
+              className="mt-3 px-3 py-1 text-xs border border-border rounded hover:border-accent"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 // isModuleEntry — entries pointing at JS modules (.mjs / .js) are

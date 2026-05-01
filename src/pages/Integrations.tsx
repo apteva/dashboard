@@ -154,13 +154,19 @@ export function Integrations() {
   );
 
   useEffect(() => {
+    let cancelled = false;
     providers
       .list(currentProject?.id)
       .then((p) => {
+        if (cancelled) return;
         setProviderList(p);
         setLoaded(true);
       })
-      .catch(() => setLoaded(true));
+      .catch(() => {
+        if (cancelled) return;
+        setLoaded(true);
+      });
+    return () => { cancelled = true; };
   }, [currentProject?.id]);
 
   useEffect(() => {
