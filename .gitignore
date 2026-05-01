@@ -3,6 +3,8 @@ dist/
 .next/
 *.log
 *.db
+*.db-shm
+*.db-wal
 .env
 .claude/
 data/
