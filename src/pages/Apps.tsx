@@ -1222,24 +1222,35 @@ function InlineConnectIntegration({
   );
 }
 
-// seedBindings pre-populates the bindings map from preflight: required
-// roles auto-pick the first compatible candidate; optional roles
-// auto-pick when exactly one candidate exists. Operator can change in
-// the UI before submit.
+// seedBindings pre-populates the bindings map from preflight.
+//
+// Required roles auto-pick the first compatible candidate so the
+// install button isn't blocked behind a click the user can't avoid
+// anyway — they can still change the picked target before submit.
+//
+// Optional roles always start unbound, even when exactly one
+// compatible candidate is available. Auto-binding "convenient"
+// optional deps surprised operators ("I just installed image-studio
+// and somehow my storage app is now wired into it"); making the
+// opt-in explicit is the safer default. The operator ticks the
+// role's checkbox when they want it; otherwise the dep is skipped
+// and the install proceeds with the role unbound.
 function seedBindings(pf: AppPreflight | null): Record<string, number | null> {
   const out: Record<string, number | null> = {};
   if (!pf) return out;
   for (const r of pf.roles) {
+    if (!r.required) {
+      out[r.role] = null;
+      continue;
+    }
     const cands = r.kind === "integration" ? r.integration_candidates : r.app_candidates;
-    if (cands && cands.length === 1) {
-      const c = cands[0] as PreflightConnectionCandidate | PreflightAppCandidate;
-      out[r.role] = "connection_id" in c ? c.connection_id : c.install_id;
-    } else if (cands && cands.length > 1 && r.required) {
-      // Required + multiple candidates → pick first; user can change.
+    if (cands && cands.length > 0) {
       const c = cands[0] as PreflightConnectionCandidate | PreflightAppCandidate;
       out[r.role] = "connection_id" in c ? c.connection_id : c.install_id;
     } else {
-      // No candidates, or optional w/ multiple — start unbound.
+      // Required role with no candidate — operator must satisfy it
+      // (Connect button for kind=integration, install_app intent for
+      // kind=app). Leaving null surfaces the unbound state in the UI.
       out[r.role] = null;
     }
   }
