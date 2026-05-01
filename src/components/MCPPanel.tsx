@@ -180,7 +180,7 @@ export function MCPPanel({ instanceId, running }: Props) {
 
       {error && <div className="text-red text-[10px] mb-2">{error}</div>}
       {restartNotice && (
-        <div className="flex items-start gap-1.5 text-[10px] mb-2 text-yellow-500 bg-yellow-500/10 border border-yellow-500/30 rounded px-2 py-1.5">
+        <div className="flex items-start gap-1.5 text-[10px] mb-2 text-warn bg-warn/10 border border-warn/30 rounded px-2 py-1.5">
           <span className="shrink-0">⚠</span>
           <span className="flex-1">{restartNotice}</span>
           <button

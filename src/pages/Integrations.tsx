@@ -706,7 +706,7 @@ export function Integrations() {
                           c.status === "active"
                             ? "bg-green"
                             : c.status === "pending"
-                              ? "bg-yellow-500"
+                              ? "bg-warn"
                               : "bg-red"
                         }`}
                       />
@@ -746,7 +746,7 @@ export function Integrations() {
                         {c.source || "local"}
                       </span>
                       {c.status === "pending" && (
-                        <span className="text-xs text-yellow-500">pending…</span>
+                        <span className="text-xs text-warn">pending…</span>
                       )}
                     </div>
                     <div className="flex items-center gap-4">

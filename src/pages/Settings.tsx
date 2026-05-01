@@ -3,6 +3,7 @@ import { auth, providers, providerTypes, telemetry, mcpServers, integrations, su
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
+import { useTheme, type ThemeName, type ThemeMode } from "../hooks/useTheme";
 
 interface Key {
   id: number;
@@ -12,7 +13,7 @@ interface Key {
 }
 
 
-type Tab = "projects" | "channels" | "integrations" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
+type Tab = "projects" | "appearance" | "channels" | "integrations" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
 
 // GlobeIcon — Lucide-style outline glyph used for "global" provider
 // scope. Inherits color via currentColor; sized to sit inline next to
@@ -51,6 +52,7 @@ export function Settings() {
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "projects", label: "Projects" },
+    { id: "appearance", label: "Appearance" },
     { id: "channels", label: "Channels" },
     { id: "integrations", label: "Integrations" },
     { id: "providers", label: "Providers" },
@@ -89,6 +91,7 @@ export function Settings() {
 
       <div className="flex-1 overflow-y-auto p-6">
         {tab === "projects" && <ProjectsTab />}
+        {tab === "appearance" && <AppearanceTab />}
         {tab === "channels" && <ChannelsTab />}
         {tab === "integrations" && <IntegrationsCatalogTab />}
         {tab === "providers" && <ProvidersTab />}
@@ -102,6 +105,112 @@ export function Settings() {
             {tab === "users" && <UsersTab />} */}
       </div>
     </div>
+  );
+}
+
+// ─── Appearance Tab ───
+//
+// Theme picks the identity (font family, radii, accent character).
+// Mode picks the surface palette (dark, light, or "auto" which
+// follows the OS prefers-color-scheme). The two are independent —
+// e.g. Clean + Auto means "use clean's palette, dark or light per
+// OS." Live preview happens because both controls drive the same
+// CSS variables that every utility class reads.
+
+function AppearanceTab() {
+  const { theme, mode, resolvedMode, setTheme, setMode } = useTheme();
+  return (
+    <div className="flex flex-col gap-8 max-w-3xl">
+      <div>
+        <h2 className="text-text font-medium mb-1">Appearance</h2>
+        <p className="text-text-muted text-sm">
+          Theme + mode are stored locally on this device. The preview below applies instantly across the whole dashboard and every installed app's panel.
+        </p>
+      </div>
+
+      <section>
+        <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">Theme</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl">
+          <ThemeCard
+            value="terminal"
+            label="Terminal"
+            description="Monospace, sharp corners, a workshop look. The default."
+            selected={theme === "terminal"}
+            onSelect={() => setTheme("terminal")}
+          />
+          <ThemeCard
+            value="clean"
+            label="Clean"
+            description="Inter, rounded corners, subtle shadows. Boardroom-ready."
+            selected={theme === "clean"}
+            onSelect={() => setTheme("clean")}
+          />
+        </div>
+      </section>
+
+      <section>
+        <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">Mode</h3>
+        <div className="flex flex-wrap gap-2">
+          {(["auto", "dark", "light"] as ThemeMode[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-4 py-2 text-sm rounded border transition-colors ${
+                mode === m
+                  ? "border-accent text-text bg-bg-card"
+                  : "border-border text-text-muted hover:text-text hover:border-text-dim"
+              }`}
+            >
+              {m === "auto" ? "Auto" : m === "dark" ? "Dark" : "Light"}
+              {m === "auto" && (
+                <span className="ml-2 text-text-dim text-xs">
+                  (currently {resolvedMode})
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+        <p className="text-text-dim text-xs mt-2">
+          Auto follows your operating system's preference and updates live when it changes.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+function ThemeCard({
+  value,
+  label,
+  description,
+  selected,
+  onSelect,
+}: {
+  value: ThemeName;
+  label: string;
+  description: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  void value;
+  return (
+    <button
+      onClick={onSelect}
+      className={`text-left border rounded-lg p-4 transition-colors ${
+        selected
+          ? "border-accent bg-bg-card"
+          : "border-border hover:border-text-dim"
+      }`}
+    >
+      <div className="flex items-center gap-2 mb-2">
+        <div
+          className={`w-3 h-3 rounded-full border ${
+            selected ? "bg-accent border-accent" : "border-border"
+          }`}
+        />
+        <span className="text-text font-medium">{label}</span>
+      </div>
+      <p className="text-text-muted text-xs leading-relaxed">{description}</p>
+    </button>
   );
 }
 
@@ -1363,7 +1472,7 @@ function MCPServersTab() {
                   s.status === "running" || s.status === "reachable"
                     ? "bg-green"
                     : s.status === "unprobed"
-                      ? "bg-yellow-500"
+                      ? "bg-warn"
                       : "bg-red"
                 }`} />
                 <div>
@@ -2292,7 +2401,7 @@ function SubscriptionsTab() {
                     <p className="text-text-dim text-xs mt-1">{selectedTriggerSchema.description}</p>
                   )}
                   {selectedTriggerSchema?.type === "poll" && (
-                    <p className="text-yellow-500 text-[11px] mt-1">
+                    <p className="text-warn text-[11px] mt-1">
                       ⓘ Polling trigger — Composio checks upstream on a schedule (typically 15-min intervals). Not real-time.
                     </p>
                   )}

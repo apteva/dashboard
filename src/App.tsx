@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
 import { ProjectProvider } from "./hooks/useProjects";
+import { ThemeProvider } from "./hooks/useTheme";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
 import { Connect } from "./pages/Connect";
@@ -32,8 +33,9 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <Routes>
+      <ThemeProvider>
+        <AuthProvider>
+          <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/connect/:token" element={<Connect />} />
           <Route
@@ -60,8 +62,9 @@ export default function App() {
                 which one. */}
             <Route path="/apps/:name/page" element={<AppProjectPage />} />
           </Route>
-        </Routes>
-      </AuthProvider>
+          </Routes>
+        </AuthProvider>
+      </ThemeProvider>
     </BrowserRouter>
   );
 }

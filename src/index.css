@@ -1,42 +1,223 @@
 @import "tailwindcss";
 @import "@xyflow/react/dist/style.css";
 
-@theme {
-  --color-bg: #0a0a0a;
-  --color-bg-card: #141414;
-  --color-bg-hover: #1c1c1c;
-  --color-bg-input: #111111;
-  --color-border: #2a2a2a;
-  --color-border-subtle: #333333;
-  --color-text: #e8e8e8;
-  --color-text-muted: #888888;
-  --color-text-dim: #aaaaaa;
-  --color-accent: #f97316;
-  --color-accent-hover: #fb923c;
-  --color-blue: #3b82f6;
-  --color-green: #22c55e;
-  --color-red: #ef4444;
-  --font-mono: "JetBrains Mono", monospace;
+/* ─── Theme system ─────────────────────────────────────────────────
+ *
+ * Two HTML attributes drive everything:
+ *   <html data-theme="terminal|clean" data-mode="dark|light">
+ *
+ * Theme owns identity (font, radii, shadow). Mode owns the palette.
+ * `auto` mode is set by JS at runtime — it resolves to dark or light
+ * based on prefers-color-scheme; the CSS only sees the resolved value.
+ *
+ * Tokens are flat CSS variables (`--bg`, `--text`, ...). The Tailwind
+ * @theme block below maps them onto Tailwind's color/font/radius
+ * system so utility classes (bg-card, text-muted, rounded-md) keep
+ * working unchanged. Switching themes is one attribute toggle on
+ * <html> — no rebuild, no re-render, every panel re-styles via the
+ * cascade.
+ * ─────────────────────────────────────────────────────────────── */
+
+/* Identity: typography + geometry. Vary by theme only. */
+[data-theme="terminal"] {
+  --font-base: "JetBrains Mono", "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --shadow-card: none;
+  --shadow-popover: 0 0 0 1px rgb(0 0 0 / 0.4);
 }
+[data-theme="clean"] {
+  --font-base: "Inter", "system-ui", -apple-system, sans-serif;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.06);
+  --shadow-popover: 0 4px 6px rgb(0 0 0 / 0.05), 0 10px 20px rgb(0 0 0 / 0.10);
+}
+
+/* Always-mono token, for code / inline IDs / log lines. Never themed. */
+:root {
+  --font-mono-fixed: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* ─── Palettes (4 = theme × mode) ─────────────────────────────────
+ * Color values are hand-tuned per (theme × mode) combination. Each
+ * row of tokens is the same semantic shape so every palette can be
+ * swapped without touching component code.
+ *
+ * Naming:
+ *   bg / bg-card / bg-hover / bg-input / bg-overlay  — surfaces
+ *   text / text-muted / text-dim                      — type tones
+ *   border / border-subtle / border-strong            — separators
+ *   accent / accent-hover / accent-muted              — brand
+ *   success / warn / error / info                     — statuses
+ * ─────────────────────────────────────────────────────────────── */
+
+/* Default (no data-theme set) = terminal-dark. Same palette as the
+ * previous hardcoded values so there's zero visual drift on first
+ * paint before the bootstrap script runs. */
+:root,
+[data-theme="terminal"][data-mode="dark"] {
+  --bg: #0a0a0a;
+  --bg-card: #141414;
+  --bg-hover: #1c1c1c;
+  --bg-input: #111111;
+  --bg-overlay: rgb(0 0 0 / 0.6);
+  --text: #e8e8e8;
+  --text-muted: #aaaaaa;
+  --text-dim: #888888;
+  --border: #2a2a2a;
+  --border-subtle: #333333;
+  --border-strong: #4a4a4a;
+  --accent: #f97316;
+  --accent-hover: #fb923c;
+  --accent-muted: #c2410c;
+  --success: #22c55e;
+  --warn: #eab308;
+  --error: #ef4444;
+  --info: #3b82f6;
+}
+
+[data-theme="terminal"][data-mode="light"] {
+  --bg: #faf8f3;
+  --bg-card: #f1ede4;
+  --bg-hover: #e8e3d6;
+  --bg-input: #f6f2e9;
+  --bg-overlay: rgb(0 0 0 / 0.5);
+  --text: #1a1a1a;
+  --text-muted: #555555;
+  --text-dim: #777777;
+  --border: #d4ccb8;
+  --border-subtle: #e2dcca;
+  --border-strong: #b9b09a;
+  --accent: #c2410c;          /* darker than terminal-dark's accent — pops on light */
+  --accent-hover: #9a3412;
+  --accent-muted: #fdba74;
+  --success: #15803d;
+  --warn: #a16207;
+  --error: #b91c1c;
+  --info: #1d4ed8;
+}
+
+[data-theme="clean"][data-mode="dark"] {
+  --bg: #0f1419;              /* slightly cooler than terminal-dark */
+  --bg-card: #1a2128;
+  --bg-hover: #232b34;
+  --bg-input: #131920;
+  --bg-overlay: rgb(0 0 0 / 0.6);
+  --text: #e6e8eb;
+  --text-muted: #a3aab3;
+  --text-dim: #7d848e;
+  --border: #2a3340;
+  --border-subtle: #1f2630;
+  --border-strong: #3d4759;
+  --accent: #6e8aff;          /* cooler blue-violet */
+  --accent-hover: #8aa1ff;
+  --accent-muted: #4255a5;
+  --success: #4ade80;
+  --warn: #fbbf24;
+  --error: #f87171;
+  --info: #60a5fa;
+}
+
+[data-theme="clean"][data-mode="light"] {
+  --bg: #ffffff;
+  --bg-card: #f7f8fa;
+  --bg-hover: #eef0f4;
+  --bg-input: #ffffff;
+  --bg-overlay: rgb(0 0 0 / 0.4);
+  --text: #15171a;
+  --text-muted: #4b5563;
+  --text-dim: #6b7280;
+  --border: #e5e7eb;
+  --border-subtle: #f1f3f5;
+  --border-strong: #cbd1d8;
+  --accent: #4f5fdb;          /* same family as clean-dark's accent, deeper */
+  --accent-hover: #4150c4;
+  --accent-muted: #c1c8f0;
+  --success: #047857;
+  --warn: #b45309;
+  --error: #b91c1c;
+  --info: #1d4ed8;
+}
+
+/* ─── Tailwind theme tokens ───────────────────────────────────────
+ * Map the runtime CSS vars onto Tailwind's design system so every
+ * utility class (bg-card, text-muted, border-strong, accent,
+ * success/warn/error/info, rounded-md, font-sans/font-mono) reads
+ * from the active palette. Switching themes flips `data-*` on <html>
+ * and the cascade does the rest.
+ * ─────────────────────────────────────────────────────────────── */
+@theme {
+  --color-bg: var(--bg);
+  --color-bg-card: var(--bg-card);
+  --color-bg-hover: var(--bg-hover);
+  --color-bg-input: var(--bg-input);
+  --color-bg-overlay: var(--bg-overlay);
+
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-dim: var(--text-dim);
+
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-muted: var(--accent-muted);
+
+  --color-success: var(--success);
+  --color-warn: var(--warn);
+  --color-error: var(--error);
+  --color-info: var(--info);
+
+  /* Back-compat aliases — the codebase has ~40 sites using the old
+   * names (text-red, bg-green, text-yellow, text-blue). They map onto
+   * the same semantic tokens so they recolor across themes too. */
+  --color-red: var(--error);
+  --color-green: var(--success);
+  --color-yellow: var(--warn);
+  --color-blue: var(--info);
+
+  --font-sans: var(--font-base);
+  --font-mono: var(--font-mono-fixed);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+}
+
+/* ─── Body + chrome ───────────────────────────────────────────── */
 
 body {
-  font-family: var(--font-mono);
+  font-family: var(--font-base);
   font-size: 15px;
-  background: var(--color-bg);
-  color: var(--color-text);
+  background: var(--bg);
+  color: var(--text);
   margin: 0;
+  /* Help built-in form controls + scrollbars adopt the right scheme.
+   * `light dark` lets the browser pick based on data-mode via the
+   * media query equivalence the cascade enforces. */
+  color-scheme: dark;
+}
+[data-mode="light"] body {
+  color-scheme: light;
 }
 
-/* Select dropdowns — native picker with custom chevron */
+/* Select dropdowns — chevron color follows text-muted via CSS vars
+ * so the indicator stays readable on light + dark surfaces. */
 select {
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%23666' stroke-width='2' stroke-linecap='round' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
   background-size: 12px;
   padding-right: 30px;
   cursor: pointer;
+  color: var(--text);
 }
 
 /* Tool call breathing animation */
@@ -51,7 +232,7 @@ select {
 
 .tool-cursor {
   animation: tool-breathe 1s ease-in-out infinite;
-  color: var(--color-accent);
+  color: var(--accent);
 }
 
 /* Scrollbar */
@@ -59,10 +240,10 @@ select {
   width: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--color-bg);
+  background: var(--bg);
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border-subtle);
+  background: var(--border-subtle);
   border-radius: 4px;
 }
 
@@ -73,7 +254,7 @@ select {
 .chat-md h1, .chat-md h2, .chat-md h3, .chat-md h4 {
   font-weight: 600;
   margin: 0.75rem 0 0.25rem 0;
-  color: var(--color-text);
+  color: var(--text);
 }
 .chat-md h1 { font-size: 1.05rem; }
 .chat-md h2 { font-size: 0.95rem; }
@@ -85,16 +266,16 @@ select {
 .chat-md li { margin: 0.1rem 0; }
 .chat-md li > p { margin: 0; }
 .chat-md code {
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: var(--font-mono-fixed);
   font-size: 0.9em;
-  background: var(--color-bg-card);
-  border: 1px solid var(--color-border-subtle);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
   border-radius: 3px;
   padding: 0.05rem 0.3rem;
 }
 .chat-md pre {
-  background: var(--color-bg-card);
-  border: 1px solid var(--color-border-subtle);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
   border-radius: 6px;
   padding: 0.5rem 0.75rem;
   margin: 0.5rem 0;
@@ -108,20 +289,20 @@ select {
   font-size: 0.85em;
 }
 .chat-md a {
-  color: var(--color-accent);
+  color: var(--accent);
   text-decoration: underline;
   text-underline-offset: 2px;
   word-break: break-all;
 }
 .chat-md blockquote {
-  border-left: 2px solid var(--color-border);
+  border-left: 2px solid var(--border);
   padding-left: 0.6rem;
-  color: var(--color-text-muted);
+  color: var(--text-muted);
   margin: 0.4rem 0;
 }
-.chat-md strong { font-weight: 600; color: var(--color-text); }
+.chat-md strong { font-weight: 600; color: var(--text); }
 .chat-md em { font-style: italic; }
-.chat-md hr { border: none; border-top: 1px solid var(--color-border-subtle); margin: 0.75rem 0; }
+.chat-md hr { border: none; border-top: 1px solid var(--border-subtle); margin: 0.75rem 0; }
 .chat-md table {
   border-collapse: collapse;
   margin: 0.5rem 0;
@@ -131,7 +312,7 @@ select {
   max-width: 100%;
 }
 .chat-md th, .chat-md td {
-  border: 1px solid var(--color-border-subtle);
+  border: 1px solid var(--border-subtle);
   padding: 0.25rem 0.5rem;
 }
-.chat-md th { background: var(--color-bg-card); font-weight: 600; }
+.chat-md th { background: var(--bg-card); font-weight: 600; }

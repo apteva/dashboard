@@ -640,7 +640,7 @@ function detectAnomalies(stats: InstanceStats[], timeline: ProjectTimelineBucket
 function AnomalyCard({ anomaly, onClick }: { anomaly: Anomaly; onClick: () => void }) {
   const sevStyle = {
     info: "border-border bg-bg-card",
-    warn: "border-yellow-500/40 bg-yellow-500/5",
+    warn: "border-warn/40 bg-warn/5",
     alert: "border-red/40 bg-red/5",
   }[anomaly.severity];
   const icon = {

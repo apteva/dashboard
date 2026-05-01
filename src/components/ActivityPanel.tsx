@@ -719,8 +719,8 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
               const c = ctxByThread["main"];
               if (!c || c.tokensIn === 0) return null;
               const pct = c.max > 0 ? Math.min(100, Math.round((c.tokensIn / c.max) * 100)) : 0;
-              const pctColor = pct >= 90 ? "text-red" : pct >= 70 ? "text-yellow-500" : "text-text";
-              const barColor = pct >= 90 ? "bg-red" : pct >= 70 ? "bg-yellow-500" : "bg-accent";
+              const pctColor = pct >= 90 ? "text-red" : pct >= 70 ? "text-warn" : "text-text";
+              const barColor = pct >= 90 ? "bg-red" : pct >= 70 ? "bg-warn" : "bg-accent";
               return (
                 <>
                   <span>context</span>
@@ -809,7 +809,7 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
                       const c = ctxByThread[t.id];
                       if (!c || c.tokensIn === 0) return null;
                       const pct = c.max > 0 ? Math.min(100, Math.round((c.tokensIn / c.max) * 100)) : 0;
-                      const color = pct >= 90 ? "text-red" : pct >= 70 ? "text-yellow-500" : "text-text-muted";
+                      const color = pct >= 90 ? "text-red" : pct >= 70 ? "text-warn" : "text-text-muted";
                       const label = c.max > 0
                         ? `${fmtK(c.tokensIn)}/${fmtK(c.max)} (${pct}%)`
                         : fmtK(c.tokensIn);
