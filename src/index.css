@@ -1,6 +1,23 @@
 @import "tailwindcss";
 @import "@xyflow/react/dist/style.css";
 
+/* Tell Tailwind to also scan first-party app panels for utility-class
+ * usage. Without this, classes that only appear in panel TSX files
+ * (e.g. social's ComposeDialog using `fixed inset-0 z-50
+ * backdrop-blur-sm max-w-2xl max-h-[90vh] mx-4 shadow-lg rounded-lg`)
+ * get tree-shaken because Tailwind v4 only auto-detects sources from
+ * this CSS file's directory by default. The compiled stylesheet would
+ * have the class names valid in the panel's JSX but no rules attached,
+ * so what was meant to be a centred modal renders as an unpositioned
+ * inline div — visually a side panel.
+ *
+ * The path is relative to this CSS file. In monorepo dev the apps/
+ * directory is a sibling of dashboard/. If the build ever runs in an
+ * environment where it isn't present (standalone dashboard CI), the
+ * directive is a silent no-op rather than a hard error — Tailwind
+ * just emits no extra classes from there. */
+@source "../../apps/mcp/*/ui/*.tsx";
+
 /* ─── Theme system ─────────────────────────────────────────────────
  *
  * Two HTML attributes drive everything:
