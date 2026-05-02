@@ -36,48 +36,19 @@ export interface UIComponentSpec {
   slots?: string[];        // ["chat.message_attachment"]
 }
 
-interface ResolvedManifest {
-  // Parsed once per app at lookup time. Empty array if the manifest
-  // doesn't declare any ui_components or fails to parse.
-  components: UIComponentSpec[];
-  version: string;
-}
-
-// We get app rows from the existing /api/apps response. The manifest
-// is stringified JSON in `manifest_json`; we parse the bits we care
-// about lazily.
+// We get app rows from /api/apps. The handler now exposes
+// ui_components directly off the row (mirroring the existing
+// ui_panels field) so we don't need to parse manifest_json
+// client-side — and don't need the full manifest payload at all.
 export interface InstalledAppRow {
   install_id: number;
   name: string;
   version: string;
-  manifest_json?: string;
+  ui_components?: UIComponentSpec[];
 }
 
-const manifestCache = new Map<string, ResolvedManifest>(); // keyed by app name
-
-function manifestFor(app: InstalledAppRow): ResolvedManifest {
-  const cacheKey = `${app.name}@${app.version}`;
-  const cached = manifestCache.get(cacheKey);
-  if (cached) return cached;
-  let components: UIComponentSpec[] = [];
-  try {
-    const m = app.manifest_json ? (JSON.parse(app.manifest_json) as Record<string, unknown>) : {};
-    const provides = (m.provides ?? m.Provides) as Record<string, unknown> | undefined;
-    const list =
-      (provides?.ui_components ?? provides?.UIComponents ?? []) as Array<Record<string, unknown>>;
-    components = list
-      .map((c) => ({
-        name: String(c.name ?? c.Name ?? ""),
-        entry: String(c.entry ?? c.Entry ?? ""),
-        slots: (c.slots ?? c.Slots) as string[] | undefined,
-      }))
-      .filter((c) => c.name && c.entry);
-  } catch {
-    components = [];
-  }
-  const m: ResolvedManifest = { components, version: app.version };
-  manifestCache.set(cacheKey, m);
-  return m;
+function componentsFor(app: InstalledAppRow): UIComponentSpec[] {
+  return (app.ui_components ?? []).filter((c) => c.name && c.entry);
 }
 
 // ─── Component module cache ─────────────────────────────────────────
@@ -142,8 +113,8 @@ export function ChatComponentMount({
   if (!app) {
     return <ComponentMissing reason={`app "${comp.app}" not installed`} />;
   }
-  const manifest = manifestFor(app);
-  const spec = manifest.components.find((c) => c.name === comp.name);
+  const components = componentsFor(app);
+  const spec = components.find((c) => c.name === comp.name);
   if (!spec) {
     return <ComponentMissing reason={`component "${comp.app}:${comp.name}" not declared`} />;
   }
@@ -270,7 +241,7 @@ export function useInstalledApps(projectId: string | null | undefined): Installe
             install_id: r.install_id ?? r.id ?? 0,
             name: String(r.name ?? ""),
             version: String(r.version ?? ""),
-            manifest_json: r.manifest_json,
+            ui_components: Array.isArray(r.ui_components) ? r.ui_components : [],
           })),
         );
       })
