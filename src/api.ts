@@ -1511,6 +1511,7 @@ export interface AppRow {
   permissions: string[];
   surfaces: AppSurfaces;
   ui_panels?: AppUIPanel[];
+  ui_components?: AppUIComponent[];
 }
 
 export interface AppUIPanel {
@@ -1518,6 +1519,15 @@ export interface AppUIPanel {
   label: string;
   icon: string;
   entry: string;  // path served by sidecar (e.g. "/ui/StatusPanel.html")
+}
+
+// Manifest entry — what the app declared. Mirrors sdk.UIComponent.
+export interface AppUIComponent {
+  name: string;
+  entry: string;
+  slots: string[];
+  props_schema?: Record<string, unknown>;
+  preview_props?: Record<string, unknown>;
 }
 
 export interface AppSurfaces {

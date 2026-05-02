@@ -9,9 +9,11 @@
 // dim overlay rather than a full opaque scrim — the page underneath
 // stays readable so the user keeps context.
 
-import { useEffect } from "react";
-import type { AppRow, AppSurfaces, MarketplaceEntry } from "../../api";
+import { useEffect, useMemo } from "react";
+import type { AppRow, AppSurfaces, AppUIComponent, MarketplaceEntry } from "../../api";
+import { useProjects } from "../../hooks/useProjects";
 import { AppSurfaceBadges } from "./AppSurfaceBadges";
+import { ChatComponentMount, type InstalledAppRow } from "./chatComponents";
 
 type Mode = "marketplace" | "installed";
 
@@ -38,6 +40,8 @@ interface View {
   category?: string;
   tags?: string[];
   status?: string;
+  installId?: number;
+  components?: AppUIComponent[];
 }
 
 function viewFromProps(p: Props): View | null {
@@ -69,6 +73,8 @@ function viewFromProps(p: Props): View | null {
       surfaces: i.surfaces,
       installed: true,
       status: i.status,
+      installId: i.install_id,
+      components: i.ui_components,
     };
   }
   return null;
@@ -193,6 +199,15 @@ export function AppDetailPanel(props: Props) {
                 ))}
               </ul>
             </section>
+          )}
+
+          {view.components && view.components.length > 0 && view.installId !== undefined && (
+            <ComponentsSection
+              appName={view.name}
+              version={view.version}
+              installId={view.installId}
+              components={view.components}
+            />
           )}
 
           {s?.required_apps && s.required_apps.length > 0 && (
@@ -354,5 +369,90 @@ export function AppDetailPanel(props: Props) {
         </div>
       </aside>
     </>
+  );
+}
+
+// ComponentsSection lists every UIComponent the app declares and
+// renders a live preview using the manifest's preview_props (when
+// declared). Components without preview_props show the metadata
+// only — name + slot + entry — so operators can still see what's
+// declared without a render.
+//
+// The preview mounts via the same ChatComponentMount used by the
+// actual chat panel, so what you see here is exactly what the
+// agent's respond(components=…) call will surface.
+function ComponentsSection({
+  appName,
+  version,
+  installId,
+  components,
+}: {
+  appName: string;
+  version: string;
+  installId: number;
+  components: AppUIComponent[];
+}) {
+  const { currentProject } = useProjects();
+  const projectId = currentProject?.id ?? "";
+
+  // ChatComponentMount expects the apps array (it looks up app by
+  // name + reads ui_components). Build a single-entry array from the
+  // current app — enough for the mount to resolve our component
+  // entries correctly.
+  const apps: InstalledAppRow[] = useMemo(
+    () => [{ install_id: installId, name: appName, version, ui_components: components }],
+    [installId, appName, version, components],
+  );
+
+  return (
+    <section>
+      <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+        Components ({components.length})
+      </h3>
+      <div className="space-y-4">
+        {components.map((c) => (
+          <div
+            key={c.name}
+            className="border border-border rounded p-3 space-y-2"
+          >
+            <div className="flex items-center gap-2 flex-wrap text-xs">
+              <span className="font-mono text-text">{c.name}</span>
+              <span className="text-text-dim">·</span>
+              {(c.slots ?? []).map((slot) => (
+                <span
+                  key={slot}
+                  className="px-1.5 py-0.5 rounded bg-bg-input text-text-muted text-[10px] font-mono"
+                >
+                  {slot}
+                </span>
+              ))}
+              <span className="text-text-dim ml-auto font-mono text-[10px]">
+                {c.entry}
+              </span>
+            </div>
+            {c.preview_props ? (
+              <div className="bg-bg-input/40 rounded p-3">
+                <div className="text-[10px] text-text-dim uppercase tracking-wide mb-2">
+                  Preview
+                </div>
+                <ChatComponentMount
+                  comp={{ app: appName, name: c.name, props: c.preview_props }}
+                  apps={apps}
+                  projectId={projectId}
+                  // Use whichever slot the component declared first —
+                  // most components today declare exactly one. Slot
+                  // gating on the mount catches mismatches.
+                  slot={(c.slots ?? [])[0] ?? "chat.message_attachment"}
+                />
+              </div>
+            ) : (
+              <div className="text-text-dim text-xs italic">
+                No preview_props declared — manifest entry only.
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
