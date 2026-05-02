@@ -145,6 +145,34 @@ if (!vendor.success) {
   process.exit(1);
 }
 
+// Step 2.6: Build @apteva/ui-kit and copy to /vendor/ui-kit.mjs so the
+// dashboard's importmap can hand it out to every panel + chat-attachment
+// component as a peer module. ui-kit is a thin React component library
+// (Card / CardHeader / StatusPill / …) that owns the visual language;
+// React stays external so it shares the host's instance. Built fresh on
+// every dashboard build — the source-of-truth lives at
+// frontends/apteva/ui-kit.
+console.log("Building @apteva/ui-kit for panel importmap...");
+{
+  const uiKitBuild = new URL("../ui-kit/scripts/build.ts", import.meta.url).pathname;
+  const proc = Bun.spawn(["bun", "run", uiKitBuild], {
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const code = await proc.exited;
+  if (code !== 0) {
+    console.error("ui-kit build failed");
+    process.exit(code);
+  }
+  const uiKitDist = new URL("../ui-kit/dist/ui-kit.mjs", import.meta.url).pathname;
+  const { copyFileSync, existsSync: exists } = await import("fs");
+  if (!exists(uiKitDist)) {
+    console.error(`ui-kit dist not found at ${uiKitDist}`);
+    process.exit(1);
+  }
+  copyFileSync(uiKitDist, "./dist/vendor/ui-kit.mjs");
+}
+
 // Run after Bun's name-rewriting step (rename below) so the verifier
 // imports react.mjs at its final path. Inserted later — see the
 // renames block.
@@ -227,7 +255,8 @@ const html = `<!DOCTYPE html>
           "react/jsx-runtime": "/vendor/react-jsx-runtime.mjs",
           "react/jsx-dev-runtime": "/vendor/react-jsx-runtime.mjs",
           "react-dom": "/vendor/react-dom.mjs",
-          "react-dom/client": "/vendor/react-dom-client.mjs"
+          "react-dom/client": "/vendor/react-dom-client.mjs",
+          "@apteva/ui-kit": "/vendor/ui-kit.mjs"
         }
       }
     </script>

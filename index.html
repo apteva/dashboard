@@ -32,6 +32,20 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <!-- Importmap: panels + chat-attachment components import @apteva/ui-kit
+         alongside react, all served by the host as peer modules. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "/vendor/react.mjs",
+          "react/jsx-runtime": "/vendor/react-jsx-runtime.mjs",
+          "react/jsx-dev-runtime": "/vendor/react-jsx-runtime.mjs",
+          "react-dom": "/vendor/react-dom.mjs",
+          "react-dom/client": "/vendor/react-dom-client.mjs",
+          "@apteva/ui-kit": "/vendor/ui-kit.mjs"
+        }
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

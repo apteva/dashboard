@@ -40,10 +40,17 @@ export interface UIComponentSpec {
 // ui_components directly off the row (mirroring the existing
 // ui_panels field) so we don't need to parse manifest_json
 // client-side — and don't need the full manifest payload at all.
+//
+// `source` is "builtin" | "github" | "local" | "integration". The
+// "integration" value is synthesised server-side for any project
+// connection whose template declares ui_components — those rows
+// load their bundles from /api/integrations/<slug>/ instead of
+// /api/apps/<slug>/.
 export interface InstalledAppRow {
   install_id: number;
   name: string;
   version: string;
+  source?: string;
   ui_components?: UIComponentSpec[];
 }
 
@@ -67,10 +74,16 @@ function loadComponent(
   appName: string,
   entry: string,
   version: string,
+  source?: string,
 ): LazyExoticComponent<ComponentType<NativeComponentProps>> {
-  const url = version
-    ? `/api/apps/${appName}${entry}?v=${encodeURIComponent(version)}`
+  // Integrations live under a different path than apps. The server
+  // serves /api/integrations/<slug>/ui/<file> from the embedded
+  // integrations dist tree; apps come from the per-install sidecar
+  // proxy at /api/apps/<slug>/<entry>.
+  const base = source === "integration"
+    ? `/api/integrations/${appName}${entry}`
     : `/api/apps/${appName}${entry}`;
+  const url = version ? `${base}?v=${encodeURIComponent(version)}` : base;
   let cached = moduleCache.get(url);
   if (cached) return cached;
   cached = lazy(async () => {
@@ -121,7 +134,7 @@ export function ChatComponentMount({
   if (spec.slots && !spec.slots.includes(slot)) {
     return <ComponentMissing reason={`component "${comp.app}:${comp.name}" not allowed in slot "${slot}"`} />;
   }
-  const Lazy = loadComponent(app.name, spec.entry, app.version);
+  const Lazy = loadComponent(app.name, spec.entry, app.version, app.source);
   return (
     <ComponentBoundary appName={app.name} componentName={comp.name}>
       <Suspense fallback={<ComponentSkeleton />}>
@@ -241,6 +254,7 @@ export function useInstalledApps(projectId: string | null | undefined): Installe
             install_id: r.install_id ?? r.id ?? 0,
             name: String(r.name ?? ""),
             version: String(r.version ?? ""),
+            source: typeof r.source === "string" ? r.source : undefined,
             ui_components: Array.isArray(r.ui_components) ? r.ui_components : [],
           })),
         );

@@ -17,6 +17,8 @@
  * directive is a silent no-op rather than a hard error — Tailwind
  * just emits no extra classes from there. */
 @source "../../apps/mcp/*/ui/*.tsx";
+@source "../../ui-kit/src/**/*.tsx";
+@source "../../integrations/src/ui/*/*.tsx";
 
 /* ─── Theme system ─────────────────────────────────────────────────
  *
