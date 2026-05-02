@@ -963,7 +963,16 @@ function InstallModal({
 // with the resulting ids.
 type RoleIntent =
   | { kind: "connect"; slug: string; name: string; creds: Record<string, string>; authType: string }
-  | { kind: "install_app"; manifestUrl: string; appName: string };
+  | { kind: "install_app"; manifestUrl: string; appName: string }
+  // "connect_integration" is the placeholder optedIn state for an
+  // optional kind=integration role with no existing candidates. We
+  // can't set a value yet (the connection doesn't exist) and there's
+  // no work to defer to the parent Install handler — the inline
+  // <InlineConnectIntegration> form below creates the connection
+  // synchronously and replaces this with a real value via onChange.
+  // Without this kind, the checkbox visually toggles but the
+  // controlled `checked={optedIn}` snaps it right back to false.
+  | { kind: "connect_integration" };
 
 // RolePicker — one row per requires.integrations entry. Three states:
 //
@@ -1027,10 +1036,14 @@ function RolePicker({
                     manifestUrl: "",
                     appName: (role.compatible || [])[0] || "",
                   });
+                } else {
+                  // kind=integration with no candidate: stash a
+                  // placeholder intent so optedIn flips true and the
+                  // <InlineConnectIntegration> form below renders.
+                  // onConnected (parent) replaces this intent with a
+                  // real connection_id when the form submits.
+                  setIntent({ kind: "connect_integration" });
                 }
-                // kind=integration with no candidate: form below renders
-                // when optedIn flips true; the Connect button handles
-                // creation synchronously and writes the binding.
               } else {
                 onChange(null);
                 setIntent(null);
