@@ -572,6 +572,7 @@ export const integrations = {
     projectId?: string,
     oauth?: { client_id?: string; client_secret?: string },
     createdVia?: "integration" | "app_install",
+    autoMCP?: boolean,
   ) =>
     request<ConnectionInfo | ConnectCreateResponse>("POST", "/connections", {
       source: "local",
@@ -583,6 +584,7 @@ export const integrations = {
       ...(oauth?.client_id ? { client_id: oauth.client_id } : {}),
       ...(oauth?.client_secret ? { client_secret: oauth.client_secret } : {}),
       ...(createdVia ? { created_via: createdVia } : {}),
+      ...(autoMCP === false ? { auto_mcp: false } : {}),
     }),
 
   // Create an additional MCP server row over an existing connection
@@ -1636,6 +1638,15 @@ export interface ChatRow {
   updated_at: string;
 }
 
+// ChatComponent — a render hint the agent attached via the
+// chat MCP's respond(components=…) arg. The dashboard mounts each
+// entry as a UIComponent declared in the named app's manifest.
+export interface ChatComponent {
+  app: string;             // "storage"
+  name: string;            // "file-card"
+  props?: Record<string, unknown>;
+}
+
 export interface ChatMessageRow {
   id: number;
   chat_id: string;
@@ -1645,6 +1656,7 @@ export interface ChatMessageRow {
   thread_id?: string;
   status: "streaming" | "final";
   created_at: string;
+  components?: ChatComponent[];
 }
 
 export const chat = {

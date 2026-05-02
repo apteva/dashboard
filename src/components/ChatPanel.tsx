@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { marked } from "marked";
 import { chat, type ChatMessageRow, type TelemetryEvent } from "../api";
+import { useProjects } from "../hooks/useProjects";
+import {
+  ChatComponentList,
+  useInstalledApps,
+} from "./apps/chatComponents";
 import { ChatStatusDot } from "./ChatStatusDot";
 import { markChatSeen, focusChat } from "../state/chatNotifications";
 import { chatConnections } from "../state/chatConnections";
@@ -95,6 +100,15 @@ function enforceCap(m: Map<string, LiveTool>): Map<string, LiveTool> {
 // ids; reconnect fetches the exact gap via `since=<last_id>`. No
 // dedup logic, no tool-call correlation, no streaming-text extractor.
 export function ChatPanel({ instanceId, subscribe }: Props) {
+  // Project context — needed so chat-attached components can scope
+  // their fetches and event subscriptions correctly. Falls back to
+  // empty string when there's no current project (apps with chat
+  // components won't render in that state, but plain text still
+  // works).
+  const { currentProject } = useProjects();
+  const projectId = currentProject?.id ?? "";
+  const installedApps = useInstalledApps(projectId || null);
+
   const [chatId, setChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessageRow[]>([]);
   const [input, setInput] = useState("");
@@ -568,7 +582,12 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
         )}
         {timeline.map((item) =>
           item.kind === "msg" ? (
-            <MessageRow key={`m${item.msg.id}`} msg={item.msg} />
+            <MessageRow
+              key={`m${item.msg.id}`}
+              msg={item.msg}
+              projectId={projectId}
+              apps={installedApps}
+            />
           ) : (
             <ToolRow key={`t${item.tool.id}`} t={item.tool} />
           ),
@@ -675,7 +694,19 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
 //   user   — right-aligned bubble with accent tint
 //   agent  — full-width markdown (Claude.ai / ChatGPT style)
 //   system — centered status line, softer color
-function MessageRow({ msg }: { msg: ChatMessageRow }) {
+//
+// projectId + apps are injected by the parent so any ChatComponents
+// attached to the message can scope themselves and resolve to the
+// right sidecar bundle.
+function MessageRow({
+  msg,
+  projectId,
+  apps,
+}: {
+  msg: ChatMessageRow;
+  projectId: string;
+  apps: ReturnType<typeof useInstalledApps>;
+}) {
   if (msg.role === "user") {
     return (
       <div className="flex justify-end min-w-0">
@@ -692,7 +723,7 @@ function MessageRow({ msg }: { msg: ChatMessageRow }) {
       </div>
     );
   }
-  // Agent — markdown.
+  // Agent — markdown + optional rich attachments.
   const html = renderMarkdown(msg.content);
   return (
     <div className="min-w-0">
@@ -701,6 +732,13 @@ function MessageRow({ msg }: { msg: ChatMessageRow }) {
         dangerouslySetInnerHTML={{ __html: html }}
       />
       {msg.status === "streaming" && <span className="tool-cursor">▊</span>}
+      {msg.components && msg.components.length > 0 && (
+        <ChatComponentList
+          components={msg.components}
+          apps={apps}
+          projectId={projectId}
+        />
+      )}
     </div>
   );
 }

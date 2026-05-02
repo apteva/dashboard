@@ -1,10 +1,17 @@
-// useAppEvents — generic SDK-level event subscription for the dashboard.
+// useAppEvents — shared SDK-level event subscription for the dashboard.
 //
 // Every Apteva app emits onto a per-(app, project_id) bus via
 // ctx.Emit(); this hook is the dashboard side of that pipe. Pass
-// the app name + project id + a handler; the hook owns one
-// EventSource and reconnects with `since=<lastSeq>` automatically
-// so a brief network drop never silently misses an event.
+// the app name + project id + a handler; the hook joins a SHARED
+// EventSource for that (app, project_id) pair so 30 chat components
+// + 1 panel all subscribed to "storage" share one network connection.
+//
+// Why shared: components attached to chat messages can pile up
+// (long conversation = many components), and per-component
+// EventSources would blow past per-domain connection limits and
+// chew memory. Hoisting to one connection per (app, project_id)
+// pair keeps cost bounded regardless of how many subscribers
+// the dashboard has open at once.
 //
 // Dedup is on `seq`. The platform's ring buffer holds the last 256
 // events per (app, project) for replay; longer gaps are the app's
@@ -28,6 +35,90 @@ export interface UseAppEventsOptions {
   enabled?: boolean;
 }
 
+// ─── Multiplexer ─────────────────────────────────────────────────────
+
+type Listener = (ev: AppEventEnvelope) => void;
+
+interface Channel {
+  es: EventSource | null;
+  listeners: Set<Listener>;
+  lastSeq: number;
+  reconnectTimer: number | null;
+  closing: boolean;
+}
+
+const channels = new Map<string, Channel>();
+
+function channelKey(app: string, projectId: string): string {
+  return `${app}::${projectId}`;
+}
+
+function ensureChannel(app: string, projectId: string): Channel {
+  const key = channelKey(app, projectId);
+  let ch = channels.get(key);
+  if (ch) return ch;
+  ch = {
+    es: null,
+    listeners: new Set(),
+    lastSeq: 0,
+    reconnectTimer: null,
+    closing: false,
+  };
+  channels.set(key, ch);
+  openConnection(app, projectId, ch);
+  return ch;
+}
+
+function openConnection(app: string, projectId: string, ch: Channel): void {
+  if (ch.closing) return;
+  const url =
+    `/api/app-events/${encodeURIComponent(app)}` +
+    `?project_id=${encodeURIComponent(projectId)}` +
+    (ch.lastSeq > 0 ? `&since=${ch.lastSeq}` : "");
+  const es = new EventSource(url, { withCredentials: true });
+  ch.es = es;
+  es.onmessage = (e) => {
+    try {
+      const ev = JSON.parse(e.data) as AppEventEnvelope;
+      if (ev.seq <= ch.lastSeq) return; // dedup across reconnects
+      ch.lastSeq = ev.seq;
+      // Snapshot the listeners so a listener that removes itself
+      // mid-iteration doesn't skip its sibling.
+      for (const fn of [...ch.listeners]) {
+        try {
+          fn(ev);
+        } catch {
+          // a misbehaving listener shouldn't tank the others
+        }
+      }
+    } catch {
+      // ignore malformed frame
+    }
+  };
+  es.onerror = () => {
+    if (es.readyState === EventSource.CLOSED && !ch.closing) {
+      if (ch.reconnectTimer) window.clearTimeout(ch.reconnectTimer);
+      ch.reconnectTimer = window.setTimeout(() => {
+        ch.reconnectTimer = null;
+        openConnection(app, projectId, ch);
+      }, 2000);
+    }
+  };
+}
+
+function maybeCloseChannel(app: string, projectId: string): void {
+  const key = channelKey(app, projectId);
+  const ch = channels.get(key);
+  if (!ch) return;
+  if (ch.listeners.size > 0) return;
+  ch.closing = true;
+  if (ch.reconnectTimer) window.clearTimeout(ch.reconnectTimer);
+  if (ch.es) ch.es.close();
+  channels.delete(key);
+}
+
+// ─── Public hook ─────────────────────────────────────────────────────
+
 export function useAppEvents<T = unknown>(
   app: string,
   projectId: string | undefined | null,
@@ -42,47 +133,19 @@ export function useAppEvents<T = unknown>(
 
   useEffect(() => {
     if (!enabled || !app || !projectId) return;
-    let lastSeq = 0;
-    let es: EventSource | null = null;
-    let cancelled = false;
-    let reconnectTimer: number | null = null;
-
-    const connect = () => {
-      if (cancelled) return;
-      const url =
-        `/api/app-events/${encodeURIComponent(app)}` +
-        `?project_id=${encodeURIComponent(projectId)}` +
-        (lastSeq > 0 ? `&since=${lastSeq}` : "");
-      es = new EventSource(url, { withCredentials: true });
-
-      es.onmessage = (e) => {
-        try {
-          const ev = JSON.parse(e.data) as AppEventEnvelope<T>;
-          if (ev.seq <= lastSeq) return; // dedup
-          lastSeq = ev.seq;
-          handlerRef.current(ev);
-        } catch {
-          // ignore malformed frame
-        }
-      };
-
-      es.onerror = () => {
-        // EventSource auto-reconnects on transient errors. If the
-        // connection ends up CLOSED (auth failure, server gone) we
-        // recreate it with the latest seq after a small backoff so
-        // the gap stays bounded.
-        if (es && es.readyState === EventSource.CLOSED) {
-          if (reconnectTimer) window.clearTimeout(reconnectTimer);
-          reconnectTimer = window.setTimeout(connect, 2000);
-        }
-      };
-    };
-
-    connect();
+    const ch = ensureChannel(app, projectId);
+    const listener: Listener = (ev) => handlerRef.current(ev as AppEventEnvelope<T>);
+    ch.listeners.add(listener);
     return () => {
-      cancelled = true;
-      if (reconnectTimer) window.clearTimeout(reconnectTimer);
-      if (es) es.close();
+      ch.listeners.delete(listener);
+      maybeCloseChannel(app, projectId);
     };
   }, [app, projectId, enabled]);
 }
+
+// ─── Test helpers ────────────────────────────────────────────────────
+// Exposed for the unit test; production callers should ignore.
+export const __testHelpers = {
+  channels,
+  channelKey,
+};
