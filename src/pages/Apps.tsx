@@ -897,7 +897,10 @@ function InstallModal({
 
   return (
     <Modal open={open} onClose={onClose} width="max-w-lg">
-      <div className="p-5 space-y-4">
+      {/* flex-1 + overflow-y-auto keeps the body scrollable inside the
+          Modal's max-h-[90vh] container — the Preview-and-configure step
+          can grow tall once integration credential forms expand. */}
+      <div className="p-5 space-y-4 flex-1 overflow-y-auto min-h-0">
         <h3 className="text-text text-base font-bold">Install an app</h3>
 
         {!preview ? (
