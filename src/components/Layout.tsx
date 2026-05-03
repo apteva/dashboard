@@ -130,6 +130,7 @@ export function Layout() {
   // Settings) at the bottom.
   const tailNav = [
     { to: "/apps", label: "Apps" },
+    { to: "/skills", label: "Skills" },
     { to: "/analytics", label: "Analytics" },
     { to: "/settings", label: "Settings" },
   ];

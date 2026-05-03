@@ -1742,3 +1742,46 @@ export interface UnreadSummaryRow {
   latest_at: string;
   last_seen_id: number;
 }
+
+// --- Skills -----------------------------------------------------------
+
+export interface Skill {
+  id: number;
+  slug: string;
+  name: string;
+  description: string;
+  body: string;
+  source: "app" | "user" | "builtin";
+  install_id?: number;
+  project_id: string;
+  command?: string;
+  metadata?: Record<string, unknown>;
+  enabled: boolean;
+  version: string;
+  created_at: string;
+  updated_at: string;
+  app_name?: string;
+}
+
+export const skills = {
+  list: (projectId?: string) => {
+    const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    return request<Skill[]>("GET", `/skills${q}`);
+  },
+  get: (id: number) => request<Skill>("GET", `/skills/${id}`),
+  create: (input: {
+    name: string;
+    description: string;
+    body: string;
+    command?: string;
+    project_id: string;
+    metadata?: Record<string, unknown>;
+  }) => request<{ id: number }>("POST", "/skills", input),
+  update: (
+    id: number,
+    patch: Partial<Pick<Skill, "name" | "description" | "body" | "command" | "metadata">>,
+  ) => request<{ updated: number }>("PUT", `/skills/${id}`, patch),
+  remove: (id: number) => request<{ deleted: number }>("DELETE", `/skills/${id}`),
+  setEnabled: (id: number, enabled: boolean) =>
+    request<{ enabled: boolean }>("PUT", `/skills/${id}/enabled`, { enabled }),
+};
