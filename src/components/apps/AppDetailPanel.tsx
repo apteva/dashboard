@@ -14,6 +14,7 @@ import type { AppRow, AppSurfaces, AppUIComponent, MarketplaceEntry } from "../.
 import { useProjects } from "../../hooks/useProjects";
 import { AppSurfaceBadges } from "./AppSurfaceBadges";
 import { ChatComponentMount, type InstalledAppRow } from "./chatComponents";
+import { SettingsSection } from "./SettingsSection";
 
 type Mode = "marketplace" | "installed";
 
@@ -272,22 +273,31 @@ export function AppDetailPanel(props: Props) {
             </section>
           )}
 
-          {s?.config_keys && s.config_keys.length > 0 && (
-            <section>
-              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
-                Configuration
-              </h3>
-              <p className="text-text-dim text-xs mb-1">
-                Asks for these at install time:
-              </p>
-              <ul className="space-y-1 text-sm font-mono">
-                {s.config_keys.map((k) => (
-                  <li key={k} className="text-text-dim">
-                    {k}
-                  </li>
-                ))}
-              </ul>
-            </section>
+          {/* Installed mode: live editable settings form. Read from
+              GET /api/apps/installs/<id>/config which returns the schema
+              + current values; saves via PUT to the same path. The
+              read-only "Configuration" list (config_keys) only shows up
+              for marketplace previews, where there's no install yet. */}
+          {props.mode === "installed" && view.installId !== undefined ? (
+            <SettingsSection installId={view.installId} />
+          ) : (
+            s?.config_keys && s.config_keys.length > 0 && (
+              <section>
+                <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+                  Configuration
+                </h3>
+                <p className="text-text-dim text-xs mb-1">
+                  Asks for these at install time:
+                </p>
+                <ul className="space-y-1 text-sm font-mono">
+                  {s.config_keys.map((k) => (
+                    <li key={k} className="text-text-dim">
+                      {k}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )
           )}
 
           {(view.tags && view.tags.length > 0) && (
