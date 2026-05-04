@@ -1785,3 +1785,28 @@ export const skills = {
   setEnabled: (id: number, enabled: boolean) =>
     request<{ enabled: boolean }>("PUT", `/skills/${id}/enabled`, { enabled }),
 };
+
+// --- Platform self-update status (apteva CLI / server / core / dashboard
+// / integrations). The action itself lives in the `apteva update` CLI
+// subcommand; the dashboard surface here is purely informational. ---
+
+export interface PlatformComponentStatus {
+  name: string;
+  current: string;
+  latest: string;
+  update_available: boolean;
+}
+
+export interface PlatformStatus {
+  polled_at: string;
+  bundle_version?: string;
+  release_notes_url?: string;
+  components: PlatformComponentStatus[];
+  update_available: boolean;
+  error?: string;
+}
+
+export const platform = {
+  status:  () => request<PlatformStatus>("GET", "/platform-status"),
+  refresh: () => request<PlatformStatus>("POST", "/platform-status/refresh"),
+};

@@ -6,11 +6,14 @@ import { AccountMenu } from "./AccountMenu";
 import { NotificationsTray } from "./NotificationsTray";
 import { startChatNotifications } from "../state/chatNotifications";
 import { chatConnections } from "../state/chatConnections";
-import { apps } from "../api";
+import { apps, platform, type PlatformStatus } from "../api";
 
 export function Layout() {
   const [version, setVersion] = useState("");
   const [versionTip, setVersionTip] = useState("");
+  const [platformStatus, setPlatformStatus] = useState<PlatformStatus | null>(null);
+  const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const { projects, currentProject, setCurrentProject } = useProjects();
   const { user, logout } = useAuth();
 
@@ -46,6 +49,27 @@ export function Layout() {
       chatConnections.stopAll();
     }
   }, [user]);
+
+  // Pull the platform-update status so the sidebar version footer can
+  // show "update available" inline with the current version. The
+  // server polls upstream every few hours; we re-read on dashboard
+  // load so a refresh after an update lands shows the new state.
+  useEffect(() => {
+    if (!user || user === false) return;
+    platform.status().then(setPlatformStatus).catch(() => {});
+  }, [user]);
+
+  const refreshPlatformStatus = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const next = await platform.refresh();
+      setPlatformStatus(next);
+    } catch {
+      /* keep last view; error surfaces server-side in `error` field */
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
 
   useEffect(() => {
     // /version now returns the full component breakdown — apteva (umbrella),
@@ -197,16 +221,35 @@ export function Layout() {
         )}
 
         {version && (
-          <div className="px-5 py-3 border-t border-border">
+          <div className="px-5 py-3 border-t border-border flex items-center gap-2">
             <span
               className="text-text-muted text-xs"
               title={versionTip}
             >
               v{version}
             </span>
+            {platformStatus?.update_available && (
+              <button
+                type="button"
+                onClick={() => setUpdateModalOpen(true)}
+                className="text-xs px-2 py-0.5 rounded bg-yellow/15 text-yellow hover:bg-yellow/25 transition-colors"
+                title="Click for update details"
+              >
+                update available
+              </button>
+            )}
           </div>
         )}
       </nav>
+
+      {updateModalOpen && platformStatus && (
+        <PlatformUpdateModal
+          status={platformStatus}
+          refreshing={refreshing}
+          onRefresh={refreshPlatformStatus}
+          onClose={() => setUpdateModalOpen(false)}
+        />
+      )}
 
       {/* Main content */}
       <main className="flex-1 overflow-hidden flex flex-col">
@@ -220,6 +263,110 @@ export function Layout() {
           <Outlet />
         </div>
       </main>
+    </div>
+  );
+}
+
+// Small inline modal for the "update available" pill. The platform
+// status is read-only here — we don't trigger the update from the
+// dashboard. The instruction copy adapts to the install method (npx,
+// docker, source, standalone tarball); we can only guess from the
+// browser, so we list the canonical commands and let the operator
+// pick the relevant one.
+function PlatformUpdateModal(props: {
+  status: PlatformStatus;
+  refreshing: boolean;
+  onRefresh: () => void;
+  onClose: () => void;
+}) {
+  const { status, refreshing, onRefresh, onClose } = props;
+  const polled = status.polled_at
+    ? new Date(status.polled_at).toLocaleString()
+    : "never";
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-bg border border-border rounded-lg shadow-xl max-w-lg w-full p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-medium">Platform update available</h2>
+            {status.bundle_version && (
+              <p className="text-text-muted text-xs mt-0.5">
+                Bundle v{status.bundle_version}
+                {status.release_notes_url && (
+                  <>
+                    {" · "}
+                    <a
+                      href={status.release_notes_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-accent hover:underline"
+                    >
+                      release notes ↗
+                    </a>
+                  </>
+                )}
+              </p>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            className="text-text-muted hover:text-text text-xl leading-none"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="space-y-1 mb-4">
+          {status.components.map((c) => (
+            <div
+              key={c.name}
+              className="flex items-center justify-between text-sm py-1 border-b border-border last:border-b-0"
+            >
+              <span className="font-mono text-xs">{c.name}</span>
+              <span className="text-text-muted">
+                v{c.current || "?"}
+                {c.update_available && c.latest && (
+                  <span className="text-yellow"> → v{c.latest}</span>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="bg-border/30 rounded p-3 mb-4 text-xs">
+          <div className="font-medium mb-2">To update, run one of:</div>
+          <pre className="font-mono text-text-muted whitespace-pre-wrap leading-relaxed">{`# standalone tarball / global install
+apteva update
+
+# npm install
+npm install -g apteva@latest
+
+# Docker
+docker pull apteva:latest && docker compose up -d`}</pre>
+        </div>
+
+        <div className="flex items-center justify-between text-xs text-text-muted">
+          <span>Last checked: {polled}</span>
+          <button
+            onClick={onRefresh}
+            disabled={refreshing}
+            className="px-3 py-1 rounded border border-border hover:bg-border/30 transition-colors disabled:opacity-50"
+          >
+            {refreshing ? "Checking…" : "Check now"}
+          </button>
+        </div>
+
+        {status.error && (
+          <div className="mt-3 text-xs text-red">Error: {status.error}</div>
+        )}
+      </div>
     </div>
   );
 }
