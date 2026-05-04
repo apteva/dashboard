@@ -93,6 +93,13 @@ export function Integrations() {
   const [selectedLocalApp, setSelectedLocalApp] = useState<AppDetail | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [connName, setConnName] = useState("");
+  // auto_mcp opt-in. Default true (preserves the historical behavior:
+  // connecting an integration auto-creates an mcp_servers row exposing
+  // its tools to every agent in the project). Operator can uncheck to
+  // create the connection silently — useful when the integration is
+  // intended for a specific app (e.g. Facebook for Social) rather than
+  // for general agent use.
+  const [autoMCP, setAutoMCP] = useState(true);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState("");
 
@@ -218,6 +225,7 @@ export function Integrations() {
     setOAuthClientSecret("");
     setOAuthClientResolved(false);
     setOAuthCallbackURL("");
+    setAutoMCP(true);
 
     // For OAuth2 apps, find out whether the user already registered an
     // OAuth client for this app+project. If yes, hide the form. If no,
@@ -256,6 +264,8 @@ export function Integrations() {
         explicitAuthType,
         currentProject?.id,
         oauthCreds,
+        undefined,        // createdVia — default 'integration'
+        autoMCP,          // operator's expose-to-agents choice
       );
       // OAuth2 apps return { connection, redirect_url } — open the popup and
       // start polling the pending connection. Non-OAuth apps return the
@@ -1173,6 +1183,21 @@ export function Integrations() {
                     />
                   </div>
                 ))}
+
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoMCP}
+                  onChange={(e) => setAutoMCP(e.target.checked)}
+                  className="mt-1 h-4 w-4 rounded border-border bg-bg-input accent-accent"
+                />
+                <span className="text-sm text-text-muted">
+                  Expose tools to agents
+                  <span className="block text-xs text-text-dim mt-0.5">
+                    When checked, an MCP server is auto-created so every agent in this project can call this integration's tools. Uncheck if the integration is only meant for an app (e.g. Social) and shouldn't be exposed agent-wide.
+                  </span>
+                </span>
+              </label>
 
               {error && <div className="text-red text-sm">{error}</div>}
 

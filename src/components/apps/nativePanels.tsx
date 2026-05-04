@@ -37,11 +37,21 @@ const cache = new Map<string, LazyExoticComponent<ComponentType<NativePanelProps
 export function resolvePanelComponent(
   appName: string,
   entry: string,
+  version?: string,
 ): ComponentType<NativePanelProps> | null {
   if (!entry) return null;
   if (!isModuleEntry(entry)) return null;
 
-  const url = `/api/apps/${appName}${entry}`;
+  // Append the install's version as a cache buster. Without it,
+  // SocialPanel.mjs (and every other panel module) keeps the same
+  // URL across version bumps — browsers cache ESM modules
+  // aggressively (memory cache + HTTP cache), so users running on a
+  // freshly-upgraded sidecar would still see the old panel until they
+  // hard-refresh. The version is opaque here; any string change
+  // forces a re-import.
+  const url = version
+    ? `/api/apps/${appName}${entry}?v=${encodeURIComponent(version)}`
+    : `/api/apps/${appName}${entry}`;
   let cached = cache.get(url);
   if (!cached) {
     cached = lazy(async () => {

@@ -48,6 +48,7 @@ export function AppPanels({
                 label: p.label,
                 icon: p.icon,
                 entry: p.entry,
+                version: r.version,
               });
             }
           }
@@ -88,7 +89,7 @@ function AppPanelMount({
   instanceId?: number;
   projectId: string;
 }) {
-  const Native = resolvePanelComponent(panel.appName, panel.entry);
+  const Native = resolvePanelComponent(panel.appName, panel.entry, panel.version);
   if (Native) {
     return (
       <Native
@@ -110,6 +111,7 @@ export interface PanelInstance {
   label: string;
   icon: string;
   entry: string;
+  version: string;
 }
 
 function AppPanelFrame({ panel, instanceId }: { panel: PanelInstance; instanceId?: number }) {
