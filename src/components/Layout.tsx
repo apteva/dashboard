@@ -98,12 +98,27 @@ export function Layout() {
       .catch(() => {});
   }, []);
 
-  // Built-in nav entries always present.
-  const baseNav = [
+  // Sidebar is split into three semantic groups so the user can tell
+  // platform-built surfaces from installed-app surfaces at a glance:
+  //
+  //   primaryNav — the dashboard's daily verbs (no section label;
+  //                this group IS the platform's default home).
+  //   appNav     — pages contributed by installed apps (header: APPS).
+  //                Each entry carries the app's manifest icon so the
+  //                visual cue matches the Apps page.
+  //   manageNav  — platform-administration verbs (header: MANAGE).
+  //                Things you do TO the platform, not WITH it.
+  const primaryNav = [
     { to: "/", label: "Overview" },
     { to: "/agents", label: "Agents" },
     { to: "/chat", label: "Chat" },
+  ];
+  const manageNav = [
     { to: "/integrations", label: "Integrations" },
+    { to: "/apps", label: "Apps" },
+    { to: "/skills", label: "Skills" },
+    { to: "/analytics", label: "Analytics" },
+    { to: "/settings", label: "Settings" },
   ];
   // App-contributed entries from any installed app declaring a
   // `provides.ui_panels` entry with slot=project.page. Each one
@@ -117,12 +132,12 @@ export function Layout() {
   // rows, so a freshly-installed app's sidebar entry appears the
   // instant the install flips to running. A 5s background poll is
   // there as a safety net for events we somehow miss.
-  const [appNav, setAppNav] = useState<{ to: string; label: string }[]>([]);
+  const [appNav, setAppNav] = useState<{ to: string; label: string; icon?: string }[]>([]);
   const refreshAppNav = useCallback(() => {
     apps
       .list(currentProject?.id)
       .then((rows) => {
-        const out: { to: string; label: string }[] = [];
+        const out: { to: string; label: string; icon?: string }[] = [];
         for (const r of rows) {
           if (r.status !== "running") continue;
           for (const p of r.ui_panels || []) {
@@ -130,6 +145,7 @@ export function Layout() {
               out.push({
                 to: `/apps/${r.name}/page`,
                 label: p.label || r.display_name || r.name,
+                icon: r.icon,
               });
             }
           }
@@ -149,16 +165,9 @@ export function Layout() {
     };
   }, [refreshAppNav]);
 
-  // Sidebar nav: base entries, then app-contributed pages, then the
-  // platform-management entries (Apps marketplace, Analytics,
-  // Settings) at the bottom.
-  const tailNav = [
-    { to: "/apps", label: "Apps" },
-    { to: "/skills", label: "Skills" },
-    { to: "/analytics", label: "Analytics" },
-    { to: "/settings", label: "Settings" },
-  ];
-  const navItems = [...baseNav, ...appNav, ...tailNav];
+  // Flat list — only used for "is this entry's path a prefix of
+  // another's" active-link disambiguation. Doesn't change rendering.
+  const navItems = [...primaryNav, ...appNav, ...manageNav];
 
   return (
     <div className="flex h-screen bg-bg">
@@ -188,31 +197,45 @@ export function Layout() {
           </div>
         )}
 
-        <div className="flex-1 py-3">
-          {navItems.map((item) => {
-            // Use exact-match for any nav entry that could be a prefix
-            // of a more-specific one. Without this, /apps lights up as
-            // active when you're on /apps/storage/page (and same for /).
-            const isPrefixOfAnother = navItems.some(
-              (other) => other !== item && other.to.startsWith(item.to + (item.to === "/" ? "" : "/")),
-            );
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.to === "/" || isPrefixOfAnother}
-                className={({ isActive }) =>
-                  `block px-5 py-3 text-sm transition-colors ${
-                    isActive
-                      ? "text-accent bg-bg-hover border-r-2 border-accent"
-                      : "text-text-muted hover:text-text hover:bg-bg-hover"
-                  }`
-                }
-              >
-                {item.label}
-              </NavLink>
-            );
-          })}
+        <div className="flex-1 py-3 overflow-y-auto">
+          {/* Primary group — the platform's daily-use verbs.
+              No section label: this group IS the dashboard's default. */}
+          {primaryNav.map((item) => (
+            <SidebarLink
+              key={item.to}
+              item={item}
+              navItems={navItems}
+            />
+          ))}
+
+          {/* Apps group — only rendered when ≥1 installed app has a
+              project.page panel. Header label tells the user these are
+              contributed by sidecars, and each entry carries the app's
+              own icon to reinforce the "third-party" visual cue. */}
+          {appNav.length > 0 && (
+            <>
+              <SidebarSectionHeader label="APPS" />
+              {appNav.map((item) => (
+                <SidebarLink
+                  key={item.to}
+                  item={item}
+                  navItems={navItems}
+                  iconUrl={item.icon}
+                />
+              ))}
+            </>
+          )}
+
+          {/* Manage group — platform-administration verbs. Things you
+              do TO the platform, not WITH the platform's daily surfaces. */}
+          <SidebarSectionHeader label="MANAGE" />
+          {manageNav.map((item) => (
+            <SidebarLink
+              key={item.to}
+              item={item}
+              navItems={navItems}
+            />
+          ))}
         </div>
         {/* Logged-in user + account menu (change password, logout). Rendered
             above the version line so it sits in the same footer area. */}
@@ -368,5 +391,74 @@ docker pull apteva:latest && docker compose up -d`}</pre>
         )}
       </div>
     </div>
+  );
+}
+
+// SidebarSectionHeader — the small uppercase label that delineates
+// nav groups (APPS / MANAGE). Same typographic treatment Linear, VS
+// Code, and Slack use for sidebar groupings: tiny, low-contrast,
+// generous top margin so the group reads as a separate band.
+function SidebarSectionHeader({ label }: { label: string }) {
+  return (
+    <div className="px-5 mt-5 mb-1 text-[10px] font-medium tracking-wider text-text-dim/70 uppercase">
+      {label}
+    </div>
+  );
+}
+
+// SidebarLink — a NavLink with optional inline app-icon prefix, plus
+// the same end-match behaviour the original flat list used (avoids
+// /apps lighting up as active when you're on /apps/storage/page).
+function SidebarLink({
+  item,
+  navItems,
+  iconUrl,
+}: {
+  item: { to: string; label: string };
+  navItems: { to: string; label: string }[];
+  iconUrl?: string;
+}) {
+  const isPrefixOfAnother = navItems.some(
+    (other) => other !== item && other.to.startsWith(item.to + (item.to === "/" ? "" : "/")),
+  );
+  return (
+    <NavLink
+      to={item.to}
+      end={item.to === "/" || isPrefixOfAnother}
+      className={({ isActive }) =>
+        `flex items-center gap-2 px-5 py-2 text-sm transition-colors ${
+          isActive
+            ? "text-accent bg-bg-hover border-r-2 border-accent"
+            : "text-text-muted hover:text-text hover:bg-bg-hover"
+        }`
+      }
+    >
+      {iconUrl !== undefined && <SidebarAppIcon url={iconUrl} name={item.label} />}
+      <span className="truncate">{item.label}</span>
+    </NavLink>
+  );
+}
+
+// SidebarAppIcon — 16×16 thumbnail of the app's manifest icon, with
+// the same broken-image fallback Apps.tsx's AppIcon uses (single
+// uppercase letter on a muted square). Kept as its own component so
+// each entry has its own broken-state — a 404 on Storage's icon
+// shouldn't make every app render the letter fallback.
+function SidebarAppIcon({ url, name }: { url?: string; name: string }) {
+  const [broken, setBroken] = useState(false);
+  if (!url || broken) {
+    return (
+      <span className="w-4 h-4 rounded-sm bg-bg-input text-text-dim flex items-center justify-center text-[10px] flex-shrink-0">
+        {name.charAt(0).toUpperCase()}
+      </span>
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt=""
+      className="w-4 h-4 rounded-sm flex-shrink-0"
+      onError={() => setBroken(true)}
+    />
   );
 }
