@@ -576,11 +576,21 @@ function AppCard({
 
   // Vertical tile, mirrors MarketplaceCard. Top: icon + name +
   // version. Middle: pills (status, scope, builtin) + description
-  // OR live install progress. Bottom: Open button (when there's a
-  // project.page panel) + Uninstall, or the inline mount/remove
-  // confirmation when one of those flows is active.
+  // OR live install progress. Bottom: Open button (sidecar panel
+  // page or static-app mount) + Uninstall, or the inline mount/
+  // remove confirmation when one of those flows is active.
   const projectPagePanel = (app.ui_panels || []).find((p) => p.slot === "project.page");
-  const showOpen = app.status === "running" && !!projectPagePanel;
+  // Static UI apps (kind=static + provides.ui_app) live at an
+  // absolute URL on the same origin as the dashboard. The server
+  // resolves the per-install mount path (config.mount_path overrides
+  // the manifest default) and emits it as surfaces.ui_app_mount.
+  const staticAppMount =
+    app.status === "running" &&
+    app.surfaces?.ui_app &&
+    app.surfaces?.ui_app_mount
+      ? app.surfaces.ui_app_mount
+      : null;
+  const showOpen = app.status === "running" && (!!projectPagePanel || !!staticAppMount);
 
   return (
     <div
@@ -659,13 +669,28 @@ function AppCard({
         ) : (
           <>
             {showOpen && (
-              <Link
-                to={`/apps/${app.name}/page`}
-                onClick={(e) => e.stopPropagation()}
-                className="w-full px-3 py-1.5 border border-accent rounded text-xs text-accent hover:bg-accent hover:text-bg transition-colors text-center"
-              >
-                Open
-              </Link>
+              staticAppMount ? (
+                // Static UI app — full navigation to the absolute URL,
+                // not a router push (the SPA router doesn't own /demo,
+                // /client, etc., and we want a fresh page anyway).
+                <a
+                  href={staticAppMount.endsWith("/") ? staticAppMount : staticAppMount + "/"}
+                  target="_blank"
+                  rel="noopener"
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full px-3 py-1.5 border border-accent rounded text-xs text-accent hover:bg-accent hover:text-bg transition-colors text-center"
+                >
+                  Open ↗
+                </a>
+              ) : (
+                <Link
+                  to={`/apps/${app.name}/page`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full px-3 py-1.5 border border-accent rounded text-xs text-accent hover:bg-accent hover:text-bg transition-colors text-center"
+                >
+                  Open
+                </Link>
+              )
             )}
             <div className="flex items-center gap-1.5">
               {updateAvailable && (
@@ -737,6 +762,19 @@ function InstallModal({
   const [installing, setInstalling] = useState(false);
   const [config, setConfig] = useState<Record<string, string>>({});
   const [scope, setScope] = useState<"project" | "global">("project");
+
+  // Reconcile scope against what the app actually supports as soon as
+  // we see a preview. Without this, a global-only app would inherit
+  // the "project" default, the picker would be hidden (length===1
+  // branch below), and Install would POST projectId to a server that
+  // (correctly) rejects it with "app does not support scope project".
+  useEffect(() => {
+    if (!preview) return;
+    const supported = preview.manifest.scopes;
+    if (!supported.includes(scope) && supported.length > 0) {
+      setScope(supported[0] as "project" | "global");
+    }
+  }, [preview, scope]);
   // bindings: role → connection_id | install_id | null. Built by the
   // role pickers; sent verbatim to apps.install on submit.
   const [bindings, setBindings] = useState<Record<string, number | null>>({});
@@ -1337,26 +1375,40 @@ function PreviewAndConfigure({
         </div>
       )}
 
-      {m.scopes.length > 1 && (
+      {m.scopes.length > 0 && (
         <div>
           <div className="text-text-muted text-xs mb-1">Install scope</div>
-          <div className="flex gap-2">
-            {(["project", "global"] as const).map((s) =>
-              m.scopes.includes(s) ? (
-                <button
-                  key={s}
-                  onClick={() => setScope(s)}
-                  className={`px-3 py-1 text-xs rounded border ${
-                    scope === s
-                      ? "border-accent text-accent bg-accent/10"
-                      : "border-border text-text-muted"
-                  }`}
-                >
-                  {s}
-                </button>
-              ) : null,
-            )}
-          </div>
+          {m.scopes.length > 1 ? (
+            <div className="flex gap-2">
+              {(["project", "global"] as const).map((s) =>
+                m.scopes.includes(s) ? (
+                  <button
+                    key={s}
+                    onClick={() => setScope(s)}
+                    className={`px-3 py-1 text-xs rounded border ${
+                      scope === s
+                        ? "border-accent text-accent bg-accent/10"
+                        : "border-border text-text-muted"
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ) : null,
+              )}
+            </div>
+          ) : (
+            // Single-scope app: show as a non-interactive label so the
+            // operator knows what's about to happen instead of the
+            // picker silently disappearing.
+            <div className="text-text-muted text-xs">
+              <span className="px-2 py-0.5 rounded border border-border bg-bg-muted font-mono">
+                {m.scopes[0]}
+              </span>
+              <span className="ml-2 italic">
+                this app only supports {m.scopes[0]} scope
+              </span>
+            </div>
+          )}
         </div>
       )}
 
