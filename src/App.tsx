@@ -5,6 +5,7 @@ import { ThemeProvider } from "./hooks/useTheme";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
 import { Connect } from "./pages/Connect";
+import { Onboarding } from "./pages/Onboarding";
 import { Dashboard } from "./pages/Dashboard";
 import { Chat } from "./pages/Chat";
 import { Instances } from "./pages/Instances";
@@ -31,6 +32,20 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// OnboardingGate — wraps the main authenticated routes. Once a user
+// finishes /auth/register they have onboarded=false; we bounce them to
+// /onboarding until the welcome flow stamps onboarded_at server-side.
+// Sits inside ProtectedRoute (so unauthenticated still goes to /login)
+// but outside it for the /onboarding route itself, so the flow is
+// reachable.
+function OnboardingGate({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  if (user && !user.onboarded) {
+    return <Navigate to="/onboarding" replace />;
+  }
+  return <>{children}</>;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -40,11 +55,21 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/connect/:token" element={<Connect />} />
           <Route
+            path="/onboarding"
             element={
               <ProtectedRoute>
-                <ProjectProvider>
-                  <Layout />
-                </ProjectProvider>
+                <Onboarding />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            element={
+              <ProtectedRoute>
+                <OnboardingGate>
+                  <ProjectProvider>
+                    <Layout />
+                  </ProjectProvider>
+                </OnboardingGate>
               </ProtectedRoute>
             }
           >

@@ -1,11 +1,11 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
 import { AccountMenu } from "./AccountMenu";
 import { NotificationsTray } from "./NotificationsTray";
 import { startChatNotifications } from "../state/chatNotifications";
-import { chatConnections } from "../state/chatConnections";
+import { chatConnections, purgeLegacyChatConnectedKeys } from "../state/chatConnections";
 import { apps, platform, type PlatformStatus } from "../api";
 
 export function Layout() {
@@ -28,13 +28,18 @@ export function Layout() {
   // closes; explicit logout calls chatConnections.stopAll() directly
   // (see the logout button below).
   //
+  // Chat-connection intent is session-only now — no resume from disk
+  // (see chatConnections.ts header). We do, however, purge legacy
+  // `chat.connected.<id>` localStorage keys from the old persistent
+  // design once per boot so they don't sit around forever.
+  //
   // The notifications driver (startChatNotifications) is safe to bounce
   // — its cleanup is just an SSE close + localStorage listener removal,
   // no agent-visible side effects.
   useEffect(() => {
     if (!user || user === false) return;
+    purgeLegacyChatConnectedKeys();
     const stopNotifs = startChatNotifications();
-    chatConnections.resumeFromStorage();
     return () => {
       stopNotifs();
     };
@@ -47,8 +52,29 @@ export function Layout() {
   useEffect(() => {
     if (user === false) {
       chatConnections.stopAll();
+      // Tear down the telemetry SSE on logout for the same reason
+      // we tear down chat: the user is gone, no need to hold a
+      // socket open. setProjectId(null) is the documented
+      // "disconnect" path.
+      if (typeof window !== "undefined") {
+        window.__aptevaTelemetryBus?.setProjectId(null);
+      }
     }
   }, [user]);
+
+  // Bind the telemetry bus to the active project. The bus opens a
+  // single /telemetry/stream?all=1&project_id=… SSE and multiplexes
+  // events out to every component that calls
+  // useTelemetryEvents() / window.__aptevaTelemetryBus.subscribe().
+  // Per-page consumers (chat thinking strip, ActivityFeed, fleet
+  // views) reuse this one stream instead of each opening their own,
+  // which used to be the dominant contributor to the connection
+  // budget on the dashboard.
+  useEffect(() => {
+    if (!user || user === false) return;
+    if (typeof window === "undefined") return;
+    window.__aptevaTelemetryBus?.setProjectId(currentProject?.id ?? null);
+  }, [user, currentProject?.id]);
 
   // Pull the platform-update status so the sidebar version footer can
   // show "update available" inline with the current version. The
@@ -133,26 +159,52 @@ export function Layout() {
   // instant the install flips to running. A 5s background poll is
   // there as a safety net for events we somehow miss.
   const [appNav, setAppNav] = useState<{ to: string; label: string; icon?: string }[]>([]);
+  // Fetch epoch — every effect run bumps this and only the latest run
+  // is allowed to write state. Without this, an in-flight unfiltered
+  // fetch (currentProject not yet hydrated) can race with a later
+  // project-filtered fetch and "win" by resolving second, leaving the
+  // sidebar showing every project's panels duplicated. The duplicate-
+  // Files-entry bug came from exactly this race.
+  const fetchEpochRef = useRef(0);
   const refreshAppNav = useCallback(() => {
+    // Skip the call when the project context isn't ready yet —
+    // apps.list(undefined) hits /api/apps with no project_id filter,
+    // which returns EVERY install (cross-project leak in the sidebar).
+    if (!currentProject?.id) {
+      setAppNav([]);
+      return;
+    }
+    const epoch = ++fetchEpochRef.current;
     apps
-      .list(currentProject?.id)
+      .list(currentProject.id)
       .then((rows) => {
+        if (epoch !== fetchEpochRef.current) return; // stale response
         const out: { to: string; label: string; icon?: string }[] = [];
+        const seen = new Set<string>();
         for (const r of rows) {
           if (r.status !== "running") continue;
           for (const p of r.ui_panels || []) {
-            if (p.slot === "project.page") {
-              out.push({
-                to: `/apps/${r.name}/page`,
-                label: p.label || r.display_name || r.name,
-                icon: r.icon,
-              });
-            }
+            if (p.slot !== "project.page") continue;
+            const to = `/apps/${r.name}/page`;
+            // Dedupe by route — multiple installs of the same app
+            // (one per project) share /apps/<name>/page, and the
+            // SidebarLink uses key={item.to}. Defensive against
+            // any future cross-project leak from the API.
+            if (seen.has(to)) continue;
+            seen.add(to);
+            out.push({
+              to,
+              label: p.label || r.display_name || r.name,
+              icon: r.icon,
+            });
           }
         }
         setAppNav(out);
       })
-      .catch(() => setAppNav([]));
+      .catch(() => {
+        if (epoch !== fetchEpochRef.current) return;
+        setAppNav([]);
+      });
   }, [currentProject?.id]);
   useEffect(() => {
     refreshAppNav();

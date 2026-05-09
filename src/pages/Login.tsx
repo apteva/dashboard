@@ -63,15 +63,26 @@ export function Login() {
     e.preventDefault();
     setError("");
     setBusy(true);
+    // Track which await threw. If register succeeded but auto-login
+    // didn't (network blip, rate limit, …), the account exists and the
+    // setup token is dead server-side — retrying setup will 403. Fall
+    // back to the regular login form so the user can sign in with the
+    // credentials they just typed instead of being stuck on a setup
+    // screen with a misleading "check the token" error.
+    let registered = false;
     try {
       await register(email, password, setupToken.trim());
-      // Server has now flipped regMode → locked. Auto-login with the
-      // credentials the user just typed so they land in the dashboard
-      // without a second form submit.
+      registered = true;
       await login(email, password);
       navigate("/");
     } catch (err: any) {
-      setError(err.message || "Setup failed — check the token and try again");
+      if (registered) {
+        setMode("login");
+        setSetupToken("");
+        setError("Account created. Please sign in with the password you just chose.");
+      } else {
+        setError(err.message || "Setup failed — check the token and try again");
+      }
     } finally {
       setBusy(false);
     }

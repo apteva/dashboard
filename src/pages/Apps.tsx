@@ -88,7 +88,7 @@ export function Apps() {
   const refreshMarketplace = () => {
     setLoading(true);
     apps
-      .marketplace()
+      .marketplace(currentProject?.id)
       .then((r) => {
         setMarketplace(r.apps);
         setRegistryURL(r.registry_url);
@@ -117,7 +117,7 @@ export function Apps() {
             return next;
           });
         } else {
-          const r = await apps.marketplace();
+          const r = await apps.marketplace(currentProject?.id);
           if (cancelled) return;
           setMarketplace(r.apps);
           setRegistryURL(r.registry_url);

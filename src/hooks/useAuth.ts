@@ -11,6 +11,9 @@ export interface AuthUser {
   id: number;
   email: string;
   createdAt: string;
+  // false for users who registered but haven't finished the welcome
+  // flow. Drives <OnboardingGate> in App.tsx.
+  onboarded: boolean;
 }
 
 interface AuthState {
@@ -34,7 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loadMe = async () => {
     try {
       const r = await auth.me();
-      setUser({ id: r.user_id, email: r.email, createdAt: r.created_at });
+      setUser({ id: r.user_id, email: r.email, createdAt: r.created_at, onboarded: r.onboarded });
     } catch {
       setUser(false);
     }

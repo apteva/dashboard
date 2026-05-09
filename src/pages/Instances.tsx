@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { instances, core, type Instance, type RunMode, type Status, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
+import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { Modal } from "../components/Modal";
 
 // Per-instance live activity snapshot built from the all-instances SSE
@@ -198,129 +199,111 @@ export function Instances() {
     return () => clearInterval(t);
   }, [list]);
 
-  // ── Live activity SSE — single connection, all running instances ──
+  // ── Live activity — fed by the project-wide telemetry bus ──
   //
-  // Server multiplexes every running core's telemetry into one stream
-  // filtered to the caller's instances. We keep a small per-instance
-  // snapshot of the most recent thought, the active tool call, and the
-  // latest iter/model. Each row's "live strip" reads from this map.
-  //
-  // Why one SSE instead of N: the dashboard's Instances page can show
-  // 10+ instances. Opening 10 EventSources hammers the browser's
-  // per-host connection limit (browsers cap ~6) and creates 10 separate
-  // ping/heartbeat loops on the server. One stream, server-side fan-out,
-  // bounded by the user's instance set. Same idea as the per-instance
-  // ChatPanel SSE but scoped to the list view.
+  // Pre-bus we opened our own EventSource against
+  // /api/telemetry/stream?all=1 here. That worked, but every page in
+  // the dashboard that wanted telemetry (ActivityFeed, InstanceView,
+  // ChatPanel for "thinking…") opened its own SSE — three or four
+  // connections against the same data, eating into the browser's
+  // HTTP/1.1 6-per-origin cap. The bus collapses every consumer onto
+  // a single EventSource per project; we just keep dedup + the
+  // per-instance snapshot logic that's specific to the fleet view.
   //
   // Reset state on project switch — instances from project A shouldn't
-  // bleed into project B's activity map.
+  // bleed into project B's activity map. The bus itself rebinds when
+  // Layout calls setProjectId on the new project.
   const seenStreamEventsRef = useRef<Set<string>>(new Set());
   const seenStreamOrderRef = useRef<string[]>([]);
   useEffect(() => {
-    if (!projectId) return;
     setLiveActivity({});
     seenStreamEventsRef.current = new Set();
     seenStreamOrderRef.current = [];
-
-    const url = `/api/telemetry/stream?all=1&project_id=${encodeURIComponent(projectId)}`;
-    const es = new EventSource(url);
-    es.onmessage = (e) => {
-      try {
-        const event: TelemetryEvent = JSON.parse(e.data);
-
-        // Dedup by event.id — same as ChatPanel/InstanceView. The
-        // server stream is already de-duplicated server-side, but
-        // StrictMode dev mounts and SSE auto-reconnects can replay
-        // the same id and we'd double-count thread.spawn etc.
-        if (event.id) {
-          if (seenStreamEventsRef.current.has(event.id)) return;
-          seenStreamEventsRef.current.add(event.id);
-          seenStreamOrderRef.current.push(event.id);
-          if (seenStreamOrderRef.current.length > 1000) {
-            const old = seenStreamOrderRef.current.shift();
-            if (old) seenStreamEventsRef.current.delete(old);
-          }
-        }
-
-        const instId = event.instance_id;
-        if (!instId) return;
-        const data = event.data || {};
-        const now = Date.now();
-
-        setLiveActivity((prev) => {
-          const cur: LiveActivity = prev[instId] || {
-            lastEventAt: now,
-            threadCount: 0,
-          };
-          const next: LiveActivity = { ...cur, lastEventAt: now };
-
-          if (event.type === "llm.done") {
-            // Most useful single event for the row strip — gives us
-            // iter, model, and the final assistant text in one shot.
-            if (typeof data.iteration === "number") next.lastIter = data.iteration;
-            if (typeof data.model === "string") next.lastModel = data.model;
-            if (typeof data.message === "string" && data.message.trim()) {
-              next.lastThought = String(data.message).split("\n")[0].slice(0, 140);
-              next.lastThoughtAt = now;
-            }
-            // The active tool from any in-progress tool.call is now
-            // stale once the iteration finishes — clear it.
-            next.activeTool = undefined;
-            next.activeToolAt = undefined;
-          }
-
-          if (event.type === "tool.call" && data.name) {
-            const name = String(data.name);
-            // Hide internal housekeeping tools from the strip; users
-            // care about real work, not pace/done/evolve/remember.
-            const hidden = new Set([
-              "pace", "done", "evolve", "remember", "send",
-              "channels_respond", "channels_status",
-            ]);
-            if (!hidden.has(name)) {
-              next.activeTool = name;
-              // Capture the free-text reason the agent passed via _reason
-              // so the row strip can show "Fetching spreadsheet metadata"
-              // instead of the raw "google-sheets_get_spreadsheet" slug.
-              next.activeToolReason =
-                typeof data.reason === "string" ? data.reason : undefined;
-              next.activeToolAt = now;
-              next.toolDone = false;
-            }
-          }
-
-          if (event.type === "tool.result" && data.name) {
-            // DO NOT clear the tool here. We want the row strip to keep
-            // showing the reason after the call completes — the user
-            // wants "what just happened" to stay visible, not flash and
-            // disappear. We only flip the toolDone flag so the chip
-            // switches from spinner to checkmark. The 30-second row
-            // expiry below handles eventual cleanup, and the next tool
-            // call overwrites this entry.
-            if (next.activeTool === String(data.name)) {
-              next.toolDone = true;
-            }
-          }
-
-          if (event.type === "thread.spawn") next.threadCount = (cur.threadCount || 0) + 1;
-          if (event.type === "thread.done") {
-            next.threadCount = Math.max(0, (cur.threadCount || 0) - 1);
-          }
-
-          return { ...prev, [instId]: next };
-        });
-      } catch {
-        // Ignore parse errors — heartbeat comments arrive as comment
-        // frames and never reach onmessage anyway, so this only fires
-        // on genuinely malformed payloads.
-      }
-    };
-    es.onerror = () => {
-      // EventSource auto-reconnects with backoff; don't tear down.
-    };
-    return () => es.close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  useTelemetryEvents(null, (event: TelemetryEvent) => {
+    // Dedup by event.id — same as ChatPanel/InstanceView. The
+    // server stream is already de-duplicated server-side, but
+    // StrictMode dev mounts and SSE auto-reconnects can replay
+    // the same id and we'd double-count thread.spawn etc.
+    if (event.id) {
+      if (seenStreamEventsRef.current.has(event.id)) return;
+      seenStreamEventsRef.current.add(event.id);
+      seenStreamOrderRef.current.push(event.id);
+      if (seenStreamOrderRef.current.length > 1000) {
+        const old = seenStreamOrderRef.current.shift();
+        if (old) seenStreamEventsRef.current.delete(old);
+      }
+    }
+
+    const instId = event.instance_id;
+    if (!instId) return;
+    const data = event.data || {};
+    const now = Date.now();
+
+    setLiveActivity((prev) => {
+      const cur: LiveActivity = prev[instId] || {
+        lastEventAt: now,
+        threadCount: 0,
+      };
+      const next: LiveActivity = { ...cur, lastEventAt: now };
+
+      if (event.type === "llm.done") {
+        // Most useful single event for the row strip — gives us
+        // iter, model, and the final assistant text in one shot.
+        if (typeof data.iteration === "number") next.lastIter = data.iteration;
+        if (typeof data.model === "string") next.lastModel = data.model;
+        if (typeof data.message === "string" && data.message.trim()) {
+          next.lastThought = String(data.message).split("\n")[0].slice(0, 140);
+          next.lastThoughtAt = now;
+        }
+        // The active tool from any in-progress tool.call is now
+        // stale once the iteration finishes — clear it.
+        next.activeTool = undefined;
+        next.activeToolAt = undefined;
+      }
+
+      if (event.type === "tool.call" && data.name) {
+        const name = String(data.name);
+        // Hide internal housekeeping tools from the strip; users
+        // care about real work, not pace/done/evolve/remember.
+        const hidden = new Set([
+          "pace", "done", "evolve", "remember", "send",
+          "channels_respond", "channels_status",
+        ]);
+        if (!hidden.has(name)) {
+          next.activeTool = name;
+          // Capture the free-text reason the agent passed via _reason
+          // so the row strip can show "Fetching spreadsheet metadata"
+          // instead of the raw "google-sheets_get_spreadsheet" slug.
+          next.activeToolReason =
+            typeof data.reason === "string" ? data.reason : undefined;
+          next.activeToolAt = now;
+          next.toolDone = false;
+        }
+      }
+
+      if (event.type === "tool.result" && data.name) {
+        // DO NOT clear the tool here. We want the row strip to keep
+        // showing the reason after the call completes — the user
+        // wants "what just happened" to stay visible, not flash and
+        // disappear. We only flip the toolDone flag so the chip
+        // switches from spinner to checkmark. The 30-second row
+        // expiry below handles eventual cleanup, and the next tool
+        // call overwrites this entry.
+        if (next.activeTool === String(data.name)) {
+          next.toolDone = true;
+        }
+      }
+
+      if (event.type === "thread.spawn") next.threadCount = (cur.threadCount || 0) + 1;
+      if (event.type === "thread.done") {
+        next.threadCount = Math.max(0, (cur.threadCount || 0) - 1);
+      }
+
+      return { ...prev, [instId]: next };
+    });
+  });
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();

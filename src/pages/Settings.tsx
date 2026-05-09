@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Instance, type Project, type CatalogStatus, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow } from "../api";
+import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Instance, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow } from "../api";
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
@@ -13,7 +13,7 @@ interface Key {
 }
 
 
-type Tab = "projects" | "appearance" | "channels" | "integrations" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
+type Tab = "projects" | "appearance" | "channels" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
 
 // GlobeIcon — Lucide-style outline glyph used for "global" provider
 // scope. Inherits color via currentColor; sized to sit inline next to
@@ -54,7 +54,6 @@ export function Settings() {
     { id: "projects", label: "Projects" },
     { id: "appearance", label: "Appearance" },
     { id: "channels", label: "Channels" },
-    { id: "integrations", label: "Integrations" },
     { id: "providers", label: "Providers" },
     { id: "mcp", label: "MCP Servers" },
     { id: "subscriptions", label: "Subscriptions" },
@@ -93,7 +92,6 @@ export function Settings() {
         {tab === "projects" && <ProjectsTab />}
         {tab === "appearance" && <AppearanceTab />}
         {tab === "channels" && <ChannelsTab />}
-        {tab === "integrations" && <IntegrationsCatalogTab />}
         {tab === "providers" && <ProvidersTab />}
         {tab === "mcp" && <MCPServersTab />}
         {tab === "subscriptions" && <SubscriptionsTab />}
@@ -538,78 +536,6 @@ function ChannelsTab() {
   );
 }
 
-// ─── Integrations Catalog Tab ───
-
-function IntegrationsCatalogTab() {
-  const [status, setStatus] = useState<CatalogStatus | null>(null);
-  const [downloading, setDownloading] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-
-  const load = () => integrations.catalogStatus().then(setStatus).catch(() => {});
-  useEffect(() => { load(); }, []);
-
-  const handleDownload = async () => {
-    setDownloading(true);
-    setResult(null);
-    try {
-      const res = await integrations.downloadCatalog();
-      setResult(`Downloaded ${res.count} integrations`);
-      load();
-    } catch (e: any) {
-      setResult(`Failed: ${e.message || "unknown error"}`);
-    }
-    setDownloading(false);
-  };
-
-  const lastUpdated = status?.last_updated
-    ? new Date(status.last_updated).toLocaleString()
-    : null;
-
-  return (
-    <div className="space-y-6 max-w-2xl">
-      <div>
-        <h2 className="text-text text-base font-bold">Integration Catalog</h2>
-        <p className="text-text-muted text-sm mt-1">
-          Download and update the integration catalog to connect external services like GitHub, Slack, Stripe, and more.
-        </p>
-      </div>
-
-      <div className="border border-border rounded-lg p-5 bg-bg-card">
-        <div className="flex items-center justify-between">
-          <div>
-            {status?.installed ? (
-              <>
-                <span className="text-text text-sm font-bold">{status.count} integrations available</span>
-                {lastUpdated && (
-                  <p className="text-text-dim text-xs mt-1">Last updated: {lastUpdated}</p>
-                )}
-              </>
-            ) : (
-              <>
-                <span className="text-text-muted text-sm">No integrations installed</span>
-                <p className="text-text-dim text-xs mt-1">
-                  Download the catalog to connect apps and services to your instances.
-                </p>
-              </>
-            )}
-          </div>
-          <button
-            onClick={handleDownload}
-            disabled={downloading}
-            className="px-4 py-2.5 bg-accent text-bg rounded-lg text-sm font-bold hover:bg-accent-hover transition-colors disabled:opacity-50"
-          >
-            {downloading ? "Downloading..." : status?.installed ? "Update" : "Download Catalog"}
-          </button>
-        </div>
-        {result && (
-          <p className={`text-sm mt-3 ${result.startsWith("Failed") ? "text-red" : "text-green"}`}>
-            {result}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
 
 // ─── Providers Tab ───
 
@@ -2041,7 +1967,24 @@ function SubscriptionsTab() {
   const [connections, setConnections] = useState<any[]>([]);
   const [catalog, setCatalog] = useState<Record<string, any>>({});
   const [instanceList, setInstanceList] = useState<Instance[]>([]);
-  const [adding, setAdding] = useState<any | null>(null); // connection being subscribed to
+  // Unified add flow:
+  //   pickerOpen=true, adding=null  → modal shows the source picker
+  //   pickerOpen=*,    adding=...   → modal shows the configure form
+  //   both falsy                    → modal closed
+  // Source tagged union covers app-event subscriptions + the two
+  // existing webhook flavors (local + composio).
+  type AddSource =
+    | { kind: "app"; appName: string; appLabel: string; scope: "project" | "global" }
+    | { kind: "webhook"; conn: any }
+    | { kind: "composio"; conn: any };
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerSearch, setPickerSearch] = useState("");
+  const [adding, setAdding] = useState<AddSource | null>(null);
+  const [appsList, setAppsList] = useState<AppRow[]>([]);
+  // For app-event subscriptions: free-text topic pattern (e.g. "row.*",
+  // "table.created", "*"). The slug sent to the server is composed as
+  // `${appName}:${topicPattern}`.
+  const [topicPattern, setTopicPattern] = useState("*");
   const [instanceId, setInstanceId] = useState(0);
   const [description, setDescription] = useState("");
   const [hmacSecret, setHmacSecret] = useState("");
@@ -2083,11 +2026,31 @@ function SubscriptionsTab() {
       for (const app of apps || []) map[app.slug] = app;
       setCatalog(map);
     }).catch(() => {});
+    // Installed apps (project-scoped + globals) for the app-event
+    // subscription picker. Only running rows show up — a stopped
+    // sidecar can't emit anyway.
+    appsAPI.list(currentProject.id).then((rs) => {
+      setAppsList((rs || []).filter((r) => r.status === "running"));
+    }).catch(() => setAppsList([]));
+  };
+
+  const closeAddFlow = () => {
+    setPickerOpen(false);
+    setAdding(null);
+    setPickerSearch("");
+    setTopicPattern("*");
+    setInstanceId(0);
+    setDescription("");
+    setHmacSecret("");
+    setSelectedEvents(new Set());
+    setSelectedTrigger("");
+    setTriggerConfig({});
+    setComposioTriggers([]);
+    setError("");
   };
   useEffect(() => { load(); }, [currentProject?.id]);
 
   const safeConns = connections || [];
-  const subscribedConnIds = new Set(safeSubs.map((s) => s.connection_id));
 
   // When the user opens the subscribe modal on a composio-source
   // connection, fetch the available trigger templates for that toolkit.
@@ -2100,13 +2063,13 @@ function SubscriptionsTab() {
       setTriggerConfig({});
       return;
     }
-    if (adding.source !== "composio") {
+    if (adding.kind !== "composio") {
       setComposioTriggers([]);
       return;
     }
     setLoadingTriggers(true);
     integrations
-      .triggers(adding.id)
+      .triggers(adding.conn.id)
       .then((resp) => {
         setComposioTriggers(resp.triggers || []);
         if ((resp.triggers || []).length > 0) {
@@ -2116,7 +2079,7 @@ function SubscriptionsTab() {
       })
       .catch(() => setComposioTriggers([]))
       .finally(() => setLoadingTriggers(false));
-  }, [adding?.id, adding?.source]);
+  }, [adding?.kind === "composio" ? adding.conn.id : null]);
 
   // Currently-selected trigger's config schema — used by the dynamic
   // form renderer inside the modal.
@@ -2127,30 +2090,50 @@ function SubscriptionsTab() {
     setError("");
     if (!adding || !instanceId) { setError("Select an instance"); return; }
 
-    const isComposio = adding.source === "composio";
-    if (isComposio && !selectedTrigger) {
-      setError("Select a trigger");
-      return;
-    }
-
     try {
-      await subscriptions.create(
-        `${adding.app_name} ${isComposio ? "trigger" : "webhooks"}`,
-        adding.app_slug,
-        instanceId,
-        {
-          connectionId: adding.id,
-          description: description.trim(),
-          hmacSecret: hmacSecret.trim(),
-          events: isComposio ? [selectedTrigger] : Array.from(selectedEvents),
-          projectId: currentProject?.id,
-          triggerSlug: isComposio ? selectedTrigger : undefined,
-          triggerConfig: isComposio ? triggerConfig : undefined,
-        }
-      );
-      setAdding(null);
-      setDescription(""); setHmacSecret(""); setInstanceId(0); setSelectedEvents(new Set());
-      setSelectedTrigger(""); setTriggerConfig({});
+      if (adding.kind === "app") {
+        const pattern = topicPattern.trim() || "*";
+        await subscriptions.create(
+          `${adding.appLabel} events`,
+          `${adding.appName}:${pattern}`,
+          instanceId,
+          {
+            description: description.trim(),
+            projectId: currentProject?.id,
+            source: "app_event",
+          },
+        );
+      } else if (adding.kind === "composio") {
+        if (!selectedTrigger) { setError("Select a trigger"); return; }
+        await subscriptions.create(
+          `${adding.conn.app_name} trigger`,
+          adding.conn.app_slug,
+          instanceId,
+          {
+            connectionId: adding.conn.id,
+            description: description.trim(),
+            events: [selectedTrigger],
+            projectId: currentProject?.id,
+            triggerSlug: selectedTrigger,
+            triggerConfig,
+          },
+        );
+      } else {
+        // webhook
+        await subscriptions.create(
+          `${adding.conn.app_name} webhooks`,
+          adding.conn.app_slug,
+          instanceId,
+          {
+            connectionId: adding.conn.id,
+            description: description.trim(),
+            hmacSecret: hmacSecret.trim(),
+            events: Array.from(selectedEvents),
+            projectId: currentProject?.id,
+          },
+        );
+      }
+      closeAddFlow();
       load();
     } catch (err: any) {
       setError(err.message || "Failed");
@@ -2283,75 +2266,184 @@ function SubscriptionsTab() {
         </section>
       )}
 
-      {/* Available connections to subscribe to. A connection qualifies
-          if it's a local template with webhook.registration config OR
-          any composio-source connection (Composio exposes triggers for
-          most toolkits, the picker inside the modal shows the real
-          list per-connection so we don't try to guess here). */}
-      {safeConns.length > 0 && (() => {
-        const available = safeConns.filter((c: any) => {
-          if (c.source === "composio") return true;
-          return catalog[c.app_slug]?.has_webhooks;
-        });
-        return (
-          <section>
-            <h3 className="text-text-muted text-sm font-bold mb-3 uppercase tracking-wide">
-              Available Integrations
-            </h3>
-            <div className="space-y-2">
-              {available.map((conn: any) => (
-                <div key={conn.id} className="border border-border rounded-lg p-4 bg-bg-card flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-text text-sm font-bold">{conn.app_name}</span>
-                    <span className="text-text-muted text-sm">{conn.name}</span>
-                    {conn.source === "composio" && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-300">composio</span>
-                    )}
-                  </div>
-                  <button
-                    onClick={() => {
-                      setAdding(conn);
-                      setError("");
-                      if (conn.source === "composio") {
-                        setSelectedEvents(new Set());
-                      } else {
-                        const events = catalog[conn.app_slug]?.webhook_events;
-                        setSelectedEvents(events ? new Set(events.map((ev: any) => ev.name)) : new Set());
-                      }
-                    }}
-                    className="text-sm text-accent hover:text-accent-hover transition-colors"
-                  >
-                    Subscribe
-                  </button>
-                </div>
-              ))}
+      {/* Single entry point. Picker modal lists every subscribable
+          source (installed apps + webhook-capable integrations +
+          composio integrations) so the operator can browse them in
+          one place rather than chasing two separate lists. */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => { closeAddFlow(); setPickerOpen(true); }}
+          className="px-4 py-2 bg-accent text-bg rounded-lg text-sm font-bold hover:bg-accent-hover"
+        >
+          + New Subscription
+        </button>
+      </div>
+
+      {/* Unified add flow — picker phase OR configure phase */}
+      <Modal open={pickerOpen || !!adding} onClose={closeAddFlow}>
+        {pickerOpen && !adding && (() => {
+          // Build the picker source list: installed apps + webhook-
+          // capable integrations + composio integrations. One row per
+          // option, search-filterable on label.
+          const webhookConns = safeConns.filter((c: any) =>
+            c.source !== "composio" && catalog[c.app_slug]?.has_webhooks,
+          );
+          const composioConns = safeConns.filter((c: any) => c.source === "composio");
+          const q = pickerSearch.trim().toLowerCase();
+          const matches = (s: string) => !q || s.toLowerCase().includes(q);
+          const visibleApps = (appsList || []).filter((a) =>
+            matches(a.display_name || a.name),
+          );
+          const visibleWebhook = webhookConns.filter((c: any) =>
+            matches(c.app_name) || matches(c.name),
+          );
+          const visibleComposio = composioConns.filter((c: any) =>
+            matches(c.app_name) || matches(c.name),
+          );
+          return (
+            <div className="p-6 w-[640px] max-w-full space-y-4">
+              <div>
+                <h3 className="text-text text-base font-bold">New subscription</h3>
+                <p className="text-text-muted text-sm mt-1">
+                  Pick a source to wake up an agent. Apps emit events from the
+                  in-process bus; integrations forward external webhooks.
+                </p>
+              </div>
+              <input
+                value={pickerSearch}
+                onChange={(e) => setPickerSearch(e.target.value)}
+                placeholder="Search apps and integrations…"
+                autoFocus
+                className="w-full bg-bg-input border border-border rounded-lg px-4 py-2.5 text-sm text-text focus:outline-none focus:border-accent"
+              />
+              <div className="max-h-[420px] overflow-y-auto space-y-4">
+                {visibleApps.length > 0 && (
+                  <section>
+                    <h4 className="text-text-muted text-xs font-bold uppercase tracking-wide mb-2">
+                      Installed apps
+                    </h4>
+                    <div className="space-y-1">
+                      {visibleApps.map((a) => {
+                        const scope: "project" | "global" = a.project_id ? "project" : "global";
+                        const label = a.display_name || a.name;
+                        return (
+                          <button
+                            key={a.install_id}
+                            onClick={() => {
+                              setAdding({ kind: "app", appName: a.name, appLabel: label, scope });
+                              setPickerOpen(false);
+                              setTopicPattern("*");
+                            }}
+                            className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-bg-card text-left"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-text text-sm font-medium truncate">{label}</span>
+                              <span className="text-text-dim text-xs font-mono truncate">{a.name}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">
+                                {scope}
+                              </span>
+                            </div>
+                            <span className="text-text-muted text-xs">app events →</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                )}
+                {visibleWebhook.length > 0 && (
+                  <section>
+                    <h4 className="text-text-muted text-xs font-bold uppercase tracking-wide mb-2">
+                      Integrations (webhooks)
+                    </h4>
+                    <div className="space-y-1">
+                      {visibleWebhook.map((c: any) => (
+                        <button
+                          key={c.id}
+                          onClick={() => {
+                            const events = catalog[c.app_slug]?.webhook_events;
+                            setAdding({ kind: "webhook", conn: c });
+                            setSelectedEvents(events ? new Set(events.map((ev: any) => ev.name)) : new Set());
+                            setPickerOpen(false);
+                          }}
+                          className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-bg-card text-left"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-text text-sm font-medium truncate">{c.app_name}</span>
+                            <span className="text-text-dim text-xs truncate">{c.name}</span>
+                          </div>
+                          <span className="text-text-muted text-xs">webhook →</span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
+                {visibleComposio.length > 0 && (
+                  <section>
+                    <h4 className="text-text-muted text-xs font-bold uppercase tracking-wide mb-2">
+                      Integrations (composio)
+                    </h4>
+                    <div className="space-y-1">
+                      {visibleComposio.map((c: any) => (
+                        <button
+                          key={c.id}
+                          onClick={() => {
+                            setAdding({ kind: "composio", conn: c });
+                            setSelectedEvents(new Set());
+                            setPickerOpen(false);
+                          }}
+                          className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-bg-card text-left"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-text text-sm font-medium truncate">{c.app_name}</span>
+                            <span className="text-text-dim text-xs truncate">{c.name}</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-300">
+                              composio
+                            </span>
+                          </div>
+                          <span className="text-text-muted text-xs">trigger →</span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
+                {visibleApps.length === 0 && visibleWebhook.length === 0 && visibleComposio.length === 0 && (
+                  <p className="text-text-dim text-sm py-4 text-center">
+                    {q ? "No matches." : "No subscribable apps or integrations yet. Install an app, or connect an integration first."}
+                  </p>
+                )}
+              </div>
             </div>
-            {available.length === 0 && (
-              <p className="text-text-dim text-sm">No integrations with webhook or trigger support available.</p>
-            )}
-          </section>
-        );
-      })()}
+          );
+        })()}
 
-      {safeConns.length === 0 && safeSubs.length === 0 && (
-        <p className="text-text-muted text-sm">
-          No integrations connected. Go to the Integrations page to connect an app first.
-        </p>
-      )}
-
-      {/* Subscribe modal */}
-      <Modal open={!!adding} onClose={() => setAdding(null)}>
         {adding && (
-          <form onSubmit={handleSubscribe} className="p-6 space-y-4">
-            <h3 className="text-text text-base font-bold">
-              Subscribe to {adding.app_name}
-            </h3>
-            <p className="text-text-muted text-sm">
-              Subscribe to {adding.app_name} events. The webhook will be automatically registered with {adding.app_name} — no manual configuration needed.
-            </p>
+          <form onSubmit={handleSubscribe} className="p-6 w-[560px] max-w-full space-y-4">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-text text-base font-bold">
+                  {adding.kind === "app"
+                    ? `Subscribe to ${adding.appLabel}`
+                    : `Subscribe to ${adding.conn.app_name}`}
+                </h3>
+                <p className="text-text-muted text-sm mt-1">
+                  {adding.kind === "app"
+                    ? "Wake the agent on app events emitted from this project's installed sidecar."
+                    : adding.kind === "composio"
+                    ? "Subscribe via Composio. The trigger config drives the upstream subscription."
+                    : `Subscribe to ${adding.conn.app_name} events. The webhook is auto-registered upstream — no manual setup needed.`}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setAdding(null); setPickerOpen(true); }}
+                className="text-text-muted text-xs hover:text-text shrink-0"
+              >
+                ← back
+              </button>
+            </div>
 
             <div>
-              <label className="block text-text-muted text-sm mb-2">Target Agent</label>
+              <label className="block text-text-muted text-sm mb-2">Target agent</label>
               <select
                 value={instanceId} onChange={(e) => setInstanceId(Number(e.target.value))}
                 className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent"
@@ -2368,11 +2460,28 @@ function SubscriptionsTab() {
               <input
                 value={description} onChange={(e) => setDescription(e.target.value)}
                 className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text focus:outline-none focus:border-accent"
-                placeholder="e.g. Push events on main branch"
+                placeholder="e.g. Wake on row inserts in the leads table"
               />
             </div>
 
-            {adding.source === "composio" ? (
+            {adding.kind === "app" && (
+              <div>
+                <label className="block text-text-muted text-sm mb-2">
+                  Topic pattern <span className="text-text-dim font-mono">{adding.appName}:</span>
+                </label>
+                <input
+                  value={topicPattern}
+                  onChange={(e) => setTopicPattern(e.target.value)}
+                  className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text font-mono focus:outline-none focus:border-accent"
+                  placeholder="e.g. row.* or table.created or *"
+                />
+                <p className="text-text-dim text-xs mt-1">
+                  <span className="font-mono">*</span> matches everything; <span className="font-mono">prefix.*</span> matches by prefix; otherwise exact match.
+                </p>
+              </div>
+            )}
+
+            {adding.kind === "composio" && (
               // Composio-source: render a trigger picker populated from
               // the live Composio catalog for this connection's toolkit,
               // plus a dynamic config form built from the selected
@@ -2383,7 +2492,7 @@ function SubscriptionsTab() {
                   {loadingTriggers ? (
                     <p className="text-text-dim text-sm">Loading triggers…</p>
                   ) : composioTriggers.length === 0 ? (
-                    <p className="text-text-dim text-sm">No triggers available for {adding.app_slug} in Composio.</p>
+                    <p className="text-text-dim text-sm">No triggers available for {adding.conn.app_slug} in Composio.</p>
                   ) : (
                     <select
                       value={selectedTrigger}
@@ -2434,9 +2543,11 @@ function SubscriptionsTab() {
                   </div>
                 )}
               </div>
-            ) : (() => {
+            )}
+
+            {adding.kind === "webhook" && (() => {
               // Local-source: use the catalog's webhook_events list.
-              const events = catalog[adding.app_slug]?.webhook_events;
+              const events = catalog[adding.conn.app_slug]?.webhook_events;
               if (!events || events.length === 0) return null;
               return (
                 <div>
@@ -2477,7 +2588,7 @@ function SubscriptionsTab() {
               );
             })()}
 
-            {adding.source !== "composio" && (
+            {adding.kind === "webhook" && (
               <div>
                 <label className="block text-text-muted text-sm mb-2">HMAC Secret (optional)</label>
                 <input
@@ -2492,7 +2603,7 @@ function SubscriptionsTab() {
             {error && <div className="text-red text-sm">{error}</div>}
 
             <div className="flex justify-end gap-3">
-              <button type="button" onClick={() => setAdding(null)}
+              <button type="button" onClick={closeAddFlow}
                 className="px-4 py-2.5 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors">
                 Cancel
               </button>

@@ -1,32 +1,51 @@
 // chatConnections — global, per-chat SSE manager.
 //
-// Lifts the per-chat EventSource out of ChatPanel so the SSE survives
-// component unmount + page navigation. While the dashboard tab is
-// open, every chat the user has toggled "connected" stays subscribed
-// — the agent sees chat as IsActive and can ping the user even while
-// they're looking at the Apps tab or another instance.
+// Session-only: the connect intent is not persisted. Every chat
+// starts disconnected on page load; the user clicks "connect" to
+// activate live messaging for the current tab. This is a deliberate
+// step back from a previous "remember intent in localStorage +
+// resume on boot" design, which had two structural problems:
+//
+//   1. Stale intents survived instance deletion. If an instance was
+//      removed (especially via a path that didn't run a dashboard
+//      cleanup hook — e.g. direct DB delete), the localStorage entry
+//      lived on. On the next page load, resumeFromStorage tried to
+//      reopen its chat SSE, the server returned 404, and the
+//      onerror retry loop reopened it every 1.5s forever — burning
+//      a connection slot in retry state on every dashboard boot.
+//
+//   2. Cross-device "I want this chat live" sync wasn't real anyway:
+//      localStorage is per-browser, per-profile. The persistence was
+//      already inconsistent with the user's actual mental model.
+//
+// Session-only matches what "connected" semantically means — "I'm
+// watching now." Closing the tab releases all subscriptions; the
+// agent stops getting [chat] connected pings; the user is responsible
+// for clicking connect again next time. No magic, no drift.
 //
 // Lifecycle:
-//   - Layout calls resumeFromStorage() on login → reopens SSEs for any
-//     chat with chat.connected.<instanceId>=1 in localStorage.
-//   - ChatPanel calls connect(chatId, instanceId) when the user clicks
-//     the connect toggle (and disconnect for the opposite). Persists
-//     intent in localStorage and emits the [chat] user connected /
-//     disconnected events to the agent.
+//   - ChatPanel calls connect(chatId, instanceId) when the user
+//     clicks the connect toggle (and disconnect for the opposite).
+//     Emits the [chat] user connected/disconnected events to the
+//     agent.
 //   - ChatPanel calls subscribeMessages(chatId, sinceId, fn) on mount
 //     to receive live messages; cleanup just unsubscribes — the SSE
-//     stays open. Buffered recent messages are replayed for late
-//     subscribers so a panel mount doesn't miss messages that arrived
-//     while it was unmounted.
+//     stays open as long as the user has the chat connected.
+//   - Instance delete calls forgetInstance(instanceId) to immediately
+//     close any live SSE for that instance (otherwise a successful
+//     delete leaves the SSE 404-retrying for the rest of the session).
 //
-// No automatic reconnection cascade beyond a simple backoff — if the
-// network blips, the manager retries every 1.5s until either the
-// connect succeeds or the user explicitly disconnects.
+// Reconnection: bounded. A connection that errors out is retried up
+// to MAX_RETRIES with a 1.5s gap. After that we give up — usually
+// the instance is gone, the user logged out, or the network is
+// genuinely down. Stops the previous "404 retry loop forever" class
+// of bugs cold.
 
 import { chat, instances, type ChatMessageRow } from "../api";
 
-const INTENT_KEY = (instanceId: number) => `chat.connected.${instanceId}`;
 const BUFFER_MAX = 100;
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 1500;
 
 type MsgListener = (m: ChatMessageRow) => void;
 type StateListener = () => void;
@@ -36,6 +55,8 @@ interface Conn {
   instanceId: number;
   es: EventSource | null;
   open: boolean;
+  failed: boolean; // true after MAX_RETRIES — UI surfaces a status dot
+  retries: number;
   highestSeenId: number;
   signaledConnected: boolean;
   recentBuffer: ChatMessageRow[];
@@ -51,31 +72,26 @@ class ChatConnectionsManager {
 
   // ---- Public API ----------------------------------------------------
 
-  /** True if localStorage says the user wants this instance connected. */
-  isConnectedIntent(instanceId: number): boolean {
-    try {
-      return localStorage.getItem(INTENT_KEY(instanceId)) === "1";
-    } catch {
-      return false;
-    }
-  }
-
   /** True if the SSE is currently in OPEN readyState. */
   isOpen(chatId: string): boolean {
     return this.byChat.get(chatId)?.open ?? false;
   }
 
+  /** True if the connection was retried out and gave up. UI can use
+   *  this to render a "couldn't connect" state alongside the dot. */
+  hasFailed(chatId: string): boolean {
+    return this.byChat.get(chatId)?.failed ?? false;
+  }
+
   /** Open (or refresh) the SSE for one chat. Idempotent — calling
-   * twice while open is a no-op. */
+   *  twice while open is a no-op. */
   connect(chatId: string, instanceId: number): void {
-    this.persistIntent(instanceId, true);
     this.openConnection(chatId, instanceId);
     this.notifyAll();
   }
 
   /** Close the SSE and tell the agent the user is gone. Idempotent. */
   disconnect(chatId: string, instanceId: number): void {
-    this.persistIntent(instanceId, false);
     const c = this.byChat.get(chatId);
     if (!c) {
       this.notifyAll();
@@ -103,9 +119,9 @@ class ChatConnectionsManager {
   }
 
   /** Subscribe to live messages for one chat. Replays any messages
-   * already buffered with id > sinceId so a late panel mount doesn't
-   * miss anything between the REST history fetch and this subscribe.
-   * Cleanup removes the listener but leaves the SSE open. */
+   *  already buffered with id > sinceId so a late panel mount doesn't
+   *  miss anything between the REST history fetch and this subscribe.
+   *  Cleanup removes the listener but leaves the SSE open. */
   subscribeMessages(
     chatId: string,
     sinceId: number,
@@ -123,7 +139,7 @@ class ChatConnectionsManager {
   }
 
   /** Subscribe to SSE-open / connection state changes for one chat.
-   * Useful for the status dot. Cleanup is a no-op for SSE itself. */
+   *  Useful for the status dot. Cleanup is a no-op for SSE itself. */
   subscribeState(chatId: string, fn: StateListener): () => void {
     const c = this.ensureShell(chatId);
     c.stateListeners.add(fn);
@@ -132,37 +148,12 @@ class ChatConnectionsManager {
     };
   }
 
-  /** Subscribe to "any chat changed state" events. Used by future
-   * dashboard widgets that want a global presence indicator. */
+  /** Subscribe to "any chat changed state" events. */
   subscribeAny(fn: StateListener): () => void {
     this.allListeners.add(fn);
     return () => {
       this.allListeners.delete(fn);
     };
-  }
-
-  /** Walk localStorage and reopen every chat the user previously
-   * marked connected. Called by Layout once the user is logged in. */
-  resumeFromStorage(): void {
-    let opened = 0;
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (!key) continue;
-        const match = key.match(/^chat\.connected\.(\d+)$/);
-        if (!match) continue;
-        if (localStorage.getItem(key) !== "1") continue;
-        const instanceId = parseInt(match[1], 10);
-        if (!Number.isFinite(instanceId)) continue;
-        // Default-chat-id convention mirrors store.go's defaultChatID.
-        const chatId = `default-${instanceId}`;
-        this.openConnection(chatId, instanceId);
-        opened++;
-      }
-    } catch {
-      // localStorage unavailable (private mode, sandbox); no-op.
-    }
-    if (opened > 0) this.notifyAll();
   }
 
   /** Tear down everything — used on logout. */
@@ -173,16 +164,11 @@ class ChatConnectionsManager {
   }
 
   /** Drop every trace of an instance after the user deletes it: close
-   * any live SSE, remove the record, clear the persisted "wants to
-   * reconnect" intent so resumeFromStorage doesn't revive it on the
-   * next page load. The agent send is suppressed because the instance
-   * is already gone server-side. */
+   *  any live SSE so the retry loop doesn't 404-spam after delete.
+   *  Skip the "[chat] user disconnected" send because the instance is
+   *  already gone server-side. Session-only design means there's no
+   *  persisted intent to clear. */
   forgetInstance(instanceId: number): void {
-    try {
-      localStorage.removeItem(INTENT_KEY(instanceId));
-    } catch {
-      // unavailable in private mode etc.
-    }
     for (const c of Array.from(this.byChat.values())) {
       if (c.instanceId !== instanceId) continue;
       if (c.retryTimer !== null) {
@@ -195,8 +181,6 @@ class ChatConnectionsManager {
       }
       c.closed = true;
       c.open = false;
-      // Skip signaling [chat] disconnected — the instance no longer
-      // exists, the event would 404.
       c.signaledConnected = false;
       this.byChat.delete(c.chatId);
     }
@@ -205,16 +189,8 @@ class ChatConnectionsManager {
 
   // ---- Internals -----------------------------------------------------
 
-  private persistIntent(instanceId: number, on: boolean): void {
-    try {
-      localStorage.setItem(INTENT_KEY(instanceId), on ? "1" : "0");
-    } catch {
-      // localStorage unavailable; intent is in-memory only this session.
-    }
-  }
-
   /** Make sure a shell record exists for state subscribers even when
-   * no connection is open yet. */
+   *  no connection is open yet. */
   private ensureShell(chatId: string): Conn {
     let c = this.byChat.get(chatId);
     if (!c) {
@@ -223,6 +199,8 @@ class ChatConnectionsManager {
         instanceId: 0,
         es: null,
         open: false,
+        failed: false,
+        retries: 0,
         highestSeenId: 0,
         signaledConnected: false,
         recentBuffer: [],
@@ -240,12 +218,14 @@ class ChatConnectionsManager {
     const c = this.ensureShell(chatId);
     c.instanceId = instanceId;
     c.closed = false;
+    c.failed = false;
     if (c.es) return; // already connecting / connected
     const since = c.highestSeenId;
     const es = chat.stream(chatId, since);
     c.es = es;
     es.onopen = () => {
       c.open = true;
+      c.retries = 0; // reset budget after a successful connect
       this.notify(c);
       if (!c.signaledConnected) {
         c.signaledConnected = true;
@@ -277,11 +257,22 @@ class ChatConnectionsManager {
         c.es = null;
       }
       if (c.closed) return;
+      // Bounded retry. The previous unbounded loop kept connections
+      // 404-retrying forever and was the load-bearing piece in our
+      // "media card mount hangs the dashboard" bug — those retries
+      // ate connection-budget slots that other fetches needed.
+      c.retries += 1;
+      if (c.retries >= MAX_RETRIES) {
+        c.failed = true;
+        c.closed = true;
+        this.notify(c);
+        return;
+      }
       if (c.retryTimer !== null) clearTimeout(c.retryTimer);
       c.retryTimer = window.setTimeout(() => {
         c.retryTimer = null;
         this.openConnection(chatId, instanceId);
-      }, 1500);
+      }, RETRY_DELAY_MS);
     };
   }
 
@@ -296,3 +287,22 @@ class ChatConnectionsManager {
 }
 
 export const chatConnections = new ChatConnectionsManager();
+
+/** Walk localStorage and remove every legacy `chat.connected.<id>`
+ *  key from the previous persistent-intent design. Idempotent and
+ *  cheap — runs once on dashboard boot via Layout. After every user
+ *  has booted at least once after the upgrade, this becomes a no-op
+ *  that we can safely delete. */
+export function purgeLegacyChatConnectedKeys(): void {
+  try {
+    const toRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (/^chat\.connected\.\d+$/.test(key)) toRemove.push(key);
+    }
+    for (const key of toRemove) localStorage.removeItem(key);
+  } catch {
+    // localStorage unavailable; nothing to clean.
+  }
+}

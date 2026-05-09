@@ -1,8 +1,9 @@
-// Cross-instance live activity feed. Subscribes to the existing
-// project-wide telemetry SSE (/telemetry/stream?all=1&project_id=…)
-// and renders a rolling window of the most recent events as a single
-// timeline. Filter tabs let the user narrow to tools / thoughts /
-// errors. Each row links to the originating instance.
+// Cross-instance live activity feed. Subscribes to the project-wide
+// telemetry bus (window.__aptevaTelemetryBus, fed by ONE EventSource
+// against /telemetry/stream?all=1&project_id=…) and renders a rolling
+// window of the most recent events as a single timeline. Filter tabs
+// let the user narrow to tools / thoughts / errors. Each row links to
+// the originating instance.
 //
 // Two design choices worth flagging:
 //   1. We keep at most MAX_ROWS in memory, dropping the oldest as new
@@ -12,10 +13,11 @@
 //      tabs just show/hide rows. Switching tabs is instant and the
 //      counts stay accurate.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { instances, BASE, type Instance, type TelemetryEvent } from "../../api";
+import { instances, type Instance, type TelemetryEvent } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
+import { useTelemetryEvents } from "../../hooks/useTelemetryBus";
 
 const MAX_ROWS = 200;
 
@@ -41,7 +43,12 @@ export function ActivityFeed() {
   const [rows, setRows] = useState<Row[]>([]);
   const [nameById, setNameById] = useState<Map<number, string>>(new Map());
   const [tab, setTab] = useState<Tab>("all");
-  const [connected, setConnected] = useState(false);
+  // "Live" is approximated as "we've received any event in this
+  // session" because the bus's connection state isn't directly
+  // observable to consumers. The bus reconnects on its own with
+  // bounded retry; if events stop arriving, the dot won't go red,
+  // but neither does anything else in the dashboard. Acceptable.
+  const [hasEvents, setHasEvents] = useState(false);
 
   // Resolve instance id → name once on mount and every 30s. The SSE
   // doesn't carry names; we annotate rows on render.
@@ -58,37 +65,24 @@ export function ActivityFeed() {
     return () => { cancelled = true; clearInterval(t); };
   }, [projectId]);
 
-  // Single SSE for the whole project. Reconnect handled by the
-  // browser's EventSource implementation; we just rebuild the URL
-  // when the project changes.
-  const esRef = useRef<EventSource | null>(null);
+  // Reset rows when the project changes — old project's events
+  // shouldn't bleed across.
   useEffect(() => {
-    const url = `${BASE}/telemetry/stream?all=1${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ""}`;
-    // Cookie-based session auth — same-origin so no withCredentials.
-    const es = new EventSource(url);
-    esRef.current = es;
-
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
-    es.onmessage = (e) => {
-      try {
-        const ev: TelemetryEvent = JSON.parse(e.data);
-        const row = toRow(ev);
-        if (!row) return;
-        setRows((prev) => {
-          // Prepend, cap. Newest first.
-          const next = [row, ...prev];
-          return next.length > MAX_ROWS ? next.slice(0, MAX_ROWS) : next;
-        });
-      } catch {
-        // malformed frame — EventSource auto-reconnects.
-      }
-    };
-    return () => {
-      es.close();
-      esRef.current = null;
-    };
+    setRows([]);
+    setHasEvents(false);
   }, [projectId]);
+
+  // Subscribe to ALL events in the project via the shared bus.
+  // The bus owns the single EventSource; we just receive callbacks.
+  useTelemetryEvents(null, (ev: TelemetryEvent) => {
+    const row = toRow(ev);
+    if (!row) return;
+    setHasEvents(true);
+    setRows((prev) => {
+      const next = [row, ...prev];
+      return next.length > MAX_ROWS ? next.slice(0, MAX_ROWS) : next;
+    });
+  });
 
   const filtered = rows.filter((r) => matches(r, tab));
 
@@ -100,8 +94,8 @@ export function ActivityFeed() {
             Activity
           </div>
           <div
-            className={`w-1.5 h-1.5 rounded-full ${connected ? "bg-green" : "bg-text-dim"}`}
-            title={connected ? "live" : "disconnected"}
+            className={`w-1.5 h-1.5 rounded-full ${hasEvents ? "bg-green" : "bg-text-dim"}`}
+            title={hasEvents ? "live" : "dishasEvents"}
           />
         </div>
         <div className="flex items-center gap-1 text-xs">
@@ -125,7 +119,7 @@ export function ActivityFeed() {
         {filtered.length === 0 ? (
           <div className="flex items-center justify-center h-32">
             <div className="text-text-dim text-sm">
-              {connected ? "waiting for events…" : "connecting…"}
+              {hasEvents ? "waiting for events…" : "connecting…"}
             </div>
           </div>
         ) : (

@@ -11,7 +11,15 @@
 // this page is purely a management surface.
 
 import { useEffect, useMemo, useState } from "react";
-import { skills as skillsApi, type Skill } from "../api";
+import {
+  skills as skillsApi,
+  type Skill,
+  instances as instancesApi,
+  type Instance,
+  instanceSkills as instanceSkillsApi,
+  type InstanceSkill,
+  type InstanceSkillStatus,
+} from "../api";
 import { useProjects } from "../hooks/useProjects";
 
 type SourceFilter = "all" | "user" | "app" | "builtin";
@@ -347,6 +355,9 @@ function SkillPanel({
               className="bg-bg-input border border-border rounded px-2 py-1 text-xs text-text font-mono disabled:opacity-60 leading-relaxed"
             />
           </Field>
+          {!isCreate && skill && skill.enabled && (
+            <SkillAssignments skill={skill} />
+          )}
           {error && <div className="text-error text-xs">{error}</div>}
         </div>
 
@@ -417,5 +428,150 @@ function Field({
       <span className="text-text-dim text-[11px] uppercase tracking-wide">{label}</span>
       {children}
     </label>
+  );
+}
+
+// --- Assignments section ----------------------------------------------
+//
+// One row per instance in the current project. Checkbox = assigned.
+// Status pill = synced | stale | missing (no orphan view here — orphans
+// only show on the per-instance page since they're not catalog skills).
+//
+// We fetch each instance's skill list and look up the row for THIS
+// skill. N+1 by design — typical projects have a handful of instances.
+
+function SkillAssignments({ skill }: { skill: Skill }) {
+  const { currentProject } = useProjects();
+  const projectId = currentProject?.id || skill.project_id || "";
+
+  const [instances, setInstances] = useState<Instance[]>([]);
+  // Per-instance status for this skill, keyed by instance id. undefined =
+  // not assigned; otherwise the InstanceSkill row.
+  const [byInstance, setByInstance] = useState<Record<number, InstanceSkill | undefined>>({});
+  const [loading, setLoading] = useState(true);
+  const [busyInstanceID, setBusyInstanceID] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = () => {
+    setLoading(true);
+    setError(null);
+    instancesApi
+      .list(projectId)
+      .then(async (insts) => {
+        setInstances(insts);
+        const lists = await Promise.all(
+          insts.map((inst) =>
+            instanceSkillsApi.list(inst.id).then(
+              (rows) => [inst.id, rows] as const,
+              () => [inst.id, [] as InstanceSkill[]] as const,
+            ),
+          ),
+        );
+        const map: Record<number, InstanceSkill | undefined> = {};
+        for (const [instID, rows] of lists) {
+          map[instID] = rows.find(
+            (r) => r.skill_id === skill.id || r.slug === skill.slug,
+          );
+        }
+        setByInstance(map);
+      })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skill.id, projectId]);
+
+  const toggle = async (inst: Instance, currentlyAssigned: boolean) => {
+    setBusyInstanceID(inst.id);
+    setError(null);
+    try {
+      if (currentlyAssigned) {
+        await instanceSkillsApi.unassign(inst.id, skill.id);
+      } else {
+        await instanceSkillsApi.assign(inst.id, skill.id);
+      }
+      refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusyInstanceID(null);
+    }
+  };
+
+  const summary = useMemo(() => {
+    const total = instances.length;
+    const assigned = Object.values(byInstance).filter(Boolean).length;
+    const stale = Object.values(byInstance).filter((r) => r?.status === "stale").length;
+    return { total, assigned, stale };
+  }, [instances, byInstance]);
+
+  return (
+    <Field label="Assigned to agents">
+      <div className="border border-border rounded">
+        <div className="px-3 py-2 border-b border-border flex items-center gap-2 text-xs text-text-muted">
+          <span>
+            {loading ? "Loading…" : `${summary.assigned}/${summary.total} agents`}
+          </span>
+          {summary.stale > 0 && (
+            <span className="text-warn">{summary.stale} stale</span>
+          )}
+          {error && <span className="text-error ml-auto">{error}</span>}
+        </div>
+        {loading ? null : instances.length === 0 ? (
+          <div className="p-3 text-text-dim text-xs">
+            No agents in this project yet.
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {instances.map((inst) => {
+              const assignment = byInstance[inst.id];
+              const assigned = !!assignment;
+              const busy = busyInstanceID === inst.id;
+              return (
+                <li
+                  key={inst.id}
+                  className="px-3 py-2 flex items-center gap-3 text-sm"
+                >
+                  <input
+                    type="checkbox"
+                    checked={assigned}
+                    disabled={busy}
+                    onChange={() => toggle(inst, assigned)}
+                    className="accent-accent"
+                  />
+                  <span className="text-text flex-1 truncate" title={inst.name}>
+                    {inst.name}
+                  </span>
+                  <span className="text-text-dim text-[10px] uppercase tracking-wide">
+                    {inst.status}
+                  </span>
+                  {assigned && assignment && (
+                    <StatusPill status={assignment.status} />
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </Field>
+  );
+}
+
+export function StatusPill({ status }: { status: InstanceSkillStatus }) {
+  const cfg: Record<InstanceSkillStatus, { label: string; cls: string }> = {
+    synced: { label: "Synced", cls: "border-success text-success" },
+    stale: { label: "Stale", cls: "border-warn text-warn" },
+    missing: { label: "Missing", cls: "border-border text-text-dim" },
+    orphaned: { label: "Orphan", cls: "border-error text-error" },
+  };
+  const c = cfg[status];
+  return (
+    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${c.cls}`}>
+      {c.label}
+    </span>
   );
 }

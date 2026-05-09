@@ -95,7 +95,10 @@ export const auth = {
     }),
 
   me: () =>
-    request<{ user_id: number; email: string; created_at: string }>("GET", "/auth/me"),
+    request<{ user_id: number; email: string; created_at: string; onboarded: boolean; onboarded_at?: string }>("GET", "/auth/me"),
+
+  completeOnboarding: () =>
+    request<{ status: string }>("POST", "/auth/onboarding/complete"),
 
   // POST /auth/password — change the logged-in user's password. The
   // server revokes every OTHER active session for this user on
@@ -559,6 +562,15 @@ export const integrations = {
     return request<ConnectionInfo[]>("GET", `/connections${params}`);
   },
 
+  // Owner-only credential reveal. Returns the decrypted token map for
+  // the connection. Server logs each call for audit; the dashboard
+  // gates this behind an explicit "Reveal" click in the row's modal.
+  credentials: (connectionId: number) =>
+    request<{ credentials: Record<string, string> }>(
+      "GET",
+      `/connections/${connectionId}/credentials`,
+    ),
+
   // Local non-OAuth: stores credentials immediately, returns ConnectionInfo.
   // Local OAuth2: returns ConnectCreateResponse with an authorize URL.
   // For OAuth2 apps, the caller may pass the user's own OAuth client_id /
@@ -839,6 +851,10 @@ export const subscriptions = {
       events?: string[];
       threadId?: string;
       projectId?: string;
+      // 'webhook' (default) or 'app_event'. For 'app_event', `slug`
+      // must be '<app>:<topic_pattern>' (e.g. 'tables:row.*') and
+      // connection / hmac / events fields are ignored server-side.
+      source?: "webhook" | "app_event";
       // Composio-source only: which trigger template to instantiate
       // and its config fields (varies per trigger template).
       triggerSlug?: string;
@@ -858,6 +874,7 @@ export const subscriptions = {
         events: opts?.events || [],
         thread_id: opts?.threadId || "",
         project_id: opts?.projectId || "",
+        source: opts?.source || "webhook",
         trigger_slug: opts?.triggerSlug || "",
         trigger_config: opts?.triggerConfig || {},
       },
@@ -1315,10 +1332,6 @@ export const telemetry = {
       threads: Record<string, number>;
     }>>("GET", `/telemetry/timeline?instance_id=${instanceId}&period=${period}`),
 
-  stream: (instanceId: number): EventSource => {
-    return new EventSource(`${BASE}/telemetry/stream?instance_id=${instanceId}`);
-  },
-
   // Project-scoped aggregate — ranks every instance in the project by
   // cost/tokens/errors over the period. Empty projectId scopes to every
   // instance the current user owns.
@@ -1466,9 +1479,40 @@ export const apps = {
       { instance_ids: instanceIds },
     ),
 
-  marketplace: (registryUrl?: string) => {
-    const q = registryUrl ? `?registry_url=${encodeURIComponent(registryUrl)}` : "";
-    return request<{ registry_url: string; apps: MarketplaceEntry[] }>("GET", `/apps/marketplace${q}`);
+  // setBindings updates an existing install's integration_bindings.
+  // Pass a partial object — keys you don't include are preserved
+  // (MERGE semantics on the server). Pass `null` for a key to
+  // unbind that role. Server bounces the sidecar so OnMount picks
+  // up the new bindings; respawned=true confirms the new process is
+  // healthy. Required roles can't be unbound (server 400s).
+  setBindings: (installId: number, bindings: Record<string, number | null>) =>
+    request<{ ok: boolean; bindings: Record<string, any>; respawned: boolean; respawn_err: string }>(
+      "PUT",
+      `/apps/installs/${installId}/bindings`,
+      bindings,
+    ),
+
+  // preflightInstalled — same shape as preflight() but for an
+  // already-installed app, so the dashboard can render the role
+  // pickers in the install detail panel without re-fetching the
+  // upstream manifest. Reuses the preflight endpoint by passing the
+  // install's own manifest_url + project_id.
+  preflightInstalled: (installId: number) =>
+    request<AppPreflight>("GET", `/apps/installs/${installId}/preflight`),
+
+  marketplace: (projectId?: string, registryUrl?: string) => {
+    // Pass project_id so the server filters the "is installed" check
+    // to project-visible installs (own + globals). Without this an
+    // install in another project marks the marketplace entry as
+    // installed everywhere and blocks per-project install.
+    const params = new URLSearchParams();
+    if (projectId) params.set("project_id", projectId);
+    if (registryUrl) params.set("registry_url", registryUrl);
+    const q = params.toString();
+    return request<{ registry_url: string; apps: MarketplaceEntry[] }>(
+      "GET",
+      `/apps/marketplace${q ? `?${q}` : ""}`,
+    );
   },
 };
 
@@ -1784,6 +1828,41 @@ export const skills = {
   remove: (id: number) => request<{ deleted: number }>("DELETE", `/skills/${id}`),
   setEnabled: (id: number, enabled: boolean) =>
     request<{ enabled: boolean }>("PUT", `/skills/${id}/enabled`, { enabled }),
+};
+
+// --- Per-instance skill assignment ------------------------------------
+//
+// The journal is the source of truth for "which skills are loaded on
+// which agent". The list endpoint returns per-skill drift status:
+//   synced   — record present and matches catalog body hash
+//   stale    — record present but body changed in the catalog
+//   missing  — catalog row exists, no record on this agent
+//   orphaned — record on this agent, no matching catalog row
+
+export type InstanceSkillStatus = "synced" | "stale" | "missing" | "orphaned";
+
+export interface InstanceSkill {
+  skill_id: number;            // 0 for orphaned journal entries
+  slug: string;
+  name: string;
+  description?: string;
+  source: "app" | "user" | "builtin" | "";
+  app_name?: string;
+  memory_id?: string;
+  pushed_at?: string;
+  status: InstanceSkillStatus;
+}
+
+export const instanceSkills = {
+  list: (instanceId: number) =>
+    request<InstanceSkill[]>("GET", `/instances/${instanceId}/skills`),
+  assign: (instanceId: number, skillId: number) =>
+    request<{ ok: boolean; memory_id: string; slug: string }>(
+      "POST",
+      `/instances/${instanceId}/skills/${skillId}`,
+    ),
+  unassign: (instanceId: number, skillId: number) =>
+    request<{ ok: boolean }>("DELETE", `/instances/${instanceId}/skills/${skillId}`),
 };
 
 // --- Platform self-update status (apteva CLI / server / core / dashboard

@@ -80,9 +80,9 @@ export function Instance() {
       onDelete={async () => {
         await instances.delete(instance.id);
         // Drop every dashboard-side trace of the deleted instance:
-        //   · live SSE + chat.connected.<id> localStorage intent
-        //     (otherwise the connection 404-loops forever and
-        //     resumeFromStorage revives it on next page load).
+        //   · live chat SSE (otherwise the connection 404-retries
+        //     for the rest of the session — bounded now, but still
+        //     wasteful).
         //   · notifications-tray watermark + any pending badge entry
         //     for the default chat (otherwise a new instance with the
         //     same id later would inherit a stale "last seen" point).

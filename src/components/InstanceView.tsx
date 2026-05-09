@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { instances, core, providers as providersAPI, type Instance, type Thread, type TelemetryEvent, type Provider, type ProviderDetail, type ModelInfo } from "../api";
+import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 
 export type EventListener = (event: TelemetryEvent) => void;
 export type SubscribeFn = (listener: EventListener) => () => void;
@@ -13,6 +14,7 @@ import { ThreadDetailModal } from "./ThreadDetailModal";
 import { AppPanels } from "./AppPanels";
 import { Modal } from "./Modal";
 import { LiveStatsBar } from "./LiveStatsBar";
+import { SkillsPanel } from "./SkillsPanel";
 
 // InstanceView is the rich per-instance view: chat panel + activity/fleet/cards
 // side panel, lifecycle controls (start/stop/pause/delete), thread detail
@@ -65,7 +67,7 @@ export function InstanceView({
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
-  const [view, setView] = useState<"activity" | "fleet" | "cards" | "memory" | "apps">("activity");
+  const [view, setView] = useState<"activity" | "fleet" | "cards" | "memory" | "skills" | "apps">("activity");
   // Whether the channels MCP is currently attached to this instance.
   // When the user detaches it via the MCP panel the chat bridge stops
   // receiving user messages — we gray out the chat column to make that
@@ -126,31 +128,6 @@ export function InstanceView({
       cancelled = true;
       clearInterval(t);
     };
-  }, [instance.id, instance.status]);
-
-  // Telemetry SSE — single EventSource for the whole instance view,
-  // owned HERE (not inside ChatPanel) so the right panel (Activity,
-  // Fleet, Cards) keeps receiving events after ChatPanel was rewritten
-  // to consume the channel-chat app's own SSE stream instead of
-  // telemetry.
-  //
-  // Every incoming event goes through handleEvent (top-level dedup)
-  // which then fans out to every subscribe(cb) caller. The chat
-  // panel's status dot + the stats badge + Activity + FleetCards are
-  // all downstream of this one stream.
-  useEffect(() => {
-    if (instance.status !== "running") return;
-    const es = new EventSource(`/api/instances/${instance.id}/events`);
-    es.onmessage = (e) => {
-      try {
-        const event: TelemetryEvent = JSON.parse(e.data);
-        handleEvent(event);
-      } catch {
-        // malformed frame — ignore; EventSource auto-reconnects on error
-      }
-    };
-    return () => es.close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instance.id, instance.status]);
 
   // Top-level dedup. ChatPanel's EventSource is the single source of truth
@@ -303,6 +280,30 @@ export function InstanceView({
     }
   };
 
+  // Telemetry input — consumes the project-wide bus
+  // (window.__aptevaTelemetryBus) filtered to this instance. Pre-bus
+  // we opened a per-instance EventSource against
+  // /api/instances/<id>/events; that worked but every instance page
+  // we navigated to spent a connection-budget slot on its own SSE,
+  // duplicating events the dashboard was already pulling for
+  // ActivityFeed / Instances list. The bus collapses all telemetry
+  // consumers in the dashboard onto ONE socket per project.
+  //
+  // Every incoming event goes through handleEvent (top-level dedup)
+  // which then fans out to every subscribe(cb) caller. The chat
+  // panel's status dot + the stats badge + Activity + FleetCards are
+  // all downstream of this one stream.
+  //
+  // NB: this call MUST live below `const handleEvent = …`. The hook
+  // reads its callback synchronously to populate a ref; if we placed
+  // it above the const, we'd hit a TDZ ("Cannot access … before
+  // initialization") on every render. Keeping it here also matches
+  // the order rule for hooks — same call sequence on every render.
+  useTelemetryEvents(
+    instance.status === "running" ? instance.id : undefined,
+    handleEvent,
+  );
+
   // Sync threads from poll (works for both running and stopped)
   useEffect(() => {
     const poll = () => {
@@ -323,7 +324,7 @@ export function InstanceView({
           <h1 className="text-text text-sm font-bold">{instance.name}</h1>
           {/* View toggle */}
           <div className="flex border border-border rounded-lg overflow-hidden ml-4">
-            {(["activity", "fleet", "cards", "memory", "apps"] as const).map((v) => (
+            {(["activity", "fleet", "cards", "memory", "skills", "apps"] as const).map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
@@ -549,6 +550,8 @@ export function InstanceView({
                   Start the agent to view its memory.
                 </div>
               )
+            ) : view === "skills" ? (
+              <SkillsPanel instanceId={instance.id} />
             ) : view === "apps" ? (
               <div className="h-full overflow-auto p-3 space-y-3">
                 <AppPanels

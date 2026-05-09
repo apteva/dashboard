@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
 import { marked } from "marked";
 import { chat, type ChatMessageRow, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
@@ -9,6 +9,7 @@ import {
 import { ChatStatusDot } from "./ChatStatusDot";
 import { markChatSeen, focusChat } from "../state/chatNotifications";
 import { chatConnections } from "../state/chatConnections";
+import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 import type { SubscribeFn } from "./InstanceView";
 
 // Markdown setup — marked.parse is synchronous with async: false. Chat
@@ -125,28 +126,20 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   // streaming → called → done lifecycle without duplicating rows.
   const [liveTools, setLiveTools] = useState<Map<string, LiveTool>>(() => new Map());
 
-  // Explicit connect/disconnect. Persistence across reloads is handled
-  // by remembering the last choice in localStorage — so a user who
-  // wants to stay connected doesn't have to click every page load,
-  // but a user who went offline stays offline until they click back.
+  // Explicit connect/disconnect, session-only.
   //
   // Why explicit at all? The agent is proactive — when chat is
   // "connected" it may greet, ping, push a status update unprompted.
   // We want the user to own that "I'm available to be poked" signal,
   // not have it toggle silently as browser tabs open and close.
-  const [connected, setConnected] = useState<boolean>(() => {
-    try {
-      const v = localStorage.getItem(`chat.connected.${instanceId}`);
-      // Default: DISCONNECTED on first visit. Connecting is an
-      // explicit opt-in because a connected chat channel lets the
-      // proactive agent push unprompted messages at you — the user
-      // should own that signal. localStorage remembers your last
-      // choice so returning users don't have to re-click every visit.
-      return v === "1";
-    } catch {
-      return false;
-    }
-  });
+  //
+  // Session-only: every chat starts disconnected on tab open; clicking
+  // Connect opens the SSE for the current session. Closing the tab
+  // releases. The previous design persisted `chat.connected.<id>=1` to
+  // localStorage and resumed on boot, but stale entries (instances
+  // deleted out-of-band) caused unbounded 404 retry loops that ate
+  // the connection budget — see chatConnections.ts header.
+  const [connected, setConnected] = useState<boolean>(false);
 
   // SSE "is the stream actually open?" — distinct from `connected`,
   // which is the user's INTENT. readyState transitions on retry are
@@ -209,16 +202,16 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   // --- 3. Hook into the global chat-connections manager ----------------
   //
   // The SSE no longer lives inside this component. The Layout-level
-  // chatConnections singleton owns one EventSource per chat the user
-  // has marked connected, so navigating away from this instance does
-  // NOT close the connection — the agent keeps seeing chat as IsActive
-  // and can ping the user while they're on another page. ChatPanel is
-  // a viewer for the singleton's state.
+  // chatConnections singleton owns one EventSource per connected chat,
+  // so navigating away from this instance does NOT close the connection
+  // — the agent keeps seeing chat as IsActive and can ping the user
+  // while they're on another page. ChatPanel is a viewer for the
+  // singleton's state.
   //
   // Three things to wire:
   //   1. connect/disconnect toggle → manager.connect/disconnect
-  //      (also persists intent in localStorage and emits the
-  //      [chat] user connected/disconnected events to the agent).
+  //      (emits the [chat] user connected/disconnected events to the
+  //      agent). Intent is session-only — closing the tab releases.
   //   2. Live messages → subscribeMessages, which replays buffered
   //      messages with id > sinceRef so a panel mount that comes
   //      after some messages already arrived doesn't miss them.
@@ -282,12 +275,65 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
     };
   }, [chatId]);
 
-  // --- 4. Auto-scroll on new messages -----------------------------------
+  // --- 4. Stick-to-bottom auto-scroll (ChatGPT/Claude-style) -----------
+  //
+  // Two pieces:
+  //   A. Track whether the user is "at bottom" (within 60px of the
+  //      end). Anything further is a deliberate scroll-up — we don't
+  //      yank them back when new content arrives.
+  //   B. On every timeline/messages change, if they're at bottom,
+  //      pin to the new bottom. This fires per-streaming-chunk
+  //      because each chunk re-renders messages, AND on tool-row
+  //      arrivals because timeline changes there too.
+  //
+  // The previous version listened on `[messages]` only, so:
+  //   - tool rows arriving never scrolled.
+  //   - it always yanked to bottom even when the user had scrolled
+  //     up to read older history.
+  //   - streaming chunks technically did fire (messages array
+  //     replaced per chunk), but the yank-while-reading bug made it
+  //     feel wrong anyway.
+  const [atBottom, setAtBottom] = useState(true);
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages]);
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const dist = el.scrollHeight - el.clientHeight - el.scrollTop;
+      setAtBottom(dist < 60);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    // Seed on mount / chat switch so the initial empty viewport reads
+    // as "at bottom" (so the first message scrolls into view).
+    onScroll();
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [chatId]);
+
+  // Activity state. Declared up here (not next to its event handler
+  // far below) because the auto-scroll effect right beneath this
+  // depends on activity.phase — moving the useState down would
+  // re-introduce the TDZ error we just fixed in InstanceView.
+  // The full state machine that drives this still lives further
+  // down beside the related useTelemetryEvents subscription; only
+  // the storage hook is hoisted.
+  type AgentActivity =
+    | { phase: "idle" }
+    | { phase: "thinking"; since: number; thread: string };
+  const [activity, setActivity] = useState<AgentActivity>({ phase: "idle" });
+
+  // Pin to bottom when the timeline grows OR the viewport shrinks
+  // and the user is at bottom. Deps cover three things:
+  //   - messages / liveTools (timeline growth)
+  //   - atBottom (a user who scrolls back down auto-pins next render)
+  //   - activity.phase (the "Thinking…" strip toggling on shrinks the
+  //     scroll viewport by ~30px; without this dep the just-sent
+  //     user message gets clipped behind the strip until the next
+  //     message arrives)
+  useEffect(() => {
+    if (!atBottom) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, liveTools, atBottom, activity.phase]);
 
   // --- 4b. Live tool activity (interleaved into the timeline) -----------
   //
@@ -391,6 +437,57 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   useEffect(() => {
     setLiveTools(new Map());
   }, [instanceId, chatId]);
+
+  // --- 4c. Agent activity strip (Claude/ChatGPT-style "Thinking…") -----
+  //
+  // Drives a slim status row above the input that says what the agent
+  // is doing right now: thinking (LLM call in flight), running a tool,
+  // or idle (paced/done). Sources telemetry from the project-wide bus
+  // (window.__aptevaTelemetryBus) so it works on every page that
+  // mounts a ChatPanel — including the chat-only pages where the
+  // legacy `subscribe` prop is a noop. The bus opens ONE SSE per
+  // project regardless of how many panels mount; see
+  // hooks/useTelemetryBus.ts for the multiplexer.
+  // The strip mirrors LLM-in-flight only: visible while the model is
+  // generating, gone the moment llm.done fires. Tool execution is
+  // already rendered inline in the chat timeline (see ToolRow), so
+  // the strip would just duplicate that. This matches the right-rail
+  // status indicator's behavior. (The `activity` useState lives up
+  // near the auto-scroll effect that depends on `activity.phase`.)
+
+  // Reset activity when switching agents / chats — avoid showing
+  // "thinking" carried over from a previous instance's stream.
+  useEffect(() => {
+    setActivity({ phase: "idle" });
+  }, [instanceId, chatId]);
+
+  // Only the MAIN thread drives the strip — sub-thread activity is
+  // interesting on the fleet view, but in chat the user cares about
+  // whether THEIR conversation partner is working.
+  useTelemetryEvents(instanceId, (ev) => {
+    if (ev.thread_id !== "main" && ev.thread_id !== "") return;
+    if (ev.type === "llm.start") {
+      setActivity({
+        phase: "thinking",
+        since: Date.parse(ev.time) || Date.now(),
+        thread: ev.thread_id || "main",
+      });
+      return;
+    }
+    // Any of these mean the LLM is no longer generating: the
+    // current call finished (llm.done), the thread terminated
+    // (thread.done), or an error stopped the call (llm.error).
+    // tool.call/tool.result aren't strip events anymore — those
+    // render in the timeline.
+    if (
+      ev.type === "llm.done" ||
+      ev.type === "llm.error" ||
+      ev.type === "thread.done"
+    ) {
+      setActivity({ phase: "idle" });
+      return;
+    }
+  });
 
   // --- 5. Send handler ---------------------------------------------------
   const handleSend = useCallback(async () => {
@@ -594,6 +691,14 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
         )}
       </div>
 
+      {/* Activity strip — Claude/ChatGPT-style "Thinking…" line that
+          surfaces what the agent is doing right now. Lives between
+          messages and the input so it doesn't compete with chat
+          content but stays in the user's eyeline as they type. */}
+      {activity.phase !== "idle" && (
+        <ActivityStrip activity={activity} />
+      )}
+
       {/* Input */}
       <div className="shrink-0 px-3 pb-3 pt-1">
         <form
@@ -698,7 +803,19 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
 // projectId + apps are injected by the parent so any ChatComponents
 // attached to the message can scope themselves and resolve to the
 // right sidecar bundle.
-function MessageRow({
+//
+// Wrapped in React.memo because the parent re-renders on every tool
+// event (timeline merges messages + liveTools), and re-running marked
+// on every agent message every time was eating real CPU on long
+// chats. Memo's default shallow comparison is the right fit here:
+//   - msg row is referentially stable per id (rows come from setState
+//     of an array, never mutated in place).
+//   - projectId is the stable currentProject?.id ?? "" string.
+//   - apps is the state value of useInstalledApps's useState, so its
+//     reference only changes when the install list actually changes.
+// Result: timeline-only updates (a tool event arriving) skip every
+// MessageRow's re-render entirely.
+const MessageRow = memo(function MessageRow({
   msg,
   projectId,
   apps,
@@ -707,6 +824,18 @@ function MessageRow({
   projectId: string;
   apps: ReturnType<typeof useInstalledApps>;
 }) {
+  // Memoize the parsed HTML against the message content so the
+  // marked() call doesn't run on a re-render that survived the memo
+  // (e.g. apps array reference changed but msg.content didn't).
+  // The role check matches the original fall-through: user + system
+  // get bespoke layouts above; everything else (agent and any future
+  // role) renders as markdown.
+  const isMarkdown = msg.role !== "user" && msg.role !== "system";
+  const html = useMemo(
+    () => (isMarkdown ? renderMarkdown(msg.content) : ""),
+    [msg.content, isMarkdown],
+  );
+
   if (msg.role === "user") {
     return (
       <div className="flex justify-end min-w-0">
@@ -724,7 +853,6 @@ function MessageRow({
     );
   }
   // Agent — markdown + optional rich attachments.
-  const html = renderMarkdown(msg.content);
   return (
     <div className="min-w-0">
       <div
@@ -741,7 +869,7 @@ function MessageRow({
       )}
     </div>
   );
-}
+});
 
 // ToolRow — inline tool indicator rendered between messages in the
 // chat timeline. Visually subdued (smaller, dimmer, indented) so it
@@ -787,6 +915,39 @@ function ToolRow({ t }: { t: LiveTool }) {
       <span className="text-text-muted shrink-0 font-mono">{t.name}</span>
       {labelEl}
       {dur && <span className="text-text-dim shrink-0">({dur})</span>}
+    </div>
+  );
+}
+
+// ActivityStrip — slim status row above the chat input. Visible iff
+// the LLM is currently generating; mirrors the right-rail status
+// indicator's behavior. Tool execution is rendered inline in the
+// timeline, so the strip stays focused on a single signal: "is the
+// model thinking right now?". Duration counter updates every 500ms.
+type ActivityForStrip = { phase: "thinking"; since: number; thread: string };
+
+function ActivityStrip({ activity }: { activity: ActivityForStrip }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 500);
+    return () => clearInterval(t);
+  }, []);
+  const elapsedMs = Date.now() - activity.since;
+  void tick; // referenced to silence lint; the tick value isn't used directly
+  const elapsedLabel =
+    elapsedMs >= 1000
+      ? `${(elapsedMs / 1000).toFixed(1)}s`
+      : `${elapsedMs}ms`;
+
+  return (
+    <div className="shrink-0 px-4 pt-2 pb-2 flex items-center gap-2 text-[11px] text-text-muted bg-bg-card/40">
+      <span className="flex items-center gap-1 shrink-0">
+        <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+        <span className="w-1.5 h-1.5 rounded-full bg-accent/60 animate-pulse [animation-delay:200ms]" />
+      </span>
+      <span className="text-text shrink-0">Thinking…</span>
+      <span className="flex-1" />
+      <span className="shrink-0 text-text-dim tabular-nums">{elapsedLabel}</span>
     </div>
   );
 }

@@ -166,7 +166,18 @@ export function ChatComponentList({
   return (
     <div className="mt-2 flex flex-col gap-2 max-w-full">
       {components.map((c, i) => (
-        <ChatComponentMount key={i} comp={c} apps={apps} projectId={projectId} />
+        // Composite key: app + name keep components stable across
+        // renders even if the array changes shape (e.g. an inserted
+        // attachment shifts later items left); the index suffix
+        // disambiguates two of the same component on one message.
+        // Pure index-keying made React reuse DOM nodes for the wrong
+        // entry whenever the array mutated mid-flight.
+        <ChatComponentMount
+          key={`${c.app}:${c.name}:${i}`}
+          comp={c}
+          apps={apps}
+          projectId={projectId}
+        />
       ))}
     </div>
   );

@@ -66,6 +66,16 @@ export function Integrations() {
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameErr, setRenameErr] = useState("");
 
+  // Credential reveal — operator escape hatch for debugging a stored
+  // token. Each row reveals individually (mask by default, click to
+  // unmask + copy). Server logs every fetch.
+  const [credsFor, setCredsFor] = useState<ConnectionInfo | null>(null);
+  const [credsData, setCredsData] = useState<Record<string, string> | null>(null);
+  const [credsBusy, setCredsBusy] = useState(false);
+  const [credsErr, setCredsErr] = useState("");
+  const [credsRevealed, setCredsRevealed] = useState<Set<string>>(new Set());
+  const [credsCopied, setCredsCopied] = useState<string | null>(null);
+
   // Tool picker — after a new connection is active, present the catalog
   // of tools exposed by that integration and let the user pick which subset
   // becomes an MCP server sub-threads can spawn against.
@@ -93,13 +103,12 @@ export function Integrations() {
   const [selectedLocalApp, setSelectedLocalApp] = useState<AppDetail | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [connName, setConnName] = useState("");
-  // auto_mcp opt-in. Default true (preserves the historical behavior:
-  // connecting an integration auto-creates an mcp_servers row exposing
-  // its tools to every agent in the project). Operator can uncheck to
-  // create the connection silently — useful when the integration is
-  // intended for a specific app (e.g. Facebook for Social) rather than
-  // for general agent use.
-  const [autoMCP, setAutoMCP] = useState(true);
+  // auto_mcp opt-in. Default false to match the server-side default —
+  // most integrations are added so a specific app can use them (e.g.
+  // Facebook for Social), not so every agent in the project gets
+  // global access to the integration's tool surface. Operator ticks
+  // the box when they DO want a project-wide MCP server.
+  const [autoMCP, setAutoMCP] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState("");
 
@@ -126,9 +135,12 @@ export function Integrations() {
   const [composioInitCreds, setComposioInitCreds] = useState<Record<string, string>>({});
   const [composioSubmitting, setComposioSubmitting] = useState(false);
 
-  const localProvider = providerList.find((p) => p.name === "Apteva Local");
+  // The local integrations catalog is always-on — every install ships
+  // (or auto-downloads on first boot) the apteva/integrations JSON,
+  // and the server serves it unconditionally. No "Apteva Local"
+  // provider row to look up here. Composio stays a real provider:
+  // it needs an API key, so it has to be explicitly activated.
   const composioProvider = providerList.find((p) => p.name === "Composio");
-  const hasLocal = !!localProvider;
   const hasComposio = !!composioProvider;
 
   const loadConnections = useCallback(() => {
@@ -136,7 +148,6 @@ export function Integrations() {
   }, [currentProject?.id]);
 
   const loadLocalApps = useCallback(() => {
-    if (!hasLocal) return;
     // Ask the server to hide apps that are members of a credential
     // group; the suite list below renders one card per group instead.
     // Falls back silently on older servers that don't support group=1.
@@ -144,7 +155,7 @@ export function Integrations() {
     // Suites come from a parallel endpoint so the cards can coexist
     // with the flat catalog grid.
     integrations.listGroups().then(setSuites).catch(() => setSuites([]));
-  }, [localSearch, hasLocal]);
+  }, [localSearch]);
 
   const loadComposioApps = useCallback(
     (search?: string) => {
@@ -200,11 +211,13 @@ export function Integrations() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [composioSearch, tab]);
 
-  // Default tab: prefer the first activated integration provider
+  // Default tab: local catalog is always-on, so we land there.
+  // Composio only auto-selects if we've nothing better to show
+  // (placeholder — kept for future variants that might land
+  // composio-first).
   useEffect(() => {
     if (!loaded) return;
-    if (!hasLocal && hasComposio) setTab("composio");
-  }, [loaded, hasLocal, hasComposio]);
+  }, [loaded, hasComposio]);
 
   // --- Local app interactions ---
 
@@ -595,6 +608,50 @@ export function Integrations() {
     setRenameErr("");
   };
 
+  const openCredsFor = async (c: ConnectionInfo) => {
+    setCredsFor(c);
+    setCredsData(null);
+    setCredsErr("");
+    setCredsRevealed(new Set());
+    setCredsCopied(null);
+    setCredsBusy(true);
+    try {
+      const r = await integrations.credentials(c.id);
+      setCredsData(r.credentials || {});
+    } catch (e: any) {
+      setCredsErr(e?.message || "failed to load credentials");
+    } finally {
+      setCredsBusy(false);
+    }
+  };
+
+  const closeCreds = () => {
+    setCredsFor(null);
+    setCredsData(null);
+    setCredsRevealed(new Set());
+    setCredsCopied(null);
+    setCredsErr("");
+  };
+
+  const toggleCredReveal = (key: string) => {
+    setCredsRevealed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const copyCred = async (key: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCredsCopied(key);
+      setTimeout(() => setCredsCopied((k) => (k === key ? null : k)), 1500);
+    } catch {
+      // clipboard blocked (insecure context, etc.) — silent
+    }
+  };
+
   const submitRename = async () => {
     if (!renameFor) return;
     const next = renameText.trim();
@@ -637,32 +694,6 @@ export function Integrations() {
 
   if (!loaded) return null;
 
-  // Neither integrations provider is activated — prompt user to pick one.
-  if (!hasLocal && !hasComposio) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="border-b border-border px-6 py-4">
-          <h1 className="text-text text-lg font-bold">Integrations</h1>
-        </div>
-        <div className="flex-1 p-6">
-          <div className="max-w-lg border border-border rounded-lg p-6 bg-bg-card">
-            <h2 className="text-text text-base font-bold mb-2">No integration provider activated</h2>
-            <p className="text-text-muted text-sm mb-4">
-              Activate <b>Apteva Local</b> for 200+ baked-in connectors, or <b>Composio</b> for
-              a hosted OAuth-managed catalog. You can enable both.
-            </p>
-            <button
-              onClick={() => navigate("/settings")}
-              className="px-5 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
-            >
-              Go to Settings &gt; Providers
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-col h-full">
       <div className="border-b border-border px-6 py-4">
@@ -672,18 +703,18 @@ export function Integrations() {
         </p>
       </div>
 
-      {/* Source tabs */}
+      {/* Source tabs — Apteva Local is always available; Composio
+          stays a real provider, gated on its API key being set. */}
       <div className="border-b border-border px-6 flex gap-0">
         <button
           onClick={() => setTab("local")}
-          disabled={!hasLocal}
           className={`px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
             tab === "local"
               ? "text-accent border-accent"
               : "text-text-muted border-transparent hover:text-text"
-          } ${!hasLocal ? "opacity-50 cursor-not-allowed" : ""}`}
+          }`}
         >
-          Apteva Local {!hasLocal && "· inactive"}
+          Apteva Local
         </button>
         <button
           onClick={() => setTab("composio")}
@@ -771,6 +802,13 @@ export function Integrations() {
                         Rename
                       </button>
                       <button
+                        onClick={() => openCredsFor(c)}
+                        className="text-sm text-text-muted hover:text-text transition-colors"
+                        title="Inspect the stored credentials for this connection"
+                      >
+                        Credentials
+                      </button>
+                      <button
                         onClick={() => openInviteFor(c)}
                         className="text-sm text-text-muted hover:text-accent transition-colors"
                         title="Generate a shareable link to let someone else swap the credentials"
@@ -791,7 +829,7 @@ export function Integrations() {
           )}
 
           {/* Tab content */}
-          {tab === "local" && hasLocal && (
+          {tab === "local" && (
             <section>
               <h2 className="text-text text-base font-bold mb-3">App Catalog</h2>
               <input
@@ -1348,6 +1386,68 @@ export function Integrations() {
               className="px-4 py-2 bg-accent text-bg font-bold rounded-lg text-sm hover:bg-accent-hover disabled:opacity-50"
             >
               {pickerBusy ? "Saving…" : `Save (${pickerSelected.size}/${pickerTools.length})`}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={!!credsFor} onClose={closeCreds}>
+        <div className="p-6 w-[560px] max-w-full space-y-3">
+          <h2 className="text-text text-base font-bold">
+            Credentials — {credsFor?.name}
+          </h2>
+          <p className="text-text-dim text-xs leading-snug">
+            Stored values for the <span className="text-text">{credsFor?.app_name}</span> connection.
+            Click the eye to reveal a value, or the copy button to copy it. Each
+            reveal is logged on the server for audit. Don&apos;t share these — they grant the same
+            access the connection itself does.
+          </p>
+          {credsBusy && <div className="text-text-dim text-xs">Loading…</div>}
+          {credsErr && <div className="text-red text-xs">{credsErr}</div>}
+          {credsData && Object.keys(credsData).length === 0 && !credsBusy && (
+            <div className="text-text-dim text-xs">No credentials stored on this connection.</div>
+          )}
+          {credsData && Object.keys(credsData).length > 0 && (
+            <div className="space-y-2">
+              {Object.entries(credsData).map(([key, value]) => {
+                const revealed = credsRevealed.has(key);
+                const masked = value.length <= 4
+                  ? "••••"
+                  : "•".repeat(Math.max(8, value.length - 4)) + value.slice(-4);
+                return (
+                  <div key={key} className="flex items-center gap-2">
+                    <div className="w-32 shrink-0 text-xs text-text-muted font-mono">{key}</div>
+                    <input
+                      readOnly
+                      value={revealed ? value : masked}
+                      onFocus={(e) => e.currentTarget.select()}
+                      className="flex-1 bg-bg-input border border-border rounded-lg px-3 py-2 text-xs text-text font-mono focus:outline-none focus:border-accent"
+                    />
+                    <button
+                      onClick={() => toggleCredReveal(key)}
+                      className="px-2 py-2 border border-border rounded-lg text-xs text-text-muted hover:text-text"
+                      title={revealed ? "Hide" : "Reveal"}
+                    >
+                      {revealed ? "Hide" : "Reveal"}
+                    </button>
+                    <button
+                      onClick={() => copyCred(key, value)}
+                      className="px-2 py-2 border border-border rounded-lg text-xs text-text-muted hover:text-text"
+                      title="Copy to clipboard"
+                    >
+                      {credsCopied === key ? "Copied" : "Copy"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div className="flex justify-end pt-1">
+            <button
+              onClick={closeCreds}
+              className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text"
+            >
+              Close
             </button>
           </div>
         </div>

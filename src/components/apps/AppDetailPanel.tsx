@@ -9,8 +9,9 @@
 // dim overlay rather than a full opaque scrim — the page underneath
 // stays readable so the user keeps context.
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { AppRow, AppSurfaces, AppUIComponent, MarketplaceEntry } from "../../api";
+import { apps } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
 import { AppSurfaceBadges } from "./AppSurfaceBadges";
 import { ChatComponentMount, type InstalledAppRow } from "./chatComponents";
@@ -104,12 +105,12 @@ export function AppDetailPanel(props: Props) {
         aria-hidden="true"
       />
       <aside
-        className="fixed right-0 top-0 h-full w-full sm:w-[480px] bg-bg-card border-l border-border z-50 flex flex-col shadow-xl"
+        className="fixed right-0 top-0 h-full w-full sm:w-[720px] bg-bg-card border-l border-border z-50 flex flex-col shadow-xl"
         role="dialog"
         aria-label={`${view.display_name} details`}
       >
         {/* Header — pinned, always visible. */}
-        <div className="flex items-start gap-3 px-5 py-4 border-b border-border flex-shrink-0">
+        <div className="flex items-start gap-3 px-6 py-5 border-b border-border flex-shrink-0">
           {view.icon && (
             <img
               src={view.icon}
@@ -138,223 +139,12 @@ export function AppDetailPanel(props: Props) {
           </button>
         </div>
 
-        {/* Body — scrolls. */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
-          {view.description && (
-            <section>
-              <p className="text-text-dim text-sm leading-relaxed whitespace-pre-line">
-                {view.description}
-              </p>
-            </section>
-          )}
-
-          {s && (
-            <section>
-              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
-                Surfaces
-              </h3>
-              <AppSurfaceBadges surfaces={s} />
-            </section>
-          )}
-
-          {s?.mcp_tool_names && s.mcp_tool_names.length > 0 && (
-            <section>
-              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
-                MCP tools ({s.mcp_tool_names.length})
-              </h3>
-              <ul className="space-y-1 text-sm font-mono">
-                {s.mcp_tool_names.map((t) => (
-                  <li key={t} className="text-text-dim">
-                    {t}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {s?.http_routes && s.http_routes.length > 0 && (
-            <section>
-              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
-                HTTP routes
-              </h3>
-              <ul className="space-y-1 text-sm font-mono">
-                {s.http_routes.map((r) => (
-                  <li key={r} className="text-text-dim">
-                    {r}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {s?.channel_names && s.channel_names.length > 0 && (
-            <section>
-              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
-                Channels
-              </h3>
-              <ul className="space-y-1 text-sm font-mono">
-                {s.channel_names.map((c) => (
-                  <li key={c} className="text-text-dim">
-                    {c}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {view.components && view.components.length > 0 && view.installId !== undefined && (
-            <ComponentsSection
-              appName={view.name}
-              version={view.version}
-              installId={view.installId}
-              components={view.components}
-            />
-          )}
-
-          {s?.required_apps && s.required_apps.length > 0 && (
-            <section>
-              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
-                Dependencies
-              </h3>
-              <ul className="space-y-1.5 text-sm">
-                {s.required_apps.map((d) => {
-                  const status = d.installed
-                    ? "installed"
-                    : d.optional
-                      ? "optional"
-                      : "missing";
-                  const cls = d.installed
-                    ? "text-green"
-                    : d.optional
-                      ? "text-text-muted"
-                      : "text-red";
-                  const glyph = d.installed ? "✓" : d.optional ? "~" : "✗";
-                  return (
-                    <li key={d.name} className="flex items-start gap-2">
-                      <span className={`font-mono ${cls}`}>{glyph}</span>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-text font-medium">{d.name}</span>
-                          {d.version && (
-                            <span className="text-[10px] text-text-dim font-mono">{d.version}</span>
-                          )}
-                          <span className={`text-[10px] uppercase tracking-wide ${cls}`}>
-                            {status}
-                          </span>
-                        </div>
-                        {d.reason && (
-                          <p className="text-text-dim text-xs mt-0.5">{d.reason}</p>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-              {s.required_apps.some((d) => !d.installed && !d.optional) && (
-                <p className="text-text-dim text-[11px] mt-2">
-                  Missing required apps will be installed automatically alongside this one.
-                </p>
-              )}
-            </section>
-          )}
-
-          {s?.permissions && s.permissions.length > 0 && (
-            <section>
-              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
-                Permissions required
-              </h3>
-              <ul className="space-y-1 text-sm font-mono">
-                {s.permissions.map((p) => (
-                  <li key={p} className="text-amber-200">
-                    {p}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {/* Installed mode: live editable settings form. Read from
-              GET /api/apps/installs/<id>/config which returns the schema
-              + current values; saves via PUT to the same path. The
-              read-only "Configuration" list (config_keys) only shows up
-              for marketplace previews, where there's no install yet. */}
-          {props.mode === "installed" && view.installId !== undefined ? (
-            <SettingsSection installId={view.installId} />
-          ) : (
-            s?.config_keys && s.config_keys.length > 0 && (
-              <section>
-                <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
-                  Configuration
-                </h3>
-                <p className="text-text-dim text-xs mb-1">
-                  Asks for these at install time:
-                </p>
-                <ul className="space-y-1 text-sm font-mono">
-                  {s.config_keys.map((k) => (
-                    <li key={k} className="text-text-dim">
-                      {k}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )
-          )}
-
-          {(view.tags && view.tags.length > 0) && (
-            <section>
-              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
-                Tags
-              </h3>
-              <div className="flex flex-wrap gap-1">
-                {view.tags.map((t) => (
-                  <span
-                    key={t}
-                    className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-muted"
-                  >
-                    {t}
-                  </span>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {(view.repo || view.manifestUrl) && (
-            <section className="border-t border-border pt-4">
-              <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
-                Links
-              </h3>
-              <ul className="space-y-1 text-sm">
-                {view.repo && (
-                  <li>
-                    <a
-                      href={view.repo}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-accent hover:underline"
-                    >
-                      Repository ↗
-                    </a>
-                  </li>
-                )}
-                {view.manifestUrl && (
-                  <li>
-                    <a
-                      href={view.manifestUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-accent hover:underline"
-                    >
-                      Manifest ↗
-                    </a>
-                  </li>
-                )}
-              </ul>
-            </section>
-          )}
-        </div>
+        {/* Body — tabbed for installed mode (lots to show: bindings,
+            settings, tools, deps), flat for marketplace previews. */}
+        <PanelBody view={view} props={props} />
 
         {/* Footer — primary actions. */}
-        <div className="border-t border-border px-5 py-3 flex-shrink-0 flex gap-2">
+        <div className="border-t border-border px-6 py-4 flex-shrink-0 flex gap-2">
           {props.mode === "marketplace" && !view.installed && (
             <button
               onClick={props.onInstall}
@@ -462,6 +252,481 @@ function ComponentsSection({
             )}
           </div>
         ))}
+      </div>
+    </section>
+  );
+}
+
+// PanelBody chooses between a flat (marketplace) and tabbed (installed)
+// render. Tabs only matter when there's a lot to surface — settings,
+// bindings, tools list — and they keep the panel scannable instead of
+// turning into a kilometer-long scroll. Marketplace previews don't
+// have settings or bindings to edit, so they stay flat.
+function PanelBody({ view, props }: { view: View; props: Props }) {
+  const s = view.surfaces;
+  if (props.mode !== "installed") {
+    return (
+      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-7">
+        <FlatBody view={view} />
+      </div>
+    );
+  }
+  return <TabbedBody view={view} />;
+
+  // helper kept inside scope so it can read s; same reading pattern as
+  // before, just inlined for readability when bodies diverge.
+  // (Not used directly here; FlatBody is the marketplace path.)
+  void s;
+}
+
+// FlatBody — the original linear render, used for marketplace previews
+// where there's nothing editable and operators just want to scan.
+function FlatBody({ view }: { view: View }) {
+  const s = view.surfaces;
+  return (
+    <>
+      {view.description && (
+        <section>
+          <p className="text-text-dim text-sm leading-relaxed whitespace-pre-line">
+            {view.description}
+          </p>
+        </section>
+      )}
+      {s && (
+        <section>
+          <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">Surfaces</h3>
+          <AppSurfaceBadges surfaces={s} />
+        </section>
+      )}
+      {s?.mcp_tool_names && s.mcp_tool_names.length > 0 && (
+        <section>
+          <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+            MCP tools ({s.mcp_tool_names.length})
+          </h3>
+          <ul className="space-y-1 text-sm font-mono">
+            {s.mcp_tool_names.map((t) => (
+              <li key={t} className="text-text-dim">{t}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {s?.required_apps && s.required_apps.length > 0 && (
+        <DependenciesList deps={s.required_apps} />
+      )}
+      {s?.permissions && s.permissions.length > 0 && (
+        <PermissionsList perms={s.permissions} />
+      )}
+      {s?.config_keys && s.config_keys.length > 0 && (
+        <section>
+          <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">Configuration</h3>
+          <p className="text-text-dim text-xs mb-1">Asks for these at install time:</p>
+          <ul className="space-y-1 text-sm font-mono">
+            {s.config_keys.map((k) => (
+              <li key={k} className="text-text-dim">{k}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {view.tags && view.tags.length > 0 && <TagsList tags={view.tags} />}
+      {(view.repo || view.manifestUrl) && (
+        <LinksList repo={view.repo} manifestUrl={view.manifestUrl} />
+      )}
+    </>
+  );
+}
+
+type TabKey = "overview" | "bindings" | "settings" | "tools";
+
+// TabbedBody — installed-mode render. Bindings and Settings each get
+// their own tab so they can spread out without competing with the
+// 50-field config form for screen space. Tabs are visible at all
+// times (no hidden state); the active one underlines.
+function TabbedBody({ view }: { view: View }) {
+  const s = view.surfaces;
+  const hasBindings =
+    (s?.required_apps && s.required_apps.length > 0) ||
+    (s?.permissions && false); // bindings tab is roles+app-deps; show if either exists
+  const showBindings = (s?.required_apps && s.required_apps.length > 0) || true;
+  const showTools =
+    (s?.mcp_tool_names && s.mcp_tool_names.length > 0) ||
+    (s?.http_routes && s.http_routes.length > 0) ||
+    (s?.channel_names && s.channel_names.length > 0) ||
+    (view.components && view.components.length > 0);
+  const tabs: { key: TabKey; label: string; visible: boolean }[] = [
+    { key: "overview", label: "Overview", visible: true },
+    { key: "bindings", label: "Bindings", visible: !!showBindings },
+    { key: "settings", label: "Settings", visible: view.installId !== undefined },
+    { key: "tools", label: "Tools & UI", visible: !!showTools },
+  ];
+  const visibleTabs = tabs.filter((t) => t.visible);
+  const [active, setActive] = useState<TabKey>("overview");
+  void hasBindings;
+
+  return (
+    <>
+      <div className="border-b border-border px-6 flex gap-5 flex-shrink-0">
+        {visibleTabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setActive(t.key)}
+            className={`py-2.5 text-sm border-b-2 -mb-px transition ${
+              active === t.key
+                ? "border-accent text-text"
+                : "border-transparent text-text-muted hover:text-text"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-7">
+        {active === "overview" && <OverviewTab view={view} />}
+        {active === "bindings" && view.installId !== undefined && (
+          <BindingsEditor installId={view.installId} />
+        )}
+        {active === "settings" && view.installId !== undefined && (
+          <SettingsSection installId={view.installId} />
+        )}
+        {active === "tools" && <ToolsTab view={view} />}
+      </div>
+    </>
+  );
+}
+
+function OverviewTab({ view }: { view: View }) {
+  const s = view.surfaces;
+  return (
+    <>
+      {view.description && (
+        <section>
+          <p className="text-text-dim text-sm leading-relaxed whitespace-pre-line">
+            {view.description}
+          </p>
+        </section>
+      )}
+      {s && (
+        <section>
+          <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">Surfaces</h3>
+          <AppSurfaceBadges surfaces={s} />
+        </section>
+      )}
+      {s?.required_apps && s.required_apps.length > 0 && (
+        <DependenciesList deps={s.required_apps} />
+      )}
+      {s?.permissions && s.permissions.length > 0 && (
+        <PermissionsList perms={s.permissions} />
+      )}
+      {view.tags && view.tags.length > 0 && <TagsList tags={view.tags} />}
+      {(view.repo || view.manifestUrl) && (
+        <LinksList repo={view.repo} manifestUrl={view.manifestUrl} />
+      )}
+    </>
+  );
+}
+
+function ToolsTab({ view }: { view: View }) {
+  const s = view.surfaces;
+  return (
+    <>
+      {s?.mcp_tool_names && s.mcp_tool_names.length > 0 && (
+        <section>
+          <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+            MCP tools ({s.mcp_tool_names.length})
+          </h3>
+          <ul className="space-y-1 text-sm font-mono">
+            {s.mcp_tool_names.map((t) => (
+              <li key={t} className="text-text-dim">{t}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {s?.http_routes && s.http_routes.length > 0 && (
+        <section>
+          <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">HTTP routes</h3>
+          <ul className="space-y-1 text-sm font-mono">
+            {s.http_routes.map((r) => (
+              <li key={r} className="text-text-dim">{r}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {s?.channel_names && s.channel_names.length > 0 && (
+        <section>
+          <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">Channels</h3>
+          <ul className="space-y-1 text-sm font-mono">
+            {s.channel_names.map((c) => (
+              <li key={c} className="text-text-dim">{c}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {view.components && view.components.length > 0 && view.installId !== undefined && (
+        <ComponentsSection
+          appName={view.name}
+          version={view.version}
+          installId={view.installId}
+          components={view.components}
+        />
+      )}
+    </>
+  );
+}
+
+// Small extracted sections used by both flat + tabbed bodies.
+
+function DependenciesList({ deps }: { deps: NonNullable<AppSurfaces["required_apps"]> }) {
+  return (
+    <section>
+      <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">Dependencies</h3>
+      <ul className="space-y-1.5 text-sm">
+        {deps.map((d) => {
+          const status = d.installed ? "installed" : d.optional ? "optional" : "missing";
+          const cls = d.installed ? "text-green" : d.optional ? "text-text-muted" : "text-red";
+          const glyph = d.installed ? "✓" : d.optional ? "~" : "✗";
+          return (
+            <li key={d.name} className="flex items-start gap-2">
+              <span className={`font-mono ${cls}`}>{glyph}</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-text font-medium">{d.name}</span>
+                  {d.version && (
+                    <span className="text-[10px] text-text-dim font-mono">{d.version}</span>
+                  )}
+                  <span className={`text-[10px] uppercase tracking-wide ${cls}`}>
+                    {status}
+                  </span>
+                </div>
+                {d.reason && <p className="text-text-dim text-xs mt-0.5">{d.reason}</p>}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      {deps.some((d) => !d.installed && !d.optional) && (
+        <p className="text-text-dim text-[11px] mt-2">
+          Missing required apps will be installed automatically alongside this one.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function PermissionsList({ perms }: { perms: string[] }) {
+  return (
+    <section>
+      <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">
+        Permissions required
+      </h3>
+      <ul className="space-y-1 text-sm font-mono">
+        {perms.map((p) => (
+          <li key={p} className="text-amber-200">{p}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function TagsList({ tags }: { tags: string[] }) {
+  return (
+    <section>
+      <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">Tags</h3>
+      <div className="flex flex-wrap gap-1">
+        {tags.map((t) => (
+          <span
+            key={t}
+            className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-muted"
+          >
+            {t}
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LinksList({ repo, manifestUrl }: { repo?: string; manifestUrl?: string }) {
+  return (
+    <section className="border-t border-border pt-4">
+      <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">Links</h3>
+      <ul className="space-y-1 text-sm">
+        {repo && (
+          <li>
+            <a href={repo} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+              Repository ↗
+            </a>
+          </li>
+        )}
+        {manifestUrl && (
+          <li>
+            <a href={manifestUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+              Manifest ↗
+            </a>
+          </li>
+        )}
+      </ul>
+    </section>
+  );
+}
+
+// BindingsEditor — installed-mode-only section that lets the operator
+// rebind integration roles AND requires.apps deps without
+// uninstalling. Fetches the same role summaries the install dialog
+// uses (GET /apps/installs/<id>/preflight) plus the install's
+// current bindings, renders a select per role, and PUTs the change
+// to /apps/installs/<id>/bindings on save. The server bounces the
+// sidecar so OnMount picks up the new bindings.
+//
+// Shows a one-line success/error banner after save. "Required" roles
+// can't be cleared (server 400s); the UI hides the "—" option for
+// those.
+function BindingsEditor({ installId }: { installId: number }) {
+  const [roles, setRoles] = useState<any[] | null>(null);
+  const [current, setCurrent] = useState<Record<string, any>>({});
+  const [edits, setEdits] = useState<Record<string, number | null>>({});
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+
+  const refresh = () => {
+    setStatus(null);
+    fetch(`/api/apps/installs/${installId}/preflight`, { credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+      .then((data) => {
+        setRoles(data.roles || []);
+        setCurrent(data.current_bindings || {});
+        setEdits({});
+      })
+      .catch((e) => setStatus({ kind: "err", msg: `Load failed: ${e.message}` }));
+  };
+  useEffect(refresh, [installId]);
+
+  if (roles === null) return null;
+  if (roles.length === 0) return null;
+
+  // Selected value = pending edit (if any) || current binding || ""
+  const selectedFor = (role: string): string => {
+    if (role in edits) {
+      const v = edits[role];
+      return v === null ? "" : String(v);
+    }
+    const cur = current[role];
+    return cur == null ? "" : String(cur);
+  };
+  const dirty = Object.keys(edits).length > 0;
+
+  const onSave = async () => {
+    setSaving(true);
+    setStatus(null);
+    try {
+      const res = await apps.setBindings(installId, edits);
+      if (res.respawned) {
+        setStatus({ kind: "ok", msg: "Bindings updated. Sidecar respawned." });
+      } else {
+        setStatus({
+          kind: "err",
+          msg: `Bindings saved but respawn failed: ${res.respawn_err || "unknown"}`,
+        });
+      }
+      // Re-load so current_bindings reflects the saved state.
+      refresh();
+    } catch (e: any) {
+      setStatus({ kind: "err", msg: e.message || "save failed" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="space-y-5">
+      <div>
+        <h3 className="text-text font-semibold text-base mb-1.5">Bindings</h3>
+        <p className="text-text-dim text-sm leading-relaxed">
+          Wire integrations and app dependencies. Saving bounces the sidecar so
+          new bindings take effect on next boot.
+        </p>
+      </div>
+
+      <div className="divide-y divide-border border border-border rounded-md">
+        {roles.map((r: any) => {
+          const cands = r.kind === "integration" ? r.integration_candidates || [] : r.app_candidates || [];
+          return (
+            <div key={r.role} className="px-4 py-4 space-y-2.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-text font-medium text-sm">{r.label || r.role}</span>
+                {r.required ? (
+                  <span className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded bg-red/15 text-red">
+                    required
+                  </span>
+                ) : (
+                  <span className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded bg-bg-hover text-text-muted">
+                    optional
+                  </span>
+                )}
+                {r.kind && (
+                  <span className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded bg-bg-hover text-text-muted">
+                    {r.kind}
+                  </span>
+                )}
+              </div>
+              {r.hint && (
+                <p className="text-text-dim text-xs leading-relaxed">{r.hint}</p>
+              )}
+              <select
+                className="w-full bg-bg-input border border-border rounded px-3 py-2 text-sm"
+                value={selectedFor(r.role)}
+                onChange={(ev) => {
+                  const v = ev.target.value;
+                  setEdits({ ...edits, [r.role]: v === "" ? null : Number(v) });
+                }}
+              >
+                {!r.required && <option value="">— unbound —</option>}
+                {cands.length === 0 && (
+                  <option value="" disabled>
+                    No compatible {r.kind === "integration" ? "connections" : "apps"} in this project
+                  </option>
+                )}
+                {cands.map((c: any) =>
+                  r.kind === "integration" ? (
+                    <option key={c.connection_id} value={String(c.connection_id)}>
+                      {c.name} ({c.app_slug})
+                    </option>
+                  ) : (
+                    <option key={c.install_id} value={String(c.install_id)}>
+                      {c.display_name || c.app_name}
+                    </option>
+                  ),
+                )}
+              </select>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center gap-3 pt-1">
+        <button
+          type="button"
+          disabled={!dirty || saving}
+          onClick={onSave}
+          className="px-4 py-2 bg-accent text-bg rounded text-sm font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+        {dirty && !saving && (
+          <button
+            type="button"
+            onClick={() => setEdits({})}
+            className="text-sm text-text-muted hover:text-text px-2 py-2"
+          >
+            Discard
+          </button>
+        )}
+        {status && (
+          <span
+            className={`text-xs ${status.kind === "ok" ? "text-green" : "text-red"} ml-auto`}
+          >
+            {status.msg}
+          </span>
+        )}
       </div>
     </section>
   );
