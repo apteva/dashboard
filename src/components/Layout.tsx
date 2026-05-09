@@ -416,15 +416,13 @@ function PlatformUpdateModal(props: {
         </div>
 
         <div className="bg-border/30 rounded p-3 mb-4 text-xs">
-          <div className="font-medium mb-2">To update, run one of:</div>
-          <pre className="font-mono text-text-muted whitespace-pre-wrap leading-relaxed">{`# standalone tarball / global install
-apteva update
-
-# npm install
-npm install -g apteva@latest
-
-# Docker
-docker pull apteva:latest && docker compose up -d`}</pre>
+          <div className="font-medium mb-2">{updateInstructionsTitle(status.install_method)}</div>
+          <pre className="font-mono text-text-muted whitespace-pre-wrap leading-relaxed">{updateInstructionsBody(status.install_method)}</pre>
+          {updateInstructionsNote(status.install_method) && (
+            <div className="mt-2 text-text-dim text-[11px] italic">
+              {updateInstructionsNote(status.install_method)}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center justify-between text-xs text-text-muted">
@@ -513,4 +511,69 @@ function SidebarAppIcon({ url, name }: { url?: string; name: string }) {
       onError={() => setBroken(true)}
     />
   );
+}
+
+// updateInstructionsTitle / Body / Note — the three slots in the
+// "Platform update available" modal. The server tags each install
+// with an `install_method` (foreground / systemd-* / launchd-* /
+// docker / source / packaged); we render the matching command.
+//
+// Why three functions and not one big switch component: the title
+// changes the verb ("To update, run" vs "Restart your container"),
+// and the note appears only for flavors where the supervisor
+// handles the restart for free — separating them keeps the JSX
+// above clean.
+function updateInstructionsTitle(method: string | undefined): string {
+  switch (method) {
+    case "docker":
+      return "Pull the new image and restart your container:";
+    case "source":
+      return "Pull the monorepo and rebuild:";
+    case "packaged":
+      return "Use your system package manager:";
+    case "systemd-system":
+    case "systemd-user":
+    case "launchd-system":
+    case "launchd-user":
+      return "Run apteva update — the supervisor handles the restart:";
+    default:
+      return "To update, run:";
+  }
+}
+
+function updateInstructionsBody(method: string | undefined): string {
+  switch (method) {
+    case "docker":
+      return "docker pull apteva:latest\ndocker compose up -d";
+    case "source":
+      return "cd <your monorepo>\ngit pull\n./scripts/build-local.sh";
+    case "packaged":
+      return "# pick the right one for your distro\nsudo apt upgrade apteva\n# or: sudo dnf upgrade apteva\n# or: sudo pacman -Syu apteva";
+    case "systemd-user":
+    case "launchd-user":
+      return "apteva update";
+    case "systemd-system":
+    case "launchd-system":
+      return "sudo apteva update";
+    default:
+      // foreground OR unknown: show the canonical paths for both
+      // standalone-tarball and npm installs so npx/npm-global users
+      // see something useful too.
+      return "# standalone / one-command upgrade\napteva update\n\n# npm install\nnpm install -g apteva@latest";
+  }
+}
+
+function updateInstructionsNote(method: string | undefined): string | null {
+  switch (method) {
+    case "systemd-user":
+    case "systemd-system":
+      return "The unit's SuccessExitStatus=11 + Restart=on-failure picks up the new binary through bin/current.";
+    case "launchd-user":
+    case "launchd-system":
+      return "launchd's KeepAlive picks up the new binary through bin/current after the SIGTERM drain.";
+    case "foreground":
+      return "After the swap, re-run apteva to start the new version.";
+    default:
+      return null;
+  }
 }

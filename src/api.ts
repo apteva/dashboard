@@ -1876,12 +1876,29 @@ export interface PlatformComponentStatus {
   update_available: boolean;
 }
 
+/** Server-side detection of how apteva-server got onto disk. The
+ *  banner copy adapts so e.g. systemd users see the right command
+ *  ("apteva update" since the supervisor handles the restart through
+ *  the symlink flip), Docker users see `docker pull && compose up`,
+ *  source builds see `git pull && build-local.sh`. See
+ *  server/install_method.go for the canonical list of values. */
+export type PlatformInstallMethod =
+  | "foreground"
+  | "systemd-user"
+  | "systemd-system"
+  | "launchd-user"
+  | "launchd-system"
+  | "docker"
+  | "source"
+  | "packaged";
+
 export interface PlatformStatus {
   polled_at: string;
   bundle_version?: string;
   release_notes_url?: string;
   components: PlatformComponentStatus[];
   update_available: boolean;
+  install_method?: PlatformInstallMethod;
   error?: string;
 }
 
