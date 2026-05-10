@@ -7,6 +7,7 @@ import {
   type AppSummary,
   type AppDetail,
   type ConnectionInfo,
+  type ConnectionTestResult,
   type Provider,
   type ComposioApp,
   type ComposioToolkitDetails,
@@ -75,6 +76,15 @@ export function Integrations() {
   const [credsErr, setCredsErr] = useState("");
   const [credsRevealed, setCredsRevealed] = useState<Set<string>>(new Set());
   const [credsCopied, setCredsCopied] = useState<string | null>(null);
+
+  // Per-connection health-check state. Keyed by connection.id.
+  // null  → never tested in this session
+  // {ok}  → last test outcome (used to render the green/red dot)
+  // The map clears when the project changes; we don't persist
+  // results to localStorage because freshness matters more than
+  // sticky reassurance on the next session.
+  const [testResults, setTestResults] = useState<Record<number, ConnectionTestResult>>({});
+  const [testInFlight, setTestInFlight] = useState<Set<number>>(new Set());
 
   // Tool picker — after a new connection is active, present the catalog
   // of tools exposed by that integration and let the user pick which subset
@@ -299,7 +309,26 @@ export function Integrations() {
       setOAuthClientID("");
       setOAuthClientSecret("");
     } catch (err: any) {
-      setError(err?.message || "Failed to connect");
+      // The server's pre-flight check returns 400 with a JSON body
+      // shaped { error, detail, status_code, health_check } when
+      // the credentials don't pass the catalog's health_check
+      // probe. Parse it so the form shows "HTTP 403: …" rather
+      // than the raw JSON. Falls through to the plain-text path
+      // for any other 4xx/5xx.
+      let msg: string = err?.message || "Failed to connect";
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed && typeof parsed === "object") {
+          if (parsed.health_check) {
+            msg = `Credential check failed — ${parsed.detail || "upstream rejected the request"}`;
+          } else if (parsed.error) {
+            msg = parsed.error + (parsed.detail ? ` — ${parsed.detail}` : "");
+          }
+        }
+      } catch {
+        // not JSON — leave msg as-is
+      }
+      setError(msg);
     } finally {
       setConnecting(false);
     }
@@ -462,6 +491,37 @@ export function Integrations() {
     await integrations.disconnect(id);
     loadConnections();
   };
+
+  // handleTestConnection runs the catalog's health_check probe
+  // against this connection's stored credentials. Result lives in
+  // the testResults map and renders inline next to the row's
+  // status dot. The button stays clickable during the request so
+  // a user can fire repeated probes (e.g. while watching an
+  // upstream incident clear) — the in-flight set prevents races.
+  const handleTestConnection = useCallback(async (id: number) => {
+    setTestInFlight((prev) => new Set(prev).add(id));
+    try {
+      const r = await integrations.testConnection(id);
+      setTestResults((prev) => ({ ...prev, [id]: r }));
+    } catch (err: any) {
+      // Network / 5xx — treat as failure with a generic message
+      // since the server didn't get to run the probe at all.
+      setTestResults((prev) => ({
+        ...prev,
+        [id]: {
+          ok: false,
+          latency_ms: 0,
+          error: err?.message || "test request failed",
+        },
+      }));
+    } finally {
+      setTestInFlight((prev) => {
+        const n = new Set(prev);
+        n.delete(id);
+        return n;
+      });
+    }
+  }, []);
 
   const openInviteFor = async (c: ConnectionInfo) => {
     setInviteFor(c);
@@ -808,6 +868,17 @@ export function Integrations() {
                       >
                         Credentials
                       </button>
+                      <button
+                        onClick={() => handleTestConnection(c.id)}
+                        disabled={testInFlight.has(c.id)}
+                        className="text-sm text-text-muted hover:text-accent transition-colors disabled:opacity-50"
+                        title="Run the app's health check against the stored credentials"
+                      >
+                        {testInFlight.has(c.id) ? "Testing…" : "Test"}
+                      </button>
+                      {testResults[c.id] && (
+                        <ConnectionTestBadge result={testResults[c.id]} />
+                      )}
                       <button
                         onClick={() => openInviteFor(c)}
                         className="text-sm text-text-muted hover:text-accent transition-colors"
@@ -1531,5 +1602,58 @@ export function Integrations() {
         </div>
       </Modal>
     </div>
+  );
+}
+
+// ConnectionTestBadge — inline pill rendered next to a Test button
+// after a probe runs. Three visual states match the result shape:
+//
+//   ok=true  + skipped=true → neutral grey "no probe"
+//   ok=true  + skipped=false → green "✓ <latency>ms"
+//   ok=false                 → red "✗ <error>" with the upstream
+//                              status / message in a tooltip so the
+//                              row stays compact but the operator
+//                              can read the full reason on hover.
+function ConnectionTestBadge({ result }: { result: ConnectionTestResult }) {
+  if (result.ok && result.skipped) {
+    return (
+      <span
+        className="text-xs text-text-dim"
+        title={result.reason || "no health check declared in the catalog for this app"}
+      >
+        no probe
+      </span>
+    );
+  }
+  if (result.ok) {
+    // result.reason is set when the upstream returned 4xx but the
+    // body matched a catalog-declared "auth still valid" pattern
+    // (S3-compat: bucket-scoped tokens get 403 AccessDenied on
+    // ListBuckets even when they're perfectly valid for the
+    // operations they're scoped to). Surface the explanation in
+    // the tooltip so the green tick is intelligible — the operator
+    // shouldn't have to wonder why HTTP 403 reads as success.
+    const status = result.status_code ?? 200;
+    const tooltip = result.reason
+      ? `HTTP ${status} · ${result.latency_ms}ms — ${result.reason}`
+      : `HTTP ${status} · ${result.latency_ms}ms`;
+    return (
+      <span className="text-xs text-green" title={tooltip}>
+        ✓ {result.latency_ms}ms
+      </span>
+    );
+  }
+  // Failure. Show "✗ HTTP 401" inline + full error in tooltip.
+  const compact =
+    result.status_code != null
+      ? `✗ HTTP ${result.status_code}`
+      : `✗ failed`;
+  return (
+    <span
+      className="text-xs text-red max-w-[14rem] truncate"
+      title={result.error || "test failed"}
+    >
+      {compact}
+    </span>
   );
 }

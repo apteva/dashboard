@@ -424,6 +424,24 @@ export interface ConnectCreateResponse {
   redirect_url: string;
 }
 
+/** Result of running the catalog-declared health_check probe
+ *  against a connection's stored credentials. The server returns
+ *  this either via POST /connections/:id/test (manual button) or
+ *  inline in POST /connections's 400 body when the pre-flight
+ *  check rejects newly-entered credentials.
+ *
+ *  ok=true with skipped=true means the catalog has no health_check
+ *  for this app — the dashboard should render a neutral state
+ *  ("Test not available") rather than green/red. */
+export interface ConnectionTestResult {
+  ok: boolean;
+  skipped?: boolean;
+  reason?: string;
+  latency_ms: number;
+  status_code?: number;
+  error?: string;
+}
+
 export interface ComposioApp {
   slug: string;
   name: string;
@@ -598,6 +616,17 @@ export const integrations = {
       ...(createdVia ? { created_via: createdVia } : {}),
       ...(autoMCP === false ? { auto_mcp: false } : {}),
     }),
+
+  // Run the per-app health_check probe against the stored
+  // credentials of an existing connection. The server replies
+  // with { ok, latency_ms, status_code?, error?, skipped?,
+  // reason? } either way; OK=false is normal payload not an
+  // HTTP error so callers don't need a try/catch around the
+  // failure case. Apps without a health_check declared in their
+  // catalog return { ok: true, skipped: true, reason: "..." }
+  // — render those as a neutral state rather than success.
+  testConnection: (connectionId: number) =>
+    request<ConnectionTestResult>("POST", `/connections/${connectionId}/test`, {}),
 
   // Create an additional MCP server row over an existing connection
   // with a specific tool subset. Lets the user attach two distinct
