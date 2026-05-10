@@ -1656,7 +1656,49 @@ export interface AppManifestV2 {
     channels?: { name: string; capabilities: string[] }[];
     workers?: { name: string; schedule: string }[];
   };
+  /** Install-time + post-install settings schema. Same shape feeds
+   *  both InstallModal (required fields only, per v0.14 UX) and
+   *  the SettingsSection panel (full set, post-install). Keeps
+   *  one source of truth — manifest authors don't write the form
+   *  twice. Extended in v0.14 with required_if_role_bound +
+   *  select_from_integration + discovery; older renderers that
+   *  ignore those fields fall back to text input gracefully. */
+  config_schema?: AppConfigField[];
   upgrade_policy: string;
+}
+
+export interface AppConfigField {
+  name: string;
+  label?: string;
+  /** text | password | toggle | select | select_from_integration |
+   *  gdrive_sheet | gdrive_folder | … (unknown types render as text) */
+  type?: string;
+  description?: string;
+  required?: boolean;
+  default?: string;
+  /** Closed enum for type=select. */
+  options?: string[];
+  /** Required only when the named integration role has a non-null
+   *  binding. Lets the manifest mark `s3_bucket` required only
+   *  when `backend` is bound. */
+  required_if_role_bound?: string;
+  /** For type=select_from_integration: which role to draw the list
+   *  from. The dashboard reads the connection bound to that role
+   *  and invokes `discovery.tool` against it to populate the
+   *  dropdown. */
+  integration_role?: string;
+  discovery?: AppConfigFieldDiscovery;
+  /** "text" → fall back to a manual text input when discovery
+   *  fails (no binding, upstream error, empty result). Empty =
+   *  show the failure and disable the field. */
+  fallback?: "text" | "";
+}
+
+export interface AppConfigFieldDiscovery {
+  tool: string;
+  response_path?: string;
+  value_field?: string;
+  label_field?: string;
 }
 
 export interface AppInstallOptions {

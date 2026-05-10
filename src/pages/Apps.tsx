@@ -7,6 +7,8 @@ import {
   type AppPreview,
   type AppPreflight,
   type AppDetail,
+  type AppManifestV2,
+  type AppConfigField,
   type MarketplaceEntry,
   type PreflightRole,
   type PreflightConnectionCandidate,
@@ -877,7 +879,21 @@ function InstallModal({
     if (intent && intent.kind === "install_app") return false;
     return true;
   });
-  const canInstall = !!preview && requiredRolesUnbound.length === 0;
+  // Required config fields whose value is empty. A field is required
+  // when manifest's `required: true` OR when its
+  // `required_if_role_bound` names a role with a non-null binding.
+  // The Install button is gated on both: required roles + required
+  // fields. Optional fields (the rest of config_schema) live in the
+  // post-install Settings panel, keeping the modal short.
+  const requiredFieldsUnfilled = preview
+    ? requiredConfigFields(preview.manifest, bindings).filter(
+        (f) => !((config[f.name] ?? f.default ?? "") as string).trim(),
+      )
+    : [];
+  const canInstall =
+    !!preview &&
+    requiredRolesUnbound.length === 0 &&
+    requiredFieldsUnfilled.length === 0;
 
   // Step text shown next to the spinner during the multi-step install.
   const [installStep, setInstallStep] = useState("");
@@ -1412,9 +1428,22 @@ function PreviewAndConfigure({
         </div>
       )}
 
-      {/* Config schema rendering — minimal: text fields. Richer types
-          (gdrive_sheet picker, etc.) come once the catalog ships. */}
-      {/* For preview/v1 we just rely on the user pasting values. */}
+      {/* Required-config fields. Optional fields land in the
+          post-install Settings panel — keeping the install modal
+          short. Field is "required" when:
+            - field.required is true, OR
+            - field.required_if_role_bound names a role that has a
+              non-null binding above.
+          Renderer also handles type=select_from_integration which
+          fetches options from the bound connection (e.g. R2's
+          list_buckets) so the bucket field becomes a dropdown of
+          real buckets the moment the operator binds backend. */}
+      <RequiredConfigFields
+        manifest={m}
+        bindings={bindings}
+        config={config}
+        setConfig={setConfig}
+      />
 
       {/* Integration role pickers — one per requires.integrations entry.
           Required roles must be bound; optional roles render a checkbox. */}
@@ -1468,4 +1497,302 @@ function PreviewAndConfigure({
       </p>
     </div>
   );
+}
+
+// ─── Config-schema rendering ─────────────────────────────────────────
+//
+// v0.14 install modal renders only the REQUIRED subset of the
+// manifest's config_schema; the rest stays in post-install Settings.
+// "Required" = field.required is true OR field.required_if_role_bound
+// names a role with a non-null binding. Non-required fields silently
+// ride along with their declared defaults — operators don't have to
+// see fields they don't need to think about. Same renderer is used
+// at install AND post-install (via SettingsSection); the only
+// difference is which fields it shows.
+
+// requiredConfigFields returns the subset of config_schema fields
+// that need an answer for THIS install given the current bindings.
+// Pure function so InstallModal can reuse it for canInstall gating.
+function requiredConfigFields(
+  manifest: AppManifestV2,
+  bindings: Record<string, number | null>,
+): AppConfigField[] {
+  const out: AppConfigField[] = [];
+  for (const f of manifest.config_schema || []) {
+    if (f.required) {
+      out.push(f);
+      continue;
+    }
+    if (f.required_if_role_bound) {
+      const v = bindings[f.required_if_role_bound];
+      if (v != null && v !== 0) out.push(f);
+    }
+  }
+  return out;
+}
+
+function RequiredConfigFields({
+  manifest,
+  bindings,
+  config,
+  setConfig,
+}: {
+  manifest: AppManifestV2;
+  bindings: Record<string, number | null>;
+  config: Record<string, string>;
+  setConfig: (c: Record<string, string>) => void;
+}) {
+  const fields = requiredConfigFields(manifest, bindings);
+  if (fields.length === 0) return null;
+
+  const update = (name: string, val: string) =>
+    setConfig({ ...config, [name]: val });
+
+  return (
+    <div className="border border-border rounded p-3 space-y-3">
+      <div className="text-text-muted text-xs">Configuration</div>
+      {fields.map((f) => {
+        const value = config[f.name] ?? f.default ?? "";
+        const label = f.label || f.name;
+        return (
+          <div key={f.name} className="space-y-1">
+            <label className="text-text text-xs flex items-center gap-2">
+              <span>{label}</span>
+              <span className="text-red text-[10px]">required</span>
+            </label>
+            <ConfigFieldInput
+              field={f}
+              value={value}
+              onChange={(v) => update(f.name, v)}
+              bindings={bindings}
+            />
+            {f.description && (
+              <div className="text-text-dim text-[11px]">{f.description}</div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ConfigFieldInput dispatches on f.type. Unknown types fall back to
+// a plain text input so a future manifest with a new type doesn't
+// hard-crash an older dashboard — it just downgrades to manual entry.
+function ConfigFieldInput({
+  field,
+  value,
+  onChange,
+  bindings,
+}: {
+  field: AppConfigField;
+  value: string;
+  onChange: (v: string) => void;
+  bindings: Record<string, number | null>;
+}) {
+  switch (field.type) {
+    case "password":
+      return (
+        <input
+          type="password"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
+        />
+      );
+    case "select":
+      return (
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
+        >
+          <option value="">(choose…)</option>
+          {(field.options || []).map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </select>
+      );
+    case "select_from_integration":
+      return (
+        <IntegrationDiscoverySelect
+          field={field}
+          value={value}
+          onChange={onChange}
+          connectionId={
+            field.integration_role ? bindings[field.integration_role] : null
+          }
+        />
+      );
+    case "toggle":
+      return (
+        <input
+          type="checkbox"
+          checked={value === "true"}
+          onChange={(e) => onChange(e.target.checked ? "true" : "false")}
+        />
+      );
+    case "text":
+    default:
+      return (
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
+        />
+      );
+  }
+}
+
+// IntegrationDiscoverySelect — type=select_from_integration. Reads
+// the connection bound to field.integration_role, fires
+// discovery.tool against it, parses the response per response_path,
+// renders a <select>. On any failure (no binding, upstream 4xx/5xx,
+// empty result) AND field.fallback === "text", collapses to a
+// regular text input with an info banner so the operator can
+// type the value manually. The most common failure mode in the
+// wild is bucket-scoped tokens that can't list_buckets — we hit
+// that against R2 in v0.13 — so the manual-fallback path is the
+// expected branch, not the unhappy one.
+function IntegrationDiscoverySelect({
+  field,
+  value,
+  onChange,
+  connectionId,
+}: {
+  field: AppConfigField;
+  value: string;
+  onChange: (v: string) => void;
+  connectionId: number | null | undefined;
+}) {
+  const [options, setOptions] = useState<{ value: string; label: string }[] | null>(
+    null,
+  );
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string>("");
+
+  useEffect(() => {
+    setOptions(null);
+    setErr("");
+    if (!connectionId || !field.discovery?.tool) return;
+    setLoading(true);
+    integrations
+      .execute(connectionId, field.discovery.tool, {})
+      .then((res) => {
+        if (!res.success) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const items = pluckList(res.data, field.discovery?.response_path || "");
+        const opts = items.map((it) => {
+          const v = pluckField(it, field.discovery?.value_field || "");
+          const l = pluckField(it, field.discovery?.label_field || "");
+          return { value: v, label: l || v };
+        }).filter((o) => o.value !== "");
+        setOptions(opts);
+      })
+      .catch((e) => {
+        setErr(e?.message || "discovery failed");
+      })
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionId, field.discovery?.tool]);
+
+  // No binding yet: nudge the operator to bind first.
+  if (!connectionId) {
+    return (
+      <div className="text-text-dim text-[11px] italic">
+        Bind an integration above to populate this list.
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="text-text-dim text-[11px]">Loading options…</div>
+    );
+  }
+
+  // Discovery failed (auth scope, network, malformed response) —
+  // fall back to text input if the catalog opted in.
+  const hasOptions = options && options.length > 0;
+  const showFallback = !hasOptions && field.fallback === "text";
+
+  if (showFallback) {
+    return (
+      <>
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
+        />
+        <div className="text-yellow text-[11px]">
+          {err
+            ? `Couldn't list options (${err}) — type the value manually.`
+            : "No options found — type the value manually."}
+        </div>
+      </>
+    );
+  }
+
+  if (!hasOptions) {
+    // No fallback declared. Show the error and disable.
+    return (
+      <div className="text-red text-[11px]">
+        {err || "No options returned by discovery."}
+      </div>
+    );
+  }
+
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
+    >
+      <option value="">(choose…)</option>
+      {options!.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+// pluckList walks a JSON path through `data`, returning whatever's
+// at the end as an array. Path uses "." to descend object keys;
+// missing keys → []. The runner's response shape is the integration
+// tool's literal response (parsed JSON for REST, parsed XML for
+// S3-style services), so we deliberately don't normalise — the
+// catalog author writes the path matching the literal upstream
+// response. Empty path = use `data` itself.
+function pluckList(data: any, path: string): any[] {
+  if (!path) {
+    return Array.isArray(data) ? data : [];
+  }
+  let cur: any = data;
+  for (const seg of path.split(".")) {
+    if (cur == null) return [];
+    cur = cur[seg];
+  }
+  if (cur == null) return [];
+  return Array.isArray(cur) ? cur : [cur]; // single-item upstreams sometimes drop the array wrapper
+}
+
+// pluckField extracts one named field from an item; empty path
+// returns the item itself if it's a string. Mirrors the lenient
+// shape the catalog authors expect.
+function pluckField(item: any, field: string): string {
+  if (!field) {
+    return typeof item === "string" ? item : "";
+  }
+  const v = item?.[field];
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  return "";
 }
