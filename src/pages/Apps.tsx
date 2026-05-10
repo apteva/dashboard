@@ -1683,7 +1683,33 @@ function IntegrationDiscoverySelect({
       .execute(connectionId, field.discovery.tool, {})
       .then((res) => {
         if (!res.success) {
-          throw new Error(`HTTP ${res.status}`);
+          // Pull the response body into a string for two purposes:
+          //   1. Pattern-match S3-compat AccessDenied so we can show
+          //      a friendly "your token is bucket-scoped" message
+          //      instead of the raw "HTTP 403" the operator can't act
+          //      on. This is the v0.13 health-check insight applied at
+          //      install time — same Cloudflare R2 token that returns
+          //      ✓ green on the connection Test button (because the
+          //      catalog's auth_ok_when_body_contains absorbs it) will
+          //      land here at install time too. Don't auto-pass;
+          //      list_buckets actually CAN'T list, so the dropdown
+          //      really does need to fall back to manual entry. Just
+          //      make the explanation legible.
+          //   2. Include the upstream's literal error in the
+          //      tooltip when it isn't AccessDenied — operators
+          //      shouldn't have to dig through server logs to
+          //      learn it was, say, an InvalidAccessKeyId typo.
+          const body = stringifyExecuteData(res.data);
+          if (res.status === 403 && /AccessDenied|access[\s_-]?denied/i.test(body)) {
+            throw new Error(
+              "your token can't list (bucket-scoped) — type the bucket name below",
+            );
+          }
+          if (res.status === 401) {
+            throw new Error("auth rejected (HTTP 401) — check the connection's credentials");
+          }
+          const trim = body.length > 120 ? body.slice(0, 120) + "…" : body;
+          throw new Error(`HTTP ${res.status}: ${trim}`);
         }
         const items = pluckList(res.data, field.discovery?.response_path || "");
         const opts = items.map((it) => {
@@ -1721,19 +1747,30 @@ function IntegrationDiscoverySelect({
   const showFallback = !hasOptions && field.fallback === "text";
 
   if (showFallback) {
+    // Order: explain WHY first (so the operator reads context before
+    // the empty input box), then the input, then a tiny secondary
+    // hint. Pre-fix this rendered input-then-warning, which on a
+    // freshly-bound R2 looked like an empty form with a yellow
+    // line below — easy to miss the input field entirely.
     return (
       <>
+        <div className="text-yellow text-[11px] leading-snug">
+          {err
+            ? `Couldn't auto-list options: ${err}.`
+            : "No options returned — enter the value manually."}
+        </div>
         <input
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          placeholder={
+            field.name === "s3_bucket"
+              ? "my-bucket-name"
+              : "value"
+          }
           className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
+          autoFocus
         />
-        <div className="text-yellow text-[11px]">
-          {err
-            ? `Couldn't list options (${err}) — type the value manually.`
-            : "No options found — type the value manually."}
-        </div>
       </>
     );
   }
@@ -1761,6 +1798,23 @@ function IntegrationDiscoverySelect({
       ))}
     </select>
   );
+}
+
+// stringifyExecuteData renders the integration runner's response
+// `data` field as a string we can substring-match for error
+// patterns (AccessDenied, InvalidAccessKeyId, etc.). The runner
+// returns either a parsed object (JSON APIs), a parsed map (XML
+// → S3-style), or an already-stringified body. We coerce to
+// string defensively so the discovery error path can pattern-
+// match without caring about the upstream's content type.
+function stringifyExecuteData(data: any): string {
+  if (data == null) return "";
+  if (typeof data === "string") return data;
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return String(data);
+  }
 }
 
 // pluckList walks a JSON path through `data`, returning whatever's
