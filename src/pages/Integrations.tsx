@@ -86,6 +86,16 @@ export function Integrations() {
   const [testResults, setTestResults] = useState<Record<number, ConnectionTestResult>>({});
   const [testInFlight, setTestInFlight] = useState<Set<number>>(new Set());
 
+  // Scope-change state. When set, renders a small confirmation
+  // modal asking "move this connection from project to global"
+  // (or vice versa). Mirrors the v0.14.5 install scope-flip
+  // pattern — same data-safety story: only project_id moves;
+  // credentials, bindings, MCP allowed-tools, subscriptions are
+  // all untouched.
+  const [scopeFlipFor, setScopeFlipFor] = useState<ConnectionInfo | null>(null);
+  const [scopeFlipBusy, setScopeFlipBusy] = useState(false);
+  const [scopeFlipErr, setScopeFlipErr] = useState("");
+
   // Tool picker — after a new connection is active, present the catalog
   // of tools exposed by that integration and let the user pick which subset
   // becomes an MCP server sub-threads can spawn against.
@@ -754,6 +764,132 @@ export function Integrations() {
 
   if (!loaded) return null;
 
+  // renderConnectionRow — single source of truth for a connection
+  // row's JSX, called from both the "Project" and "Global" sections
+  // of the Connected list. Closes over every handler the row needs
+  // (testInFlight / openRenameFor / handleDisconnect / …) so adding
+  // a new action is a one-line change inside the JSX, not a prop
+  // threading exercise. Project rows get a "Move to global" action;
+  // global rows get "Move to <current project>" (when one is
+  // selected) — both flow through scopeFlipFor + the confirmation
+  // modal at the bottom of the page.
+  const renderConnectionRow = (c: ConnectionInfo) => {
+    const isGlobal = !c.project_id;
+    return (
+      <div
+        key={c.id}
+        className="border border-border rounded-lg p-4 bg-bg-card flex items-center justify-between"
+      >
+        <div className="flex items-center gap-3">
+          <span
+            className={`inline-block w-2.5 h-2.5 rounded-full ${
+              c.status === "active"
+                ? "bg-green"
+                : c.status === "pending"
+                  ? "bg-warn"
+                  : "bg-red"
+            }`}
+          />
+          <div>
+            {c.is_group_child ? (
+              <span
+                className="text-text text-base font-bold"
+                title={c.external_project_id ? `Suite child — pinned to project ${c.external_project_id}` : undefined}
+              >
+                {c.app_name} {c.name}
+              </span>
+            ) : (
+              <>
+                <span className="text-text text-base font-bold">{c.name}</span>
+                <span className="text-text-muted text-sm ml-2">· {c.app_name}</span>
+              </>
+            )}
+          </div>
+          <span
+            className={`text-xs px-1.5 py-0.5 rounded ${
+              c.source === "composio"
+                ? "bg-purple-900/40 text-purple-300"
+                : "bg-bg-hover text-text-dim"
+            }`}
+          >
+            {c.source || "local"}
+          </span>
+          {isGlobal && (
+            <span
+              className="text-xs px-1.5 py-0.5 rounded bg-accent/20 text-accent"
+              title="Visible from every project"
+            >
+              global
+            </span>
+          )}
+          {c.status === "pending" && (
+            <span className="text-xs text-warn">pending…</span>
+          )}
+        </div>
+        <div className="flex items-center gap-4">
+          {c.tool_count > 0 && (
+            <span className="text-text-dim text-sm">{c.tool_count} tools</span>
+          )}
+          <button
+            onClick={() => openRenameFor(c)}
+            className="text-sm text-text-muted hover:text-text transition-colors"
+            title="Rename"
+          >
+            Rename
+          </button>
+          <button
+            onClick={() => openCredsFor(c)}
+            className="text-sm text-text-muted hover:text-text transition-colors"
+            title="Inspect the stored credentials for this connection"
+          >
+            Credentials
+          </button>
+          <button
+            onClick={() => handleTestConnection(c.id)}
+            disabled={testInFlight.has(c.id)}
+            className="text-sm text-text-muted hover:text-accent transition-colors disabled:opacity-50"
+            title="Run the app's health check against the stored credentials"
+          >
+            {testInFlight.has(c.id) ? "Testing…" : "Test"}
+          </button>
+          {testResults[c.id] && (
+            <ConnectionTestBadge result={testResults[c.id]} />
+          )}
+          {/* Move-scope: shows on every row except composio (server
+              refuses for composio source; surface the same gate
+              client-side so the button isn't there to mock). Hidden
+              when there's no current project AND the connection is
+              global — nowhere to move it to. */}
+          {c.source !== "composio" && (isGlobal ? currentProject?.id : true) && (
+            <button
+              onClick={() => {
+                setScopeFlipErr("");
+                setScopeFlipFor(c);
+              }}
+              className="text-sm text-text-muted hover:text-accent transition-colors"
+              title={isGlobal ? "Bind this connection to the current project" : "Make this connection visible from every project"}
+            >
+              {isGlobal ? `Move to ${currentProject?.name || "project"}` : "Move to global"}
+            </button>
+          )}
+          <button
+            onClick={() => openInviteFor(c)}
+            className="text-sm text-text-muted hover:text-accent transition-colors"
+            title="Generate a shareable link to let someone else swap the credentials"
+          >
+            Invite
+          </button>
+          <button
+            onClick={() => handleDisconnect(c.id)}
+            className="text-sm text-text-muted hover:text-red transition-colors"
+          >
+            Disconnect
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="flex flex-col h-full">
       <div className="border-b border-border px-6 py-4">
@@ -791,111 +927,47 @@ export function Integrations() {
 
       <div className="flex-1 flex min-h-0">
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* Active connections — shared across sources */}
+          {/* Active connections — shared across sources.
+              v0.15.0 splits the list into "Project: <name>" and
+              "Global" sections so the operator can tell at a glance
+              which connections are scoped to the current project vs.
+              visible across every project. Both sections render the
+              same row component; only the heading differs. */}
           {connections && connections.length > 0 && (
             <section>
-              <h2 className="text-text text-base font-bold mb-3">Connected ({connections.length})</h2>
-              <div className="space-y-2">
-                {connections.map((c) => (
-                  <div
-                    key={c.id}
-                    className="border border-border rounded-lg p-4 bg-bg-card flex items-center justify-between"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={`inline-block w-2.5 h-2.5 rounded-full ${
-                          c.status === "active"
-                            ? "bg-green"
-                            : c.status === "pending"
-                              ? "bg-warn"
-                              : "bg-red"
-                        }`}
-                      />
-                      <div>
-                        {/*
-                          Suite children: render as one continuous
-                          headline ("OmniKit Messaging Alexa") so the
-                          row matches the corresponding MCP server's
-                          name. The external project id is technical
-                          and lives in the title-tooltip rather than
-                          a visible chip — it adds noise without
-                          helping the operator pick a row.
-                          Legacy single-app connections keep the
-                          user-chosen name first, app kind as subtitle.
-                        */}
-                        {c.is_group_child ? (
-                          <span
-                            className="text-text text-base font-bold"
-                            title={c.external_project_id ? `Suite child — pinned to project ${c.external_project_id}` : undefined}
-                          >
-                            {c.app_name} {c.name}
-                          </span>
-                        ) : (
-                          <>
-                            <span className="text-text text-base font-bold">{c.name}</span>
-                            <span className="text-text-muted text-sm ml-2">· {c.app_name}</span>
-                          </>
-                        )}
+              <h2 className="text-text text-base font-bold mb-3">
+                Connected ({connections.length})
+              </h2>
+              {(() => {
+                const globals = connections.filter((c) => !c.project_id);
+                const local = connections.filter((c) => c.project_id);
+                return (
+                  <>
+                    {local.length > 0 && (
+                      <div className="mb-4">
+                        <div className="text-text-muted text-xs mb-2 uppercase tracking-wide">
+                          Project{currentProject?.name ? `: ${currentProject.name}` : ""}
+                          {" "}
+                          ({local.length})
+                        </div>
+                        <div className="space-y-2">
+                          {local.map((c) => renderConnectionRow(c))}
+                        </div>
                       </div>
-                      <span
-                        className={`text-xs px-1.5 py-0.5 rounded ${
-                          c.source === "composio"
-                            ? "bg-purple-900/40 text-purple-300"
-                            : "bg-bg-hover text-text-dim"
-                        }`}
-                      >
-                        {c.source || "local"}
-                      </span>
-                      {c.status === "pending" && (
-                        <span className="text-xs text-warn">pending…</span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-4">
-                      {c.tool_count > 0 && (
-                        <span className="text-text-dim text-sm">{c.tool_count} tools</span>
-                      )}
-                      <button
-                        onClick={() => openRenameFor(c)}
-                        className="text-sm text-text-muted hover:text-text transition-colors"
-                        title="Rename"
-                      >
-                        Rename
-                      </button>
-                      <button
-                        onClick={() => openCredsFor(c)}
-                        className="text-sm text-text-muted hover:text-text transition-colors"
-                        title="Inspect the stored credentials for this connection"
-                      >
-                        Credentials
-                      </button>
-                      <button
-                        onClick={() => handleTestConnection(c.id)}
-                        disabled={testInFlight.has(c.id)}
-                        className="text-sm text-text-muted hover:text-accent transition-colors disabled:opacity-50"
-                        title="Run the app's health check against the stored credentials"
-                      >
-                        {testInFlight.has(c.id) ? "Testing…" : "Test"}
-                      </button>
-                      {testResults[c.id] && (
-                        <ConnectionTestBadge result={testResults[c.id]} />
-                      )}
-                      <button
-                        onClick={() => openInviteFor(c)}
-                        className="text-sm text-text-muted hover:text-accent transition-colors"
-                        title="Generate a shareable link to let someone else swap the credentials"
-                      >
-                        Invite
-                      </button>
-                      <button
-                        onClick={() => handleDisconnect(c.id)}
-                        className="text-sm text-text-muted hover:text-red transition-colors"
-                      >
-                        Disconnect
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                    )}
+                    {globals.length > 0 && (
+                      <div>
+                        <div className="text-text-muted text-xs mb-2 uppercase tracking-wide">
+                          Global ({globals.length})
+                        </div>
+                        <div className="space-y-2">
+                          {globals.map((c) => renderConnectionRow(c))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </section>
           )}
 
@@ -1600,6 +1672,71 @@ export function Integrations() {
             </button>
           </div>
         </div>
+      </Modal>
+
+      {/* Scope-flip confirmation. Mirrors the install scope-flip
+          modal from v0.14.5. Same data-safety story explained
+          inline so the operator doesn't need to dig for it:
+          credentials, bindings, MCP allowed-tools, subscriptions
+          all stay; only project_id and any auto-MCP project_id
+          move. */}
+      <Modal open={!!scopeFlipFor} onClose={() => !scopeFlipBusy && setScopeFlipFor(null)}>
+        {scopeFlipFor && (() => {
+          const wasGlobal = !scopeFlipFor.project_id;
+          const target = wasGlobal ? (currentProject?.id ?? "") : "";
+          const targetLabel = wasGlobal
+            ? (currentProject?.name ?? "current project")
+            : "global";
+          const onConfirm = async () => {
+            setScopeFlipBusy(true);
+            setScopeFlipErr("");
+            try {
+              await integrations.setConnectionScope(scopeFlipFor.id, target);
+              setScopeFlipFor(null);
+              loadConnections();
+            } catch (e: any) {
+              setScopeFlipErr(e?.message || "scope change failed");
+            } finally {
+              setScopeFlipBusy(false);
+            }
+          };
+          return (
+            <div className="bg-bg border border-border rounded-lg shadow-xl max-w-md w-full p-5 space-y-3">
+              <h3 className="text-text text-sm font-bold">
+                Move {scopeFlipFor.name} to {targetLabel}?
+              </h3>
+              <div className="text-xs text-text-muted leading-relaxed space-y-2">
+                <p>
+                  {wasGlobal
+                    ? "Binds this connection to the current project — it'll no longer be visible from other projects."
+                    : "Makes this connection visible from every project. Any app install bound to it keeps working unchanged."}
+                </p>
+                <p>
+                  Credentials, integration bindings, MCP allowed-tool
+                  subsets, and subscriptions are preserved. Only the
+                  connection's scope changes.
+                </p>
+              </div>
+              {scopeFlipErr && <div className="text-red text-xs">{scopeFlipErr}</div>}
+              <div className="flex gap-2 justify-end pt-1">
+                <button
+                  onClick={() => setScopeFlipFor(null)}
+                  disabled={scopeFlipBusy}
+                  className="px-3 py-1.5 text-xs border border-border rounded hover:bg-bg-hover disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={onConfirm}
+                  disabled={scopeFlipBusy}
+                  className="px-3 py-1.5 text-xs bg-accent text-bg rounded font-bold hover:opacity-80 disabled:opacity-50"
+                >
+                  {scopeFlipBusy ? "Moving…" : `Move to ${targetLabel}`}
+                </button>
+              </div>
+            </div>
+          );
+        })()}
       </Modal>
     </div>
   );

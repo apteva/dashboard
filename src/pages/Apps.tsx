@@ -1143,6 +1143,7 @@ function RolePicker({
             ? (role.integration_candidates || []).map((c) => (
                 <option key={c.connection_id} value={c.connection_id}>
                   {c.name} ({c.app_slug})
+                  {c.scope === "global" ? " · global" : ""}
                 </option>
               ))
             : (role.app_candidates || []).map((c) => (

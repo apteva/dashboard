@@ -628,6 +628,20 @@ export const integrations = {
   testConnection: (connectionId: number) =>
     request<ConnectionTestResult>("POST", `/connections/${connectionId}/test`, {}),
 
+  /** Move a connection between project and global scope. project_id=""
+   *  → global; an id → that project. Mirror of apps.setScope (v0.14.5)
+   *  but for connections. Returns a summary of what moved (the row
+   *  + its auto-MCP). Refuses for composio-source connections —
+   *  Composio's hosted connected_account is bound to a project on
+   *  their side too. */
+  setConnectionScope: (connectionId: number, projectId: string) =>
+    request<{
+      connection_id: number;
+      old_project_id: string;
+      new_project_id: string;
+      mcp_servers_migrated: number;
+    }>("PATCH", `/connections/${connectionId}/scope`, { project_id: projectId }),
+
   // Create an additional MCP server row over an existing connection
   // with a specific tool subset. Lets the user attach two distinct
   // scoped MCPs (e.g. google-sheets-readonly + google-sheets-rw) from
@@ -1750,6 +1764,11 @@ export interface PreflightConnectionCandidate {
   app_slug: string;
   name: string;
   status: string;
+  /** "project" or "global". Lets the install-modal role picker
+   *  render a "global" badge so an operator binding the storage
+   *  backend can tell at a glance whether the candidate is
+   *  project-scoped or visible across every project. */
+  scope?: "project" | "global";
 }
 
 export interface PreflightAppCandidate {
