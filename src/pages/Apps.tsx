@@ -282,6 +282,14 @@ export function Apps() {
             alert(e.message || "uninstall failed");
           }
         }}
+        onScopeChanged={() => {
+          // Scope flip succeeded — close the panel (the row's
+          // project_id just changed, so re-opening it would show
+          // the post-flip state anyway) and refetch the list so
+          // the global/project section assignment is correct.
+          setDetailInstall(null);
+          refreshInstalled();
+        }}
       />
     </div>
   );

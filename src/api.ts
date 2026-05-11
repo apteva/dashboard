@@ -1490,6 +1490,21 @@ export const apps = {
   upgrade: (installId: number) =>
     request<{ status: string; version: string }>("POST", `/apps/installs/${installId}/upgrade`),
 
+  /** Move an install between project and global scope without
+   *  destroying its data. project_id="" → global; any string id →
+   *  that project. Returns a summary of what moved (rows
+   *  migrated, whether the sidecar restarted). Refuses with 400
+   *  if the manifest doesn't list the target scope, and 409 if a
+   *  conflicting install of the same app already occupies it. */
+  setScope: (installId: number, projectId: string) =>
+    request<{
+      install_id: number;
+      old_project_id: string;
+      new_project_id: string;
+      connections_migrated: number;
+      sidecar_restarted: boolean;
+    }>("PATCH", `/apps/installs/${installId}/scope`, { project_id: projectId }),
+
   setStatus: (
     installId: number,
     status: "running" | "disabled" | "error",

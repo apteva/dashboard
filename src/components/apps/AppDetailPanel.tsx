@@ -27,6 +27,9 @@ interface Props {
   install?: AppRow;
   onInstall?: () => void;
   onUninstall?: () => void;
+  /** Fired after a scope change succeeds so the parent can refresh
+   *  the app list (the row's project_id just changed). */
+  onScopeChanged?: () => void;
 }
 
 interface View {
@@ -158,13 +161,16 @@ export function AppDetailPanel(props: Props) {
               Already installed
             </div>
           )}
-          {props.mode === "installed" && (
-            <button
-              onClick={props.onUninstall}
-              className="flex-1 px-3 py-2 border border-red text-red rounded font-bold text-sm hover:bg-red/10"
-            >
-              Uninstall
-            </button>
+          {props.mode === "installed" && props.install && (
+            <>
+              <ScopeButton install={props.install} onChanged={props.onScopeChanged} />
+              <button
+                onClick={props.onUninstall}
+                className="flex-1 px-3 py-2 border border-red text-red rounded font-bold text-sm hover:bg-red/10"
+              >
+                Uninstall
+              </button>
+            </>
           )}
         </div>
       </aside>
@@ -731,3 +737,107 @@ function BindingsEditor({ installId }: { installId: number }) {
     </section>
   );
 }
+
+
+// ScopeButton — moves an installed app between project and global
+// scope. Two visible states:
+//
+//   global       → "Move to project" (binds to currently-active project)
+//   project      → "Move to global" (visible across every project)
+//
+// Click → confirmation modal listing what changes + reassurance that
+// nothing gets deleted (data dir is keyed by install_id, integration
+// bindings reference connection_id not project_id, etc. — see
+// server/apps_scope.go for the full contract). Server validates the
+// manifest scopes[] and refuses if another install already occupies
+// the target slot.
+//
+// The button is hidden when there is no active project AND the
+// install is already global (nowhere to move it to).
+function ScopeButton({ install, onChanged }: { install: AppRow; onChanged?: () => void }) {
+  const { currentProject } = useProjects();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string>("");
+
+  const isGlobal = !install.project_id;
+  const target = isGlobal ? (currentProject?.id ?? "") : "";
+  const labelTarget = isGlobal
+    ? (currentProject?.name ?? "current project")
+    : "global";
+
+  // Suppress when there is nowhere to move to (e.g. global install
+  // and no project selected).
+  if (isGlobal && !currentProject?.id) return null;
+
+  const doFlip = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      await apps.setScope(install.install_id, target);
+      setConfirming(false);
+      onChanged?.();
+    } catch (e: any) {
+      setErr(e?.message || "scope change failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => setConfirming(true)}
+        className="flex-1 px-3 py-2 border border-border text-text rounded font-bold text-sm hover:bg-bg-hover"
+        title={`Currently ${isGlobal ? "global" : "in project " + install.project_id}`}
+      >
+        Move to {labelTarget}
+      </button>
+      {confirming && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+          onClick={() => !busy && setConfirming(false)}
+        >
+          <div
+            className="bg-bg border border-border rounded-lg shadow-xl max-w-md w-full p-5 space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-text text-sm font-bold">
+              Move {install.display_name || install.name} to {labelTarget}?
+            </h3>
+            <div className="text-xs text-text-muted leading-relaxed space-y-2">
+              <p>
+                This updates the install&rsquo;s scope and any connections it
+                owns. The app&rsquo;s data, integration bindings, and runtime
+                state are preserved — they&rsquo;re keyed by install id, not
+                project.
+              </p>
+              <p>
+                The sidecar will restart so it picks up the new scope. Brief
+                interruption only.
+              </p>
+            </div>
+            {err && <div className="text-red text-xs">{err}</div>}
+            <div className="flex gap-2 justify-end pt-1">
+              <button
+                onClick={() => setConfirming(false)}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs border border-border rounded hover:bg-bg-hover disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={doFlip}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs bg-accent text-bg rounded font-bold hover:opacity-80 disabled:opacity-50"
+              >
+                {busy ? "Moving…" : `Move to ${labelTarget}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
