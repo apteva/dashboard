@@ -10,7 +10,7 @@ import { ChatStatusDot } from "./ChatStatusDot";
 import { markChatSeen, focusChat } from "../state/chatNotifications";
 import { chatConnections } from "../state/chatConnections";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
-import type { SubscribeFn } from "./InstanceView";
+import type { SubscribeFn } from "./AgentView";
 
 // Markdown setup — marked.parse is synchronous with async: false. Chat
 // content comes from the agent and is already sanitized at the message
@@ -26,10 +26,10 @@ interface Props {
   // Telemetry subscribe — used ONLY for the status dot. Chat messages
   // come from the channel-chat app's SSE stream, not telemetry.
   subscribe: SubscribeFn;
-  // onEvent is the legacy callback the InstanceView wires up to fan
+  // onEvent is the legacy callback the AgentView wires up to fan
   // events to sibling panels. Kept for backward compatibility — we
   // forward nothing from the chat path, but the prop signature stays
-  // stable so InstanceView doesn't need a conditional.
+  // stable so AgentView doesn't need a conditional.
   onEvent?: (event: TelemetryEvent) => void;
 }
 
@@ -311,7 +311,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   // Activity state. Declared up here (not next to its event handler
   // far below) because the auto-scroll effect right beneath this
   // depends on activity.phase — moving the useState down would
-  // re-introduce the TDZ error we just fixed in InstanceView.
+  // re-introduce the TDZ error we just fixed in AgentView.
   // The full state machine that drives this still lives further
   // down beside the related useTelemetryEvents subscription; only
   // the storage hook is hoisted.

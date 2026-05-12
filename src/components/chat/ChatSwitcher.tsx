@@ -9,10 +9,10 @@
 // switcher over data the page already has loaded.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Instance, UnreadSummaryRow } from "../../api";
+import type { Agent, UnreadSummaryRow } from "../../api";
 
 interface Props {
-  instances: Instance[];
+  instances: Agent[];
   summary: UnreadSummaryRow[];
   unreadByInstance: Map<number, number>;
   onSelect: (chatId: string) => void;

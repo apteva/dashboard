@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import {
   instances,
   telemetry,
-  type Instance,
+  type Agent,
   type InstanceStats,
   type ProjectTimelineBucket,
   type TelemetryStats,
@@ -46,7 +46,7 @@ export function Analytics() {
   const [projectStats, setProjectStats] = useState<InstanceStats[]>([]);
   const [projectTimeline, setProjectTimeline] = useState<ProjectTimelineBucket[]>([]);
   const [loading, setLoading] = useState(true);
-  const [allInstances, setAllInstances] = useState<Instance[]>([]);
+  const [allInstances, setAllInstances] = useState<Agent[]>([]);
 
   const [drillId, setDrillId] = useState<number | null>(null);
 
@@ -189,7 +189,7 @@ export function Analytics() {
               <StatCard label="Total cost" value={`$${totals.cost.toFixed(4)}`} sub={period} />
               <StatCard label="Projected / day" value={`$${totals.costPerDay.toFixed(3)}`} sub="extrapolated" />
               <StatCard label="Projected / month" value={`$${totals.costPerMonth.toFixed(2)}`} />
-              <StatCard label="Active instances" value={String(totals.activeInstances)} sub={`of ${allInstances.length}`} />
+              <StatCard label="Active agents" value={String(totals.activeInstances)} sub={`of ${allInstances.length}`} />
               <StatCard label="LLM calls" value={formatNumber(totals.calls)} sub={`${formatNumber(totals.tokensIn)} tok in`} />
               <StatCard label="Cache rate" value={`${totals.cacheRate.toFixed(0)}%`} />
               <StatCard label="Errors" value={String(totals.errors)} highlight={totals.errors > 0 ? "red" : undefined} />
@@ -327,7 +327,7 @@ export function Analytics() {
               <InstanceDrillDown
                 instanceId={drillId}
                 period={period}
-                name={nameByInstance[String(drillId)] || `Instance ${drillId}`}
+                name={nameByInstance[String(drillId)] || `Agent ${drillId}`}
                 color={colorByInstance[String(drillId)] || COLORS[0]}
                 projectCost={totals.cost}
                 onClose={() => setDrillId(null)}

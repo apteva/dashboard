@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Instance, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow } from "../api";
+import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow } from "../api";
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
@@ -216,7 +216,7 @@ function ThemeCard({
 
 function ChannelsTab() {
   const { currentProject } = useProjects();
-  const [instanceList, setInstanceList] = useState<Instance[]>([]);
+  const [instanceList, setInstanceList] = useState<Agent[]>([]);
   const [allChannels, setAllChannels] = useState<ChannelInfo[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [error, setError] = useState("");
@@ -292,7 +292,7 @@ function ChannelsTab() {
   };
 
   const handleConnect = async () => {
-    if (!selectedInstance) { setError("Select an instance"); return; }
+    if (!selectedInstance) { setError("Select an agent"); return; }
     setError(""); setConnecting(true);
     try {
       if (connectType === "telegram") {
@@ -384,9 +384,9 @@ function ChannelsTab() {
       <Modal open={showModal} onClose={() => setShowModal(false)}>
         <div className="p-6 space-y-4">
           <h3 className="text-text text-base font-bold">Connect channel</h3>
-            {/* Instance picker */}
+            {/* Agent picker */}
             <div>
-              <label className="text-text-muted text-xs font-bold uppercase tracking-wide block mb-1">Instance</label>
+              <label className="text-text-muted text-xs font-bold uppercase tracking-wide block mb-1">Agent</label>
               <select
                 value={selectedInstance}
                 onChange={(e) => setSelectedInstance(Number(e.target.value))}
@@ -1966,7 +1966,7 @@ function SubscriptionsTab() {
   const safeSubs = subs || [];
   const [connections, setConnections] = useState<any[]>([]);
   const [catalog, setCatalog] = useState<Record<string, any>>({});
-  const [instanceList, setInstanceList] = useState<Instance[]>([]);
+  const [instanceList, setInstanceList] = useState<Agent[]>([]);
   // Unified add flow:
   //   pickerOpen=true, adding=null  → modal shows the source picker
   //   pickerOpen=*,    adding=...   → modal shows the configure form
@@ -2088,7 +2088,7 @@ function SubscriptionsTab() {
   const handleSubscribe = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    if (!adding || !instanceId) { setError("Select an instance"); return; }
+    if (!adding || !instanceId) { setError("Select an agent"); return; }
 
     try {
       if (adding.kind === "app") {

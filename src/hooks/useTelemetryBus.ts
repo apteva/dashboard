@@ -7,8 +7,8 @@
 // subscribe/unsubscribe handle on `window.__aptevaTelemetryBus`.
 //
 // Why a bus and not per-page EventSource? Connection budget. Before
-// this, InstanceView opened its own per-instance SSE, the dashboard's
-// ActivityFeed opened its own all-instances SSE, the Instances page
+// this, AgentView opened its own per-instance SSE, the dashboard's
+// ActivityFeed opened its own all-instances SSE, the Agents page
 // opened ANOTHER all-instances SSE. Three telemetry streams against
 // the same data in a typical session, each consuming a slot in the
 // browser's HTTP/1.1 6-per-origin cap. Worse, if a chat panel wants

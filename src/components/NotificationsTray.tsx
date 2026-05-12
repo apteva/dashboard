@@ -73,7 +73,7 @@ export function NotificationsTray() {
 
   function routeTo(n: Notification): void {
     if (n.ref?.kind === "instance-chat") {
-      navigate(`/instances/${n.ref.instanceId}`);
+      navigate(`/agents/${n.ref.instanceId}`);
       const chatId = n.id.startsWith("chat:") ? n.id.slice(5) : "";
       if (chatId && n.latestId) markChatSeen(chatId, n.latestId);
     }

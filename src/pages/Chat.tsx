@@ -15,7 +15,7 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { instances, chat, type Instance, type UnreadSummaryRow } from "../api";
+import { instances, chat, type Agent, type UnreadSummaryRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { ChatSidebar } from "../components/chat/ChatSidebar";
 import { ChatMain } from "../components/chat/ChatMain";
@@ -31,7 +31,7 @@ export function Chat() {
   const navigate = useNavigate();
   const { chatId: chatIdFromUrl } = useParams<{ chatId?: string }>();
 
-  const [list, setList] = useState<Instance[]>([]);
+  const [list, setList] = useState<Agent[]>([]);
   const [summary, setSummary] = useState<UnreadSummaryRow[]>([]);
   const [showRightPane, setShowRightPane] = useState(true);
   const [showSwitcher, setShowSwitcher] = useState(false);
@@ -63,7 +63,7 @@ export function Chat() {
     let cancelled = false;
     const load = () => {
       Promise.all([
-        instances.list(projectId).catch(() => [] as Instance[]),
+        instances.list(projectId).catch(() => [] as Agent[]),
         chat.unreadSummary().catch(() => [] as UnreadSummaryRow[]),
       ]).then(([l, s]) => {
         if (cancelled) return;

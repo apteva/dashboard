@@ -1,14 +1,14 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { instances, core, type Instance as InstanceType, type Thread } from "../api";
-import { InstanceView } from "../components/InstanceView";
+import { instances, core, type Agent as InstanceType, type Thread } from "../api";
+import { AgentView } from "../components/AgentView";
 import { chatConnections } from "../state/chatConnections";
 import { forgetChat } from "../state/chatNotifications";
 
-// Instance is the per-id wrapper. Resolves :id from the URL, fetches the
-// instance metadata + preloaded threads, and hands off to InstanceView.
+// Agent is the per-id wrapper. Resolves :id from the URL, fetches the
+// instance metadata + preloaded threads, and hands off to AgentView.
 // On delete, navigates back to the list at /.
-export function Instance() {
+export function Agent() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
@@ -74,7 +74,7 @@ export function Instance() {
   }
 
   return (
-    <InstanceView
+    <AgentView
       instance={instance}
       initialThreads={preloadedThreads}
       onDelete={async () => {

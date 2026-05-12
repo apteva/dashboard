@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import { core, instances, type Instance, type RunMode, type Status, type Thread } from "../api";
-import type { SubscribeFn } from "./InstanceView";
+import { core, instances, type Agent, type RunMode, type Status, type Thread } from "../api";
+import type { SubscribeFn } from "./AgentView";
 import { MCPPanel } from "./MCPPanel";
 import { ComputerPanel } from "./ComputerPanel";
 import { Modal } from "./Modal";
@@ -135,8 +135,8 @@ function previewArgs(name: string, args: Record<string, any> | undefined): strin
 }
 
 interface Props {
-  instance: Instance;
-  subscribe: SubscribeFn; // synchronous event fan-out from InstanceView's SSE
+  instance: Agent;
+  subscribe: SubscribeFn; // synchronous event fan-out from AgentView's SSE
   onReload: () => void;
   // Optional: open the ThreadDetailModal for a thread id. When set, each
   // thread row in the Threads section becomes clickable and routes here.

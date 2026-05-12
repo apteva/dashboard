@@ -221,11 +221,11 @@ export const projects = {
   delete: (id: string) => request<any>("DELETE", `/projects/${id}`),
 };
 
-// Instances
+// Agents
 // Agent safety mode. Source of truth: core/config.go.
 export type RunMode = "autonomous" | "cautious" | "learn";
 
-export interface Instance {
+export interface Agent {
   id: number;
   user_id: number;
   name: string;
@@ -242,7 +242,7 @@ export interface Instance {
 export const instances = {
   list: (projectId?: string) => {
     const params = projectId ? `?project_id=${projectId}` : "";
-    return request<Instance[]>("GET", `/instances${params}`);
+    return request<Agent[]>("GET", `/agents${params}`);
   },
 
   create: (
@@ -253,7 +253,7 @@ export const instances = {
     start?: boolean,
     opts?: { includeAptevaServer?: boolean; includeChannels?: boolean },
   ) =>
-    request<Instance>("POST", "/instances", {
+    request<Agent>("POST", "/agents", {
       name,
       directive: directive || "",
       mode: mode || "autonomous",
@@ -267,31 +267,31 @@ export const instances = {
       ...(opts?.includeChannels === false ? { include_channels: false } : {}),
     }),
 
-  get: (id: number) => request<Instance>("GET", `/instances/${id}`),
+  get: (id: number) => request<Agent>("GET", `/agents/${id}`),
 
   rename: (id: number, name: string) =>
-    request<Instance>("PUT", `/instances/${id}`, { name }),
+    request<Agent>("PUT", `/agents/${id}`, { name }),
 
-  delete: (id: number) => request<any>("DELETE", `/instances/${id}`),
+  delete: (id: number) => request<any>("DELETE", `/agents/${id}`),
 
-  stop: (id: number) => request<Instance>("POST", `/instances/${id}/stop`),
+  stop: (id: number) => request<Agent>("POST", `/agents/${id}/stop`),
 
-  start: (id: number) => request<Instance>("POST", `/instances/${id}/start`),
+  start: (id: number) => request<Agent>("POST", `/agents/${id}/start`),
 
-  pause: (id: number) => request<{ paused: boolean }>("POST", `/instances/${id}/pause`),
+  pause: (id: number) => request<{ paused: boolean }>("POST", `/agents/${id}/pause`),
 
   sendEvent: (id: number, message: string | Array<{ type: string; text?: string; image_url?: { url: string }; audio_url?: { url: string; mime_type?: string } }>, threadId?: string) =>
-    request<any>("POST", `/instances/${id}/event`, { message, ...(threadId ? { thread_id: threadId } : {}) }),
+    request<any>("POST", `/agents/${id}/event`, { message, ...(threadId ? { thread_id: threadId } : {}) }),
 
   updateConfig: (id: number, opts: { directive?: string; mode?: string; providers?: Array<{ name: string; default: boolean }> }) =>
-    request<Instance>("PUT", `/instances/${id}/config`, {
+    request<Agent>("PUT", `/agents/${id}/config`, {
       ...(opts.directive ? { directive: opts.directive } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
       ...(opts.providers ? { providers: opts.providers } : {}),
     }),
 
   chatHistory: (id: number, limit?: number) =>
-    request<ChatHistoryMessage[]>("GET", `/instances/${id}/chat-history${limit ? `?limit=${limit}` : ""}`),
+    request<ChatHistoryMessage[]>("GET", `/agents/${id}/chat-history${limit ? `?limit=${limit}` : ""}`),
 };
 
 export interface ChatHistoryMessage {
@@ -910,7 +910,7 @@ export const subscriptions = {
       {
         name,
         slug,
-        instance_id: instanceId,
+        agent_id: instanceId,
         connection_id: opts?.connectionId || 0,
         description: opts?.description || "",
         hmac_secret: opts?.hmacSecret || "",
@@ -1088,8 +1088,8 @@ export interface MCPServerConfig {
 }
 
 export const core = {
-  status: (instanceId: number) => request<Status>("GET", `/instances/${instanceId}/status`),
-  threads: (instanceId: number) => request<Thread[]>("GET", `/instances/${instanceId}/threads`),
+  status: (instanceId: number) => request<Status>("GET", `/agents/${instanceId}/status`),
+  threads: (instanceId: number) => request<Thread[]>("GET", `/agents/${instanceId}/threads`),
 
   // Kill a sub-thread by ID. Core stops its goroutine + removes it
   // from the persisted config so it won't respawn next boot. Rejected
@@ -1097,7 +1097,7 @@ export const core = {
   killThread: (instanceId: number, threadId: string) =>
     request<{ status: string; id: string }>(
       "DELETE",
-      `/instances/${instanceId}/threads/${encodeURIComponent(threadId)}`,
+      `/agents/${instanceId}/threads/${encodeURIComponent(threadId)}`,
     ),
 
   // Clear the thread's history without killing it: wipes session.jsonl,
@@ -1107,7 +1107,7 @@ export const core = {
   resetThread: (instanceId: number, threadId: string) =>
     request<{ status: string; id: string; count: number }>(
       "POST",
-      `/instances/${instanceId}/threads/${encodeURIComponent(threadId)}/reset`,
+      `/agents/${instanceId}/threads/${encodeURIComponent(threadId)}/reset`,
     ),
 
   // Reset agent state — any combination of history (session.jsonl + in-memory
@@ -1119,7 +1119,7 @@ export const core = {
   ) =>
     request<{ status: string }>(
       "PUT",
-      `/instances/${instanceId}/config`,
+      `/agents/${instanceId}/config`,
       { reset: {
         ...(opts.history ? { history: true } : {}),
         ...(opts.threads ? { threads: true } : {}),
@@ -1147,7 +1147,7 @@ export const core = {
       composition: PromptComposition;
     }>(
       "GET",
-      `/instances/${instanceId}/threads/${encodeURIComponent(threadId)}/context`,
+      `/agents/${instanceId}/threads/${encodeURIComponent(threadId)}/context`,
     ),
   // GET /instances/:id/config — proxied to the core. The core responds with
   // the current in-memory config including the live mcp_servers list (each
@@ -1163,7 +1163,7 @@ export const core = {
         type?: string;
         display?: { width: number; height: number };
       } | null;
-    }>("GET", `/instances/${instanceId}/config`),
+    }>("GET", `/agents/${instanceId}/config`),
 
   // Hot-attach or detach the browser/computer environment on a running
   // instance. The server fills in credentials from the saved browser
@@ -1177,17 +1177,17 @@ export const core = {
       | { type: "browserbase"; width?: number; height?: number }
       | { type: "service"; url?: string; width?: number; height?: number },
   ) =>
-    request<{ status: string }>("PUT", `/instances/${instanceId}/config`, {
+    request<{ status: string }>("PUT", `/agents/${instanceId}/config`, {
       computer,
     }),
   setMode: (instanceId: number, mode: RunMode) =>
-    request<{ status: string }>("PUT", `/instances/${instanceId}/config`, { mode }),
+    request<{ status: string }>("PUT", `/agents/${instanceId}/config`, { mode }),
   // Replace the full mcp_servers list on a running instance. The core
   // runs reconcileMCP against the list: names present get attached /
   // kept, names absent get disconnected. Always send the complete
   // desired list — a partial write will disconnect anything missing.
   setMCPServers: (instanceId: number, servers: MCPServerConfig[]) =>
-    request<{ status: string }>("PUT", `/instances/${instanceId}/config`, {
+    request<{ status: string }>("PUT", `/agents/${instanceId}/config`, {
       mcp_servers: servers,
     }),
   // Flip the include_apteva_server / include_channels flag on an
@@ -1205,9 +1205,9 @@ export const core = {
       enable: boolean;
       previous: boolean;
       restart_required: boolean;
-    }>("POST", `/instances/${instanceId}/system-mcp`, { name, enable }),
+    }>("POST", `/agents/${instanceId}/system-mcp`, { name, enable }),
   approve: (instanceId: number, approved: boolean) =>
-    request<{ status: string }>("POST", `/instances/${instanceId}/approve`, { approved }),
+    request<{ status: string }>("POST", `/agents/${instanceId}/approve`, { approved }),
 
   // Reset the main thread's conversation context. Mirrors the CLI's
   // /clear command. Choose any combination of:
@@ -1220,7 +1220,7 @@ export const core = {
     instanceId: number,
     opts?: { history?: boolean; memory?: boolean; threads?: boolean },
   ) =>
-    request<{ status: string }>("PUT", `/instances/${instanceId}/config`, {
+    request<{ status: string }>("PUT", `/agents/${instanceId}/config`, {
       reset: {
         history: opts?.history ?? true,
         memory: opts?.memory ?? false,
@@ -1234,11 +1234,11 @@ export const core = {
   // the remember-tool guidance asks the agent to use ([preference],
   // [correction], …) — the UI uses it for coloring/filtering.
   listMemory: (instanceId: number) =>
-    request<MemoryItem[]>("GET", `/instances/${instanceId}/memory`),
+    request<MemoryItem[]>("GET", `/agents/${instanceId}/memory`),
   updateMemory: (instanceId: number, index: number, text: string) =>
-    request<{ ok: boolean }>("PUT", `/instances/${instanceId}/memory/${index}`, { text }),
+    request<{ ok: boolean }>("PUT", `/agents/${instanceId}/memory/${index}`, { text }),
   deleteMemory: (instanceId: number, index: number) =>
-    request<{ ok: boolean; count: number }>("DELETE", `/instances/${instanceId}/memory/${index}`),
+    request<{ ok: boolean; count: number }>("DELETE", `/agents/${instanceId}/memory/${index}`),
 };
 
 export interface MemoryItem {
@@ -1328,7 +1328,7 @@ export const channels = {
   },
   connect: (instanceId: number, type: string, config: Record<string, string>) =>
     request<{ status: string; type: string; bot_name?: string; channel?: string }>(
-      "POST", "/channels/connect", { instance_id: instanceId, type, ...config },
+      "POST", "/channels/connect", { agent_id: instanceId, type, ...config },
     ),
   disconnect: (channelId: number) =>
     request<{ status: string }>("DELETE", `/channels/disconnect/${channelId}`),
@@ -1352,7 +1352,7 @@ export const email = {
 
 export const telemetry = {
   query: (instanceId: number, type?: string, limit?: number, threadId?: string) => {
-    const params = new URLSearchParams({ instance_id: String(instanceId) });
+    const params = new URLSearchParams({ agent_id: String(instanceId) });
     if (type) params.set("type", type);
     if (limit) params.set("limit", String(limit));
     if (threadId) params.set("thread_id", threadId);
@@ -1409,7 +1409,7 @@ export interface ProjectToolStat {
 }
 
 // Per-instance aggregate over a period. Sorted by cost desc on the
-// server. Instances with zero events in the window are omitted.
+// server. Agents with zero events in the window are omitted.
 export interface InstanceStats {
   instance_id: number;
   name: string;
@@ -1828,7 +1828,7 @@ export const chat = {
     request<ChatRow[]>("GET", `/apps/channel-chat/chats?instance_id=${instanceId}`),
 
   createChat: (instanceId: number, title?: string) =>
-    request<ChatRow>("POST", "/apps/channel-chat/chats", { instance_id: instanceId, title }),
+    request<ChatRow>("POST", "/apps/channel-chat/chats", { agent_id: instanceId, title }),
 
   messages: (chatId: string, since: number = 0, limit: number = 500) =>
     request<ChatMessageRow[]>(
@@ -1960,14 +1960,14 @@ export interface InstanceSkill {
 
 export const instanceSkills = {
   list: (instanceId: number) =>
-    request<InstanceSkill[]>("GET", `/instances/${instanceId}/skills`),
+    request<InstanceSkill[]>("GET", `/agents/${instanceId}/skills`),
   assign: (instanceId: number, skillId: number) =>
     request<{ ok: boolean; memory_id: string; slug: string }>(
       "POST",
-      `/instances/${instanceId}/skills/${skillId}`,
+      `/agents/${instanceId}/skills/${skillId}`,
     ),
   unassign: (instanceId: number, skillId: number) =>
-    request<{ ok: boolean }>("DELETE", `/instances/${instanceId}/skills/${skillId}`),
+    request<{ ok: boolean }>("DELETE", `/agents/${instanceId}/skills/${skillId}`),
 };
 
 // --- Platform self-update status (apteva CLI / server / core / dashboard

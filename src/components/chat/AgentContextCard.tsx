@@ -18,12 +18,12 @@
 
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { instances, core, type Instance, type Thread, type MCPServerConfig } from "../../api";
+import { instances, core, type Agent, type Thread, type MCPServerConfig } from "../../api";
 
 const REFRESH_MS = 8000;
 
 interface Props {
-  instance: Instance;
+  instance: Agent;
 }
 
 export function AgentContextCard({ instance }: Props) {
@@ -182,7 +182,7 @@ export function AgentContextCard({ instance }: Props) {
       {/* Quick actions */}
       <div className="pt-3 border-t border-border space-y-1.5">
         <Link
-          to={`/instances/${instance.id}`}
+          to={`/agents/${instance.id}`}
           className="block w-full text-center text-xs text-text border border-border rounded px-2 py-1.5 hover:bg-bg-hover"
         >
           Open agent →

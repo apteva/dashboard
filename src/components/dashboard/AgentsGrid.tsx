@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { instances, type Instance } from "../../api";
+import { instances, type Agent } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
 import { notifications } from "../../state/notifications";
 
@@ -18,7 +18,7 @@ export function AgentsGrid() {
   const { currentProject } = useProjects();
   const projectId = currentProject?.id;
 
-  const [list, setList] = useState<Instance[]>([]);
+  const [list, setList] = useState<Agent[]>([]);
   const [unread, setUnread] = useState<Map<number, number>>(new Map());
 
   useEffect(() => {
@@ -97,13 +97,13 @@ export function AgentsGrid() {
   );
 }
 
-function AgentTile({ instance, unread }: { instance: Instance; unread: number }) {
+function AgentTile({ instance, unread }: { instance: Agent; unread: number }) {
   const running = instance.status === "running";
   const dot = running ? "bg-green" : "bg-text-dim";
 
   return (
     <Link
-      to={`/instances/${instance.id}`}
+      to={`/agents/${instance.id}`}
       className={`relative block rounded-md p-2.5 bg-bg-card hover:bg-bg-hover transition-colors group ${running ? "" : "opacity-60"}`}
       title={`${instance.name} · ${instance.status}`}
     >

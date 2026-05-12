@@ -3,10 +3,10 @@
 // you'd care about most surface first); ties broken by name.
 
 import { useMemo, useState } from "react";
-import type { Instance, UnreadSummaryRow } from "../../api";
+import type { Agent, UnreadSummaryRow } from "../../api";
 
 interface Props {
-  instances: Instance[];
+  instances: Agent[];
   summary: UnreadSummaryRow[];
   unreadByInstance: Map<number, number>;
   focusedChatId: string | null;
@@ -30,7 +30,7 @@ export function ChatSidebar({
   }, [summary]);
 
   // Sort: instances with a known latest_at come first, sorted desc.
-  // Instances with no chat activity yet come last, sorted by name.
+  // Agents with no chat activity yet come last, sorted by name.
   const sorted = useMemo(() => {
     const copy = [...instances];
     copy.sort((a, b) => {

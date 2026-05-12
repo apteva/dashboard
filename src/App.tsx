@@ -1,5 +1,14 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
+
+// LegacyInstanceRedirect bounces /instances/:id to /agents/:id so any
+// pre-rename bookmark, deep-link, or cached tab keeps resolving. The
+// hook reads :id off the route params and emits a replace-style nav
+// so the browser history shows the canonical URL after the redirect.
+function LegacyInstanceRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={`/agents/${id ?? ""}`} replace />;
+}
 import { ProjectProvider } from "./hooks/useProjects";
 import { ThemeProvider } from "./hooks/useTheme";
 import { Layout } from "./components/Layout";
@@ -8,8 +17,8 @@ import { Connect } from "./pages/Connect";
 import { Onboarding } from "./pages/Onboarding";
 import { Dashboard } from "./pages/Dashboard";
 import { Chat } from "./pages/Chat";
-import { Instances } from "./pages/Instances";
-import { Instance } from "./pages/Instance";
+import { Agents } from "./pages/Agents";
+import { Agent } from "./pages/Agent";
 import { Integrations } from "./pages/Integrations";
 import { Analytics } from "./pages/Analytics";
 import { Settings } from "./pages/Settings";
@@ -74,10 +83,15 @@ export default function App() {
             }
           >
             <Route path="/" element={<Dashboard />} />
-            <Route path="/agents" element={<Instances />} />
+            <Route path="/agents" element={<Agents />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/chat/:chatId" element={<Chat />} />
-            <Route path="/instances/:id" element={<Instance />} />
+            <Route path="/agents/:id" element={<Agent />} />
+            {/* Phase 3 rename: keep the old /instances URLs working for
+                external bookmarks + any old tab the operator left open.
+                Phase 4 (next release) drops these redirects. */}
+            <Route path="/instances" element={<Navigate to="/agents" replace />} />
+            <Route path="/instances/:id" element={<LegacyInstanceRedirect />} />
             <Route path="/integrations" element={<Integrations />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/settings" element={<Settings />} />

@@ -15,7 +15,7 @@
 
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { instances, type Instance, type TelemetryEvent } from "../../api";
+import { instances, type Agent, type TelemetryEvent } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
 import { useTelemetryEvents } from "../../hooks/useTelemetryBus";
 
@@ -55,7 +55,7 @@ export function ActivityFeed() {
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
-      instances.list(projectId).then((list: Instance[]) => {
+      instances.list(projectId).then((list: Agent[]) => {
         if (cancelled) return;
         setNameById(new Map(list.map((i) => [i.id, i.name])));
       }).catch(() => {});
@@ -132,7 +132,7 @@ export function ActivityFeed() {
                 <span className="text-text-dim w-12 shrink-0">{fmtTime(r.time)}</span>
                 <span className={`shrink-0 ${iconColor(r)}`}>{r.icon}</span>
                 <Link
-                  to={`/instances/${r.instanceId}`}
+                  to={`/agents/${r.instanceId}`}
                   className="shrink-0 text-text-muted hover:text-text truncate max-w-[100px]"
                   title={nameById.get(r.instanceId) || `#${r.instanceId}`}
                 >

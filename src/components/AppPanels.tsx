@@ -120,7 +120,7 @@ function AppPanelFrame({ panel, instanceId }: { panel: PanelInstance; instanceId
   // relative URL the iframe can resolve from the dashboard origin is:
   const params = new URLSearchParams({
     install_id: String(panel.installId),
-    ...(instanceId ? { instance_id: String(instanceId) } : {}),
+    ...(instanceId ? { agent_id: String(instanceId) } : {}),
     // token is forwarded automatically via the cookie on same-origin
     // requests; no need to splice it into the URL for now.
   });

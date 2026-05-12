@@ -31,7 +31,7 @@
 //   - ChatPanel calls subscribeMessages(chatId, sinceId, fn) on mount
 //     to receive live messages; cleanup just unsubscribes — the SSE
 //     stays open as long as the user has the chat connected.
-//   - Instance delete calls forgetInstance(instanceId) to immediately
+//   - Agent delete calls forgetInstance(instanceId) to immediately
 //     close any live SSE for that instance (otherwise a successful
 //     delete leaves the SSE 404-retrying for the rest of the session).
 //

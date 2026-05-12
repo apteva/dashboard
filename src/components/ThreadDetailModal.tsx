@@ -101,7 +101,7 @@ export function ThreadDetailModal({ open, onClose, thread, instanceId, liveEvent
   const exportContext = () => {
     if (!ctx || !thread) return;
     const payload = {
-      instance_id: instanceId,
+      agent_id: instanceId,
       thread_id: thread.id,
       iteration: ctx.iteration,
       model: ctx.model,

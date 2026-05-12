@@ -17,10 +17,10 @@
 //      first running instance, falling back to the first instance.
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { instances, type Instance } from "../../api";
+import { instances, type Agent } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
 import { ChatPanel } from "../ChatPanel";
-import type { SubscribeFn } from "../InstanceView";
+import type { SubscribeFn } from "../AgentView";
 import { notifications } from "../../state/notifications";
 
 const FOCUSED_KEY = "apteva.dashboard.projectChat.focused";
@@ -37,7 +37,7 @@ export function ProjectChat() {
   const { currentProject } = useProjects();
   const projectId = currentProject?.id;
 
-  const [list, setList] = useState<Instance[]>([]);
+  const [list, setList] = useState<Agent[]>([]);
   const [focused, setFocused] = useState<number | null>(() => {
     try {
       const v = localStorage.getItem(FOCUSED_KEY);

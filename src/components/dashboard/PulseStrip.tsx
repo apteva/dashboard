@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { instances, telemetry, type Instance, type InstanceStats } from "../../api";
+import { instances, telemetry, type Agent, type InstanceStats } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
 
 const PERIOD = "24h";
@@ -17,14 +17,14 @@ export function PulseStrip() {
   const { currentProject } = useProjects();
   const projectId = currentProject?.id;
 
-  const [insts, setInsts] = useState<Instance[]>([]);
+  const [insts, setInsts] = useState<Agent[]>([]);
   const [stats, setStats] = useState<InstanceStats[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     const load = () => {
       Promise.all([
-        instances.list(projectId).catch(() => [] as Instance[]),
+        instances.list(projectId).catch(() => [] as Agent[]),
         telemetry.projectStats(projectId, PERIOD).catch(() => [] as InstanceStats[]),
       ]).then(([list, st]) => {
         if (cancelled) return;

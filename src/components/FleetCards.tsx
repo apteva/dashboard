@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
 import type { Thread } from "../api";
-import type { SubscribeFn } from "./InstanceView";
+import type { SubscribeFn } from "./AgentView";
 
 interface FleetCardsProps {
   threads: Thread[];
-  subscribe: SubscribeFn; // synchronous event fan-out from InstanceView
+  subscribe: SubscribeFn; // synchronous event fan-out from AgentView
   activeTools: Record<string, string>;
   thoughts: Record<string, string>;
 }

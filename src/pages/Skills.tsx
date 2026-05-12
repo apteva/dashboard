@@ -15,7 +15,7 @@ import {
   skills as skillsApi,
   type Skill,
   instances as instancesApi,
-  type Instance,
+  type Agent,
   instanceSkills as instanceSkillsApi,
   type InstanceSkill,
   type InstanceSkillStatus,
@@ -444,7 +444,7 @@ function SkillAssignments({ skill }: { skill: Skill }) {
   const { currentProject } = useProjects();
   const projectId = currentProject?.id || skill.project_id || "";
 
-  const [instances, setInstances] = useState<Instance[]>([]);
+  const [instances, setInstances] = useState<Agent[]>([]);
   // Per-instance status for this skill, keyed by instance id. undefined =
   // not assigned; otherwise the InstanceSkill row.
   const [byInstance, setByInstance] = useState<Record<number, InstanceSkill | undefined>>({});
@@ -484,7 +484,7 @@ function SkillAssignments({ skill }: { skill: Skill }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [skill.id, projectId]);
 
-  const toggle = async (inst: Instance, currentlyAssigned: boolean) => {
+  const toggle = async (inst: Agent, currentlyAssigned: boolean) => {
     setBusyInstanceID(inst.id);
     setError(null);
     try {

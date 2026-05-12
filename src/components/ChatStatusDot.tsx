@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import type { SubscribeFn } from "./InstanceView";
+import type { SubscribeFn } from "./AgentView";
 
 interface Props {
   subscribe: SubscribeFn;

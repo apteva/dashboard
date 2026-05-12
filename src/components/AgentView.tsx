@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { instances, core, providers as providersAPI, type Instance, type Thread, type TelemetryEvent, type Provider, type ProviderDetail, type ModelInfo } from "../api";
+import { instances, core, providers as providersAPI, type Agent, type Thread, type TelemetryEvent, type Provider, type ProviderDetail, type ModelInfo } from "../api";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 
 export type EventListener = (event: TelemetryEvent) => void;
@@ -16,7 +16,7 @@ import { Modal } from "./Modal";
 import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
 
-// InstanceView is the rich per-instance view: chat panel + activity/fleet/cards
+// AgentView is the rich per-instance view: chat panel + activity/fleet/cards
 // side panel, lifecycle controls (start/stop/pause/delete), thread detail
 // modal. Used by the /instances/:id route to render whichever instance the
 // user navigated to.
@@ -26,13 +26,13 @@ import { SkillsPanel } from "./SkillsPanel";
 // modal would close with no error message. onReload is called after
 // lifecycle actions (start/stop) so the parent can refresh its
 // instance metadata.
-export function InstanceView({
+export function AgentView({
   instance,
   onDelete,
   onReload,
   initialThreads = [],
 }: {
-  instance: Instance;
+  instance: Agent;
   onDelete: () => void | Promise<void>;
   onReload: () => void;
   initialThreads?: Thread[];
@@ -286,7 +286,7 @@ export function InstanceView({
   // /api/instances/<id>/events; that worked but every instance page
   // we navigated to spent a connection-budget slot on its own SSE,
   // duplicating events the dashboard was already pulling for
-  // ActivityFeed / Instances list. The bus collapses all telemetry
+  // ActivityFeed / Agents list. The bus collapses all telemetry
   // consumers in the dashboard onto ONE socket per project.
   //
   // Every incoming event goes through handleEvent (top-level dedup)
@@ -363,7 +363,7 @@ export function InstanceView({
           <button
             onClick={() => setShowConfig(true)}
             className="px-2.5 py-1 border border-border rounded-lg text-xs text-text-muted hover:text-accent hover:border-accent transition-colors"
-            title="Instance settings"
+            title="Agent settings"
           >
             Config
           </button>
@@ -511,7 +511,7 @@ export function InstanceView({
         <div className={`border-r border-border ${view === "fleet" ? "w-0 min-w-0 overflow-hidden" : "w-1/3 min-w-[300px]"}`}>
           {instance.status !== "running" ? (
             <div className="flex items-center justify-center h-full text-text-muted text-sm">
-              Instance is stopped. Start it to begin chatting.
+              Agent is stopped. Start it to begin chatting.
             </div>
           ) : !channelsAttached ? (
             <div className="relative h-full">
@@ -593,7 +593,7 @@ export function InstanceView({
 function ConfigModal({ open, onClose, instance, onSaved }: {
   open: boolean;
   onClose: () => void;
-  instance: Instance;
+  instance: Agent;
   onSaved: () => void;
 }) {
   const [providerList, setProviderList] = useState<Provider[]>([]);
@@ -757,7 +757,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   return (
     <Modal open={open} onClose={onClose}>
       <div className="p-6 space-y-5 max-h-[80vh] overflow-y-auto">
-        <h3 className="text-text text-base font-bold">Instance Config</h3>
+        <h3 className="text-text text-base font-bold">Agent Config</h3>
 
         {/* Default provider */}
         <div>

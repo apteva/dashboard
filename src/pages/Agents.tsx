@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
-import { instances, core, type Instance, type RunMode, type Status, type TelemetryEvent } from "../api";
+import { instances, core, type Agent, type RunMode, type Status, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { Modal } from "../components/Modal";
@@ -28,14 +28,14 @@ interface LiveActivity {
   threadCount: number;
 }
 
-// Instances is the fleet-list view: all instances in the current project,
+// Agents is the fleet-list view: all instances in the current project,
 // with status + quick lifecycle actions + a create form. Clicking a row
-// navigates to /instances/:id which renders the full InstanceView.
-export function Instances() {
+// navigates to /instances/:id which renders the full AgentView.
+export function Agents() {
   const { currentProject } = useProjects();
   const projectId = currentProject?.id;
 
-  const [list, setList] = useState<Instance[]>([]);
+  const [list, setList] = useState<Agent[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
@@ -44,7 +44,7 @@ export function Instances() {
   // it asks before every new kind of action and remembers answers, so
   // users building their first agent can watch it ask rather than act.
   // Can be changed to cautious/autonomous before create, or later in
-  // InstanceView / the ActivityPanel header toggle.
+  // AgentView / the ActivityPanel header toggle.
   const [createMode, setCreateMode] = useState<RunMode>("learn");
   const [includeAptevaServer, setIncludeAptevaServer] = useState(true);
   const [includeChannels, setIncludeChannels] = useState(true);
@@ -203,7 +203,7 @@ export function Instances() {
   //
   // Pre-bus we opened our own EventSource against
   // /api/telemetry/stream?all=1 here. That worked, but every page in
-  // the dashboard that wanted telemetry (ActivityFeed, InstanceView,
+  // the dashboard that wanted telemetry (ActivityFeed, AgentView,
   // ChatPanel for "thinking…") opened its own SSE — three or four
   // connections against the same data, eating into the browser's
   // HTTP/1.1 6-per-origin cap. The bus collapses every consumer onto
@@ -222,7 +222,7 @@ export function Instances() {
   }, [projectId]);
 
   useTelemetryEvents(null, (event: TelemetryEvent) => {
-    // Dedup by event.id — same as ChatPanel/InstanceView. The
+    // Dedup by event.id — same as ChatPanel/AgentView. The
     // server stream is already de-duplicated server-side, but
     // StrictMode dev mounts and SSE auto-reconnects can replay
     // the same id and we'd double-count thread.spawn etc.
@@ -327,7 +327,7 @@ export function Instances() {
       setShowCreate(false);
       load();
     } catch (err: any) {
-      setError(err?.message || "Failed to create instance");
+      setError(err?.message || "Failed to create agent");
     } finally {
       setCreating(false);
     }
@@ -347,7 +347,7 @@ export function Instances() {
     } catch {}
   };
 
-  const startRename = (inst: Instance) => {
+  const startRename = (inst: Agent) => {
     setRenamingId(inst.id);
     setRenameDraft(inst.name);
     setRenameError("");
@@ -414,7 +414,7 @@ export function Instances() {
                 className="border border-border rounded-lg bg-bg-card hover:border-accent transition-colors overflow-hidden"
               >
                 <Link
-                  to={`/instances/${inst.id}`}
+                  to={`/agents/${inst.id}`}
                   // Stable card height: reserve a minimum so rows don't
                   // jump when the live activity strip appears/disappears
                   // or when the directive line wraps to a second row.

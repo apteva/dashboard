@@ -3,7 +3,7 @@ import { MemoryPanel } from "../components/MemoryPanel";
 
 // Memory page — thin wrapper around MemoryPanel for routes like
 // /instances/:id/memory. Most users reach memory via the view tabs
-// inside InstanceView; this page exists for deep-linkable URLs.
+// inside AgentView; this page exists for deep-linkable URLs.
 export function Memory() {
   const { id } = useParams<{ id: string }>();
   const instanceId = Number(id);

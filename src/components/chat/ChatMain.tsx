@@ -7,13 +7,13 @@
 // 8s poll. That's plenty fresh for an at-a-glance indicator.
 
 import { ChatPanel } from "../ChatPanel";
-import type { Instance } from "../../api";
-import type { SubscribeFn } from "../InstanceView";
+import type { Agent } from "../../api";
+import type { SubscribeFn } from "../AgentView";
 import { Link } from "react-router-dom";
 
 interface Props {
   chatId: string | null;
-  instance: Instance | null;
+  instance: Agent | null;
   onToggleRightPane: () => void;
   rightPaneOpen: boolean;
 }
@@ -62,7 +62,7 @@ export function ChatMain({
         </div>
         <div className="flex items-center gap-1">
           <Link
-            to={`/instances/${instance.id}`}
+            to={`/agents/${instance.id}`}
             className="text-xs text-text-muted hover:text-text border border-border rounded px-2 py-1"
             title="Open agent page"
           >

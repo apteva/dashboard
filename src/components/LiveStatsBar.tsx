@@ -1,11 +1,11 @@
 import { useEffect, useState, useRef } from "react";
-import type { SubscribeFn } from "./InstanceView";
+import type { SubscribeFn } from "./AgentView";
 
 // LiveStatsBar aggregates llm.done telemetry events and displays running
 // totals + a simple per-day cost projection — the dashboard equivalent of
 // the CLI/TUI token strip.
 //
-// Data source: InstanceView's synchronous event subscriber. Every llm.done
+// Data source: AgentView's synchronous event subscriber. Every llm.done
 // event carries `tokens_in`, `tokens_cached`, `tokens_out`, `cost_usd`,
 // `duration_ms`, `iteration` (see core/telemetry.go LLMDoneData) so we just
 // sum them as they stream in.

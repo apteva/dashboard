@@ -7,7 +7,7 @@
 // agent burned $X today" is what you want to chase.
 
 import { useEffect, useMemo, useState } from "react";
-import { telemetry, instances, type Instance, type ProjectTimelineBucket } from "../../api";
+import { telemetry, instances, type Agent, type ProjectTimelineBucket } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
 
 const REFRESH_MS = 30_000;
@@ -25,7 +25,7 @@ export function CostCard() {
     const load = () => {
       Promise.all([
         telemetry.projectTimeline(projectId, PERIOD).catch(() => [] as ProjectTimelineBucket[]),
-        instances.list(projectId).catch(() => [] as Instance[]),
+        instances.list(projectId).catch(() => [] as Agent[]),
       ]).then(([t, list]) => {
         if (cancelled) return;
         setBuckets(t);
