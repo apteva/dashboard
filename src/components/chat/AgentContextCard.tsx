@@ -24,9 +24,17 @@ const REFRESH_MS = 8000;
 
 interface Props {
   instance: Agent;
+  // Focused chat id (e.g. "default-42"). When CHANNELCHAT_PER_THREAD
+  // is on, channelchat routes this chat's events to thread "chat-<id>"
+  // rather than "main"; we surface that with a small badge on the
+  // matching row in the threads list so the operator can see which
+  // thread is handling the conversation. Optional — when omitted or
+  // when no matching thread is found, the list renders unchanged.
+  chatId?: string | null;
 }
 
-export function AgentContextCard({ instance }: Props) {
+export function AgentContextCard({ instance, chatId }: Props) {
+  const expectedChatThreadId = chatId ? `chat-${chatId}` : "";
   const [threads, setThreads] = useState<Thread[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServerConfig[]>([]);
   const [directive, setDirective] = useState<string>(instance.directive || "");
@@ -138,6 +146,9 @@ export function AgentContextCard({ instance }: Props) {
                 <li key={t.id} className="text-xs flex items-center gap-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
                   <span className="text-text-muted truncate">{t.id}</span>
+                  {expectedChatThreadId && t.id === expectedChatThreadId && (
+                    <span className="text-[10px] uppercase tracking-wide text-accent shrink-0">this chat</span>
+                  )}
                 </li>
               ))}
               {threads.length > 8 && (

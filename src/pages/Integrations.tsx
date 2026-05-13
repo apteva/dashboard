@@ -306,13 +306,16 @@ export function Integrations() {
       if ("redirect_url" in (result as any)) {
         const r = result as ConnectCreateResponse;
         openOAuthPopup(r.redirect_url);
-        pollConnection(r.connection.id);
+        pollConnection(r.connection.id, autoMCP);
       } else {
         loadConnections();
         // Non-OAuth path: response IS the connection (ConnectionInfo).
         // Open the tool picker immediately so the user can create the
-        // first MCP for this integration.
-        openPickerFor(result as unknown as ConnectionInfo);
+        // first MCP for this integration — but only if the operator
+        // chose to expose this integration to agents. When autoMCP is
+        // off the server didn't create an MCP, so there's nothing for
+        // the picker to edit.
+        if (autoMCP) openPickerFor(result as unknown as ConnectionInfo);
       }
       setSelectedLocalApp(null);
       setCredentials({});
@@ -433,7 +436,7 @@ export function Integrations() {
       //     connection is already active, just refresh
       if (result.redirect_url) {
         openOAuthPopup(result.redirect_url);
-        pollConnection(result.connection.id);
+        pollConnection(result.connection.id, true);
       } else if (result.connection) {
         // Composio direct create (no redirect needed) — connection is
         // already active, go straight to the tool picker.
@@ -471,7 +474,7 @@ export function Integrations() {
     );
   };
 
-  const pollConnection = (id: number) => {
+  const pollConnection = (id: number, openPickerOnDone: boolean) => {
     let attempts = 0;
     const tick = async () => {
       attempts += 1;
@@ -481,8 +484,9 @@ export function Integrations() {
           loadConnections();
           // Connection finished OAuth — open the tool picker so the user
           // can pick which tools to expose as the first MCP for this
-          // integration.
-          openPickerFor(c as unknown as ConnectionInfo);
+          // integration. Skip when the operator unchecked "expose to
+          // agents" (no MCP exists to edit).
+          if (openPickerOnDone) openPickerFor(c as unknown as ConnectionInfo);
           return;
         }
         if (c.status === "failed") {

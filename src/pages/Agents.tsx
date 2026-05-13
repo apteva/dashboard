@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { instances, core, type Agent, type RunMode, type Status, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
@@ -34,6 +34,7 @@ interface LiveActivity {
 export function Agents() {
   const { currentProject } = useProjects();
   const projectId = currentProject?.id;
+  const navigate = useNavigate();
 
   const [list, setList] = useState<Agent[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -391,17 +392,34 @@ export function Agents() {
               : `${list.length} agent${list.length === 1 ? "" : "s"} in this project.`}
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
-        >
-          + New Agent
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowCreate(true)}
+            className="px-3 py-2 border border-border rounded-lg text-text-muted text-xs hover:text-text hover:border-text-dim transition-colors"
+            title="Open the classic create form — single dialog with all fields"
+          >
+            Quick create
+          </button>
+          <button
+            onClick={() => navigate("/agents/new")}
+            className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
+          >
+            + New Agent
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
         {list.length === 0 && (
-          <div className="text-text-muted text-sm">No agents. Click + New Agent.</div>
+          <div className="text-text-muted text-sm">
+            No agents yet.{" "}
+            <button
+              onClick={() => navigate("/agents/new")}
+              className="text-accent underline-offset-2 hover:underline"
+            >
+              Build your first agent →
+            </button>
+          </div>
         )}
 
         <div className="space-y-2">

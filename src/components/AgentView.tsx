@@ -7,6 +7,7 @@ export type SubscribeFn = (listener: EventListener) => () => void;
 import { ChatPanel } from "./ChatPanel";
 import { ActivityPanel } from "./ActivityPanel";
 import { MemoryPanel } from "./MemoryPanel";
+import { UnconsciousPanel } from "./UnconsciousPanel";
 import { InjectPanel } from "./InjectPanel";
 import { FleetGraph, type FleetEvent } from "./FleetGraph";
 import { FleetCards } from "./FleetCards";
@@ -15,6 +16,7 @@ import { AppPanels } from "./AppPanels";
 import { Modal } from "./Modal";
 import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
+import { EvalsPanel } from "./EvalsPanel";
 
 // AgentView is the rich per-instance view: chat panel + activity/fleet/cards
 // side panel, lifecycle controls (start/stop/pause/delete), thread detail
@@ -67,7 +69,7 @@ export function AgentView({
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
-  const [view, setView] = useState<"activity" | "fleet" | "cards" | "memory" | "skills" | "apps">("activity");
+  const [view, setView] = useState<"activity" | "fleet" | "cards" | "memory" | "unconscious" | "skills" | "apps" | "evals">("activity");
   // Whether the channels MCP is currently attached to this instance.
   // When the user detaches it via the MCP panel the chat bridge stops
   // receiving user messages — we gray out the chat column to make that
@@ -324,7 +326,7 @@ export function AgentView({
           <h1 className="text-text text-sm font-bold">{instance.name}</h1>
           {/* View toggle */}
           <div className="flex border border-border rounded-lg overflow-hidden ml-4">
-            {(["activity", "fleet", "cards", "memory", "skills", "apps"] as const).map((v) => (
+            {(["activity", "fleet", "cards", "memory", "unconscious", "skills", "apps", "evals"] as const).map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
@@ -550,6 +552,14 @@ export function AgentView({
                   Start the agent to view its memory.
                 </div>
               )
+            ) : view === "unconscious" ? (
+              instance.status === "running" ? (
+                <UnconsciousPanel instanceId={instance.id} />
+              ) : (
+                <div className="flex items-center justify-center h-full text-text-muted text-sm">
+                  Start the agent to view its unconscious activity.
+                </div>
+              )
             ) : view === "skills" ? (
               <SkillsPanel instanceId={instance.id} />
             ) : view === "apps" ? (
@@ -561,6 +571,8 @@ export function AgentView({
                   className="space-y-3"
                 />
               </div>
+            ) : view === "evals" ? (
+              <EvalsPanel agentID={instance.id} />
             ) : (
               <FleetCards threads={graphThreads} subscribe={subscribe} activeTools={graphActiveTools} thoughts={graphThoughts} />
             )}

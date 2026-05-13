@@ -167,7 +167,7 @@ export function Chat() {
         {showRightPane && (
           <div className="hidden lg:block overflow-y-auto">
             {focusedInstance ? (
-              <AgentContextCard instance={focusedInstance} />
+              <AgentContextCard instance={focusedInstance} chatId={focusedChatId} />
             ) : (
               <div className="p-4 text-text-dim text-sm">
                 Select an agent to see context

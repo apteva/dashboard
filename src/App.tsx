@@ -19,6 +19,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { Chat } from "./pages/Chat";
 import { Agents } from "./pages/Agents";
 import { Agent } from "./pages/Agent";
+import { AgentNew } from "./pages/AgentNew";
 import { Integrations } from "./pages/Integrations";
 import { Analytics } from "./pages/Analytics";
 import { Settings } from "./pages/Settings";
@@ -84,6 +85,7 @@ export default function App() {
           >
             <Route path="/" element={<Dashboard />} />
             <Route path="/agents" element={<Agents />} />
+            <Route path="/agents/new" element={<AgentNew />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/chat/:chatId" element={<Chat />} />
             <Route path="/agents/:id" element={<Agent />} />

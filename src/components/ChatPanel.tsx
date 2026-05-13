@@ -126,6 +126,14 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   // streaming → called → done lifecycle without duplicating rows.
   const [liveTools, setLiveTools] = useState<Map<string, LiveTool>>(() => new Map());
 
+  // Ephemeral streaming bubble — the LLM-args text for an in-progress
+  // `channels_respond` tool call, surfaced as the user's reply arrives
+  // character-by-character. Cleared on the next real agent message,
+  // on SSE drop, or on chat switch. Sourced from chatConnections's
+  // subscribeStream — server flag CHANNELCHAT_STREAMING=0 stops the
+  // frames at the source, so this state simply stays null end-to-end.
+  const [streamingText, setStreamingText] = useState<string | null>(null);
+
   // Explicit connect/disconnect, session-only.
   //
   // Why explicit at all? The agent is proactive — when chat is
@@ -436,7 +444,19 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   // entries from a previous instance briefly leak into the new view.
   useEffect(() => {
     setLiveTools(new Map());
+    setStreamingText(null);
   }, [instanceId, chatId]);
+
+  // Subscribe to streaming-frame updates for this chat. Frames carry
+  // monotonically growing text; setting state to the latest is enough,
+  // no reducer needed. A null payload (chatConnections fires that on
+  // real-message-arrival and on SSE drop) clears the bubble.
+  useEffect(() => {
+    if (!chatId) return;
+    return chatConnections.subscribeStream(chatId, (f) => {
+      setStreamingText(f ? f.text : null);
+    });
+  }, [chatId]);
 
   // --- 4c. Agent activity strip (Claude/ChatGPT-style "Thinking…") -----
   //
@@ -689,6 +709,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
             <ToolRow key={`t${item.tool.id}`} t={item.tool} />
           ),
         )}
+        {streamingText !== null && <StreamingBubble text={streamingText} />}
       </div>
 
       {/* Activity strip — Claude/ChatGPT-style "Thinking…" line that
@@ -870,6 +891,60 @@ const MessageRow = memo(function MessageRow({
     </div>
   );
 });
+
+// StreamingBubble — ephemeral agent-style bubble pinned to the bottom
+// of the timeline while the LLM is composing a respond() call. The
+// text grows as new server frames arrive. Replaced (not transitioned)
+// by the real DB message once the tool actually runs — chatConnections
+// fires a null stream payload at that moment, which clears the bubble
+// in the same React commit as MessageRow renders the final row.
+//
+// Markdown: we parse on every chunk via the same renderMarkdown used
+// by final messages, so lists/code/bold render live. Unterminated
+// tokens (a `**bold` mid-stream) get auto-closed by closeOpenMarkdown
+// before parse — keeps marked from emitting literal asterisks one
+// chunk and bold the next. Memoized against text so unrelated
+// re-renders (e.g. other state changes in ChatPanel) don't re-parse.
+function StreamingBubble({ text }: { text: string }) {
+  const html = useMemo(
+    () => renderMarkdown(closeOpenMarkdown(text)),
+    [text],
+  );
+  return (
+    <div className="min-w-0">
+      <div
+        className="chat-md text-text text-xs break-words leading-relaxed"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+      <span className="tool-cursor">▊</span>
+    </div>
+  );
+}
+
+// closeOpenMarkdown closes the last unterminated bold/italic/inline-
+// code/fenced-code/link tokens in a string so a partial mid-stream
+// render doesn't flicker as the closing pair arrives. Doesn't try to
+// be a full parser — just the four token types that produce the
+// worst visual flashes when half-written.
+function closeOpenMarkdown(s: string): string {
+  // Fenced code (```): odd count → append a closing fence on its own line.
+  const fence = (s.match(/```/g) || []).length;
+  let out = s;
+  if (fence % 2 === 1) out += "\n```";
+  // Inside a fence? Skip the inline rules — they're literal in code blocks.
+  if (fence % 2 === 1) return out;
+  // Inline code (`): odd count of single backticks not part of a fence.
+  // Strip the fences first so we don't miscount.
+  const noFences = out.replace(/```[\s\S]*?```/g, "");
+  const ticks = (noFences.match(/`/g) || []).length;
+  if (ticks % 2 === 1) out += "`";
+  // Bold (**): odd count of `**`.
+  const bold = (out.match(/\*\*/g) || []).length;
+  if (bold % 2 === 1) out += "**";
+  // Unclosed link: `[text](url` without the closing paren.
+  if (/\[[^\]]*\]\([^)]*$/.test(out)) out += ")";
+  return out;
+}
 
 // ToolRow — inline tool indicator rendered between messages in the
 // chat timeline. Visually subdued (smaller, dimmer, indented) so it

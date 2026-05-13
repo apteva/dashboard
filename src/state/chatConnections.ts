@@ -41,7 +41,7 @@
 // genuinely down. Stops the previous "404 retry loop forever" class
 // of bugs cold.
 
-import { chat, instances, type ChatMessageRow } from "../api";
+import { chat, type ChatMessageRow } from "../api";
 
 const BUFFER_MAX = 100;
 const MAX_RETRIES = 3;
@@ -49,6 +49,24 @@ const RETRY_DELAY_MS = 1500;
 
 type MsgListener = (m: ChatMessageRow) => void;
 type StateListener = () => void;
+
+// StreamFrame mirrors the server-side channelchat.StreamFrame shape.
+// Arrives on the SSE stream under the `stream` event name, separate
+// from `message` (which carries final ChatMessageRow rows). Single
+// place to disable streaming end-to-end on the server is the
+// CHANNELCHAT_STREAMING env var; on the dashboard, this whole field
+// + addEventListener block is what would be reverted.
+export interface StreamFrame {
+  type: "stream";
+  chat_id: string;
+  thread_id: string;
+  call_id: string;
+  text: string;
+  done?: boolean;
+  created_at?: string;
+}
+
+type StreamListener = (f: StreamFrame | null) => void;
 
 interface Conn {
   chatId: string;
@@ -62,6 +80,13 @@ interface Conn {
   recentBuffer: ChatMessageRow[];
   msgListeners: Set<MsgListener>;
   stateListeners: Set<StateListener>;
+  // streamListeners receive ephemeral StreamFrame updates and a
+  // null when the streaming bubble should be cleared (next real
+  // agent message lands or the SSE drops). Reverting streaming
+  // safely is: drop the addEventListener("stream", ...) below and
+  // remove this set + subscribeStream method.
+  streamListeners: Set<StreamListener>;
+  currentStream: StreamFrame | null;
   retryTimer: number | null;
   closed: boolean;
 }
@@ -107,9 +132,7 @@ class ChatConnectionsManager {
       c.es = null;
     }
     if (c.signaledConnected) {
-      instances
-        .sendEvent(instanceId, "[chat] user disconnected from chat", "main")
-        .catch(() => {});
+      chat.presence(chatId, "disconnected").catch(() => {});
       c.signaledConnected = false;
     }
     c.open = false;
@@ -135,6 +158,27 @@ class ChatConnectionsManager {
     c.msgListeners.add(fn);
     return () => {
       c.msgListeners.delete(fn);
+    };
+  }
+
+  /** Subscribe to streaming-frame updates for one chat. The callback
+   *  fires with the current StreamFrame (text grows monotonically
+   *  across calls) and with `null` when the bubble should clear
+   *  (next real agent message arrives or SSE drops). Returns
+   *  unsubscribe; the SSE itself stays open.
+   *
+   *  Disabling end-to-end: server flag CHANNELCHAT_STREAMING=0
+   *  stops emitting frames, so this listener simply never fires —
+   *  no UI changes needed. To revert the dashboard piece only,
+   *  delete this method, the streamListeners field, the
+   *  addEventListener("stream", ...) in openConnection, and the
+   *  StreamFrame export. */
+  subscribeStream(chatId: string, fn: StreamListener): () => void {
+    const c = this.ensureShell(chatId);
+    c.streamListeners.add(fn);
+    if (c.currentStream) fn(c.currentStream);
+    return () => {
+      c.streamListeners.delete(fn);
     };
   }
 
@@ -206,6 +250,8 @@ class ChatConnectionsManager {
         recentBuffer: [],
         msgListeners: new Set(),
         stateListeners: new Set(),
+        streamListeners: new Set(),
+        currentStream: null,
         retryTimer: null,
         closed: false,
       };
@@ -229,9 +275,7 @@ class ChatConnectionsManager {
       this.notify(c);
       if (!c.signaledConnected) {
         c.signaledConnected = true;
-        instances
-          .sendEvent(instanceId, "[chat] user connected to chat", "main")
-          .catch(() => {});
+        chat.presence(chatId, "connected").catch(() => {});
       }
     };
     es.onmessage = (ev) => {
@@ -245,12 +289,41 @@ class ChatConnectionsManager {
           c.recentBuffer.splice(0, c.recentBuffer.length - BUFFER_MAX);
         }
         for (const fn of c.msgListeners) fn(m);
+        // When a real agent message lands, the streaming bubble's job
+        // is done — clear it so the UI swaps without flicker. We
+        // intentionally don't try to correlate by call_id; "the next
+        // agent message wins" is robust against provider-specific
+        // call-id quirks and avoids a swap race.
+        if (m.role === "agent" && c.currentStream) {
+          c.currentStream = null;
+          for (const fn of c.streamListeners) fn(null);
+        }
       } catch {
         // malformed frame — ignore
       }
     };
+    // Named-event handler for stream frames (server emits with
+    // `event: stream`). Default `onmessage` doesn't fire on named
+    // events, so this and `onmessage` can't collide.
+    es.addEventListener("stream", (ev) => {
+      try {
+        const f = JSON.parse((ev as MessageEvent).data) as StreamFrame;
+        if (!f || f.type !== "stream") return;
+        c.currentStream = f;
+        for (const fn of c.streamListeners) fn(f);
+      } catch {
+        // malformed frame — ignore
+      }
+    });
     es.onerror = () => {
       c.open = false;
+      // Drop any in-progress streaming bubble on disconnect — the
+      // next thing the user sees should be the (real, DB-backed)
+      // message that lands after reconnect, not a stale partial.
+      if (c.currentStream) {
+        c.currentStream = null;
+        for (const fn of c.streamListeners) fn(null);
+      }
       this.notify(c);
       if (c.es) {
         c.es.close();

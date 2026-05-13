@@ -552,6 +552,32 @@ function ProvidersTab() {
   // union of project-scoped + globals, so a global created here will
   // immediately show up everywhere with the "global" scope badge.
   const [makeGlobal, setMakeGlobal] = useState(false);
+  // Health-check state, keyed by provider id. Set when the operator
+  // clicks "Test" on a row; rendered next to the row's controls.
+  // testingProviderID is the id of the in-flight probe (one at a
+  // time — the button disables to avoid double-fires).
+  const [testResultByID, setTestResultByID] = useState<Record<number, import("../api").ProviderTestResult>>({});
+  const [testingProviderID, setTestingProviderID] = useState<number | null>(null);
+
+  const handleTest = async (name: string) => {
+    const p = getActive(name);
+    if (!p) return;
+    setTestingProviderID(p.id);
+    try {
+      const res = await providers.test(p.id);
+      setTestResultByID((m) => ({ ...m, [p.id]: res }));
+    } catch (err: any) {
+      // request() throws on 4xx/5xx; for the test endpoint we still
+      // want to surface the error inline, so build a synthetic failure
+      // result from the thrown message.
+      setTestResultByID((m) => ({
+        ...m,
+        [p.id]: { ok: false, latency_ms: 0, error: String(err?.message || "test failed") },
+      }));
+    } finally {
+      setTestingProviderID(null);
+    }
+  };
 
   const load = () => {
     providers.list(currentProject?.id).then(setProviderList).catch(() => {});
@@ -608,7 +634,17 @@ function ProvidersTab() {
       setMakeGlobal(false);
       load();
     } catch (err: any) {
-      setError(err.message || "Failed");
+      // request() now unpacks the {error, status_code, …} body on 4xx
+      // into err.message + err.body, so the upstream's reason ("Invalid
+      // API key") lands directly here without per-caller JSON parsing.
+      // err.body.status_code is set when the upstream returned a
+      // ProviderTestResult — prefix it for context.
+      const body = err?.body;
+      if (body && body.status_code) {
+        setError(`${body.status_code} — ${err.message || "Failed"}`);
+      } else {
+        setError(err?.message || "Failed");
+      }
     }
   };
 
@@ -721,12 +757,34 @@ function ProvidersTab() {
                   </div>
                   <p className="text-text-muted text-xs leading-relaxed mb-2">{pt.description}</p>
                   {active ? (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDeactivate(pt.name); }}
-                      className="text-xs text-text-muted hover:text-red transition-colors"
-                    >
-                      Deactivate
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleTest(pt.name); }}
+                        className="text-xs text-text-muted hover:text-accent transition-colors disabled:opacity-50"
+                        disabled={testingProviderID === getActive(pt.name)?.id}
+                        title="Probe the upstream with the saved credentials"
+                      >
+                        {testingProviderID === getActive(pt.name)?.id ? "Testing…" : "Test"}
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeactivate(pt.name); }}
+                        className="text-xs text-text-muted hover:text-red transition-colors"
+                      >
+                        Deactivate
+                      </button>
+                      {testResultByID[getActive(pt.name)?.id ?? -1] && (
+                        <span
+                          className={`text-xs ${testResultByID[getActive(pt.name)?.id ?? -1]?.ok ? "text-green" : "text-red"}`}
+                          title={testResultByID[getActive(pt.name)?.id ?? -1]?.error || ""}
+                        >
+                          {testResultByID[getActive(pt.name)?.id ?? -1]?.ok
+                            ? `✓ ${testResultByID[getActive(pt.name)?.id ?? -1]?.model_count
+                                ? `${testResultByID[getActive(pt.name)?.id ?? -1]?.model_count} models`
+                                : "ok"} (${testResultByID[getActive(pt.name)?.id ?? -1]?.latency_ms}ms)`
+                            : `✗ ${testResultByID[getActive(pt.name)?.id ?? -1]?.error || "failed"}`}
+                        </span>
+                      )}
+                    </div>
                   ) : (
                     <span className="text-xs text-accent">
                       {pt.requires_credentials ? "Configure" : "Activate"}

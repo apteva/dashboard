@@ -51,7 +51,39 @@ async function request<T>(
   }
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || `${res.status}`);
+    // Surface a structured error field when the server returned JSON
+    // on the 4xx/5xx. Two shapes the server actually emits:
+    //
+    //   { error: "..." }                                  (most handlers)
+    //   { ok:false, status_code, error, latency_ms, ... } (ProviderTestResult,
+    //                                                      ConnectionTestResult)
+    //
+    // Falling through to the raw text means a non-JSON 4xx (a 5xx
+    // body that's "internal error") still renders cleanly. The parsed
+    // object is attached on the thrown Error so callers that want
+    // richer detail (an inline test-result component) read it
+    // without re-parsing.
+    let msg = text || `${res.status}`;
+    let parsed: any = undefined;
+    if (text) {
+      try {
+        const obj = JSON.parse(text);
+        parsed = obj;
+        if (obj && typeof obj === "object") {
+          if (typeof obj.error === "string" && obj.error.trim() !== "") {
+            msg = obj.error;
+          } else if (typeof obj.message === "string" && obj.message.trim() !== "") {
+            msg = obj.message;
+          }
+        }
+      } catch {
+        // not JSON — leave msg as the raw text.
+      }
+    }
+    const err: any = new Error(msg);
+    if (parsed !== undefined) err.body = parsed;
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
@@ -211,6 +243,233 @@ export interface Project {
   created_at: string;
 }
 
+// Agent templates — starter configs surfaced in /agents/new wizard.
+// Builtin rows are seeded by the server, app-contributed rows arrive
+// on app install, user rows are created here via .create() or
+// .saveFromAgent (TBD).
+export interface Requirement {
+  // One entry on a template's setup checklist. kind drives which
+  // wizard step satisfies it: app=install via apps.install,
+  // integration=create/select a connection, channel=bind a channel
+  // to the agent, skill=push a markdown playbook.
+  kind: "app" | "integration" | "channel" | "skill";
+  slug?: string;
+  role?: string;
+  // For kind=channel: "email" | "slack" | "telegram" | ...
+  type?: string;
+  // Any of these integration slugs can satisfy the requirement.
+  compatible_slugs?: string[];
+  capabilities?: string[];
+  bind_to?: { app: string; role: string };
+  reason?: string;
+  required: boolean;
+  source?: string;
+  config?: Record<string, unknown>;
+}
+
+export interface TemplateLogo {
+  // One icon resolved server-side from a Requirement. The wizard's
+  // card row renders these as a small horizontal cluster.
+  kind: "app" | "integration" | "channel";
+  slug: string;
+  icon_url?: string;
+  label: string;
+  // "direct" — declared on the template itself.
+  // "derived" — pulled from a required app's requires.integrations.
+  source: "direct" | "derived";
+  via?: string;
+}
+
+export interface AgentTemplate {
+  id: string;
+  user_id?: number;
+  source: "builtin" | "app" | "user";
+  source_ref?: string;
+  name: string;
+  // Short icon name resolved by the dashboard to a stroked SVG
+  // (see TemplateIcon in pages/AgentNew.tsx). Empty / unknown names
+  // fall back to a generic neutral glyph.
+  icon?: string;
+  description: string;
+  directive: string;
+  mode: "autonomous" | "cautious" | "learn";
+  unconscious: boolean;
+  recommended_apps: string[];
+  // Structured setup checklist. Drives the Setup step of the wizard
+  // and the card-level logo strip (after server resolution).
+  requirements: Requirement[];
+  // Server-resolved logos for the card. Walks requirements + the app
+  // marketplace + the integrations catalog so the dashboard doesn't
+  // need either of those itself to render a card.
+  resolved_logos?: TemplateLogo[];
+  // Starter evals shipped with this template. PR-1 includes one
+  // entry per builtin (except "empty"). Copied into agent_evals
+  // at agent-create time with source="template"; the wizard's
+  // Verify step uses the first entry as the draft eval.
+  suggested_evals?: SuggestedEval[];
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SuggestedEval {
+  id: string;
+  name: string;
+  trigger: EvalTrigger;
+  goals: string[];
+  mocks: EvalMock[];
+  max_turns?: number;
+}
+
+export const agentTemplates = {
+  list: () => request<AgentTemplate[]>("GET", "/agent-templates"),
+  get: (id: string) => request<AgentTemplate>("GET", `/agent-templates/${encodeURIComponent(id)}`),
+  create: (t: Partial<AgentTemplate>) =>
+    request<AgentTemplate>("POST", "/agent-templates", t),
+  update: (id: string, t: Partial<AgentTemplate>) =>
+    request<AgentTemplate>("PUT", `/agent-templates/${encodeURIComponent(id)}`, t),
+  delete: (id: string) =>
+    request<any>("DELETE", `/agent-templates/${encodeURIComponent(id)}`),
+  hide: (id: string) =>
+    request<any>("POST", `/agent-templates/${encodeURIComponent(id)}/hide`, {}),
+  unhide: (id: string) =>
+    request<any>("POST", `/agent-templates/${encodeURIComponent(id)}/unhide`, {}),
+};
+
+// Agent evals — behavioural tests attached to an agent. See
+// server/agent_evals.go for the runner architecture and the
+// schema.
+//
+// Two roles in the dashboard:
+//   - The wizard's Verify step renders the agent's first eval
+//     (template-seeded at create time) and lets the operator
+//     run it inline.
+//   - The agent detail page lists every eval the agent has,
+//     plus run history.
+export interface EvalTrigger {
+  // PR-1 trigger types: chat_message | webhook | scheduled_tick.
+  // Payload shape varies per type; the wizard renders a
+  // type-specific editor.
+  type: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface EvalMock {
+  app: string;
+  tool: string;
+  args_match?: Record<string, unknown>;
+  return?: unknown;
+  error?: string;
+}
+
+export interface Eval {
+  id: string;
+  agent_id: number;
+  name: string;
+  trigger: EvalTrigger;
+  // Plain-text rubric items the meta-agent judges each run
+  // against. Wizard renders these as an editable list of inputs.
+  goals: string[];
+  mocks: EvalMock[];
+  max_turns: number;
+  // 'manual' for PR-1; PR-2 adds cron expressions.
+  schedule: string;
+  // Cached rollup of the latest run. NULL until first run.
+  last_status?: "pass" | "fail" | "error";
+  last_run_at?: string;
+  // 'user' (operator-authored), 'template' (seeded from
+  // AgentTemplate.suggested_evals on agent create), 'app'
+  // (future — contributed by an installed app).
+  source: "user" | "template" | "app";
+  source_ref?: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ToolCallRecord {
+  app: string;
+  tool: string;
+  args?: unknown;
+  response?: unknown;
+  error?: string;
+  // Mocked=true means the gateway returned the eval's mock.
+  // Mocked=false with a non-null response means we returned the
+  // stub-ok default for an unmocked tool. Real app calls don't
+  // happen during eval runs.
+  mocked: boolean;
+  warning?: string;
+}
+
+export interface TrajectoryTurn {
+  role: "user" | "agent" | "tool" | "system";
+  content?: string;
+  tool_call?: ToolCallRecord;
+  ts: string;
+}
+
+export interface Trajectory {
+  turns: TrajectoryTurn[];
+}
+
+export interface GoalVerdict {
+  goal: string;
+  verdict: "pass" | "fail";
+  why: string;
+}
+
+export interface JudgeVerdict {
+  overall: "pass" | "fail";
+  reasoning: string;
+  per_goal: GoalVerdict[];
+  judge_model?: string;
+  judge_tokens?: { input: number; output: number };
+}
+
+export interface EvalRun {
+  id: number;
+  eval_id: string;
+  started_at: string;
+  finished_at?: string;
+  status: "pass" | "fail" | "error";
+  trajectory: Trajectory;
+  verdict?: JudgeVerdict;
+  duration_ms: number;
+  turns_used: number;
+  error_message?: string;
+}
+
+export const evals = {
+  // List every eval for an agent. Returned with last_status
+  // rolled up so the UI can render dots without a runs fetch.
+  list: (agentID: number) =>
+    request<Eval[]>("GET", `/agents/${agentID}/evals`),
+  get: (agentID: number, evalID: string) =>
+    request<Eval>("GET", `/agents/${agentID}/evals/${encodeURIComponent(evalID)}`),
+  create: (agentID: number, e: Partial<Eval>) =>
+    request<Eval>("POST", `/agents/${agentID}/evals`, e),
+  update: (agentID: number, evalID: string, e: Partial<Eval>) =>
+    request<Eval>("PUT", `/agents/${agentID}/evals/${encodeURIComponent(evalID)}`, e),
+  delete: (agentID: number, evalID: string) =>
+    request<{ status: string }>("DELETE", `/agents/${agentID}/evals/${encodeURIComponent(evalID)}`),
+  // Synchronous — the runner returns the full {status, verdict,
+  // trajectory} when the run finishes. Expect ~5-30s.
+  run: (agentID: number, evalID: string) =>
+    request<EvalRun>("POST", `/agents/${agentID}/evals/${encodeURIComponent(evalID)}/run`, {}),
+  // Last 10 runs in reverse chronological order. PR-2 paginates.
+  runs: (agentID: number, evalID: string) =>
+    request<EvalRun[]>("GET", `/agents/${agentID}/evals/${encodeURIComponent(evalID)}/runs`),
+  // Stateless preview — used by the wizard's Verify step to run
+  // an eval against a draft agent before it's created. No DB
+  // writes; returned EvalRun has id=0.
+  preview: (body: {
+    directive: string;
+    name?: string;
+    project_id?: string;
+    eval: { name?: string; trigger: EvalTrigger; goals: string[]; mocks?: EvalMock[]; max_turns?: number };
+  }) => request<EvalRun>("POST", "/evals/preview", body),
+};
+
 export const projects = {
   list: () => request<Project[]>("GET", "/projects"),
   create: (name: string, description?: string, color?: string) =>
@@ -251,9 +510,9 @@ export const instances = {
     mode?: string,
     projectId?: string,
     start?: boolean,
-    opts?: { includeAptevaServer?: boolean; includeChannels?: boolean },
+    opts?: { includeAptevaServer?: boolean; includeChannels?: boolean; unconscious?: boolean; templateID?: string },
   ) =>
-    request<Agent>("POST", "/agents", {
+    request<Agent & { warning?: string }>("POST", "/agents", {
       name,
       directive: directive || "",
       mode: mode || "autonomous",
@@ -265,6 +524,16 @@ export const instances = {
       // stays minimal in the common case.
       ...(opts?.includeAptevaServer === false ? { include_apteva_server: false } : {}),
       ...(opts?.includeChannels === false ? { include_channels: false } : {}),
+      // Unconscious: when set, spawns the background memory-consolidation
+      // thread (core/thinker.go). Per-agent so a personal-assistant
+      // template can enable it while a fast/stateless agent stays out.
+      ...(opts?.unconscious !== undefined ? { unconscious: opts.unconscious } : {}),
+      // When set, the server seeds the template's suggested_evals
+      // into agent_evals for this new agent (source='template').
+      // The wizard's Verify step has already run a stateless preview
+      // against the same draft; this gives the operator a persisted
+      // copy on the agent detail page to rerun + edit later.
+      ...(opts?.templateID ? { template_id: opts.templateID } : {}),
     }),
 
   get: (id: number) => request<Agent>("GET", `/agents/${id}`),
@@ -328,6 +597,27 @@ export interface ModelInfo {
   output_cost?: number;
 }
 
+// ProviderTestResult mirrors the server's ConnectionTestResult shape
+// so the dashboard's success-or-failure renderer is a single
+// component across both surfaces. Returned by POST /providers/:id/test
+// AND by POST /providers when a pre-flight check rejects bogus
+// credentials (HTTP 400 + this body).
+export interface ProviderTestResult {
+  ok: boolean;
+  skipped?: boolean;
+  reason?: string;
+  latency_ms: number;
+  status_code?: number;
+  error?: string;
+  // model_count is set on success when the probe can extract a count
+  // from the upstream's listing endpoint (OpenAI/Anthropic/Fireworks
+  // /v1/models → data.length, ElevenLabs voices, Ollama models).
+  // Lets the dashboard render "12 models available" as a small
+  // confirmation that the probe actually saw the upstream's
+  // catalog and not a cached 200.
+  model_count?: number;
+}
+
 export const providers = {
   // If projectId is passed, the response includes providers scoped to that
   // project PLUS any unscoped "global" ones (project_id = '').
@@ -348,6 +638,11 @@ export const providers = {
       provider_type_id: providerTypeId || 0,
       project_id: projectId || "",
     }),
+
+  // Test an already-saved provider's credentials. Used by the "Test"
+  // button on each row in the Settings page providers section.
+  test: (id: number) =>
+    request<ProviderTestResult>("POST", `/providers/${id}/test`, {}),
 
   update: (id: number, type: string, name: string, data: Record<string, string>) =>
     request<any>("PUT", `/providers/${id}`, { type, name, data }),
@@ -1877,6 +2172,17 @@ export const chat = {
     request<{ last_seen_id: number }>("POST", "/apps/channel-chat/seen", {
       chat_id: chatId,
       last_seen_id: lastSeenId,
+    }),
+
+  // presence forwards "[chat] user connected/disconnected" through
+  // channelchat so the same per-chat thread resolution applies as for
+  // messages. Used to bypass channelchat and hit /agents/:id/event
+  // with thread_id="main" hardcoded — that's why presence events
+  // landed on main even when CHANNELCHAT_PER_THREAD was on.
+  presence: (chatId: string, action: "connected" | "disconnected"): Promise<{ status: string; thread_id: string }> =>
+    request<{ status: string; thread_id: string }>("POST", "/apps/channel-chat/presence", {
+      chat_id: chatId,
+      action,
     }),
 };
 

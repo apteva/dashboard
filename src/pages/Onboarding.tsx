@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { auth, providerTypes, providers, type ProviderTypeInfo } from "../api";
+import { auth, providerTypes, providers, projects, type ProviderTypeInfo, type Project } from "../api";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme, type ThemeMode } from "../hooks/useTheme";
 
@@ -9,7 +9,7 @@ import { useTheme, type ThemeMode } from "../hooks/useTheme";
 // "Finish" button on the last step calls /auth/onboarding/complete,
 // which stamps onboarded_at and lets the user into the dashboard.
 
-type StepId = "theme" | "provider";
+type StepId = "theme" | "project" | "provider";
 
 interface StepDef {
   id: StepId;
@@ -21,12 +21,24 @@ interface StepDef {
 
 const STEPS: StepDef[] = [
   { id: "theme", canSkip: false },
+  // The project step lets the user rename/describe the "Default"
+  // project that registration auto-created. Skippable because the
+  // default name is already serviceable; the description in particular
+  // becomes useful context for LLM-using apps that surface it
+  // (media's auto-describer prepends it to prompts, for example).
+  { id: "project", canSkip: true },
   { id: "provider", canSkip: true },
 ];
 
 export function Onboarding() {
   const [stepIdx, setStepIdx] = useState(0);
   const [finishing, setFinishing] = useState(false);
+  // providerAdded — flipped by ProviderStep when it successfully
+  // saves a key. Drives the post-onboarding redirect: with a provider,
+  // the user can usefully build an agent next, so we route to the
+  // /agents/new wizard. Without one, we route to / and let them poke
+  // around the dashboard first.
+  const [providerAdded, setProviderAdded] = useState(false);
   const navigate = useNavigate();
   const { refresh, user } = useAuth();
 
@@ -48,15 +60,21 @@ export function Onboarding() {
       return;
     }
     setFinishing(true);
+    // If the operator saved a provider during onboarding, drop them
+    // straight into the build-an-agent wizard. Otherwise the
+    // dashboard's empty state with its "Build your first agent →"
+    // CTA is a fine landing — they can come back when they're ready
+    // to wire up an LLM key.
+    const dest = providerAdded ? "/agents/new" : "/";
     try {
       await auth.completeOnboarding();
       await refresh();
-      navigate("/", { replace: true });
+      navigate(dest, { replace: true });
     } catch {
       // Best-effort: even if the server call fails, still let the user
       // through. They'll re-onboard on next reload, which is annoying
       // but better than wedging them on this page.
-      navigate("/", { replace: true });
+      navigate(dest, { replace: true });
     }
   };
 
@@ -74,7 +92,8 @@ export function Onboarding() {
 
         <div className="border border-border rounded-lg p-8 bg-bg-card mt-6">
           {step.id === "theme" && <ThemeStep />}
-          {step.id === "provider" && <ProviderStep />}
+          {step.id === "project" && <ProjectStep />}
+          {step.id === "provider" && <ProviderStep onSaved={() => setProviderAdded(true)} />}
 
           <div className="flex justify-between items-center mt-8 pt-6 border-t border-border">
             {step.canSkip ? (
@@ -203,7 +222,161 @@ function ThemeCard({
   );
 }
 
-function ProviderStep() {
+// ProjectStep — let the user rename + describe the "Default" project
+// registration auto-created. Skippable because the auto name is fine;
+// the description in particular is worth filling because LLM-using
+// apps surface it as context (media's auto-describer, for example,
+// prepends it to vision prompts). Color is offered as a small set of
+// pre-picked swatches rather than a free-form picker — the dashboard's
+// project chips use this, and a curated palette keeps them legible.
+const PROJECT_COLORS = [
+  "#6366f1", // indigo (the auto-create default)
+  "#10b981", // emerald
+  "#f59e0b", // amber
+  "#ef4444", // red
+  "#3b82f6", // blue
+  "#a855f7", // violet
+  "#14b8a6", // teal
+  "#ec4899", // pink
+];
+
+function ProjectStep() {
+  const [project, setProject] = useState<Project | null>(null);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [color, setColor] = useState(PROJECT_COLORS[0]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    // Registration auto-creates one "Default" project. We seed the
+    // form from whatever's there (in the rare case the user already
+    // edited it from a different tab, we reflect their latest values).
+    // If there's somehow no project, the step still renders — Save
+    // will fail with a useful message rather than wedging the form.
+    projects
+      .list()
+      .then((list) => {
+        const p = list[0];
+        if (p) {
+          setProject(p);
+          setName(p.name);
+          setDescription(p.description);
+          setColor(p.color || PROJECT_COLORS[0]);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const dirty = !!project &&
+    (name !== project.name || description !== project.description || color !== (project.color || PROJECT_COLORS[0]));
+
+  const onSave = async () => {
+    if (!project) {
+      setError("No project to update — your account didn't get one auto-created. Hit Skip and create one from the dashboard.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await projects.update(project.id, name.trim() || project.name, description, color);
+      setProject(updated);
+      setSaved(true);
+    } catch (err: any) {
+      setError(err?.message || "Failed to update project");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return <div className="text-text-muted text-sm">Loading…</div>;
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <h2 className="text-text text-lg font-bold">Name your first project</h2>
+        <p className="text-text-muted text-sm mt-1">
+          Projects are the top-level scope your agents, providers, and integrations live in. A short description helps agents that read project context (the auto-describer in media uses it, for example).
+        </p>
+      </div>
+
+      <div>
+        <label className="block text-text-muted text-sm mb-2">Name</label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => {
+            setName((e.target as HTMLInputElement).value);
+            setSaved(false);
+            setError("");
+          }}
+          className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text focus:outline-none focus:border-accent"
+          placeholder="Default"
+          autoComplete="off"
+        />
+      </div>
+
+      <div>
+        <label className="block text-text-muted text-sm mb-2">Description</label>
+        <textarea
+          value={description}
+          onChange={(e) => {
+            setDescription((e.target as HTMLTextAreaElement).value);
+            setSaved(false);
+            setError("");
+          }}
+          rows={3}
+          className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text focus:outline-none focus:border-accent resize-none"
+          placeholder="What this project is for — e.g. 'Personal automation: email triage, scheduling, content drafting'"
+          spellCheck={false}
+        />
+      </div>
+
+      <div>
+        <label className="block text-text-muted text-sm mb-2">Color</label>
+        <div className="flex flex-wrap gap-2">
+          {PROJECT_COLORS.map((c) => (
+            <button
+              key={c}
+              onClick={() => {
+                setColor(c);
+                setSaved(false);
+                setError("");
+              }}
+              className={`w-8 h-8 rounded-full border-2 transition-all ${
+                color === c ? "border-text scale-110" : "border-border hover:border-text-dim"
+              }`}
+              style={{ backgroundColor: c }}
+              aria-label={`Pick color ${c}`}
+            />
+          ))}
+        </div>
+      </div>
+
+      {error && <div className="text-red text-sm">{error}</div>}
+      {saved && (
+        <div className="text-accent text-sm">Saved — you can change this any time in Settings → Projects.</div>
+      )}
+
+      {project && dirty && !saved && (
+        <button
+          onClick={onSave}
+          disabled={saving}
+          className="self-start px-4 py-2 border border-border rounded-lg text-sm text-text hover:bg-bg-hover transition-colors disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save project"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ProviderStep({ onSaved }: { onSaved?: () => void }) {
   const [types, setTypes] = useState<ProviderTypeInfo[]>([]);
   const [selected, setSelected] = useState<ProviderTypeInfo | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -246,6 +419,7 @@ function ProviderStep() {
       // GetAllProviderEnvVars.
       await providers.create(selected.type, selected.name, trimmed, selected.id, "");
       setSaved(true);
+      onSaved?.();
     } catch (err: any) {
       setError(err?.message || "Failed to save provider");
     } finally {

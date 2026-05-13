@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
@@ -8,13 +8,42 @@ import { startChatNotifications } from "../state/chatNotifications";
 import { chatConnections, purgeLegacyChatConnectedKeys } from "../state/chatConnections";
 import { apps, platform, type PlatformStatus } from "../api";
 
+// Sidebar APPS section visible-cap. Above this, the overflow row
+// collapses the rest behind a "More apps (N)" toggle. Five is the
+// "shows above the fold on a 720-tall screen plus the MANAGE
+// section underneath" threshold — picked empirically. Pinning lands
+// in a later PR; PR-1 uses the first N entries by the server's
+// sort order.
+const SIDEBAR_APPS_VISIBLE = 5;
+
 export function Layout() {
   const [version, setVersion] = useState("");
   const [versionTip, setVersionTip] = useState("");
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus | null>(null);
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  // Sidebar APPS overflow toggle. Default collapsed so a long
+  // install list (~22 apps in the boot we saw) doesn't push the
+  // MANAGE section off-screen. Persisted to localStorage so the
+  // expanded-state survives page reloads without a backend setting.
+  const [showAllApps, setShowAllApps] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("sidebar:showAllApps") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleShowAllApps = useCallback(() => {
+    setShowAllApps((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem("sidebar:showAllApps", next ? "1" : "0");
+      } catch {}
+      return next;
+    });
+  }, []);
   const [refreshing, setRefreshing] = useState(false);
   const { projects, currentProject, setCurrentProject } = useProjects();
+  const navigate = useNavigate();
   const { user, logout } = useAuth();
 
   // Boot the global notifications source once the user is logged in.
@@ -249,6 +278,25 @@ export function Layout() {
           </div>
         )}
 
+        {/* Primary call-to-action — building a new agent is the
+            highest-frequency creative action in the app, so it sits
+            above the nav rail (not behind a "go to Agents → click +"
+            two-step). Filled accent so it stays the focal point of
+            the sidebar regardless of which page is selected. */}
+        <div className="px-3 py-3 border-b border-border">
+          <button
+            onClick={() => navigate("/agents/new")}
+            className="w-full flex items-center justify-center gap-2 bg-accent text-bg rounded-lg px-3 py-2 text-sm font-bold hover:bg-accent-hover transition-colors"
+            title="Build a new agent"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 5v14" />
+              <path d="M5 12h14" />
+            </svg>
+            New agent
+          </button>
+        </div>
+
         <div className="flex-1 py-3 overflow-y-auto">
           {/* Primary group — the platform's daily-use verbs.
               No section label: this group IS the dashboard's default. */}
@@ -263,20 +311,40 @@ export function Layout() {
           {/* Apps group — only rendered when ≥1 installed app has a
               project.page panel. Header label tells the user these are
               contributed by sidecars, and each entry carries the app's
-              own icon to reinforce the "third-party" visual cue. */}
-          {appNav.length > 0 && (
-            <>
-              <SidebarSectionHeader label="APPS" />
-              {appNav.map((item) => (
-                <SidebarLink
-                  key={item.to}
-                  item={item}
-                  navItems={navItems}
-                  iconUrl={item.icon}
-                />
-              ))}
-            </>
-          )}
+              own icon to reinforce the "third-party" visual cue.
+              Caps the visible list at SIDEBAR_APPS_VISIBLE so an
+              installer with 20+ apps doesn't bury the MANAGE section
+              below the fold. Anything beyond the cap collapses behind
+              a "More apps (N)" toggle. Pinning lands in a later PR; for
+              now the first SIDEBAR_APPS_VISIBLE entries (server's sort
+              order) are the ones shown. */}
+          {appNav.length > 0 && (() => {
+            const visibleApps = showAllApps ? appNav : appNav.slice(0, SIDEBAR_APPS_VISIBLE);
+            const overflow = appNav.length - visibleApps.length;
+            return (
+              <>
+                <SidebarSectionHeader label="APPS" />
+                {visibleApps.map((item) => (
+                  <SidebarLink
+                    key={item.to}
+                    item={item}
+                    navItems={navItems}
+                    iconUrl={item.icon}
+                  />
+                ))}
+                {(overflow > 0 || showAllApps) && (
+                  <button
+                    onClick={toggleShowAllApps}
+                    className="w-full px-5 py-2 text-xs text-text-muted hover:text-text text-left transition-colors"
+                  >
+                    {showAllApps
+                      ? "Show less"
+                      : `+ More apps (${overflow})`}
+                  </button>
+                )}
+              </>
+            );
+          })()}
 
           {/* Manage group — platform-administration verbs. Things you
               do TO the platform, not WITH the platform's daily surfaces. */}
