@@ -3,19 +3,18 @@ import { core, mcpServers, type MCPServer, type MCPServerConfig } from "../api";
 import { Modal } from "./Modal";
 import { useProjects } from "../hooks/useProjects";
 
-// Post-discovery-refactor (apteva/core@ea67eab): the main_access /
-// catalog split is gone. Every attached MCP is reachable from main
-// via search_tools and the directive-fed preload. The per-MCP knob
-// that still matters is `no_spawn` — when true, the server's tools
-// are invisible to sub-threads (search_tools filters them, and the
-// LLM-driven spawn tool refuses to attach them via mcps=[…]). The
-// host pre-flags infrastructure servers (gateway, channels) as
-// no_spawn=true; users can flip it on their own attachments to
-// restrict an integration to main only.
+// Post-discovery-refactor (apteva/core@ea67eab) the MCP attach flow
+// is plain: pick a server, it's attached. Every attached MCP is
+// reachable from main via search_tools and the directive-fed
+// preload; there's no per-attachment mode/access decision in the
+// new model.
 //
-// System MCPs (apteva-server, channels) are identified by name and
-// rendered with a non-toggleable "system" badge — detaching them
-// disables the feature they provide.
+// System MCPs (gateway, channels) are server-injected and identified
+// by name — rendered with a non-toggleable "system" badge to explain
+// why detaching one is consequential (it disables the feature it
+// provides). The no_spawn flag the server sets on those entries
+// controls sub-thread visibility at the core level; not exposed in
+// the UI because it's a host-managed property.
 
 const SYSTEM_MCP_NAMES = new Set(["apteva-server", "channels", "apteva-channels"]);
 
@@ -32,11 +31,6 @@ export function MCPPanel({ instanceId, running }: Props) {
   const [attached, setAttached] = useState<MCPServerConfig[]>([]);
   const [inventory, setInventory] = useState<MCPServer[]>([]);
   const [picker, setPicker] = useState(false);
-  // Whether a freshly-attached MCP should be restricted to main only
-  // (no_spawn=true) or shared with sub-threads (no_spawn=false, default).
-  // Most attachments leave this false — sub-threads can use the tool
-  // — but a sensitive integration may warrant main-only.
-  const [pickerNoSpawn, setPickerNoSpawn] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Sticky notice when a system MCP was just enabled on a running
@@ -149,27 +143,11 @@ export function MCPPanel({ instanceId, running }: Props) {
       command: row.proxy_config.command,
       args: row.proxy_config.args,
     };
-    // Only set no_spawn when the user explicitly chose "main only" in
-    // the picker — keep the JSON minimal otherwise (omit = default
-    // false = shared with sub-threads).
-    if (pickerNoSpawn) entry.no_spawn = true;
     await writeList([...attached, entry]);
   };
 
   const handleDetach = async (name: string) => {
     await writeList(attached.filter((s) => s.name !== name));
-  };
-
-  // Flip the no_spawn flag on a user-attached entry. System MCPs
-  // (gateway, channels) are always no_spawn=true and not toggleable
-  // from the UI. Core's reconcileMCP diff detects the change via
-  // `changed()` and disconnects-then-reconnects the server so
-  // sub-thread visibility updates on the next iteration.
-  const handleToggleNoSpawn = async (name: string) => {
-    const next = attached.map((s) =>
-      s.name === name ? { ...s, no_spawn: !s.no_spawn } : s,
-    );
-    await writeList(next);
   };
 
   return (
@@ -209,12 +187,12 @@ export function MCPPanel({ instanceId, running }: Props) {
       ) : (
         <div className="space-y-1">
           {attached.map((s) => {
-            // System MCPs (gateway, channels) are server-injected and
-            // identified by name — they're always no_spawn and not
-            // user-toggleable. Everything else is a user attachment
-            // with an optional, flippable no_spawn restriction.
+            // System MCPs (gateway, channels) are server-injected,
+            // identified by name. The badge is informational: it
+            // explains why detaching one is consequential (kills the
+            // feature it provides). User-attached MCPs are just
+            // attached — no per-row knobs in the new model.
             const isSystem = SYSTEM_MCP_NAMES.has(s.name);
-            const noSpawn = s.no_spawn === true;
             return (
               <div key={s.name} className="flex items-center gap-1.5">
                 <span
@@ -223,30 +201,13 @@ export function MCPPanel({ instanceId, running }: Props) {
                   }`}
                 />
                 <span className="text-text truncate flex-1">{s.name}</span>
-                {isSystem ? (
+                {isSystem && (
                   <span
                     className="text-[9px] px-1.5 py-[1px] rounded bg-blue/15 text-blue"
-                    title="System MCP — injected at startup, main-only by design. Removing disables the feature (e.g. channels controls the chat bridge)."
+                    title="System MCP — injected at startup. Removing disables the feature it provides (e.g. channels controls the chat bridge)."
                   >
                     system
                   </span>
-                ) : (
-                  <button
-                    onClick={() => handleToggleNoSpawn(s.name)}
-                    disabled={busy}
-                    className={`text-[9px] px-1.5 py-[1px] rounded transition-colors disabled:opacity-50 ${
-                      noSpawn
-                        ? "bg-warn/15 text-warn hover:bg-warn/25"
-                        : "bg-bg-hover text-text-dim hover:text-text"
-                    }`}
-                    title={
-                      noSpawn
-                        ? "Main-only — sub-threads can't see or attach this MCP. Click to share with workers."
-                        : "Shared — main and sub-threads can use this MCP. Click to restrict to main only."
-                    }
-                  >
-                    {noSpawn ? "main-only" : "shared"}
-                  </button>
                 )}
                 <span className="text-text-dim text-[10px]">{s.transport || "stdio"}</span>
                 <button
@@ -264,13 +225,7 @@ export function MCPPanel({ instanceId, running }: Props) {
       )}
 
       {/* Picker modal */}
-      <Modal
-        open={picker}
-        onClose={() => {
-          setPicker(false);
-          setPickerNoSpawn(false);
-        }}
-      >
+      <Modal open={picker} onClose={() => setPicker(false)}>
         <div className="p-6 max-h-[70vh] flex flex-col min-w-[480px]">
           <div className="shrink-0 mb-4">
             <h3 className="text-text text-base font-bold">Attach MCP server</h3>
@@ -280,25 +235,6 @@ export function MCPPanel({ instanceId, running }: Props) {
               search_tools and the agent's directive-fed preload.
             </p>
           </div>
-
-          {/* Optional restriction — keep the attachment off sub-threads
-              (no_spawn=true). Off by default; flip this before clicking
-              a server in the list below. Toggleable later via the badge
-              on the attached entry. */}
-          <label className="shrink-0 mb-4 flex items-center gap-2 cursor-pointer text-sm text-text-muted hover:text-text">
-            <input
-              type="checkbox"
-              checked={pickerNoSpawn}
-              onChange={(e) => setPickerNoSpawn(e.target.checked)}
-              className="accent-accent"
-            />
-            <span>
-              Main-only{" "}
-              <span className="text-text-dim text-[11px]">
-                (sub-threads can't see or attach this MCP)
-              </span>
-            </span>
-          </label>
 
           <div className="flex-1 overflow-y-auto space-y-2">
             {/* System MCPs — apteva-server + channels. The server
@@ -395,10 +331,7 @@ export function MCPPanel({ instanceId, running }: Props) {
           </div>
           <div className="shrink-0 flex justify-end pt-3">
             <button
-              onClick={() => {
-                setPicker(false);
-                setPickerNoSpawn(false);
-              }}
+              onClick={() => setPicker(false)}
               className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
             >
               Close

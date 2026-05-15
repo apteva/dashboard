@@ -1312,8 +1312,8 @@ export interface SystemBreakdown {
 }
 
 // One entry in the tools[] payload the provider receives. `kind`
-// separates core loop tools from main-access MCP tools and locals so
-// the user can see which category is costing them bytes.
+// separates core loop tools from MCP tools and locals so the user
+// can see which category is costing them bytes.
 export interface NativeToolSize {
   name: string;
   kind: "core" | "mcp" | "local";
