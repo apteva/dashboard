@@ -572,10 +572,13 @@ export function Agents() {
                           <span className="opacity-50">stopped</span>
                         )}
                       </div>
-                      {/* Main's MCPs — servers whose tools are live on
-                          the main thread's registry (main_access=true).
-                          Catalog-only servers don't show here; they
-                          appear on the worker that spawned with them. */}
+                      {/* Attached MCP servers for this agent. The
+                          main/catalog split is gone post-discovery
+                          refactor — every attached MCP is reachable
+                          via search_tools and the directive-fed
+                          preload; what shows here is the full
+                          attached surface, irrespective of which
+                          tools are active on any given turn. */}
                       {(mainMCPs[inst.id] || []).length > 0 && (
                         <div className="flex items-center flex-wrap gap-1 mt-1.5">
                           <span className="text-[10px] text-text-dim">mcp:</span>

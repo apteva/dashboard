@@ -1373,11 +1373,11 @@ export interface MCPServerConfig {
   url?: string;
   command?: string;
   args?: string[];
-  main_access?: boolean;
-  // no_spawn marks an MCP as main-only: sub-threads can't attach it via
-  // spawn(mcp="..."). The host sets this on infrastructure servers
+  // no_spawn restricts an MCP to the main thread: sub-threads can't
+  // see its tools in search_tools results or attach it via
+  // spawn(mcps=[...]). The host sets this on infrastructure servers
   // (gateways, outbound bridges) that shouldn't be reachable from a
-  // worker. Display hint only — writes preserve the flag verbatim.
+  // worker — the privilege boundary in the discovery model.
   no_spawn?: boolean;
   connected?: boolean;     // present on GET, absent on PUT
 }

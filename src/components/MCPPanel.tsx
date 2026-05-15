@@ -3,10 +3,21 @@ import { core, mcpServers, type MCPServer, type MCPServerConfig } from "../api";
 import { Modal } from "./Modal";
 import { useProjects } from "../hooks/useProjects";
 
-// MCPs the host has flagged as main-only (no_spawn=true) get a
-// "system" badge instead of the main/catalog toggle. Detaching them
-// disconnects the feature they provide — e.g. removing the channels
-// bridge grays out chat.
+// Post-discovery-refactor (apteva/core@ea67eab): the main_access /
+// catalog split is gone. Every attached MCP is reachable from main
+// via search_tools and the directive-fed preload. The per-MCP knob
+// that still matters is `no_spawn` — when true, the server's tools
+// are invisible to sub-threads (search_tools filters them, and the
+// LLM-driven spawn tool refuses to attach them via mcps=[…]). The
+// host pre-flags infrastructure servers (gateway, channels) as
+// no_spawn=true; users can flip it on their own attachments to
+// restrict an integration to main only.
+//
+// System MCPs (apteva-server, channels) are identified by name and
+// rendered with a non-toggleable "system" badge — detaching them
+// disables the feature they provide.
+
+const SYSTEM_MCP_NAMES = new Set(["apteva-server", "channels", "apteva-channels"]);
 
 interface Props {
   instanceId: number;
@@ -21,14 +32,11 @@ export function MCPPanel({ instanceId, running }: Props) {
   const [attached, setAttached] = useState<MCPServerConfig[]>([]);
   const [inventory, setInventory] = useState<MCPServer[]>([]);
   const [picker, setPicker] = useState(false);
-  // Attach mode the user selected in the picker before committing. `main`
-  // makes the server's tools visible to the root thread and every thread
-  // with a matching allowlist; `catalog` only surfaces the server's
-  // name + tool count in the system prompt so sub-threads must explicitly
-  // spawn with mcp="<name>" to use it. Defaults to main because that's
-  // the common case — a user attaching an integration usually wants the
-  // agent to use it directly, not to have to delegate through a worker.
-  const [pickerMainAccess, setPickerMainAccess] = useState(true);
+  // Whether a freshly-attached MCP should be restricted to main only
+  // (no_spawn=true) or shared with sub-threads (no_spawn=false, default).
+  // Most attachments leave this false — sub-threads can use the tool
+  // — but a sensitive integration may warrant main-only.
+  const [pickerNoSpawn, setPickerNoSpawn] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Sticky notice when a system MCP was just enabled on a running
@@ -140,11 +148,11 @@ export function MCPPanel({ instanceId, running }: Props) {
       url: row.proxy_config.url,
       command: row.proxy_config.command,
       args: row.proxy_config.args,
-      // Mode selected in the picker — main (root-thread tools) or catalog
-      // (workers must spawn with mcp="<name>" to see them). Defaults to
-      // main but the user can flip it in the picker before clicking.
-      main_access: pickerMainAccess,
     };
+    // Only set no_spawn when the user explicitly chose "main only" in
+    // the picker — keep the JSON minimal otherwise (omit = default
+    // false = shared with sub-threads).
+    if (pickerNoSpawn) entry.no_spawn = true;
     await writeList([...attached, entry]);
   };
 
@@ -152,13 +160,14 @@ export function MCPPanel({ instanceId, running }: Props) {
     await writeList(attached.filter((s) => s.name !== name));
   };
 
-  // Flip the main_access flag on an already-attached entry. Core's
-  // reconcileMCP diff detects the change via `changed()` and will
-  // disconnect-then-reconnect the server so the mode switch takes
-  // effect on the next iteration.
-  const handleToggleMode = async (name: string) => {
-    const next = userAttached.map((s) =>
-      s.name === name ? { ...s, main_access: !s.main_access } : s,
+  // Flip the no_spawn flag on a user-attached entry. System MCPs
+  // (gateway, channels) are always no_spawn=true and not toggleable
+  // from the UI. Core's reconcileMCP diff detects the change via
+  // `changed()` and disconnects-then-reconnects the server so
+  // sub-thread visibility updates on the next iteration.
+  const handleToggleNoSpawn = async (name: string) => {
+    const next = attached.map((s) =>
+      s.name === name ? { ...s, no_spawn: !s.no_spawn } : s,
     );
     await writeList(next);
   };
@@ -200,13 +209,12 @@ export function MCPPanel({ instanceId, running }: Props) {
       ) : (
         <div className="space-y-1">
           {attached.map((s) => {
-            const isSystem = !!s.no_spawn;
-            // Core's zero-value for main_access is false (catalog). Mirror
-            // that: undefined / absent = catalog. Only an explicit true
-            // in the stored config promotes the row to main's registry.
-            // Keeping these aligned avoids "shows as main in UI but
-            // behaves as catalog at runtime" confusion.
-            const isMain = s.main_access === true;
+            // System MCPs (gateway, channels) are server-injected and
+            // identified by name — they're always no_spawn and not
+            // user-toggleable. Everything else is a user attachment
+            // with an optional, flippable no_spawn restriction.
+            const isSystem = SYSTEM_MCP_NAMES.has(s.name);
+            const noSpawn = s.no_spawn === true;
             return (
               <div key={s.name} className="flex items-center gap-1.5">
                 <span
@@ -215,32 +223,29 @@ export function MCPPanel({ instanceId, running }: Props) {
                   }`}
                 />
                 <span className="text-text truncate flex-1">{s.name}</span>
-                {isSystem && (
+                {isSystem ? (
                   <span
                     className="text-[9px] px-1.5 py-[1px] rounded bg-blue/15 text-blue"
-                    title="System MCP — injected at startup. Removing disables the feature (e.g. channels controls the chat bridge)."
+                    title="System MCP — injected at startup, main-only by design. Removing disables the feature (e.g. channels controls the chat bridge)."
                   >
                     system
                   </span>
-                )}
-                {!isSystem && (
+                ) : (
                   <button
-                    onClick={() => handleToggleMode(s.name)}
+                    onClick={() => handleToggleNoSpawn(s.name)}
                     disabled={busy}
                     className={`text-[9px] px-1.5 py-[1px] rounded transition-colors disabled:opacity-50 ${
-                      isMain
-                        ? "bg-accent/15 text-accent hover:bg-accent/25"
+                      noSpawn
+                        ? "bg-warn/15 text-warn hover:bg-warn/25"
                         : "bg-bg-hover text-text-dim hover:text-text"
                     }`}
                     title={
-                      isMain
-                        ? "Main access — tools visible to root thread. Click to switch to catalog."
-                        : "Catalog — sub-threads must spawn with mcp=\"" +
-                          s.name +
-                          "\" to use these tools. Click to promote to main."
+                      noSpawn
+                        ? "Main-only — sub-threads can't see or attach this MCP. Click to share with workers."
+                        : "Shared — main and sub-threads can use this MCP. Click to restrict to main only."
                     }
                   >
-                    {isMain ? "main" : "catalog"}
+                    {noSpawn ? "main-only" : "shared"}
                   </button>
                 )}
                 <span className="text-text-dim text-[10px]">{s.transport || "stdio"}</span>
@@ -263,61 +268,37 @@ export function MCPPanel({ instanceId, running }: Props) {
         open={picker}
         onClose={() => {
           setPicker(false);
-          setPickerMainAccess(true);
+          setPickerNoSpawn(false);
         }}
       >
         <div className="p-6 max-h-[70vh] flex flex-col min-w-[480px]">
           <div className="shrink-0 mb-4">
             <h3 className="text-text text-base font-bold">Attach MCP server</h3>
             <p className="text-text-muted text-sm mt-1">
-              Pick one of the MCP servers registered in this project. The core will
-              reconcile and connect it immediately.
+              Pick one of the MCP servers registered in this project. The core
+              connects it immediately — tools become discoverable via
+              search_tools and the agent's directive-fed preload.
             </p>
           </div>
 
-          {/* Attach-mode toggle — determines whether clicking a row below
-              creates a main-access or catalog-only entry. The choice is
-              per-click: pick a mode, then click the server. Can be
-              changed again later via the mode badge in the attached list. */}
-          <div className="shrink-0 mb-4 border border-border rounded-lg p-3 bg-bg-card/30">
-            <div className="text-[10px] text-text-muted uppercase tracking-wide font-bold mb-2">
-              Attach mode
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setPickerMainAccess(true)}
-                className={`flex-1 text-left px-3 py-2 rounded-lg border transition-colors ${
-                  pickerMainAccess
-                    ? "border-accent bg-accent/10 text-text"
-                    : "border-border text-text-muted hover:text-text hover:border-border"
-                }`}
-              >
-                <div className="flex items-center gap-2 text-sm font-bold">
-                  {pickerMainAccess && <span className="text-accent">●</span>}
-                  Main access
-                </div>
-                <div className="text-[10px] text-text-muted mt-0.5">
-                  Tools register on the root thread. Agent can call them directly.
-                </div>
-              </button>
-              <button
-                onClick={() => setPickerMainAccess(false)}
-                className={`flex-1 text-left px-3 py-2 rounded-lg border transition-colors ${
-                  !pickerMainAccess
-                    ? "border-accent bg-accent/10 text-text"
-                    : "border-border text-text-muted hover:text-text hover:border-border"
-                }`}
-              >
-                <div className="flex items-center gap-2 text-sm font-bold">
-                  {!pickerMainAccess && <span className="text-accent">●</span>}
-                  Catalog
-                </div>
-                <div className="text-[10px] text-text-muted mt-0.5">
-                  Visible to main as a name + tool count. Sub-threads spawn with mcp=&quot;…&quot;.
-                </div>
-              </button>
-            </div>
-          </div>
+          {/* Optional restriction — keep the attachment off sub-threads
+              (no_spawn=true). Off by default; flip this before clicking
+              a server in the list below. Toggleable later via the badge
+              on the attached entry. */}
+          <label className="shrink-0 mb-4 flex items-center gap-2 cursor-pointer text-sm text-text-muted hover:text-text">
+            <input
+              type="checkbox"
+              checked={pickerNoSpawn}
+              onChange={(e) => setPickerNoSpawn(e.target.checked)}
+              className="accent-accent"
+            />
+            <span>
+              Main-only{" "}
+              <span className="text-text-dim text-[11px]">
+                (sub-threads can't see or attach this MCP)
+              </span>
+            </span>
+          </label>
 
           <div className="flex-1 overflow-y-auto space-y-2">
             {/* System MCPs — apteva-server + channels. The server
@@ -416,7 +397,7 @@ export function MCPPanel({ instanceId, running }: Props) {
             <button
               onClick={() => {
                 setPicker(false);
-                setPickerMainAccess(true);
+                setPickerNoSpawn(false);
               }}
               className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
             >
