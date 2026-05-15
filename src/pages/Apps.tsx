@@ -863,10 +863,20 @@ function InstallModal({
   // (new connection or new app install). We re-fetch preflight to
   // populate the now-existing candidate; the picker auto-binds via
   // its own onChange callback after the refresh resolves.
+  // Scope-aware: a global-scoped install minted a global connection
+  // (see InstallModal's projectId={...} prop on PreviewAndConfigure
+  // for the inline-connect fix), so we must re-preflight with the
+  // same scope to actually see it. Without this, the refresh polls
+  // the operator's current project and the new global connection
+  // never appears in the candidate list.
   const refetchPreflight = async () => {
     if (!manifestUrl) return;
     try {
-      const pf = await apps.preflight(manifestUrl, undefined, projectId);
+      const pf = await apps.preflight(
+        manifestUrl,
+        undefined,
+        scope === "global" ? "" : projectId,
+      );
       setPreflight(pf);
     } catch (e: any) {
       setError(e.message || "preflight refresh failed");
@@ -1007,7 +1017,13 @@ function InstallModal({
             error={error}
             installing={installing}
             installStep={installStep}
-            projectId={projectId}
+            // Pass the scope-aware projectId so any integration
+            // connections minted inline during this install (via
+            // InlineConnectIntegration) land at the same scope as
+            // the app itself — a global app gets globally-scoped
+            // integrations, not project-scoped ones the operator
+            // can't reuse from other projects.
+            projectId={scope === "global" ? "" : projectId}
             refetchPreflight={refetchPreflight}
             onBack={() => { setPreview(null); setPreflight(null); setIntents({}); }}
             onConfirm={doInstall}
