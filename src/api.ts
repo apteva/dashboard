@@ -315,7 +315,12 @@ export interface AgentTemplate {
 export interface SuggestedEval {
   id: string;
   name: string;
-  trigger: EvalTrigger;
+  // description is the new primary input. Templates that ship the
+  // legacy `trigger` get an auto-derived description server-side at
+  // seed time, so old templates keep rendering even though new
+  // wizard editors only show description.
+  description?: string;
+  trigger?: EvalTrigger;
   goals: string[];
   mocks: EvalMock[];
   max_turns?: number;
@@ -346,10 +351,10 @@ export const agentTemplates = {
 //     run it inline.
 //   - The agent detail page lists every eval the agent has,
 //     plus run history.
+// EvalTrigger is the legacy "incoming event" shape. New evals don't
+// use it; the runner backfills description from it for any row that
+// predates the description column.
 export interface EvalTrigger {
-  // PR-1 trigger types: chat_message | webhook | scheduled_tick.
-  // Payload shape varies per type; the wizard renders a
-  // type-specific editor.
   type: string;
   payload?: Record<string, unknown>;
 }
@@ -366,13 +371,18 @@ export interface Eval {
   id: string;
   agent_id: number;
   name: string;
-  trigger: EvalTrigger;
+  // description is the new primary input — a plain-prose brief the
+  // agent reads as its opening event. Replaces the older `trigger`
+  // field; legacy rows have description auto-derived from trigger
+  // server-side so this is always populated.
+  description: string;
+  trigger?: EvalTrigger; // deprecated; backfilled to description on read
   // Plain-text rubric items the meta-agent judges each run
-  // against. Wizard renders these as an editable list of inputs.
+  // against. Editable list of inputs in the UI.
   goals: string[];
   mocks: EvalMock[];
   max_turns: number;
-  // 'manual' for PR-1; PR-2 adds cron expressions.
+  // 'manual' default; future cron expressions.
   schedule: string;
   // Cached rollup of the latest run. NULL until first run.
   last_status?: "pass" | "fail" | "error";
@@ -385,6 +395,17 @@ export interface Eval {
   sort_order: number;
   created_at: string;
   updated_at: string;
+}
+
+// RunOptions controls a single run's execution policy. The eval row
+// stays declarative ("what good looks like"); the UI passes RunOptions
+// per click. MaxIterations=1 is strict single-shot verification;
+// MaxIterations>1 enables the improvement loop where the judge's
+// suggestions (directive edits, in-run feedback) drive subsequent
+// attempts. StrictMocks fails the run on any unmocked tool call.
+export interface RunOptions {
+  max_iterations?: number;
+  strict_mocks?: boolean;
 }
 
 export interface ToolCallRecord {
@@ -402,9 +423,14 @@ export interface ToolCallRecord {
 }
 
 export interface TrajectoryTurn {
-  role: "user" | "agent" | "tool" | "system";
+  role: "user" | "agent" | "tool" | "judge" | "system";
   content?: string;
   tool_call?: ToolCallRecord;
+  // Iteration boundary marker — set on judge turns (the judge's
+  // feedback shown to the agent before iteration N) and on some
+  // system turns. 0 / undefined for ordinary turns inside an
+  // iteration.
+  iteration?: number;
   ts: string;
 }
 
@@ -418,12 +444,51 @@ export interface GoalVerdict {
   why: string;
 }
 
+// DirectiveEditSuggestion is one proposed addition to the agent's
+// directive. Comes from the judge during improvement-mode runs.
+// `helped` is set true when a subsequent iteration passed after
+// this edit was applied (an at-most-honest signal — co-applied
+// edits all get the same flag).
+export interface DirectiveEditSuggestion {
+  id: string;
+  add: string;
+  reason?: string;
+  helped?: boolean;
+}
+
+export interface MissingCapabilitySuggestion {
+  id: string;
+  app: string;
+  reason?: string;
+  helped?: boolean;
+}
+
+// JudgeSuggestions is what the judge emits per iteration.
+// in_run_feedback is the text the runner posts back to the agent
+// thread; directive_edits + missing_capabilities trigger a respawn
+// of the eval core with the proposed changes ephemerally applied.
+export interface JudgeSuggestions {
+  in_run_feedback?: string;
+  directive_edits?: DirectiveEditSuggestion[];
+  missing_capabilities?: MissingCapabilitySuggestion[];
+}
+
 export interface JudgeVerdict {
   overall: "pass" | "fail";
   reasoning: string;
   per_goal: GoalVerdict[];
+  suggested_improvements?: JudgeSuggestions;
   judge_model?: string;
   judge_tokens?: { input: number; output: number };
+}
+
+// RunSuggestions is the run-level rollup the operator acts on
+// post-run. Every directive edit the judge proposed across all
+// iterations lands here; the apply endpoint takes a subset of ids
+// to persist onto the live agent.
+export interface RunSuggestions {
+  directive_edits?: DirectiveEditSuggestion[];
+  missing_capabilities?: MissingCapabilitySuggestion[];
 }
 
 export interface EvalRun {
@@ -434,9 +499,142 @@ export interface EvalRun {
   status: "pass" | "fail" | "error";
   trajectory: Trajectory;
   verdict?: JudgeVerdict;
+  suggestions?: RunSuggestions;
   duration_ms: number;
   turns_used: number;
+  // Number of attempts the run took (1 for strict single-shot).
+  iterations_used: number;
   error_message?: string;
+}
+
+// IterationEvent is the SSE payload the streaming runner emits after
+// each iteration's judge call. `final=true` signals the runner will
+// finalize on its own next — the client should not POST `continue`
+// (the step endpoint will 404 once the run finishes). `final=false`
+// means the runner is parked waiting for {action: "continue"|"stop"}.
+export interface IterationEvent {
+  iteration: number;
+  max_iterations: number;
+  verdict?: JudgeVerdict;
+  suggestions?: RunSuggestions;
+  trajectory: Trajectory;
+  final: boolean;
+}
+
+// EvalStreamHandlers are passed into streamEvalPreview/streamEvalRun.
+// onRunId fires once the server hands back its generated run id;
+// the client needs it before it can POST /step.
+export interface EvalStreamHandlers {
+  onRunId?: (runId: string) => void;
+  onIteration?: (it: IterationEvent) => void;
+  onDone?: (run: EvalRun) => void;
+  onError?: (err: Error) => void;
+}
+
+// EvalStreamHandle is returned by the stream openers. `sendStep`
+// is a no-op (with a warning) until onRunId has fired. `abort` tears
+// down the fetch — the server's runner will observe ctx.Done and
+// finalize as a stopped run.
+export interface EvalStreamHandle {
+  sendStep: (action: "continue" | "stop") => Promise<void>;
+  abort: () => void;
+}
+
+// streamSSEFromPost is the shared fetch+ReadableStream SSE consumer.
+// EventSource doesn't support POST or bodies, so we read text/event-stream
+// off a regular fetch and frame it ourselves. SSE frames are blank-line
+// separated; within a frame, "event:" sets the event name and "data:"
+// lines are JSON-decoded. Other line prefixes (id:, retry:, comments
+// starting with `:`) are ignored — we don't need reconnect.
+function streamSSEFromPost(
+  path: string,
+  body: unknown,
+  handlers: EvalStreamHandlers,
+): EvalStreamHandle {
+  const ctl = new AbortController();
+  let runId: string | null = null;
+
+  void (async () => {
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify(body),
+        signal: ctl.signal,
+      });
+    } catch (e: any) {
+      if (e?.name !== "AbortError") handlers.onError?.(new Error(e?.message || "network error"));
+      return;
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      handlers.onError?.(new Error(text || `http ${res.status}`));
+      return;
+    }
+    if (!res.body) {
+      handlers.onError?.(new Error("empty response body"));
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let sep = buf.indexOf("\n\n");
+        while (sep !== -1) {
+          const frame = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          let event = "message";
+          let data = "";
+          for (const line of frame.split("\n")) {
+            if (line.startsWith("event: ")) event = line.slice(7);
+            else if (line.startsWith("data: ")) data += (data ? "\n" : "") + line.slice(6);
+          }
+          if (data) {
+            try {
+              const parsed = JSON.parse(data);
+              switch (event) {
+                case "run_id":
+                  runId = parsed.run_id;
+                  if (runId) handlers.onRunId?.(runId);
+                  break;
+                case "iteration":
+                  handlers.onIteration?.(parsed as IterationEvent);
+                  break;
+                case "done":
+                  handlers.onDone?.(parsed as EvalRun);
+                  break;
+                case "error":
+                  handlers.onError?.(new Error(parsed?.error || "stream error"));
+                  break;
+              }
+            } catch {
+              // ignore malformed frame
+            }
+          }
+          sep = buf.indexOf("\n\n");
+        }
+      }
+    } catch (e: any) {
+      if (e?.name !== "AbortError") handlers.onError?.(new Error(e?.message || "stream read failed"));
+    }
+  })();
+
+  return {
+    sendStep: async (action) => {
+      if (!runId) {
+        console.warn("[evalStream] sendStep called before run_id arrived; ignoring");
+        return;
+      }
+      await request<{ status: string }>("POST", `/eval-runs/${runId}/step`, { action });
+    },
+    abort: () => ctl.abort(),
+  };
 }
 
 export const evals = {
@@ -453,21 +651,82 @@ export const evals = {
   delete: (agentID: number, evalID: string) =>
     request<{ status: string }>("DELETE", `/agents/${agentID}/evals/${encodeURIComponent(evalID)}`),
   // Synchronous — the runner returns the full {status, verdict,
-  // trajectory} when the run finishes. Expect ~5-30s.
-  run: (agentID: number, evalID: string) =>
-    request<EvalRun>("POST", `/agents/${agentID}/evals/${encodeURIComponent(evalID)}/run`, {}),
-  // Last 10 runs in reverse chronological order. PR-2 paginates.
+  // trajectory, suggestions} when the run finishes. Strict
+  // single-shot is typically 5-30s; improvement-mode runs scale
+  // with max_iterations (~30-60s per iteration).
+  run: (agentID: number, evalID: string, opts?: RunOptions) =>
+    request<EvalRun>("POST", `/agents/${agentID}/evals/${encodeURIComponent(evalID)}/run`, opts ?? {}),
+  // Last 10 runs in reverse chronological order.
   runs: (agentID: number, evalID: string) =>
     request<EvalRun[]>("GET", `/agents/${agentID}/evals/${encodeURIComponent(evalID)}/runs`),
   // Stateless preview — used by the wizard's Verify step to run
   // an eval against a draft agent before it's created. No DB
-  // writes; returned EvalRun has id=0.
+  // writes; returned EvalRun has id=0. Default opts on the server
+  // are MaxIterations=5 (wizard wants improvement signal).
   preview: (body: {
     directive: string;
     name?: string;
     project_id?: string;
-    eval: { name?: string; trigger: EvalTrigger; goals: string[]; mocks?: EvalMock[]; max_turns?: number };
+    eval: {
+      name?: string;
+      description: string;
+      goals: string[];
+      mocks?: EvalMock[];
+      max_turns?: number;
+    };
+    options?: RunOptions;
   }) => request<EvalRun>("POST", "/evals/preview", body),
+  // Streaming preview — same input as `preview` but the server emits
+  // an SSE frame per iteration so the wizard can pause for operator
+  // confirmation between attempts. Caller drives via the returned
+  // handle's sendStep("continue"|"stop"); abort() tears down the
+  // fetch and the server treats client disconnect as Stop.
+  previewStream: (
+    body: {
+      directive: string;
+      name?: string;
+      project_id?: string;
+      eval: {
+        name?: string;
+        description: string;
+        goals: string[];
+        mocks?: EvalMock[];
+        max_turns?: number;
+      };
+      options?: RunOptions;
+    },
+    handlers: EvalStreamHandlers,
+  ) => streamSSEFromPost("/evals/preview/stream", body, handlers),
+  // Streaming counterpart of `run` for agent-scoped evals. Same body,
+  // same semantics as previewStream — runs persist to agent_eval_runs
+  // on done.
+  runStream: (
+    agentID: number,
+    evalID: string,
+    opts: RunOptions | undefined,
+    handlers: EvalStreamHandlers,
+  ) =>
+    streamSSEFromPost(
+      `/agents/${agentID}/evals/${encodeURIComponent(evalID)}/run/stream`,
+      opts ?? {},
+      handlers,
+    ),
+  // Persist a subset of the judge's directive-edit suggestions
+  // onto the live agent. Body: { directive_edit_ids: ["edit-1", ...] }.
+  // Writes an agent_directive_history audit row tying the change
+  // back to the originating run.
+  applySuggestions: (agentID: number, evalID: string, runID: number, body: { directive_edit_ids: string[] }) =>
+    request<{
+      status: string;
+      agent_id: number;
+      directive_before: string;
+      directive_after: string;
+      edits_applied: number;
+    }>(
+      "POST",
+      `/agents/${agentID}/evals/${encodeURIComponent(evalID)}/runs/${runID}/apply`,
+      body,
+    ),
 };
 
 export const projects = {
@@ -510,7 +769,21 @@ export const instances = {
     mode?: string,
     projectId?: string,
     start?: boolean,
-    opts?: { includeAptevaServer?: boolean; includeChannels?: boolean; unconscious?: boolean; templateID?: string },
+    opts?: {
+      includeAptevaServer?: boolean;
+      includeChannels?: boolean;
+      unconscious?: boolean;
+      templateID?: string;
+      // Setup-step selections — explicit lists of apps + integration
+      // connections the operator wants attached as MCP servers on
+      // this new agent. Server writes app_agent_bindings rows for
+      // the apps and appends per-connection /mcp/<id> URLs to the
+      // agent's config.json mcp_servers list. Missing = "default
+      // behaviour" (all project-visible apps reachable through the
+      // gateway, no extra explicit MCP rows).
+      boundAppInstallIDs?: number[];
+      boundConnectionIDs?: number[];
+    },
   ) =>
     request<Agent & { warning?: string }>("POST", "/agents", {
       name,
@@ -534,6 +807,12 @@ export const instances = {
       // against the same draft; this gives the operator a persisted
       // copy on the agent detail page to rerun + edit later.
       ...(opts?.templateID ? { template_id: opts.templateID } : {}),
+      ...(opts?.boundAppInstallIDs && opts.boundAppInstallIDs.length > 0
+        ? { bound_app_install_ids: opts.boundAppInstallIDs }
+        : {}),
+      ...(opts?.boundConnectionIDs && opts.boundConnectionIDs.length > 0
+        ? { bound_connection_ids: opts.boundConnectionIDs }
+        : {}),
     }),
 
   get: (id: number) => request<Agent>("GET", `/agents/${id}`),
@@ -909,7 +1188,14 @@ export const integrations = {
       ...(oauth?.client_id ? { client_id: oauth.client_id } : {}),
       ...(oauth?.client_secret ? { client_secret: oauth.client_secret } : {}),
       ...(createdVia ? { created_via: createdVia } : {}),
-      ...(autoMCP === false ? { auto_mcp: false } : {}),
+      // Pass through whatever the caller said. Server default is
+      // OFF (no MCP) when the field is omitted, so callers that
+      // want exposure (the Integrations connect form, the wizard's
+      // ConnectIntegrationModal) must send auto_mcp=true
+      // explicitly. The old wrapper only forwarded the false
+      // value, which silently broke auto-MCP for every dashboard
+      // caller passing autoMCP=true.
+      ...(autoMCP !== undefined ? { auto_mcp: autoMCP } : {}),
     }),
 
   // Run the per-app health_check probe against the stored

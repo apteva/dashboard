@@ -214,9 +214,12 @@ export function Apps() {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          // Installed apps are inventory, not pitch decks — render
+          // as compact rows (status-led, actionable) rather than the
+          // marketing cards we use on the Marketplace tab.
+          <div className="border border-border rounded-lg divide-y divide-border overflow-hidden">
             {rows.map((r) => (
-              <AppCard
+              <AppListRow
                 key={r.install_id}
                 app={r}
                 onChange={refreshInstalled}
@@ -510,6 +513,278 @@ function Pill({ className, children }: { className?: string; children: React.Rea
     <span className={`text-[10px] px-1.5 py-0.5 rounded ${className || "bg-border text-text-muted"}`}>
       {children}
     </span>
+  );
+}
+
+// AppListRow — compact horizontal row for the Installed tab.
+// Different mental model from MarketplaceCard: operators are doing
+// inventory + lifecycle management here, not browsing. So we lead
+// with the status dot, keep the description compressed to a single
+// line (or replaced inline with status_message / error_message
+// while pending or errored), and surface every applicable action as
+// a button on the right.
+//
+// Shares uninstall + mount + disable + upgrade handlers with the
+// previous AppCard so behaviour is identical — only the layout
+// changes.
+function AppListRow({
+  app, onChange, onOpenDetails,
+}: {
+  app: AppRow;
+  onChange: () => void;
+  onOpenDetails: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [showMount, setShowMount] = useState(false);
+  const [mountUrl, setMountUrl] = useState("http://127.0.0.1:8080");
+  const [mountError, setMountError] = useState("");
+
+  const remove = async () => {
+    setBusy(true);
+    try {
+      await apps.uninstall(app.install_id);
+      onChange();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const mount = async () => {
+    setBusy(true);
+    setMountError("");
+    try {
+      await apps.setStatus(app.install_id, "running", { sidecarUrl: mountUrl });
+      setShowMount(false);
+      onChange();
+    } catch (e: any) {
+      setMountError(e.message || "mount failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const disable = async () => {
+    setBusy(true);
+    try {
+      await apps.setStatus(app.install_id, "disabled");
+      onChange();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const upgrade = async () => {
+    setBusy(true);
+    try {
+      await apps.upgrade(app.install_id);
+      onChange();
+    } catch (e: any) {
+      alert(e.message || "upgrade failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateAvailable =
+    !!app.available_version && !!app.version && app.available_version !== app.version;
+
+  // Status dot — green/amber/red/grey. The dot is the row's first
+  // visual element so operators eye-scan a column of running/down
+  // states quickly without parsing labels.
+  const dotColor =
+    app.status === "running"
+      ? "bg-green"
+      : app.status === "error"
+        ? "bg-red"
+        : app.status === "disabled"
+          ? "bg-text-dim"
+          : "bg-yellow animate-pulse"; // pending — pulsing amber
+
+  const projectPagePanel = (app.ui_panels || []).find((p) => p.slot === "project.page");
+  const staticAppMount =
+    app.status === "running" &&
+    app.surfaces?.ui_app &&
+    app.surfaces?.ui_app_mount
+      ? app.surfaces.ui_app_mount
+      : null;
+  const showOpen = app.status === "running" && (!!projectPagePanel || !!staticAppMount);
+
+  // The "middle text" of the row is context-dependent:
+  //   pending → live status_message (Cloning… / Building… / Linking…)
+  //   error   → the error_message
+  //   else    → static description, truncated to one line
+  const middleText =
+    app.status === "pending"
+      ? app.status_message || "Installing…"
+      : app.status === "error" && app.error_message
+        ? app.error_message
+        : app.description;
+  const middleTone =
+    app.status === "pending"
+      ? "text-accent"
+      : app.status === "error"
+        ? "text-red"
+        : "text-text-muted";
+
+  return (
+    <div
+      className="px-4 py-3 flex items-center gap-3 hover:bg-bg-card transition-colors cursor-pointer"
+      onClick={onOpenDetails}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpenDetails();
+        }
+      }}
+    >
+      {/* Status dot */}
+      <span
+        className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${dotColor}`}
+        title={app.status}
+      />
+
+      {/* Icon */}
+      <AppIcon url={app.icon} name={app.display_name} />
+
+      {/* Name + version (left column, takes remaining space, truncates) */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-text text-sm font-medium truncate">
+            {app.display_name}
+          </span>
+          <span className="text-text-dim text-[11px] shrink-0">
+            v{app.version}
+            {updateAvailable && (
+              <span className="text-yellow"> → v{app.available_version}</span>
+            )}
+          </span>
+        </div>
+        <div className={`text-xs truncate mt-0.5 ${middleTone}`} title={middleText}>
+          {middleText}
+        </div>
+      </div>
+
+      {/* Pills */}
+      <div className="hidden md:flex items-center gap-1 shrink-0">
+        {app.project_id ? (
+          <Pill className="bg-accent/10 text-accent">project</Pill>
+        ) : (
+          <Pill className="bg-border text-text-muted">global</Pill>
+        )}
+        {app.source === "builtin" && <Pill className="bg-blue/15 text-blue">built-in</Pill>}
+        {updateAvailable && <Pill className="bg-yellow/15 text-yellow">update</Pill>}
+      </div>
+
+      {/* Actions — anchored right, click doesn't propagate to row */}
+      <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+        {showMount ? (
+          <div className="bg-accent/10 border border-accent/40 rounded p-1.5 flex items-center gap-1.5">
+            <input
+              type="text"
+              value={mountUrl}
+              onChange={(e) => setMountUrl(e.target.value)}
+              placeholder="http://127.0.0.1:8080"
+              className="bg-bg-input border border-border rounded px-1.5 py-0.5 text-[11px] font-mono text-text w-48"
+            />
+            <button
+              onClick={mount}
+              disabled={busy}
+              className="text-[11px] text-accent font-medium hover:underline disabled:opacity-50"
+            >
+              {busy ? "…" : "mount"}
+            </button>
+            <button
+              onClick={() => setShowMount(false)}
+              disabled={busy}
+              className="text-[11px] text-text-muted hover:text-text"
+            >
+              cancel
+            </button>
+            {mountError && (
+              <span className="text-[10px] text-red ml-1">{mountError}</span>
+            )}
+          </div>
+        ) : confirmRemove ? (
+          <div className="bg-red/10 border border-red/40 rounded px-2 py-1 flex items-center gap-2">
+            <span className="text-[11px] text-red">Uninstall?</span>
+            <button
+              onClick={remove}
+              disabled={busy}
+              className="text-[11px] text-red font-medium hover:underline disabled:opacity-50"
+            >
+              {busy ? "…" : "confirm"}
+            </button>
+            <button
+              onClick={() => setConfirmRemove(false)}
+              disabled={busy}
+              className="text-[11px] text-text-muted hover:text-text"
+            >
+              cancel
+            </button>
+          </div>
+        ) : (
+          <>
+            {showOpen && (
+              staticAppMount ? (
+                <a
+                  href={staticAppMount.endsWith("/") ? staticAppMount : staticAppMount + "/"}
+                  target="_blank"
+                  rel="noopener"
+                  onClick={(e) => e.stopPropagation()}
+                  className="px-2.5 py-1 border border-accent rounded text-[11px] text-accent hover:bg-accent hover:text-bg transition-colors"
+                >
+                  Open ↗
+                </a>
+              ) : (
+                <Link
+                  to={`/apps/${app.name}/page`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="px-2.5 py-1 border border-accent rounded text-[11px] text-accent hover:bg-accent hover:text-bg transition-colors"
+                >
+                  Open
+                </Link>
+              )
+            )}
+            {updateAvailable && (
+              <button
+                onClick={upgrade}
+                disabled={busy}
+                className="px-2.5 py-1 border border-yellow rounded text-[11px] text-yellow hover:bg-yellow/10 transition-colors disabled:opacity-50"
+                title={`Upgrade to v${app.available_version}`}
+              >
+                {busy ? "…" : "Update"}
+              </button>
+            )}
+            {(app.status === "pending" || app.status === "disabled" || app.status === "error") && app.source !== "builtin" && (
+              <button
+                onClick={() => setShowMount(true)}
+                className="px-2.5 py-1 border border-border rounded text-[11px] text-text-muted hover:text-accent hover:border-accent transition-colors"
+                title="Mount a running sidecar by URL (local dev)"
+              >
+                Mount…
+              </button>
+            )}
+            {app.status === "running" && app.source !== "builtin" && (
+              <button
+                onClick={disable}
+                disabled={busy}
+                className="px-2.5 py-1 border border-border rounded text-[11px] text-text-muted hover:text-yellow hover:border-yellow transition-colors disabled:opacity-50"
+              >
+                Disable
+              </button>
+            )}
+            {app.source !== "builtin" && (
+              <button
+                onClick={() => setConfirmRemove(true)}
+                className="px-2.5 py-1 border border-border rounded text-[11px] text-text-muted hover:text-red hover:border-red transition-colors"
+              >
+                Uninstall
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
