@@ -7,6 +7,7 @@ import {
   instances,
   integrations as integrationsAPI,
   providers,
+  synthesizeDirective,
   type AgentTemplate,
   type AppRow,
   type AppSummary,
@@ -709,6 +710,66 @@ interface DetailsStepProps {
   setState: React.Dispatch<React.SetStateAction<WizardState>>;
 }
 
+// SuggestFromGoalsButton — calls the server's /agents/seed-directive
+// endpoint with the wizard's current eval goals + agent name, then
+// pastes the returned directive into state.directive. Disabled when
+// no goals exist yet (template provided none, operator hasn't typed
+// any). The platform meta-agent does the synthesis; one LLM call,
+// 5-15s depending on load. We park a small loading + error indicator
+// inline so the operator can see the call landed (or failed loud).
+function SuggestFromGoalsButton({
+  state,
+  setState,
+}: {
+  state: WizardState;
+  setState: React.Dispatch<React.SetStateAction<WizardState>>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const goals = (state.draftEval?.goals ?? []).filter((g) => g.trim() !== "");
+  const disabled = busy || goals.length === 0;
+
+  const onClick = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const resp = await synthesizeDirective({
+        goals,
+        agent_name: state.name || undefined,
+        current_directive: state.directive || undefined,
+      });
+      setState((s) => ({ ...s, directive: resp.directive }));
+    } catch (e: any) {
+      setErr(e?.message ?? "synthesis failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      {err && (
+        <span className="text-red text-[11px]" title={err}>
+          ✗ {err.length > 60 ? err.slice(0, 60) + "…" : err}
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        className="text-accent text-xs hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
+        title={
+          goals.length === 0
+            ? "Add eval goals first (Verify step)"
+            : "Ask the platform to draft a starter directive from your eval goals"
+        }
+      >
+        {busy ? "Synthesizing…" : "Suggest from goals"}
+      </button>
+    </div>
+  );
+}
+
 // DetailsStep — single merged step covering everything the operator
 // authors about the agent itself: name, directive, safety mode,
 // background memory. Was two steps (Details + Behavior) until the
@@ -758,7 +819,10 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
       </div>
 
       <div>
-        <label className="block text-text-muted text-xs mb-1.5">Directive</label>
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="block text-text-muted text-xs">Directive</label>
+          <SuggestFromGoalsButton state={state} setState={setState} />
+        </div>
         <textarea
           value={state.directive}
           onChange={(e) =>

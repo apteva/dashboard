@@ -155,6 +155,14 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   // of a stale "connected".
   const [sseOpen, setSseOpen] = useState(false);
 
+  // Plan-mode toggle. Session-only (no DB, no agent state) — when on,
+  // handleSend wraps the user message with a "plan first, don't write"
+  // prompt and a small Approve/Reject/Refine quick-action strip
+  // appears above the input. Soft enforcement: the agent's wrapped
+  // prompt tells it to investigate-then-plan; there is no runtime
+  // gate on writes. Same trust contract as Claude Code's plan mode.
+  const [planMode, setPlanMode] = useState(false);
+
   // Monotonic "highest id seen" — used as the `since` cursor on
   // reconnect and as the idempotency gate on SSE deliveries (reject
   // any row whose id we've already rendered).
@@ -511,8 +519,15 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
 
   // --- 5. Send handler ---------------------------------------------------
   const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if (!text || !chatId || sending || !connected) return;
+    const raw = input.trim();
+    if (!raw || !chatId || sending || !connected) return;
+    // Plan-mode prompt wrap. Pure prompt engineering — the agent reads
+    // this as a regular user message and is expected to reply with a
+    // plan (no writes) via channels_respond. The Approve button below
+    // sends a follow-up "execute now" message that releases the agent.
+    const text = planMode
+      ? `[Plan mode] Investigate using read-only tools, then reply with a numbered plan to do:\n\n${raw}\n\nDo NOT call write/send/delete/create/update tools yet. I will approve the plan before you execute.`
+      : raw;
     setSending(true);
     setError(null);
     try {
@@ -536,15 +551,44 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
     } finally {
       setSending(false);
     }
-  }, [input, chatId, sending, connected]);
+  }, [input, chatId, sending, connected, planMode]);
+
+  // postCanned sends a fixed reply on behalf of the user — used by the
+  // plan-mode Approve / Reject / Refine quick-action buttons. Same
+  // gating as handleSend (chat must be loaded + connected + not
+  // mid-send) but bypasses the input box so the user doesn't have to
+  // clear it before clicking.
+  const postCanned = useCallback(
+    async (text: string) => {
+      if (!chatId || sending || !connected) return;
+      setSending(true);
+      setError(null);
+      try {
+        await chat.post(chatId, text);
+      } catch (e) {
+        setError(errMsg(e));
+      } finally {
+        setSending(false);
+      }
+    },
+    [chatId, sending, connected],
+  );
 
   // --- 6. Clear history -------------------------------------------------
+  // Wipes the messages DB on the server AND the ephemeral on-screen
+  // state: tool-activity strip and any in-progress streaming bubble.
+  // Without the latter, Clear visually empties the message list but
+  // tool rows + a hanging "thinking" bubble stay pinned above the
+  // input, which feels broken.
   const handleClear = async () => {
     setShowClearModal(false);
     if (!chatId) return;
     try {
       await chat.clear(chatId);
       setMessages([]);
+      setLiveTools(new Map());
+      setStreamingText(null);
+      setActivity({ phase: "idle" });
       sinceRef.current = 0;
     } catch (e) {
       setError(errMsg(e));
@@ -638,6 +682,19 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
           <ChatStatusDot subscribe={subscribe} />
         </div>
         <div className="flex items-center gap-3 shrink-0">
+          <button
+            onClick={() => setPlanMode((v) => !v)}
+            title={
+              planMode
+                ? "Plan mode ON — your next message asks the agent to plan first. Approve / Reject / Refine shortcuts appear above the input."
+                : "Plan mode OFF — turn on to make the agent investigate and return a plan before executing writes."
+            }
+            className={`text-[10px] uppercase tracking-wide transition-colors ${
+              planMode ? "text-accent font-bold" : "text-text-muted hover:text-text"
+            }`}
+          >
+            {planMode ? "Plan ✓" : "Plan"}
+          </button>
           {chatId && messages.length > 0 && (
             <button
               onClick={() => setShowClearModal(true)}
@@ -719,6 +776,51 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
       {activity.phase !== "idle" && (
         <ActivityStrip activity={activity} />
       )}
+
+      {/* Plan-mode quick actions. Only shown when plan mode is on AND
+          the most recent message is from the agent (i.e. there's a
+          plan on screen worth approving). Buttons send canned text
+          via postCanned; for nuanced feedback the user can also just
+          type a reply in the input below. */}
+      {planMode && connected && orderedMessages.length > 0 &&
+        orderedMessages[orderedMessages.length - 1]!.role === "agent" && (
+          <div className="shrink-0 px-3 pt-2 flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] uppercase tracking-wide text-text-muted">
+              Plan
+            </span>
+            <button
+              onClick={() => postCanned("Approved. Execute the plan now.")}
+              disabled={sending}
+              className="text-[11px] px-2 py-1 rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-40 transition-colors"
+              title="Tell the agent to execute the plan."
+            >
+              ✓ Approve
+            </button>
+            <button
+              onClick={() =>
+                postCanned("Rejected. Don't execute that plan — try a different approach.")
+              }
+              disabled={sending}
+              className="text-[11px] px-2 py-1 rounded border border-border text-text-muted hover:border-red hover:text-red disabled:opacity-40 transition-colors"
+              title="Discard this plan and ask the agent to try a different approach."
+            >
+              ✗ Reject
+            </button>
+            <button
+              onClick={() =>
+                postCanned("Refine the plan. Keep the overall approach but address the points I'll list next.")
+              }
+              disabled={sending}
+              className="text-[11px] px-2 py-1 rounded border border-border text-text-muted hover:border-text hover:text-text disabled:opacity-40 transition-colors"
+              title="Tell the agent to revise the plan. Follow up with what to change."
+            >
+              ↻ Refine
+            </button>
+            <span className="text-[10px] text-text-dim ml-1">
+              or just type a reply
+            </span>
+          </div>
+        )}
 
       {/* Input */}
       <div className="shrink-0 px-3 pb-3 pt-1">

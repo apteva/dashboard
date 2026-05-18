@@ -743,6 +743,20 @@ export const projects = {
 // Agent safety mode. Source of truth: core/config.go.
 export type RunMode = "autonomous" | "cautious" | "learn";
 
+// Synthesize a starter directive from an eval's goals via the
+// platform meta-agent. Used by the wizard's "Suggest from goals"
+// button so operators don't have to hand-write a directive for
+// self-describing goals ("You should be called Pablo", "Always
+// reply in French", etc.). One LLM call; ~5-15s depending on
+// model load. Returns plain directive text, ready to paste into
+// state.directive.
+export const synthesizeDirective = (body: {
+  goals: string[];
+  agent_name?: string;
+  current_directive?: string;
+}) =>
+  request<{ directive: string }>("POST", "/agents/seed-directive", body);
+
 export interface Agent {
   id: number;
   user_id: number;
