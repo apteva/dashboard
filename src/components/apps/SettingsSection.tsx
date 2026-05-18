@@ -15,6 +15,7 @@
 // settings UI to maintain.
 
 import { useEffect, useState } from "react";
+import { AppDiscoverySelect } from "./AppDiscoverySelect";
 
 interface SchemaField {
   name: string;
@@ -24,6 +25,20 @@ interface SchemaField {
   required?: boolean;
   default?: string;
   options?: string[];
+  // Extended fields for select_from_app (and select_from_integration —
+  // the integration variant isn't rendered post-install yet because
+  // it needs the install's binding context, but the type carries
+  // through so we don't drop fields on edit-save round-trips).
+  app?: string;
+  integration_role?: string;
+  fallback?: "text" | "";
+  discovery?: {
+    tool?: string;
+    route?: string;
+    response_path?: string;
+    value_field?: string;
+    label_field?: string;
+  };
 }
 
 interface Props {
@@ -188,7 +203,13 @@ function FieldRow({
       {field.description && (
         <span className="text-text-dim text-[11px] leading-snug">{field.description}</span>
       )}
-      {field.type === "select" && Array.isArray(field.options) ? (
+      {field.type === "select_from_app" ? (
+        <AppDiscoverySelect
+          field={field}
+          value={valStr}
+          onChange={(v) => onChange(v)}
+        />
+      ) : field.type === "select" && Array.isArray(field.options) ? (
         <select
           value={valStr}
           onChange={(e) => onChange(e.target.value)}

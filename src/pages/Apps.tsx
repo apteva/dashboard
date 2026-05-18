@@ -18,6 +18,7 @@ import { useProjects } from "../hooks/useProjects";
 import { Modal } from "../components/Modal";
 import { AppSurfaceBadges } from "../components/apps/AppSurfaceBadges";
 import { AppDetailPanel } from "../components/apps/AppDetailPanel";
+import { AppDiscoverySelect } from "../components/apps/AppDiscoverySelect";
 
 type Tab = "installed" | "marketplace";
 
@@ -2108,134 +2109,6 @@ function IntegrationDiscoverySelect({
   );
 }
 
-// AppDiscoverySelect — type=select_from_app. Hits a sibling app's
-// HTTP route over the dashboard's same-origin session and renders
-// the parsed list as a <select>. Same parse + fallback shape as
-// IntegrationDiscoverySelect so manifest authors only learn one
-// mental model:
-//
-//   discovery.response_path / value_field / label_field
-//
-// behave identically; the only swap is discovery.tool (integration)
-// → discovery.route (app). On any failure AND field.fallback ===
-// "text" we degrade to a plain text input so the operator can type
-// a value by hand — same pattern that proved necessary for R2's
-// bucket-scoped tokens.
-//
-// The fetch goes to /api/apps/{field.app}{field.discovery.route}
-// with credentials: same-origin so the dashboard's session cookie
-// authenticates without us having to mint a token here. The route
-// must be one the app exposes on its HTTPRoutes() surface — it's
-// the same shape its own panel uses (see InstancesPanel.tsx
-// fetching /api/apps/instances/api/instances).
-function AppDiscoverySelect({
-  field,
-  value,
-  onChange,
-}: {
-  field: AppConfigField;
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  const [options, setOptions] = useState<{ value: string; label: string }[] | null>(
-    null,
-  );
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string>("");
-
-  useEffect(() => {
-    setOptions(null);
-    setErr("");
-    if (!field.app || !field.discovery?.route) return;
-    setLoading(true);
-    const url = `/api/apps/${field.app}${field.discovery.route}`;
-    fetch(url, { credentials: "same-origin" })
-      .then(async (r) => {
-        if (!r.ok) {
-          // 404 = app not installed (or route not registered). Any
-          // other status = the app's own error — surface its body
-          // so operators can act on it.
-          let body = "";
-          try {
-            body = await r.text();
-          } catch {
-            /* ignore */
-          }
-          if (r.status === 404) {
-            throw new Error(
-              `${field.app} app not installed — install it first to populate this list`,
-            );
-          }
-          const trim = body.length > 120 ? body.slice(0, 120) + "…" : body;
-          throw new Error(`HTTP ${r.status}: ${trim}`);
-        }
-        const data = await r.json();
-        const items = pluckList(data, field.discovery?.response_path || "");
-        const opts = items
-          .map((it) => {
-            const v = pluckField(it, field.discovery?.value_field || "");
-            const l = pluckField(it, field.discovery?.label_field || "");
-            return { value: v, label: l || v };
-          })
-          .filter((o) => o.value !== "");
-        setOptions(opts);
-      })
-      .catch((e) => {
-        setErr(e?.message || "discovery failed");
-      })
-      .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [field.app, field.discovery?.route]);
-
-  if (loading) {
-    return <div className="text-text-dim text-[11px]">Loading options…</div>;
-  }
-
-  const hasOptions = options && options.length > 0;
-  const showFallback = !hasOptions && field.fallback === "text";
-
-  if (showFallback) {
-    return (
-      <>
-        <div className="text-yellow text-[11px] leading-snug">
-          {err
-            ? `Couldn't auto-list options: ${err}.`
-            : `No options returned by ${field.app} — enter the value manually.`}
-        </div>
-        <input
-          type="text"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="value"
-          className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
-        />
-      </>
-    );
-  }
-
-  if (!hasOptions) {
-    return (
-      <div className="text-red text-[11px]">
-        {err || "No options returned by discovery."}
-      </div>
-    );
-  }
-
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
-    >
-      <option value="">(choose…)</option>
-      {options!.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
-  );
-}
 
 // stringifyExecuteData renders the integration runner's response
 // `data` field as a string we can substring-match for error
