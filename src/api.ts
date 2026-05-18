@@ -2295,7 +2295,8 @@ export interface AppConfigField {
   name: string;
   label?: string;
   /** text | password | toggle | select | select_from_integration |
-   *  gdrive_sheet | gdrive_folder | … (unknown types render as text) */
+   *  select_from_app | gdrive_sheet | gdrive_folder | …
+   *  (unknown types render as text) */
   type?: string;
   description?: string;
   required?: boolean;
@@ -2311,6 +2312,12 @@ export interface AppConfigField {
    *  and invokes `discovery.tool` against it to populate the
    *  dropdown. */
   integration_role?: string;
+  /** For type=select_from_app: which sibling app (by name) to query.
+   *  The dashboard hits /api/apps/{app}{discovery.route} and parses
+   *  the response the same way as select_from_integration. The named
+   *  app should appear in requires.apps so missing-dep surfaces
+   *  before config time. */
+  app?: string;
   discovery?: AppConfigFieldDiscovery;
   /** "text" → fall back to a manual text input when discovery
    *  fails (no binding, upstream error, empty result). Empty =
@@ -2319,7 +2326,11 @@ export interface AppConfigField {
 }
 
 export interface AppConfigFieldDiscovery {
-  tool: string;
+  /** Tool name (select_from_integration only). */
+  tool?: string;
+  /** HTTP route on the sibling app (select_from_app only). Leading
+   *  slash required, e.g. "/api/instances". */
+  route?: string;
   response_path?: string;
   value_field?: string;
   label_field?: string;
