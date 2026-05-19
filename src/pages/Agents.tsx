@@ -81,6 +81,52 @@ export function Agents() {
   // no row is in edit mode. We store the draft separately so canceling
   // restores the original without an extra fetch.
   const [renamingId, setRenamingId] = useState<number | null>(null);
+  // Quick-edit modal state. editTarget = the agent being edited; null
+  // = modal closed. We deliberately keep this separate from the
+  // legacy inline-rename so a rename in progress (renamingId) and the
+  // modal don't compete for the same row's name field.
+  const [editTarget, setEditTarget] = useState<Agent | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDirective, setEditDirective] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState("");
+
+  const openEditModal = (inst: Agent) => {
+    setEditTarget(inst);
+    setEditName(inst.name);
+    setEditDirective(inst.directive || "");
+    setEditError("");
+  };
+  const closeEditModal = () => {
+    setEditTarget(null);
+    setEditName("");
+    setEditDirective("");
+    setEditError("");
+    setEditSaving(false);
+  };
+  const saveEdit = async () => {
+    if (!editTarget) return;
+    const trimmedName = editName.trim();
+    const trimmedDirective = editDirective.trim();
+    if (!trimmedName) { setEditError("Name cannot be empty"); return; }
+    setEditSaving(true);
+    setEditError("");
+    try {
+      // Two independent endpoints — name via /agents/:id, directive
+      // via /agents/:id/config — fire only the ones that actually
+      // changed to avoid spurious history rows on the directive
+      // audit trail.
+      const nameChanged = trimmedName !== editTarget.name;
+      const directiveChanged = trimmedDirective !== (editTarget.directive || "").trim();
+      if (nameChanged) await instances.rename(editTarget.id, trimmedName);
+      if (directiveChanged) await instances.updateConfig(editTarget.id, { directive: trimmedDirective });
+      closeEditModal();
+      load();
+    } catch (err: any) {
+      setEditError(err?.message || "Save failed");
+      setEditSaving(false);
+    }
+  };
   const [renameDraft, setRenameDraft] = useState("");
   const [renameError, setRenameError] = useState("");
 
@@ -703,6 +749,21 @@ export function Agents() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
+                      {/* Quick-edit affordance — opens a modal to tweak
+                          name + directive without leaving the fleet view.
+                          stopPropagation prevents the surrounding <Link>
+                          from navigating into the agent detail page. */}
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          openEditModal(inst);
+                        }}
+                        className="px-3 py-1 border border-border rounded-lg text-xs text-text-muted hover:text-text hover:border-text transition-colors"
+                        title="Edit name + directive"
+                      >
+                        Edit
+                      </button>
                       {isRunning ? (
                         <button
                           onClick={(e) => {
@@ -735,6 +796,79 @@ export function Agents() {
           })}
         </div>
       </div>
+
+      {/* Quick-edit modal — name + directive only. Lives at page root
+          so it overlays cleanly regardless of which row triggered it.
+          For deeper config (mode, providers, MCP wiring, evals)
+          operators still go through the agent detail page. */}
+      <Modal open={!!editTarget} onClose={closeEditModal}>
+        {editTarget && (
+          <form
+            onSubmit={(e) => { e.preventDefault(); void saveEdit(); }}
+            className="p-6 w-[560px] max-w-full space-y-4"
+          >
+            <div>
+              <h2 className="text-text text-base font-bold">Edit agent</h2>
+              <p className="text-text-muted text-xs mt-1">
+                Quick edits — name + directive. For mode, providers,
+                MCPs, evals, open the agent's detail page.
+              </p>
+            </div>
+            <div>
+              <label className="block text-text-muted text-sm mb-2">Name</label>
+              <input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent"
+                required
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="block text-text-muted text-sm mb-2">
+                Directive
+                <span className="text-text-dim text-xs ml-2 font-normal">
+                  (the system prompt the agent reads at every think)
+                </span>
+              </label>
+              <textarea
+                value={editDirective}
+                onChange={(e) => setEditDirective(e.target.value)}
+                rows={10}
+                className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text font-mono resize-y focus:outline-none focus:border-accent"
+                placeholder="What this agent should do, in plain prose."
+              />
+              <p className="text-text-dim text-xs mt-1">
+                Saving updates the running core in place. Any open chat
+                thread inherits this directive plus its own persona suffix
+                on next spawn.
+              </p>
+            </div>
+            {editError && (
+              <div className="text-red text-xs bg-red/10 border border-red/30 rounded px-3 py-2">
+                {editError}
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={closeEditModal}
+                disabled={editSaving}
+                className="px-4 py-2 border border-border rounded-lg text-text-muted hover:text-text transition-colors text-sm disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={editSaving || !editName.trim()}
+                className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
+              >
+                {editSaving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
 
       {/* Create-agent modal. Lives at the page root so the backdrop
           covers the full viewport regardless of which list row the

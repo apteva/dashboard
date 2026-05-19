@@ -2034,8 +2034,24 @@ function SubscriptionsTab() {
   const [appsList, setAppsList] = useState<AppRow[]>([]);
   // For app-event subscriptions: free-text topic pattern (e.g. "row.*",
   // "table.created", "*"). The slug sent to the server is composed as
-  // `${appName}:${topicPattern}`.
+  // `${appName}:${topicPattern}`. Kept for the single-topic fallback
+  // path when the app declares no publishes — otherwise the form
+  // routes through selectedTopics (multi-select).
   const [topicPattern, setTopicPattern] = useState("*");
+  // Multi-select state for the rich app-event picker. Empty = nothing
+  // selected (Subscribe button disabled). The `*` sentinel is one of
+  // the regular checkbox entries and lives in this set when chosen.
+  const [selectedTopics, setSelectedTopics] = useState<Set<string>>(new Set());
+  // Search filter for the event list, plus a free-text "custom topic"
+  // composer that lets the operator add a pattern not declared by the
+  // app (e.g. "row.*" when the app declared exact topics, or any
+  // pattern for apps with no declared publishes at all).
+  const [topicFilter, setTopicFilter] = useState("");
+  const [customTopic, setCustomTopic] = useState("");
+  // Topics the operator added by hand via the "+ Custom topic" path
+  // — kept separate from app.publishes so the checkbox list shows
+  // them as the operator-authored extras they are.
+  const [customTopics, setCustomTopics] = useState<string[]>([]);
   const [instanceId, setInstanceId] = useState(0);
   const [description, setDescription] = useState("");
   const [hmacSecret, setHmacSecret] = useState("");
@@ -2090,6 +2106,10 @@ function SubscriptionsTab() {
     setAdding(null);
     setPickerSearch("");
     setTopicPattern("*");
+    setSelectedTopics(new Set());
+    setTopicFilter("");
+    setCustomTopic("");
+    setCustomTopics([]);
     setInstanceId(0);
     setDescription("");
     setHmacSecret("");
@@ -2143,17 +2163,33 @@ function SubscriptionsTab() {
 
     try {
       if (adding.kind === "app") {
-        const pattern = topicPattern.trim() || "*";
-        await subscriptions.create(
-          `${adding.appLabel} events`,
-          `${adding.appName}:${pattern}`,
-          instanceId,
-          {
-            description: description.trim(),
-            projectId: currentProject?.id,
-            source: "app_event",
-          },
-        );
+        // Multi-select: every checked topic becomes its own
+        // subscription row. We fall back to the topicPattern free-text
+        // when the operator never opened the picker (single-shot legacy
+        // path for apps that declare no events).
+        const topics = selectedTopics.size > 0
+          ? Array.from(selectedTopics)
+          : [topicPattern.trim() || "*"];
+        // De-dup + create in parallel. If any fail, surface the first
+        // error but let the rest land.
+        const results = await Promise.allSettled(topics.map((t) =>
+          subscriptions.create(
+            `${adding.appLabel} ${t === "*" ? "events" : t}`,
+            `${adding.appName}:${t}`,
+            instanceId,
+            {
+              description: description.trim(),
+              projectId: currentProject?.id,
+              source: "app_event",
+            },
+          )
+        ));
+        const firstErr = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
+        if (firstErr) {
+          setError((firstErr.reason as any)?.message || "Some subscriptions failed to create");
+          load();
+          return;
+        }
       } else if (adding.kind === "composio") {
         if (!selectedTrigger) { setError("Select a trigger"); return; }
         await subscriptions.create(
@@ -2515,22 +2551,197 @@ function SubscriptionsTab() {
               />
             </div>
 
-            {adding.kind === "app" && (
-              <div>
-                <label className="block text-text-muted text-sm mb-2">
-                  Topic pattern <span className="text-text-dim font-mono">{adding.appName}:</span>
-                </label>
-                <input
-                  value={topicPattern}
-                  onChange={(e) => setTopicPattern(e.target.value)}
-                  className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text font-mono focus:outline-none focus:border-accent"
-                  placeholder="e.g. row.* or table.created or *"
-                />
-                <p className="text-text-dim text-xs mt-1">
-                  <span className="font-mono">*</span> matches everything; <span className="font-mono">prefix.*</span> matches by prefix; otherwise exact match.
-                </p>
-              </div>
-            )}
+            {adding.kind === "app" && (() => {
+              // Look up the picked app's declared publishes from the
+              // installed-apps list. Two render modes:
+              //   - Declared (decls.length > 0): rich checkbox picker
+              //     with search + a "+ Custom topic" composer. Operator
+              //     can subscribe to many events at once; each becomes
+              //     its own subscription row server-side.
+              //   - No declarations: degrade to the legacy single
+              //     free-text input. Apps that haven't updated their
+              //     manifest still work, just without the picker.
+              const app = appsList.find((a) => a.name === adding.appName);
+              const decls = app?.publishes || [];
+
+              // Combined list = declared + operator-added customs.
+              // Customs are tagged so the render shows them differently
+              // (with a remove × button).
+              type Row = { name: string; description?: string; payload?: Record<string, string>; custom: boolean };
+              const allRows: Row[] = [
+                { name: "*", description: `Every event from ${adding.appName}`, custom: false },
+                ...decls.map((d) => ({ name: d.name, description: d.description, payload: d.payload, custom: false })),
+                ...customTopics.map((n) => ({ name: n, description: "Custom topic / pattern (operator-added)", custom: true })),
+              ];
+
+              const filter = topicFilter.trim().toLowerCase();
+              const filtered = filter
+                ? allRows.filter((r) => r.name.toLowerCase().includes(filter) || (r.description || "").toLowerCase().includes(filter))
+                : allRows;
+
+              const toggle = (name: string) => {
+                setSelectedTopics((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(name)) next.delete(name);
+                  else next.add(name);
+                  // Picking "*" cancels out every specific topic — they
+                  // would all be subsumed and create useless duplicate
+                  // subs. Picking a specific topic cancels "*" for the
+                  // same reason.
+                  if (name === "*" && next.has("*")) {
+                    for (const k of Array.from(next)) if (k !== "*") next.delete(k);
+                  } else if (name !== "*" && next.has(name)) {
+                    next.delete("*");
+                  }
+                  return next;
+                });
+              };
+
+              const addCustom = () => {
+                const t = customTopic.trim();
+                if (!t) return;
+                if (!customTopics.includes(t) && !decls.find((d) => d.name === t) && t !== "*") {
+                  setCustomTopics((prev) => [...prev, t]);
+                }
+                setSelectedTopics((prev) => {
+                  const next = new Set(prev);
+                  next.add(t);
+                  // Cancel the everything-wildcard if the user
+                  // started narrowing to specific patterns.
+                  if (t !== "*") next.delete("*");
+                  return next;
+                });
+                setCustomTopic("");
+              };
+
+              const removeCustom = (name: string) => {
+                setCustomTopics((prev) => prev.filter((n) => n !== name));
+                setSelectedTopics((prev) => { const next = new Set(prev); next.delete(name); return next; });
+              };
+
+              return (
+                <div>
+                  <label className="block text-text-muted text-sm mb-2">
+                    Event(s) <span className="text-text-dim font-mono">{adding.appName}:</span>
+                    {selectedTopics.size > 0 && (
+                      <span className="ml-2 text-text-dim text-xs">
+                        ({selectedTopics.size} selected)
+                      </span>
+                    )}
+                  </label>
+
+                  {decls.length === 0 ? (
+                    // Legacy single-pattern fallback — apps that
+                    // haven't declared events yet. Same UX as before
+                    // multi-select landed.
+                    <>
+                      <input
+                        value={topicPattern}
+                        onChange={(e) => setTopicPattern(e.target.value)}
+                        className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text font-mono focus:outline-none focus:border-accent"
+                        placeholder="e.g. row.* or table.created or *"
+                      />
+                      <p className="text-text-dim text-xs mt-1">
+                        <span className="font-mono">*</span> matches everything; <span className="font-mono">prefix.*</span> matches by prefix; otherwise exact match.
+                        <span className="text-text-dim"> {adding.appName} hasn't declared its events in its manifest — pattern is free-form.</span>
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      {/* Search filter for the checkbox list. Useful
+                          once an app declares 10+ events; for tiny
+                          surfaces (media has 5) it's basically idle. */}
+                      <input
+                        value={topicFilter}
+                        onChange={(e) => setTopicFilter(e.target.value)}
+                        className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+                        placeholder="Filter events…"
+                      />
+
+                      {/* Checkbox list. Each row: label, optional
+                          description, optional payload hint, custom
+                          rows get a remove × on the right. */}
+                      <div className="mt-2 border border-border rounded-lg max-h-72 overflow-y-auto divide-y divide-border">
+                        {filtered.length === 0 ? (
+                          <div className="px-3 py-4 text-center text-text-dim text-xs">
+                            No events match "{topicFilter}".
+                          </div>
+                        ) : filtered.map((r) => {
+                          const checked = selectedTopics.has(r.name);
+                          return (
+                            <label
+                              key={r.name}
+                              className={`flex items-start gap-3 px-3 py-2.5 cursor-pointer hover:bg-bg-hover transition-colors ${checked ? "bg-accent/5" : ""}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggle(r.name)}
+                                className="mt-1 shrink-0"
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className={`text-sm font-mono ${r.name === "*" ? "text-accent" : "text-text"}`}>
+                                    {r.name}
+                                  </span>
+                                  {r.custom && (
+                                    <span className="text-[10px] uppercase tracking-wide text-text-dim px-1 py-0.5 border border-border rounded">
+                                      custom
+                                    </span>
+                                  )}
+                                </div>
+                                {r.description && (
+                                  <div className="text-text-muted text-xs mt-0.5">{r.description}</div>
+                                )}
+                                {r.payload && (
+                                  <div className="text-text-dim text-[11px] mt-1 font-mono">
+                                    payload: {Object.entries(r.payload).map(([k, v]) => `${k}: ${v}`).join(", ")}
+                                  </div>
+                                )}
+                              </div>
+                              {r.custom && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.preventDefault(); removeCustom(r.name); }}
+                                  className="shrink-0 text-text-dim hover:text-red text-sm px-1"
+                                  title="Remove this custom topic"
+                                >
+                                  ×
+                                </button>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+
+                      {/* Custom-topic composer — for patterns the app
+                          didn't declare ("row.*", "*.failed", etc.). */}
+                      <div className="mt-2 flex gap-2">
+                        <input
+                          value={customTopic}
+                          onChange={(e) => setCustomTopic(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustom(); } }}
+                          className="flex-1 bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text font-mono focus:outline-none focus:border-accent"
+                          placeholder="+ Custom topic or pattern (e.g. row.*)"
+                        />
+                        <button
+                          type="button"
+                          onClick={addCustom}
+                          disabled={!customTopic.trim()}
+                          className="px-3 py-2 border border-border rounded-lg text-text-muted hover:text-accent text-xs transition-colors disabled:opacity-40"
+                        >
+                          Add
+                        </button>
+                      </div>
+                      <p className="text-text-dim text-[11px] mt-1">
+                        <span className="font-mono">*</span> matches everything;
+                        <span className="font-mono"> prefix.*</span> matches by prefix; otherwise exact match.
+                      </p>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
 
             {adding.kind === "composio" && (
               // Composio-source: render a trigger picker populated from
@@ -2658,9 +2869,14 @@ function SubscriptionsTab() {
                 className="px-4 py-2.5 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors">
                 Cancel
               </button>
-              <button type="submit"
-                className="px-4 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors">
-                Create Subscription
+              <button
+                type="submit"
+                disabled={adding?.kind === "app" && (appsList.find((a) => a.name === adding.appName)?.publishes?.length ?? 0) > 0 && selectedTopics.size === 0}
+                className="px-4 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
+              >
+                {adding?.kind === "app" && selectedTopics.size > 1
+                  ? `Subscribe to ${selectedTopics.size} events`
+                  : "Create Subscription"}
               </button>
             </div>
           </form>

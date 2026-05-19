@@ -2309,6 +2309,19 @@ export interface AppRow {
   surfaces: AppSurfaces;
   ui_panels?: AppUIPanel[];
   ui_components?: AppUIComponent[];
+  // Events the app's manifest declares it emits on the AppBus.
+  // Populated by the server from manifest.Provides.Publishes when
+  // present. Drives the subscription form's event dropdown.
+  publishes?: EventDecl[];
+}
+
+// EventDecl — one topic the app's manifest declares it emits via
+// ctx.Emit. Mirrors sdk.EventDecl.
+export interface EventDecl {
+  name: string;                       // e.g. "media.indexed"
+  description?: string;               // human prose for the dropdown
+  dynamic?: boolean;                  // name ends with ".*"
+  payload?: Record<string, string>;   // doc-only field → type label map
 }
 
 export interface AppUIPanel {
