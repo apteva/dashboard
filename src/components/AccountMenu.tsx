@@ -18,10 +18,18 @@ export function AccountMenu({ user, onLogout }: Props) {
   return (
     <div className="px-5 py-3 border-t border-border">
       <div
-        className="text-text text-xs font-mono truncate"
-        title={`Signed in as ${user.email}`}
+        className="text-text text-xs font-mono truncate flex items-center gap-1.5"
+        title={`Signed in as ${user.email}${user.role === "admin" ? " (platform admin)" : ""}`}
       >
-        {user.email}
+        <span className="truncate">{user.email}</span>
+        {user.role === "admin" && (
+          <span
+            className="shrink-0 text-[9px] uppercase tracking-wide px-1 py-0.5 rounded bg-accent/15 text-accent font-bold"
+            title="You are a platform admin — implicit owner on every project; manage other users in Settings → Users"
+          >
+            admin
+          </span>
+        )}
       </div>
       <div className="flex items-center gap-3 mt-1.5">
         <button

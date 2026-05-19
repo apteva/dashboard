@@ -110,13 +110,17 @@ export const auth = {
   status: () =>
     request<{ reg_mode: string; needs_setup: boolean }>("GET", "/auth/status"),
 
-  register: (email: string, password: string, setupToken?: string) =>
-    request<{ id: number; email: string }>(
+  register: (email: string, password: string, setupToken?: string, inviteToken?: string) => {
+    const headers: Record<string, string> = {};
+    if (setupToken) headers["X-Setup-Token"] = setupToken;
+    if (inviteToken) headers["X-Invite-Token"] = inviteToken;
+    return request<{ id: number; email: string }>(
       "POST",
       "/auth/register",
       { email, password },
-      setupToken ? { "X-Setup-Token": setupToken } : undefined,
-    ),
+      Object.keys(headers).length > 0 ? headers : undefined,
+    );
+  },
 
   login: (email: string, password: string) =>
     request<{ user_id: number; email: string }>("POST", "/auth/login", { email, password }),
@@ -127,7 +131,7 @@ export const auth = {
     }),
 
   me: () =>
-    request<{ user_id: number; email: string; created_at: string; onboarded: boolean; onboarded_at?: string }>("GET", "/auth/me"),
+    request<{ user_id: number; email: string; role: PlatformRole; created_at: string; onboarded: boolean; onboarded_at?: string }>("GET", "/auth/me"),
 
   completeOnboarding: () =>
     request<{ status: string }>("POST", "/auth/onboarding/complete"),
@@ -737,6 +741,102 @@ export const projects = {
   update: (id: string, name: string, description: string, color: string) =>
     request<Project>("PUT", `/projects/${id}`, { name, description, color }),
   delete: (id: string) => request<any>("DELETE", `/projects/${id}`),
+};
+
+// ─── Multi-user + roles ────────────────────────────────────────────────
+
+export type PlatformRole = "user" | "admin";
+export type ProjectRole = "viewer" | "editor" | "owner";
+
+export interface ProjectMember {
+  project_id: string;
+  user_id: number;
+  email: string;
+  role: ProjectRole;
+  added_by?: number;
+  added_at: string;
+}
+
+export interface ProjectInvite {
+  id: string;
+  project_id: string;
+  email: string;
+  role: ProjectRole;
+  invited_by: number;
+  expires_at: string;
+  accepted_at?: string;
+  created_at: string;
+}
+
+// Preview shape for /api/invites/:token — what the dashboard's invite
+// banner needs to show "You've been invited to <Project> by <inviter>".
+export interface InvitePreview {
+  email: string;
+  role: ProjectRole;
+  project_id?: string;
+  project_name?: string;
+  inviter_email?: string;
+}
+
+// User wire shape returned from /api/admin/users (admin-only listing).
+// AuthUser in useAuth.ts is the same minus password_hash; this carries
+// the role explicitly because the admin UI is the place it's edited.
+export interface AdminUser {
+  id: number;
+  email: string;
+  role: PlatformRole;
+  created_at: string;
+}
+
+export const projectMembers = {
+  list: (projectID: string) =>
+    request<ProjectMember[]>("GET", `/projects/${projectID}/members`),
+  updateRole: (projectID: string, userID: number, role: ProjectRole) =>
+    request<{ status: string }>(
+      "PATCH",
+      `/projects/${projectID}/members/${userID}`,
+      { role },
+    ),
+  remove: (projectID: string, userID: number) =>
+    request<{ status: string }>(
+      "DELETE",
+      `/projects/${projectID}/members/${userID}`,
+    ),
+};
+
+export const projectInvites = {
+  list: (projectID: string) =>
+    request<ProjectInvite[]>("GET", `/projects/${projectID}/members/invites`),
+  // Returns one of two shapes:
+  //   {kind:"added",   user_id, email, role}      — existing user
+  //   {kind:"invited", invite: ProjectInvite}     — new email, link minted
+  // Lets the dashboard show the right confirmation without a second
+  // round-trip ("Added Alice to the project" vs "Invite link ready
+  // to copy").
+  create: (projectID: string, email: string, role: ProjectRole) =>
+    request<
+      | { kind: "added"; user_id: number; email: string; role: ProjectRole }
+      | { kind: "invited"; invite: ProjectInvite }
+    >("POST", `/projects/${projectID}/members/invites`, { email, role }),
+  revoke: (projectID: string, token: string) =>
+    request<{ status: string }>(
+      "DELETE",
+      `/projects/${projectID}/members/invites/${token}`,
+    ),
+  // Public-ish preview — fetched from the /login banner.
+  preview: (token: string) => request<InvitePreview>("GET", `/invites/${token}`),
+  // Accept requires a logged-in user whose email matches the invite.
+  accept: (token: string) =>
+    request<{ status: string; project_id: string; role: ProjectRole }>(
+      "POST",
+      `/invites/${token}/accept`,
+    ),
+};
+
+export const adminUsers = {
+  list: () => request<AdminUser[]>("GET", "/admin/users"),
+  setRole: (userID: number, role: PlatformRole) =>
+    request<{ status: string }>("PATCH", `/admin/users/${userID}`, { role }),
 };
 
 // Agents

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
-import { auth } from "../api";
+import { auth, projectInvites, type InvitePreview } from "../api";
 
 // Login renders one of three flows depending on the server's registration mode:
 //
@@ -27,18 +27,65 @@ export function Login() {
   const { login, register, authenticated } = useAuth();
   const navigate = useNavigate();
 
+  // ?invite=<token> handling. When present:
+  //   - we fetch the invite preview and show a banner above the form
+  //   - the email field pre-fills with the invite's email + locks
+  //   - in locked-mode servers, the register form becomes accessible
+  //     (the invite is the registration credential)
+  //   - after a successful login/register, we POST /invites/:token/accept
+  //     to add the membership, then navigate the user to /
+  const [inviteToken] = useState<string>(() => {
+    if (typeof window === "undefined") return "";
+    return new URLSearchParams(window.location.search).get("invite") || "";
+  });
+  const [invitePreview, setInvitePreview] = useState<InvitePreview | null>(null);
+  const [inviteErr, setInviteErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!inviteToken) return;
+    projectInvites
+      .preview(inviteToken)
+      .then((p) => {
+        setInvitePreview(p);
+        // Lock the email to the invite's address so the user can't
+        // try to claim it with a different account.
+        setEmail(p.email);
+      })
+      .catch((e: any) => {
+        setInviteErr(e?.message || "Invite invalid or expired");
+      });
+  }, [inviteToken]);
+
   // If the user arrives at /login with a valid session already, bounce
   // them straight to the dashboard. Without this, a user who logs in,
   // closes the tab, then reopens it on /login (bookmarks, back button)
   // sits on the login form forever even though their cookie is still
   // valid — auth.me() succeeds in AuthProvider but the Login page
   // itself never re-checks and stays mounted.
+  //
+  // Special case: if there's a pending ?invite=<token>, we DO want
+  // them to land here so we can accept the invite on their behalf
+  // before redirecting. The acceptInviteThenGo path below covers that.
   useEffect(() => {
-    if (authenticated === true) {
+    if (authenticated === true && !inviteToken) {
       console.log("[login] already authenticated on mount → navigate /");
       navigate("/", { replace: true });
     }
-  }, [authenticated, navigate]);
+  }, [authenticated, navigate, inviteToken]);
+
+  // If we land on /login already authenticated AND we have an invite
+  // token, immediately accept it and bounce to the dashboard. This
+  // covers the "open the invite link while logged in" path.
+  useEffect(() => {
+    if (authenticated === true && inviteToken) {
+      projectInvites
+        .accept(inviteToken)
+        .then(() => navigate("/", { replace: true }))
+        .catch((e: any) => {
+          setInviteErr(e?.message || "Failed to accept invite");
+        });
+    }
+  }, [authenticated, inviteToken, navigate]);
 
   // Detect server state on mount. We only care about distinguishing
   // setup from non-setup — open vs locked just toggles the register button
@@ -95,9 +142,22 @@ export function Login() {
     console.log("[login] handleSubmit mode=", mode);
     try {
       if (mode === "register") {
-        await register(email, password);
+        // In locked mode the server requires a valid invite token
+        // (via ?invite or X-Invite-Token). When we have one, pass it
+        // through the query string of the registration request — the
+        // server reads it before validating the rest of the body.
+        await register(email, password, undefined, inviteToken || undefined);
       }
       await login(email, password);
+      // If this login came via an invite link, also accept the invite
+      // so the project_members row gets written. Best-effort: a
+      // failure here lands the user inside the dashboard without
+      // the invited project — they can be re-invited.
+      if (inviteToken) {
+        try { await projectInvites.accept(inviteToken); } catch (e: any) {
+          setInviteErr(e?.message || "Logged in, but failed to accept invite");
+        }
+      }
       console.log("[login] login() resolved, calling navigate('/')");
       navigate("/");
       console.log("[login] navigate('/') called, new url=", window.location.pathname);
@@ -211,6 +271,27 @@ export function Login() {
           </p>
         </div>
 
+        {/* Invite banner — shows when ?invite=<token> is on the URL.
+            Pre-fills the email field (locked to the invite's address)
+            and unlocks the register path even in locked-mode servers,
+            since the invite itself authorises the new account. */}
+        {invitePreview && (
+          <div className="mb-5 border border-accent/40 bg-accent/10 rounded-lg px-4 py-3 text-sm">
+            <div className="text-accent font-bold">
+              You've been invited to <strong>{invitePreview.project_name || "a project"}</strong>
+              {invitePreview.inviter_email ? ` by ${invitePreview.inviter_email}` : ""}.
+            </div>
+            <div className="text-text-muted text-xs mt-1">
+              Sign in (or register) with <span className="font-mono">{invitePreview.email}</span> to accept the invite as a <b>{invitePreview.role}</b>.
+            </div>
+          </div>
+        )}
+        {inviteErr && (
+          <div className="mb-5 border border-red/40 bg-red/10 rounded-lg px-4 py-3 text-sm text-red">
+            {inviteErr}
+          </div>
+        )}
+
         <form
           onSubmit={handleSubmit}
           className="border border-border rounded-lg p-8 bg-bg-card"
@@ -223,10 +304,11 @@ export function Login() {
               type="text"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent"
+              className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent disabled:opacity-70"
               placeholder="username"
               autoComplete="username"
               required
+              disabled={!!invitePreview}
             />
           </div>
 
@@ -257,8 +339,9 @@ export function Login() {
 
           {/* Only show the register toggle when the server actually accepts
               public registrations. In `locked` mode the button would lead to
-              a guaranteed 403, so we hide it. */}
-          {regMode === "open" && (
+              a guaranteed 403 — unless the user has an invite token, which
+              IS the authorisation to create an account in locked mode. */}
+          {(regMode === "open" || (invitePreview && regMode === "locked")) && (
             <button
               type="button"
               onClick={() => setMode(isRegister ? "login" : "register")}

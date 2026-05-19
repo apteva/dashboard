@@ -1,5 +1,5 @@
 import { useState, useEffect, createContext, useContext, type ReactNode, createElement } from "react";
-import { auth, setAuthInvalidHandler } from "../api";
+import { auth, setAuthInvalidHandler, type PlatformRole } from "../api";
 
 // Auth state lives in a single React Context at the root of the app so
 // every consumer — ProtectedRoute, Login, Layout — reads the same
@@ -10,6 +10,9 @@ import { auth, setAuthInvalidHandler } from "../api";
 export interface AuthUser {
   id: number;
   email: string;
+  // Platform role: 'user' (default) or 'admin'. Admins see the
+  // /admin/users page and are implicit owners on every project.
+  role: PlatformRole;
   createdAt: string;
   // false for users who registered but haven't finished the welcome
   // flow. Drives <OnboardingGate> in App.tsx.
@@ -22,7 +25,7 @@ interface AuthState {
   // Legacy boolean view retained so existing ProtectedRoute checks keep working.
   authenticated: boolean | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, setupToken?: string) => Promise<any>;
+  register: (email: string, password: string, setupToken?: string, inviteToken?: string) => Promise<any>;
   logout: () => void;
   // Refresh the user profile after a settings change (email edit, etc.).
   refresh: () => Promise<void>;
@@ -37,7 +40,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loadMe = async () => {
     try {
       const r = await auth.me();
-      setUser({ id: r.user_id, email: r.email, createdAt: r.created_at, onboarded: r.onboarded });
+      setUser({
+        id: r.user_id,
+        email: r.email,
+        role: (r.role as PlatformRole) || "user",
+        createdAt: r.created_at,
+        onboarded: r.onboarded,
+      });
     } catch {
       setUser(false);
     }
@@ -67,7 +76,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // response only carries id+email.
       await loadMe();
     },
-    register: (email, password, setupToken) => auth.register(email, password, setupToken),
+    register: (email, password, setupToken, inviteToken) =>
+      auth.register(email, password, setupToken, inviteToken),
     logout: () => {
       auth.logout();
       setUser(false);

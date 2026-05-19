@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow } from "../api";
+import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser } from "../api";
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
@@ -41,14 +41,9 @@ function GlobeIcon({ size = 11 }: { size?: number }) {
 export function Settings() {
   const [tab, setTab] = useState<Tab>("projects");
   const { user } = useAuth();
-  // Solo-user mode: the Users tab is intentionally hidden. The server
-  // endpoints (/api/users*) still exist and stay admin-gated, so when
-  // we add real project-scoped multi-tenancy the tab can be flipped
-  // back on by restoring the conditional below.
-  //   const isAdmin = user && user !== false && user.id === 1;
-  // We still dereference `user` elsewhere on this page (AccountTab),
-  // so we keep the hook call but drop the derived flag.
-  void user;
+  // Multi-user: Users tab is admin-only. Non-admins still get every
+  // other tab; just hides the platform-wide user management surface.
+  const isAdmin = user && user !== false && user.role === "admin";
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "projects", label: "Projects" },
@@ -61,8 +56,7 @@ export function Settings() {
     { id: "data", label: "Data" },
     { id: "server", label: "Server" },
     { id: "account", label: "Account" },
-    // Users tab hidden — solo mode. Re-enable with:
-    //   ...(isAdmin ? [{ id: "users" as Tab, label: "Users" }] : []),
+    ...(isAdmin ? [{ id: "users" as Tab, label: "Users" }] : []),
   ];
 
   return (
@@ -99,8 +93,7 @@ export function Settings() {
         {tab === "data" && <DataTab />}
         {tab === "server" && <ServerTab />}
         {tab === "account" && <AccountTab />}
-        {/* Users tab body stays wired for when we re-enable it:
-            {tab === "users" && <UsersTab />} */}
+        {tab === "users" && isAdmin && <UsersTab />}
       </div>
     </div>
   );
@@ -3229,6 +3222,8 @@ function ProjectsTab() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [color, setColor] = useState(PROJECT_COLORS[0]);
+  // Which project's Members modal is open. Null when closed.
+  const [membersFor, setMembersFor] = useState<string | null>(null);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3298,6 +3293,9 @@ function ProjectsTab() {
               {currentProject?.id === p.id && (
                 <span className="text-xs text-accent">Active</span>
               )}
+              <button onClick={() => setMembersFor(p.id)} className="text-xs text-text-muted hover:text-text transition-colors">
+                Members
+              </button>
               <button onClick={() => openEdit(p)} className="text-xs text-text-muted hover:text-text transition-colors">
                 Edit
               </button>
@@ -3353,6 +3351,341 @@ function ProjectsTab() {
           </div>
         </form>
       </Modal>
+
+      {/* Members modal — opens from a per-project "Members" button.
+          Owners (and platform admins) get inline role-edit + remove +
+          invite affordances; viewers and editors get a read-only
+          listing. The modal owns its own data fetch so opening/closing
+          doesn't perturb the surrounding ProjectsTab state. */}
+      {membersFor && (
+        <Modal open={!!membersFor} onClose={() => setMembersFor(null)}>
+          <ProjectMembersPane
+            projectID={membersFor}
+            projectName={projects.find((p) => p.id === membersFor)?.name || ""}
+            onClose={() => setMembersFor(null)}
+          />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ProjectMembersPane — modal body for managing a single project's
+// members + pending invites. Self-contained: owns its own data
+// fetches, refreshes after every mutation.
+function ProjectMembersPane({
+  projectID,
+  projectName,
+  onClose,
+}: {
+  projectID: string;
+  projectName: string;
+  onClose: () => void;
+}) {
+  const { user } = useAuth();
+  const isAdmin = user && user !== false && user.role === "admin";
+  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const [invites, setInvites] = useState<ProjectInvite[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<ProjectRole>("editor");
+  const [creatingInvite, setCreatingInvite] = useState(false);
+  // Admin-only: full user roster fetched on modal open. Non-admins
+  // can't (and shouldn't) see other users' emails — they stay on
+  // the type-email-by-hand form.
+  const [allUsers, setAllUsers] = useState<AdminUser[]>([]);
+
+  // The caller's role on THIS project drives the can-edit gating. A
+  // non-owner who somehow opens the modal sees a read-only view. Admins
+  // are always treated as effective owners (matches server-side
+  // requireProjectAccess short-circuit).
+  const myRole: ProjectRole | null = user && user !== false
+    ? (members.find((m) => m.user_id === user.id)?.role
+        || (user.role === "admin" ? "owner" : null))
+    : null;
+  const canManage = myRole === "owner";
+
+  const load = async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const [m, i, u] = await Promise.all([
+        projectMembers.list(projectID),
+        projectInvites.list(projectID),
+        // /admin/users is 403 for non-admins — swallow the error so
+        // the rest of the modal still loads. Empty list means "no
+        // picker, just the type-email form".
+        isAdmin ? adminUsers.list().catch(() => [] as AdminUser[]) : Promise.resolve([] as AdminUser[]),
+      ]);
+      setMembers(m);
+      setInvites(i);
+      setAllUsers(u);
+    } catch (e: any) {
+      setErr(e?.message || "Failed to load members");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectID]);
+
+  // Pickable = every user on the platform minus those already in
+  // this project's members list. The picker hides itself entirely
+  // when the set is empty (everyone's already in) or when the
+  // caller isn't an admin.
+  const memberIDs = new Set(members.map((m) => m.user_id));
+  const pickable = allUsers.filter((u) => !memberIDs.has(u.id));
+
+  // notice — short-lived confirmation banner after an invite action.
+  // "added" path tells the operator the existing user is in now; the
+  // "invited" path is silent because the new pending invite row
+  // appears in the list above and is self-explanatory.
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const submitInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteEmail.trim()) return;
+    setCreatingInvite(true);
+    setErr(null);
+    setNotice(null);
+    try {
+      const res = await projectInvites.create(projectID, inviteEmail.trim(), inviteRole);
+      if (res.kind === "added") {
+        setNotice(`Added ${res.email} as ${res.role}.`);
+      } else {
+        setNotice(`Invite sent to ${res.invite.email}. Use "Copy link" if your mail isn't auto-delivered.`);
+      }
+      setInviteEmail("");
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Failed to create invite");
+    } finally {
+      setCreatingInvite(false);
+    }
+  };
+
+  const copyInviteLink = (token: string) => {
+    const url = `${window.location.origin}/login?invite=${encodeURIComponent(token)}`;
+    void navigator.clipboard.writeText(url).catch(() => {});
+  };
+
+  const changeRole = async (uid: number, role: ProjectRole) => {
+    setErr(null);
+    try {
+      await projectMembers.updateRole(projectID, uid, role);
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Failed to update role");
+    }
+  };
+
+  const removeMember = async (uid: number) => {
+    setErr(null);
+    try {
+      await projectMembers.remove(projectID, uid);
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Failed to remove member");
+    }
+  };
+
+  const revokeInvite = async (token: string) => {
+    setErr(null);
+    try {
+      await projectInvites.revoke(projectID, token);
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Failed to revoke invite");
+    }
+  };
+
+  return (
+    <div className="p-6 space-y-5 min-w-[420px] max-w-lg">
+      <div>
+        <h3 className="text-text text-base font-bold">Members of {projectName}</h3>
+        <p className="text-text-muted text-xs mt-1">
+          {canManage
+            ? "Owners can change roles, remove members, and send invites."
+            : "Read-only — only project owners can change membership."}
+        </p>
+      </div>
+
+      {err && (
+        <div className="text-red text-xs bg-red/10 border border-red/30 rounded px-3 py-2">
+          {err}
+        </div>
+      )}
+      {notice && (
+        <div className="text-green text-xs bg-green/10 border border-green/30 rounded px-3 py-2">
+          {notice}
+        </div>
+      )}
+
+      {loading ? (
+        <p className="text-text-muted text-sm">Loading…</p>
+      ) : (
+        <>
+          <div className="space-y-2">
+            {members.map((m) => (
+              <div key={m.user_id} className="flex items-center justify-between gap-3 border border-border rounded-lg px-3 py-2">
+                <div className="min-w-0">
+                  <div className="text-text text-sm truncate">{m.email}</div>
+                  <div className="text-text-dim text-[11px]">User #{m.user_id}</div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {canManage && user && user !== false && m.user_id !== user.id ? (
+                    <>
+                      <select
+                        value={m.role}
+                        onChange={(e) => changeRole(m.user_id, e.target.value as ProjectRole)}
+                        className="bg-bg-input border border-border rounded px-2 py-1 text-xs text-text focus:outline-none focus:border-accent"
+                      >
+                        <option value="viewer">Viewer</option>
+                        <option value="editor">Editor</option>
+                        <option value="owner">Owner</option>
+                      </select>
+                      <button
+                        onClick={() => removeMember(m.user_id)}
+                        className="text-[11px] text-text-muted hover:text-red transition-colors"
+                      >
+                        Remove
+                      </button>
+                    </>
+                  ) : (
+                    <span className="text-xs text-text-muted capitalize">{m.role}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {invites.length > 0 && (
+            <div>
+              <h4 className="text-text-muted text-xs uppercase tracking-wide mb-2">Pending invites</h4>
+              <div className="space-y-2">
+                {invites.map((inv) => (
+                  <div key={inv.id} className="flex items-center justify-between gap-3 border border-dashed border-border rounded-lg px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="text-text text-sm truncate">{inv.email}</div>
+                      <div className="text-text-dim text-[11px] capitalize">
+                        {inv.role} · expires {new Date(inv.expires_at).toLocaleDateString()}
+                      </div>
+                    </div>
+                    {canManage && (
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => copyInviteLink(inv.id)}
+                          className="text-[11px] text-accent hover:text-accent-hover transition-colors"
+                          title="Copy invite link to clipboard"
+                        >
+                          Copy link
+                        </button>
+                        <button
+                          onClick={() => revokeInvite(inv.id)}
+                          className="text-[11px] text-text-muted hover:text-red transition-colors"
+                        >
+                          Revoke
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {canManage && pickable.length > 0 && (
+            <div className="border-t border-border pt-4 space-y-2">
+              <h4 className="text-text-muted text-xs uppercase tracking-wide">Add an existing user</h4>
+              <div className="space-y-1.5">
+                {pickable.map((u) => (
+                  <div key={u.id} className="flex items-center justify-between gap-3 border border-border rounded-lg px-3 py-1.5">
+                    <div className="text-text text-sm truncate">{u.email}</div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <select
+                        defaultValue="editor"
+                        id={`role-${u.id}`}
+                        className="bg-bg-input border border-border rounded px-2 py-1 text-xs text-text focus:outline-none focus:border-accent"
+                      >
+                        <option value="viewer">Viewer</option>
+                        <option value="editor">Editor</option>
+                        <option value="owner">Owner</option>
+                      </select>
+                      <button
+                        onClick={async () => {
+                          const select = document.getElementById(`role-${u.id}`) as HTMLSelectElement | null;
+                          const role = (select?.value || "editor") as ProjectRole;
+                          setErr(null);
+                          setNotice(null);
+                          try {
+                            await projectInvites.create(projectID, u.email, role);
+                            setNotice(`Added ${u.email} as ${role}.`);
+                            await load();
+                          } catch (e: any) {
+                            setErr(e?.message || "Failed to add user");
+                          }
+                        }}
+                        className="text-[11px] text-accent hover:text-accent-hover transition-colors font-bold"
+                      >
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-text-dim text-[11px]">
+                Existing accounts on this server. Pick a role and click <b>Add</b> — no invite link needed.
+              </p>
+            </div>
+          )}
+
+          {canManage && (
+            <form onSubmit={submitInvite} className="border-t border-border pt-4 space-y-2">
+              <h4 className="text-text-muted text-xs uppercase tracking-wide">{pickable.length > 0 ? "Invite someone new" : "Add or invite someone"}</h4>
+              <div className="flex gap-2">
+                <input
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder="email@example.com"
+                  className="flex-1 bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+                  required
+                />
+                <select
+                  value={inviteRole}
+                  onChange={(e) => setInviteRole(e.target.value as ProjectRole)}
+                  className="bg-bg-input border border-border rounded-lg px-2 py-2 text-xs text-text focus:outline-none focus:border-accent"
+                >
+                  <option value="viewer">Viewer</option>
+                  <option value="editor">Editor</option>
+                  <option value="owner">Owner</option>
+                </select>
+                <button
+                  type="submit"
+                  disabled={creatingInvite}
+                  className="px-3 py-2 bg-accent text-bg rounded-lg text-xs font-bold hover:bg-accent-hover transition-colors disabled:opacity-50"
+                >
+                  {creatingInvite ? "…" : "Send"}
+                </button>
+              </div>
+              <p className="text-text-dim text-[11px]">
+                If the email already has an account on this server, they're added
+                immediately. Otherwise an invite link is minted — click "Copy link"
+                on the pending invite to send it.
+              </p>
+            </form>
+          )}
+        </>
+      )}
+
+      <div className="flex justify-end pt-2">
+        <button
+          onClick={onClose}
+          className="px-4 py-2 border border-border rounded-lg text-text-muted hover:text-text transition-colors text-sm"
+        >
+          Close
+        </button>
+      </div>
     </div>
   );
 }
@@ -3380,6 +3713,19 @@ function UsersTab() {
   };
 
   useEffect(() => { load(); }, []);
+
+  // toggleRole flips the user's platform role via /admin/users PATCH.
+  // Server enforces the "at least one admin must remain" invariant
+  // and refuses self-demotion, so we just surface errors inline.
+  const toggleRole = async (u: UserRow) => {
+    setErr("");
+    try {
+      await adminUsers.setRole(u.id, u.is_admin ? "user" : "admin");
+      load();
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -3442,6 +3788,21 @@ function UsersTab() {
                   <td className="px-3 py-2 text-right text-text-muted">{u.keys}</td>
                   <td className="px-3 py-2 text-right text-text-muted">{u.projects}</td>
                   <td className="px-3 py-2 text-right">
+                    {/* Role toggle. Hidden for self so an admin can't
+                        accidentally demote themselves (server also
+                        refuses). Promotes user → admin or demotes
+                        admin → user via /admin/users PATCH. */}
+                    {!u.is_self && (
+                      <button
+                        onClick={() => toggleRole(u)}
+                        className="text-[10px] text-text-muted hover:text-accent transition-colors mr-3"
+                        title={u.is_admin
+                          ? "Demote to user — they keep their owned projects but lose platform-admin power"
+                          : "Promote to admin — implicit owner on every project"}
+                      >
+                        {u.is_admin ? "Demote" : "Make admin"}
+                      </button>
+                    )}
                     <button
                       onClick={() => setResetTarget(u)}
                       className="text-[10px] text-text-muted hover:text-accent transition-colors mr-3"

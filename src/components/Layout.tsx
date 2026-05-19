@@ -258,7 +258,11 @@ export function Layout() {
           <span className="text-accent font-bold text-lg">Apteva</span>
         </div>
 
-        {/* Project selector */}
+        {/* Project selector. Projects the current user didn't create
+            (typically because they were invited as a member, or because
+            they're a platform admin seeing every project) get a
+            "(shared)" tag so the picker UI signals "you're peeking
+            into someone else's workspace." */}
         {projects.length > 0 && (
           <div className="px-3 py-3 border-b border-border">
             <select
@@ -269,11 +273,14 @@ export function Layout() {
               }}
               className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
             >
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
+              {projects.map((p) => {
+                const mine = user && user !== false && p.user_id === user.id;
+                return (
+                  <option key={p.id} value={p.id}>
+                    {p.name}{mine ? "" : " (shared)"}
+                  </option>
+                );
+              })}
             </select>
           </div>
         )}
