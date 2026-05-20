@@ -25,6 +25,7 @@ import { Analytics } from "./pages/Analytics";
 import { Settings } from "./pages/Settings";
 import { Apps } from "./pages/Apps";
 import { Skills } from "./pages/Skills";
+import { Worlds } from "./pages/Worlds";
 import { AppProjectPage } from "./pages/AppProjectPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -99,6 +100,7 @@ export default function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/apps" element={<Apps />} />
             <Route path="/skills" element={<Skills />} />
+            <Route path="/worlds" element={<Worlds />} />
             {/* Generic per-app project-level page. The project.page
                 slot of any installed app's manifest gets rendered here.
                 One route serves every app — :name in the URL picks

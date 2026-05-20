@@ -733,6 +733,105 @@ export const evals = {
     ),
 };
 
+// ─── Worlds — isolated test environments ───────────────────────────────
+//
+// A World is a set of real app sidecars (real DB writes) sharing one HTTP
+// edge that virtualises outbound calls. See server/world*.go. The dashboard
+// uses these to run/inspect test Worlds and to drive an app panel against a
+// sandbox instance ("open in test World").
+
+export interface WorldAppInfo {
+  url: string;
+  mcp_url: string;
+  data_dir: string;
+}
+
+export interface WorldSummary {
+  id: string;
+  project_id: string;
+  mode: string; // block | passthrough | mock | record | replay
+  proxy_url: string;
+  apps: Record<string, WorldAppInfo>;
+}
+
+// One outbound call the World edge classified — the raw material for edge
+// assertions and the call inspector.
+export interface InterceptedCall {
+  host: string;
+  path: string;
+  method: string;
+  mocked: boolean;
+  allowed: boolean;
+  blocked: boolean;
+  recorded: boolean;
+  req_body?: string;
+  resp_body?: string;
+  status: number;
+  ts: string;
+}
+
+export interface WorldSnapshotManifest {
+  id: string;
+  project_id: string;
+  description?: string;
+  apps: string[];
+  has_agent: boolean;
+  has_cassette: boolean;
+  created_at: string;
+}
+
+export interface WorldAssertion {
+  name: string;
+  kind: "edge" | "state" | "trajectory";
+  edge?: { host?: string; path?: string; method?: string; count?: number; min?: number; max?: number };
+  state?: { app: string; query: string; equals?: number; min?: number; max?: number };
+  trajectory?: { tool_called?: string; tool_not_called?: string; before?: string };
+}
+
+export interface WorldAssertionResult {
+  name: string;
+  kind: string;
+  pass: boolean;
+  detail: string;
+}
+
+export interface CreateWorldBody {
+  id?: string;
+  project_id?: string;
+  apps?: string[];
+  mode?: string;
+  allow_suffixes?: string[];
+  snapshot_id?: string;
+}
+
+export const worlds = {
+  list: () => request<WorldSummary[]>("GET", "/worlds"),
+  create: (body: CreateWorldBody) => request<WorldSummary>("POST", "/worlds", body),
+  get: (id: string) => request<WorldSummary>("GET", `/worlds/${encodeURIComponent(id)}`),
+  destroy: (id: string) => request<{ destroyed: string }>("DELETE", `/worlds/${encodeURIComponent(id)}`),
+  calls: (id: string) => request<InterceptedCall[]>("GET", `/worlds/${encodeURIComponent(id)}/calls`),
+  assert: (id: string, body: { assertions: WorldAssertion[]; tool_sequence?: string[] }) =>
+    request<{ all_pass: boolean; results: WorldAssertionResult[] }>(
+      "POST",
+      `/worlds/${encodeURIComponent(id)}/assert`,
+      body,
+    ),
+  snapshot: (id: string, body: { snapshot_id?: string; description?: string }) =>
+    request<WorldSnapshotManifest>("POST", `/worlds/${encodeURIComponent(id)}/snapshot`, body),
+  spawnAgent: (id: string, body: { source_agent_id: number; directive?: string }) =>
+    request<{ agent_id: number; port: number }>("POST", `/worlds/${encodeURIComponent(id)}/agent`, body),
+  stopAgent: (id: string) => request<{ stopped: boolean }>("DELETE", `/worlds/${encodeURIComponent(id)}/agent`),
+  // Base path a panel/iframe uses to talk to an in-world sidecar.
+  appBase: (worldId: string, app: string) =>
+    `${BASE}/worlds/${encodeURIComponent(worldId)}/apps/${encodeURIComponent(app)}`,
+};
+
+export const worldSnapshots = {
+  list: () => request<WorldSnapshotManifest[]>("GET", "/world-snapshots"),
+  get: (id: string) => request<WorldSnapshotManifest>("GET", `/world-snapshots/${encodeURIComponent(id)}`),
+  delete: (id: string) => request<{ deleted: string }>("DELETE", `/world-snapshots/${encodeURIComponent(id)}`),
+};
+
 export const projects = {
   list: () => request<Project[]>("GET", "/projects"),
   create: (name: string, description?: string, color?: string) =>

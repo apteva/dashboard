@@ -172,6 +172,7 @@ export function Layout() {
     { to: "/integrations", label: "Integrations" },
     { to: "/apps", label: "Apps" },
     { to: "/skills", label: "Skills" },
+    { to: "/worlds", label: "Worlds" },
     { to: "/analytics", label: "Analytics" },
     { to: "/settings", label: "Settings" },
   ];
