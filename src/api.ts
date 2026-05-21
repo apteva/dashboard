@@ -2443,6 +2443,7 @@ export interface AppSurfaces {
   kind: string;                    // service | source | static
   mcp_tool_count: number;
   mcp_tool_names?: string[];
+  skill_count: number;             // playbooks the app ships (inherited on bind)
   http_route_count: number;
   http_routes?: string[];
   ui_panel_count: number;

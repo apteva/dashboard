@@ -1188,6 +1188,9 @@ function SetupStep({
             + Install more →
           </a>
         </h3>
+        <p className="text-text-muted text-[11px]">
+          Binding an app gives this agent its tools and its skills (playbooks).
+        </p>
         {runningInstalledApps.length === 0 ? (
           <p className="text-text-muted text-xs px-3 py-2 border border-border border-dashed rounded-lg">
             No apps installed in this project.{" "}
@@ -1200,6 +1203,13 @@ function SetupStep({
             {runningInstalledApps.map((a) => {
               const checked = state.boundAppInstallIDs.has(a.install_id);
               const toolCount = a.surfaces?.mcp_tool_count || 0;
+              const skillCount = a.surfaces?.skill_count || 0;
+              // What binding this app brings the agent: its tools (via the
+              // gateway) + its skills (attached on bind, server-side).
+              const parts: string[] = [];
+              if (toolCount > 0) parts.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
+              if (skillCount > 0) parts.push(`${skillCount} skill${skillCount === 1 ? "" : "s"}`);
+              const surfaceBadge = parts.length > 0 ? parts.join(" · ") : "MCP";
               return (
                 <SelectableRow
                   key={a.install_id}
@@ -1207,7 +1217,7 @@ function SetupStep({
                   onToggle={() => toggleApp(a.install_id)}
                   label={a.display_name || a.name}
                   meta={`v${a.version}`}
-                  badge={toolCount > 0 ? `${toolCount} tool${toolCount === 1 ? "" : "s"}` : "MCP"}
+                  badge={surfaceBadge}
                   statusDot={a.status === "running" ? "green" : "amber"}
                   hint={a.project_id ? undefined : "global"}
                 />
