@@ -76,7 +76,7 @@ export function EvalsPanel({ agentID }: { agentID: number }) {
       });
   }, [agentID, selected]);
 
-  const onRun = async (evalID: string) => {
+  const onRun = async (evalID: string, useWorld = false) => {
     setRunning(true);
     setError(null);
     setApplyNotice(null);
@@ -84,7 +84,8 @@ export function EvalsPanel({ agentID }: { agentID: number }) {
       // Strict single-shot. No iteration loop for live-agent
       // monitoring — the run measures the agent as-is, with no
       // ephemeral directive edits or judge hand-holding.
-      const run = await evalsAPI.run(agentID, evalID, { max_iterations: 1 });
+      // use_world runs the agent in an isolated clone of its real apps.
+      const run = await evalsAPI.run(agentID, evalID, { max_iterations: 1, use_world: useWorld });
       setActiveRun(run);
       // Push to the front of the history without a full refetch.
       setRunHistory((prev) => [run, ...prev].slice(0, 10));
@@ -297,8 +298,16 @@ export function EvalsPanel({ agentID }: { agentID: number }) {
                 >
                   {running ? "Running…" : "Run eval"}
                 </button>
+                <button
+                  onClick={() => onRun(selectedEval.id, true)}
+                  disabled={running}
+                  className="px-4 py-2 border border-border rounded font-bold text-sm hover:bg-bg-subtle transition-colors disabled:opacity-50"
+                  title="Run the agent inside an isolated World — a clone of its real apps with real DB writes, but third-party APIs mocked."
+                >
+                  {running ? "Running…" : "Run in world"}
+                </button>
                 <span className="text-text-muted text-xs">
-                  Single attempt · checks the live agent passes today
+                  Single attempt · <span className="font-medium">Run in world</span> isolates real apps, mocks externals
                 </span>
               </div>
 

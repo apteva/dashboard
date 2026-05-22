@@ -410,6 +410,9 @@ export interface Eval {
 export interface RunOptions {
   max_iterations?: number;
   strict_mocks?: boolean;
+  // Run the agent inside an isolated World — a throwaway clone of its real
+  // apps (real DB writes) with only the edge (third-party APIs) virtualised.
+  use_world?: boolean;
 }
 
 export interface ToolCallRecord {
