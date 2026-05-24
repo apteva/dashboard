@@ -230,6 +230,10 @@ export interface ProviderTypeInfo {
   description: string;
   fields: string[];
   requires_credentials: boolean;
+  auth_type?: "api_key" | "oauth_device_code" | "oauth_browser" | "external_process" | "none" | string;
+  auth_provider?: string;
+  runtime_status?: "available" | "auth_only" | "unsupported" | string;
+  capabilities?: string[];
   sort_order: number;
 }
 
@@ -747,6 +751,17 @@ export interface WorldAppInfo {
   url: string;
   mcp_url: string;
   data_dir: string;
+  kind?: "legacy" | "install";
+  install_id?: number;
+}
+
+export interface WorldConnectionInfo {
+  id: number;
+  app_slug: string;
+  app_name: string;
+  name: string;
+  status: string;
+  project_id: string;
 }
 
 export interface WorldSummary {
@@ -755,6 +770,7 @@ export interface WorldSummary {
   mode: string; // block | passthrough | mock | record | replay
   proxy_url: string;
   apps: Record<string, WorldAppInfo>;
+  connections?: WorldConnectionInfo[];
 }
 
 // One outbound call the World edge classified — the raw material for edge
@@ -802,8 +818,12 @@ export interface CreateWorldBody {
   id?: string;
   project_id?: string;
   apps?: string[];
+  app_install_ids?: number[];
+  connection_ids?: number[];
   mode?: string;
   allow_suffixes?: string[];
+  integration_fixtures?: Array<{ app: string; tool: string; status?: number; data: any }>;
+  seed_plan?: Array<{ app: string; tool: string; input: Record<string, any> }>;
   snapshot_id?: string;
 }
 
@@ -821,6 +841,8 @@ export const worlds = {
     ),
   snapshot: (id: string, body: { snapshot_id?: string; description?: string }) =>
     request<WorldSnapshotManifest>("POST", `/worlds/${encodeURIComponent(id)}/snapshot`, body),
+  seed: (id: string, body: { calls: Array<{ app: string; tool: string; input: Record<string, any> }> }) =>
+    request<{ results: any[] }>("POST", `/worlds/${encodeURIComponent(id)}/seed`, body),
   spawnAgent: (id: string, body: { source_agent_id: number; directive?: string }) =>
     request<{ agent_id: number; port: number }>("POST", `/worlds/${encodeURIComponent(id)}/agent`, body),
   stopAgent: (id: string) => request<{ stopped: boolean }>("DELETE", `/worlds/${encodeURIComponent(id)}/agent`),
@@ -1075,6 +1097,8 @@ export interface Provider {
   provider_type_id?: number;
   type: string;
   name: string;
+  auth_status?: string;
+  runtime_status?: string;
   project_id?: string;
   created_at: string;
   updated_at: string;
@@ -1111,6 +1135,40 @@ export interface ProviderTestResult {
   // confirmation that the probe actually saw the upstream's
   // catalog and not a cached 200.
   model_count?: number;
+  model?: string;
+  response_text?: string;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  cached_tokens?: number;
+  tool_call_count?: number;
+  tool_name?: string;
+  tool_arguments?: string;
+}
+
+export interface ProviderAuthStart {
+  session_id: string;
+  provider: string;
+  method: string;
+  verification_uri?: string;
+  user_code?: string;
+  expires_at?: string;
+  interval_seconds?: number;
+  runtime_status?: string;
+  provider_type_id?: number;
+  provider_type_name?: string;
+}
+
+export interface ProviderAuthStatus {
+  status?: string;
+  auth_status?: string;
+  provider?: string;
+  auth_type?: string;
+  runtime_status?: string;
+  expires_at?: string;
+  last_refresh?: string;
+  next_poll_seconds?: number;
+  error?: string;
+  account?: Record<string, any>;
 }
 
 export const providers = {
@@ -1138,6 +1196,27 @@ export const providers = {
   // button on each row in the Settings page providers section.
   test: (id: number) =>
     request<ProviderTestResult>("POST", `/providers/${id}/test`, {}),
+
+  authStart: (providerTypeId: number, projectId?: string) =>
+    request<ProviderAuthStart>("POST", "/providers/auth/start", {
+      provider_type_id: providerTypeId,
+      project_id: projectId || "",
+    }),
+
+  authPoll: (sessionId: string) =>
+    request<ProviderAuthStatus>("GET", `/providers/auth/${encodeURIComponent(sessionId)}`),
+
+  authStatus: (id: number) =>
+    request<ProviderAuthStatus>("GET", `/providers/${id}/auth/status`),
+
+  authRefresh: (id: number) =>
+    request<ProviderAuthStatus>("POST", `/providers/${id}/auth/refresh`, {}),
+
+  authLogout: (id: number) =>
+    request<ProviderAuthStatus>("POST", `/providers/${id}/auth/logout`, {}),
+
+  authSmokeTest: (id: number) =>
+    request<ProviderTestResult>("POST", `/providers/${id}/auth/smoke-test`, {}),
 
   update: (id: number, type: string, name: string, data: Record<string, string>) =>
     request<any>("PUT", `/providers/${id}`, { type, name, data }),
@@ -1207,11 +1286,30 @@ export interface ConnectionInfo {
   external_project_id?: string;
 }
 
+export interface DeviceAuthStart {
+  session_id: string;
+  provider: string;
+  method: "oauth_device_code" | string;
+  verification_uri: string;
+  user_code: string;
+  expires_at: string;
+  interval_seconds: number;
+}
+
+export interface DeviceAuthStatus {
+  status: "pending" | "connected" | "expired" | "failed" | string;
+  next_poll_seconds?: number;
+  error?: string;
+  connection?: ConnectionInfo;
+  account?: { id?: string; email?: string };
+}
+
 // Response shape when a connection create kicks off an OAuth flow (local
-// oauth2 or composio). `redirect_url` is what the popup should open.
+// oauth2/composio) or an oauth_device_code flow.
 export interface ConnectCreateResponse {
   connection: ConnectionInfo;
-  redirect_url: string;
+  redirect_url?: string;
+  device_auth?: DeviceAuthStart;
 }
 
 /** Result of running the catalog-declared health_check probe
@@ -1476,6 +1574,9 @@ export const integrations = {
       callback_url: string;
     }>("GET", `/oauth/local/client?${params}`);
   },
+
+  deviceAuthPoll: (sessionId: string) =>
+    request<DeviceAuthStatus>("GET", `/connections/auth/${encodeURIComponent(sessionId)}`),
 
   // Hosted Composio connection — server calls Composio, returns a redirect URL
   // the dashboard must open in a popup. The connection row is pending until
@@ -1757,6 +1858,40 @@ export interface Status {
   paused: boolean;
   mode: RunMode;
   pending_approval: PendingApproval | null;
+  execution_control?: ExecutionControlStatus;
+  execution_checkpoints?: ExecutionCheckpointMeta[];
+}
+
+export interface ExecutionControlStatus {
+  mode: "auto" | "paused" | "step";
+  scope?: string;
+  breakpoints?: string[];
+  follow?: string;
+  waiting?: boolean;
+  phase?: string;
+  active_thread_id?: string;
+  iteration?: number;
+  tool?: string;
+  call_id?: string;
+  summary?: string;
+  args?: Record<string, string>;
+  waiting_count?: number;
+  can_restore?: boolean;
+  restore_checkpoint_id?: string;
+  restore_summary?: string;
+  restore_phase?: string;
+}
+
+export interface ExecutionCheckpointMeta {
+  id: string;
+  thread_id: string;
+  iteration: number;
+  phase: string;
+  tool?: string;
+  call_id?: string;
+  summary?: string;
+  args?: Record<string, string>;
+  created_at: string;
 }
 
 export interface Thread {
@@ -1953,6 +2088,8 @@ export const core = {
     request<{
       directive: string;
       mode: string;
+      execution_control?: ExecutionControlStatus;
+      execution_checkpoints?: ExecutionCheckpointMeta[];
       auto_approve?: string[];
       mcp_servers?: MCPServerConfig[];
       computer?: {
@@ -1979,6 +2116,18 @@ export const core = {
     }),
   setMode: (instanceId: number, mode: RunMode) =>
     request<{ status: string }>("PUT", `/agents/${instanceId}/config`, { mode }),
+  control: (instanceId: number, action: "run" | "pause" | "step", threadId?: string) =>
+    request<{ status: string; execution_control: ExecutionControlStatus }>(
+      "POST",
+      `/agents/${instanceId}/control`,
+      { action, ...(threadId ? { thread_id: threadId } : {}) },
+    ),
+  restoreCheckpoint: (instanceId: number, checkpointId: string) =>
+    request<{ status: string; execution_control: ExecutionControlStatus; checkpoint?: ExecutionCheckpointMeta }>(
+      "POST",
+      `/agents/${instanceId}/control`,
+      { action: "restore_checkpoint", checkpoint_id: checkpointId, mode: "step" },
+    ),
   // Replace the full mcp_servers list on a running instance. The core
   // runs reconcileMCP against the list: names present get attached /
   // kept, names absent get disconnected. Always send the complete
@@ -2355,6 +2504,12 @@ export const apps = {
   preflightInstalled: (installId: number) =>
     request<AppPreflight>("GET", `/apps/installs/${installId}/preflight`),
 
+  tools: (installId: number) =>
+    request<AppMCPTool[]>("GET", `/apps/installs/${installId}/tools`),
+
+  imports: (installId: number) =>
+    request<{ imports?: AppImports }>("GET", `/apps/installs/${installId}/imports`),
+
   marketplace: (projectId?: string, registryUrl?: string) => {
     // Pass project_id so the server filters the "is installed" check
     // to project-visible installs (own + globals). Without this an
@@ -2405,7 +2560,7 @@ export interface AppRow {
   status: "pending" | "running" | "error" | "disabled";
   status_message?: string;  // live phase string while pending — "Cloning…", "Building…", etc.
   error_message?: string;
-  source: "git" | "registry" | "builtin" | "manual";
+  source: "git" | "registry" | "builtin" | "manual" | "integration";
   upgrade_policy: "manual" | "auto-patch" | "auto-minor";
   permissions: string[];
   surfaces: AppSurfaces;
@@ -2415,6 +2570,21 @@ export interface AppRow {
   // Populated by the server from manifest.Provides.Publishes when
   // present. Drives the subscription form's event dropdown.
   publishes?: EventDecl[];
+  imports?: AppImports;
+}
+
+export interface AppImports {
+  sources?: AppImportSource[];
+}
+
+export interface AppImportSource {
+  id: string;
+  label?: string;
+  description?: string;
+  kind?: string;
+  integration?: string;
+  scope?: string;
+  [key: string]: unknown;
 }
 
 // EventDecl — one topic the app's manifest declares it emits via
@@ -2459,6 +2629,12 @@ export interface AppSurfaces {
   permissions?: string[];
   config_keys?: string[];
   required_apps?: AppDependency[];
+}
+
+export interface AppMCPTool {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, any>;
 }
 
 export interface AppDependency {

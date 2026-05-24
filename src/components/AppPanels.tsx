@@ -89,7 +89,10 @@ function AppPanelMount({
   instanceId?: number;
   projectId: string;
 }) {
-  const Native = resolvePanelComponent(panel.appName, panel.entry, panel.version);
+  const Native = resolvePanelComponent(panel.appName, panel.entry, panel.version, {
+    installId: panel.installId,
+    projectId,
+  });
   if (Native) {
     return (
       <Native

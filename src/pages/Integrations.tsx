@@ -12,6 +12,8 @@ import {
   type ComposioApp,
   type ComposioToolkitDetails,
   type ConnectCreateResponse,
+  type DeviceAuthStart,
+  type DeviceAuthStatus,
   type InviteResponse,
 } from "../api";
 
@@ -131,6 +133,9 @@ export function Integrations() {
   const [autoMCP, setAutoMCP] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState("");
+  const [deviceAuth, setDeviceAuth] = useState<{ connection: ConnectionInfo; auth: DeviceAuthStart } | null>(null);
+  const [deviceAuthStatus, setDeviceAuthStatus] = useState<DeviceAuthStatus | null>(null);
+  const [deviceAuthPollTick, setDeviceAuthPollTick] = useState(0);
 
   // Local OAuth client credentials. The user's own OAuth app id+secret
   // (registered with the upstream provider — e.g. github.com/settings/developers).
@@ -259,6 +264,9 @@ export function Integrations() {
     setOAuthClientResolved(false);
     setOAuthCallbackURL("");
     setAutoMCP(true);
+    setDeviceAuth(null);
+    setDeviceAuthStatus(null);
+    setDeviceAuthPollTick(0);
 
     // For OAuth2 apps, find out whether the user already registered an
     // OAuth client for this app+project. If yes, hide the form. If no,
@@ -282,6 +290,7 @@ export function Integrations() {
     setConnecting(true);
     try {
       const isOAuth2 = selectedLocalApp.auth.types.includes("oauth2");
+      const isDeviceCode = selectedLocalApp.auth.types.includes("oauth_device_code");
       const oauthCreds = isOAuth2 && !oauthClientResolved
         ? { client_id: oauthClientID.trim(), client_secret: oauthClientSecret.trim() }
         : undefined;
@@ -289,7 +298,7 @@ export function Integrations() {
       // server's default-picker would also choose it. Templates that list
       // ["bearer", "oauth2"] could otherwise be routed to the non-OAuth
       // path (silent "connected" with empty creds) if the picker drifts.
-      const explicitAuthType = isOAuth2 ? "oauth2" : undefined;
+      const explicitAuthType = isDeviceCode ? "oauth_device_code" : isOAuth2 ? "oauth2" : undefined;
       const result = await integrations.connect(
         selectedLocalApp.slug,
         connName.trim(),
@@ -300,12 +309,19 @@ export function Integrations() {
         undefined,        // createdVia — default 'integration'
         autoMCP,          // operator's expose-to-agents choice
       );
+      if ((result as ConnectCreateResponse).device_auth) {
+        const r = result as ConnectCreateResponse;
+        setDeviceAuth({ connection: r.connection, auth: r.device_auth! });
+        setDeviceAuthStatus({ status: "pending", next_poll_seconds: r.device_auth!.interval_seconds || 5 });
+        setDeviceAuthPollTick(0);
+        return;
+      }
       // OAuth2 apps return { connection, redirect_url } — open the popup and
       // start polling the pending connection. Non-OAuth apps return the
       // connection object directly, fully active.
-      if ("redirect_url" in (result as any)) {
+      if ((result as ConnectCreateResponse).redirect_url) {
         const r = result as ConnectCreateResponse;
-        openOAuthPopup(r.redirect_url);
+        openOAuthPopup(r.redirect_url || "");
         pollConnection(r.connection.id, autoMCP);
       } else {
         loadConnections();
@@ -500,6 +516,37 @@ export function Integrations() {
     };
     setTimeout(tick, 1500);
   };
+
+  useEffect(() => {
+    if (!deviceAuth?.auth.session_id || deviceAuthStatus?.status !== "pending") return;
+    let cancelled = false;
+    const delay = Math.max(2, deviceAuthStatus.next_poll_seconds || deviceAuth.auth.interval_seconds || 5) * 1000;
+    const timer = window.setTimeout(async () => {
+      try {
+        const next = await integrations.deviceAuthPoll(deviceAuth.auth.session_id);
+        if (cancelled) return;
+        setDeviceAuthStatus(next);
+        if (next.status === "connected" && next.connection) {
+          loadConnections();
+          if (autoMCP) openPickerFor(next.connection as unknown as ConnectionInfo);
+          setSelectedLocalApp(null);
+          setDeviceAuth(null);
+          setDeviceAuthStatus(null);
+          setDeviceAuthPollTick(0);
+        } else if (next.status === "pending") {
+          setDeviceAuthPollTick((n) => n + 1);
+        } else if (next.status === "expired" || next.status === "failed") {
+          setError(next.error || `Authentication ${next.status}`);
+        }
+      } catch (err: any) {
+        if (!cancelled) setError(err?.message || "Authentication check failed");
+      }
+    }, delay);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [deviceAuth?.auth.session_id, deviceAuthStatus?.status, deviceAuthStatus?.next_poll_seconds, deviceAuthPollTick, autoMCP, loadConnections]);
 
   const handleDisconnect = async (id: number) => {
     await integrations.disconnect(id);
@@ -1264,7 +1311,11 @@ export function Integrations() {
                 <h2 className="text-text text-base font-bold">{selectedLocalApp.name}</h2>
               </div>
               <button
-                onClick={() => setSelectedLocalApp(null)}
+                onClick={() => {
+                  setSelectedLocalApp(null);
+                  setDeviceAuth(null);
+                  setDeviceAuthStatus(null);
+                }}
                 className="text-text-muted hover:text-text text-sm transition-colors"
               >
                 Close
@@ -1276,6 +1327,13 @@ export function Integrations() {
             <div className="text-text-dim text-xs mb-4">
               Auth: {selectedLocalApp.auth.types.join(", ")} · {selectedLocalApp.tools.length} tools
             </div>
+
+            {selectedLocalApp.auth.types.includes("oauth_device_code") && !deviceAuth && (
+              <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted">
+                Click <b>Connect</b> to get a short sign-in code, then authorize
+                this connection with your OpenAI account.
+              </div>
+            )}
 
             {selectedLocalApp.auth.types.includes("oauth2") && oauthClientResolved && (
               <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted">
@@ -1315,8 +1373,29 @@ export function Integrations() {
                   onChange={(e) => setConnName(e.target.value)}
                   className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text focus:outline-none focus:border-accent"
                   required
+                  disabled={!!deviceAuth}
                 />
               </div>
+
+              {deviceAuth && (
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-border bg-bg-hover p-4">
+                    <div className="text-xs uppercase text-text-muted mb-1">Code</div>
+                    <div className="text-text text-2xl font-bold tracking-wide">{deviceAuth.auth.user_code}</div>
+                  </div>
+                  <a
+                    href={deviceAuth.auth.verification_uri}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex text-sm text-accent hover:text-accent-hover"
+                  >
+                    Open sign-in page
+                  </a>
+                  <div className="text-sm text-text-muted">
+                    {deviceAuthStatus?.status === "pending" ? "Waiting for authorization…" : deviceAuthStatus?.status}
+                  </div>
+                </div>
+              )}
 
               {selectedLocalApp.auth.types.includes("oauth2") && !oauthClientResolved && (
                 <>
@@ -1351,6 +1430,7 @@ export function Integrations() {
               )}
 
               {!selectedLocalApp.auth.types.includes("oauth2") &&
+                !selectedLocalApp.auth.types.includes("oauth_device_code") &&
                 selectedLocalApp.auth.credential_fields?.map((field) => (
                   <div key={field.name}>
                     <label className="block text-text-muted text-sm mb-2">{field.label}</label>
@@ -1388,11 +1468,13 @@ export function Integrations() {
 
               <button
                 type="submit"
-                disabled={connecting}
+                disabled={connecting || !!deviceAuth}
                 className="w-full px-5 py-3 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
               >
                 {connecting
                   ? "Connecting..."
+                  : deviceAuth
+                    ? "Waiting for authorization..."
                   : selectedLocalApp.auth.types.includes("oauth2")
                     ? "Authorize"
                     : "Connect"}

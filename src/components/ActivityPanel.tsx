@@ -71,6 +71,12 @@ function formatToolTime(ms: number): string {
   return `${months[d.getMonth()]} ${String(d.getDate()).padStart(2, "0")} ${hh}:${mm}`;
 }
 
+function restoreCheckpointMs(event: { type: string; data?: Record<string, any> }): number {
+  if (event.type !== "execution.restored") return 0;
+  const ms = Date.parse(String(event.data?.checkpoint_time || ""));
+  return Number.isFinite(ms) ? ms : 0;
+}
+
 // Noisy internal tools that clutter the Tool Calls list. `pace` fires on
 // every iteration-rate change (very often), `send`/`done` are glue
 // calls, and `channels_*` is the outbound chat bridge — none of these
@@ -249,6 +255,17 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
       }
 
       const data = event.data || {};
+
+    const restoreMs = restoreCheckpointMs(event);
+    if (restoreMs > 0) {
+      setThoughts((prev) => prev.filter((t) => t.time < restoreMs));
+      setTools((prev) => prev.filter((t) => t.time < restoreMs));
+      setIncomingEvents((prev) => prev.filter((e) => e.time < restoreMs));
+      setThinking({});
+      setCtxByThread({});
+      setUsageByThread({});
+      return;
+    }
 
     // llm.start — agent started an LLM call, no tokens yet
     if (event.type === "llm.start") {

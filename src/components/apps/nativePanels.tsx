@@ -38,6 +38,7 @@ export function resolvePanelComponent(
   appName: string,
   entry: string,
   version?: string,
+  scope?: { installId?: number; projectId?: string },
 ): ComponentType<NativePanelProps> | null {
   if (!entry) return null;
   if (!isModuleEntry(entry)) return null;
@@ -49,9 +50,12 @@ export function resolvePanelComponent(
   // freshly-upgraded sidecar would still see the old panel until they
   // hard-refresh. The version is opaque here; any string change
   // forces a re-import.
-  const url = version
-    ? `/api/apps/${appName}${entry}?v=${encodeURIComponent(version)}`
-    : `/api/apps/${appName}${entry}`;
+  const params = new URLSearchParams();
+  if (version) params.set("v", version);
+  if (scope?.installId) params.set("install_id", String(scope.installId));
+  if (scope?.projectId) params.set("project_id", scope.projectId);
+  const qs = params.toString();
+  const url = `/api/apps/${appName}${entry}${qs ? `?${qs}` : ""}`;
   let cached = cache.get(url);
   if (!cached) {
     cached = lazy(async () => {

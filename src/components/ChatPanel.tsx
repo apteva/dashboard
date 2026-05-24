@@ -60,12 +60,22 @@ interface LiveTool {
 //   channels_respond — IS the response; surfacing it as a separate
 //     tool call is pure noise (the user already sees the message it
 //     produced as an assistant turn).
-// Everything else surfaces. `send` (inter-thread dispatch) is
-// included because it's the "main is talking to leader" signal — the
-// dispatch side of [from:main] events the receiving thread shows.
-// Without it the chat reads as one-sided: you'd see thread-x's
-// "[from:main]" land but never see main initiating the conversation.
 const HIDDEN_TOOLS = new Set(["pace", "done", "channels_respond"]);
+
+// `send` is useful when it explains meaningful delegation, but noisy
+// when it is only an internal completion/report-back hop.
+function shouldHideTool(name: string, reason = ""): boolean {
+  if (HIDDEN_TOOLS.has(name)) return true;
+  if (name !== "send") return false;
+  const normalized = reason.trim().toLowerCase();
+  if (!normalized) return true;
+  return (
+    normalized === "report completion" ||
+    normalized === "report back" ||
+    normalized === "report result" ||
+    normalized.includes("completion")
+  );
+}
 
 // Cap on retained tool entries. Once exceeded we drop the oldest
 // completed entry. In-flight (streaming/called) entries are never
@@ -381,7 +391,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
     return subscribe((ev) => {
       if (ev.type === "llm.tool_chunk") {
         const name = String(ev.data?.tool || "");
-        if (!name || HIDDEN_TOOLS.has(name)) return;
+        if (!name || shouldHideTool(name)) return;
         const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
         setLiveTools((prev) => {
           if (prev.has(id)) return prev; // already tracked, ignore further chunks
@@ -401,9 +411,17 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
 
       if (ev.type === "tool.call") {
         const name = String(ev.data?.name || "");
-        if (!name || HIDDEN_TOOLS.has(name)) return;
         const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
         const reason = String(ev.data?.reason || "");
+        if (!name || shouldHideTool(name, reason)) {
+          setLiveTools((prev) => {
+            if (!prev.has(id)) return prev;
+            const next = new Map(prev);
+            next.delete(id);
+            return next;
+          });
+          return;
+        }
         setLiveTools((prev) => {
           const next = new Map(prev);
           const existing = next.get(id);
@@ -422,14 +440,15 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
 
       if (ev.type === "tool.result") {
         const name = String(ev.data?.name || ev.data?.tool || "");
-        if (!name || HIDDEN_TOOLS.has(name)) return;
         const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
+        if (!name || HIDDEN_TOOLS.has(name)) return;
         const isError = !!ev.data?.is_error;
         const durationMs =
           typeof ev.data?.duration_ms === "number" ? ev.data.duration_ms : undefined;
         setLiveTools((prev) => {
           const next = new Map(prev);
           const existing = next.get(id);
+          if (name === "send" && !existing) return prev;
           next.set(id, {
             id,
             threadId: existing?.threadId || ev.thread_id || "main",
@@ -1052,26 +1071,16 @@ function closeOpenMarkdown(s: string): string {
 // chat timeline. Visually subdued (smaller, dimmer, indented) so it
 // reads as background activity, not as a primary turn. Layout:
 //
-//   ⟳ thread · tool_name → agent's reason                    (1.2s)
-//
-// Thread id is always shown so the operator can tell whether main is
-// busy, a sub-thread spawned a helper, etc. Tool slug stays in a
-// fixed-width column so eye scan remains alignable across rows.
+//   ⟳ agent's reason                                         (1.2s)
 function ToolRow({ t }: { t: LiveTool }) {
   const icon =
     t.state === "streaming"
       ? <span className="text-yellow shrink-0 animate-pulse">◐</span>
       : t.state === "called"
-      ? <span className="text-accent shrink-0">⟳</span>
+      ? <span className="text-accent shrink-0 animate-spin">⟳</span>
       : <span className={`shrink-0 ${t.success ? "text-green" : "text-red"}`}>{t.success ? "✓" : "✗"}</span>;
-
-  const labelEl =
-    t.state === "streaming"
-      ? <span className="text-text-dim italic">starting…</span>
-      : t.reason
-      ? <span className="text-text-dim truncate" title={t.reason}>{t.reason}</span>
-      : null;
-
+  const label =
+    t.reason || (t.state === "streaming" ? "Starting..." : "Working...");
   const dur =
     t.state === "done" && t.durationMs != null
       ? t.durationMs >= 1000
@@ -1080,18 +1089,18 @@ function ToolRow({ t }: { t: LiveTool }) {
       : "";
 
   return (
-    <div className="flex items-center gap-1.5 min-w-0 leading-tight pl-3 text-[10px]">
+    <div className="flex items-center gap-1.5 min-w-0 leading-tight pl-3 text-[10px] text-text-dim">
       {icon}
       <span
-        className="text-text-dim shrink-0"
-        title={`thread: ${t.threadId}`}
+        className={t.state === "streaming" ? "truncate italic" : "truncate"}
+        title={label}
       >
-        {t.threadId}
+        {label}
       </span>
-      <span className="text-text-dim shrink-0">·</span>
-      <span className="text-text-muted shrink-0 font-mono">{t.name}</span>
-      {labelEl}
-      {dur && <span className="text-text-dim shrink-0">({dur})</span>}
+      {dur && <span className="shrink-0">({dur})</span>}
+      {t.state === "done" && t.success === false && (
+        <span className="shrink-0 text-red">failed</span>
+      )}
     </div>
   );
 }

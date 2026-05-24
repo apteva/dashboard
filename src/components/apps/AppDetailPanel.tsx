@@ -10,8 +10,8 @@
 // stays readable so the user keeps context.
 
 import { useEffect, useMemo, useState } from "react";
-import type { AppRow, AppSurfaces, AppUIComponent, MarketplaceEntry } from "../../api";
-import { apps } from "../../api";
+import type { AppImports, AppRow, AppSurfaces, AppUIComponent, ConnectionInfo, MarketplaceEntry } from "../../api";
+import { apps, integrations } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
 import { AppSurfaceBadges } from "./AppSurfaceBadges";
 import { ChatComponentMount, type InstalledAppRow } from "./chatComponents";
@@ -47,6 +47,7 @@ interface View {
   status?: string;
   installId?: number;
   components?: AppUIComponent[];
+  imports?: AppImports;
 }
 
 function viewFromProps(p: Props): View | null {
@@ -80,6 +81,7 @@ function viewFromProps(p: Props): View | null {
       status: i.status,
       installId: i.install_id,
       components: i.ui_components,
+      imports: i.imports,
     };
   }
   return null;
@@ -341,7 +343,7 @@ function FlatBody({ view }: { view: View }) {
   );
 }
 
-type TabKey = "overview" | "bindings" | "settings" | "tools";
+type TabKey = "overview" | "bindings" | "settings" | "imports" | "tools";
 
 // TabbedBody — installed-mode render. Bindings and Settings each get
 // their own tab so they can spread out without competing with the
@@ -358,10 +360,12 @@ function TabbedBody({ view }: { view: View }) {
     (s?.http_routes && s.http_routes.length > 0) ||
     (s?.channel_names && s.channel_names.length > 0) ||
     (view.components && view.components.length > 0);
+  const showImports = !!view.imports?.sources?.length;
   const tabs: { key: TabKey; label: string; visible: boolean }[] = [
     { key: "overview", label: "Overview", visible: true },
     { key: "bindings", label: "Bindings", visible: !!showBindings },
     { key: "settings", label: "Settings", visible: view.installId !== undefined },
+    { key: "imports", label: "Imports", visible: showImports && view.installId !== undefined },
     { key: "tools", label: "Tools & UI", visible: !!showTools },
   ];
   const visibleTabs = tabs.filter((t) => t.visible);
@@ -394,10 +398,185 @@ function TabbedBody({ view }: { view: View }) {
         {active === "settings" && view.installId !== undefined && (
           <SettingsSection installId={view.installId} />
         )}
+        {active === "imports" && view.installId !== undefined && (
+          <ImportsSection installId={view.installId} imports={view.imports} />
+        )}
         {active === "tools" && <ToolsTab view={view} />}
       </div>
     </>
   );
+}
+
+function ImportsSection({ installId, imports }: { installId: number; imports?: AppImports }) {
+  const { currentProject } = useProjects();
+  const sources = imports?.sources || [];
+  const [connections, setConnections] = useState<ConnectionInfo[]>([]);
+  const [selected, setSelected] = useState<Record<string, string>>({});
+  const [running, setRunning] = useState<string | null>(null);
+  const [events, setEvents] = useState<Array<{ type?: string; message?: string; [key: string]: any }>>([]);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    integrations
+      .connections(currentProject?.id)
+      .then((rows) => {
+        if (!cancelled) setConnections(rows || []);
+      })
+      .catch(() => {
+        if (!cancelled) setConnections([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProject?.id]);
+
+  const runImport = async (source: NonNullable<AppImports["sources"]>[number]) => {
+    const connID = Number(selected[source.id] || 0);
+    if (!connID || running) return;
+    setRunning(source.id);
+    setEvents([]);
+    setError("");
+    try {
+      const res = await fetch(`/api/apps/installs/${installId}/imports/${encodeURIComponent(source.id)}/run`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ connection_id: connID, project_id: currentProject?.id || "" }),
+      });
+      if (!res.ok || !res.body) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const event = JSON.parse(trimmed);
+            setEvents((prev) => [...prev, event]);
+            if (event.type === "error") setError(event.message || "Import failed");
+          } catch {
+            setEvents((prev) => [...prev, { type: "log", message: trimmed }]);
+          }
+        }
+      }
+    } catch (e: any) {
+      setError(e?.message || "Import failed");
+    } finally {
+      setRunning(null);
+    }
+  };
+
+  if (sources.length === 0) return null;
+
+  return (
+    <section className="space-y-5">
+      <div>
+        <h3 className="text-text font-semibold text-base mb-1.5">Imports</h3>
+        <p className="text-text-dim text-sm leading-relaxed">
+          Run manual imports declared by this app.
+        </p>
+      </div>
+      <div className="divide-y divide-border border border-border rounded-md">
+        {sources.map((source) => {
+          const compatible = connections.filter(
+            (c) => c.app_slug === source.integration && c.status !== "disabled",
+          );
+          const value = selected[source.id] || "";
+          return (
+            <div key={source.id} className="px-4 py-4 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-text font-medium text-sm">{source.label || source.id}</div>
+                  {source.description && (
+                    <p className="text-text-dim text-xs mt-0.5 leading-relaxed">{source.description}</p>
+                  )}
+                </div>
+                {source.integration && (
+                  <span className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded bg-bg-hover text-text-muted">
+                    {source.integration}
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <select
+                  value={value}
+                  onChange={(e) => setSelected((prev) => ({ ...prev, [source.id]: e.target.value }))}
+                  className="flex-1 bg-bg-input border border-border rounded px-2 py-1.5 text-sm text-text focus:outline-none focus:border-accent"
+                >
+                  <option value="">Choose connection…</option>
+                  {compatible.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name || c.app_name} #{c.id}{c.project_id ? "" : " · global"}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={!value || !!running}
+                  onClick={() => runImport(source)}
+                  className="px-3 py-1.5 text-xs rounded bg-accent text-bg font-medium disabled:opacity-40"
+                >
+                  {running === source.id ? "Importing…" : "Start import"}
+                </button>
+              </div>
+              {compatible.length === 0 && (
+                <div className="text-text-dim text-xs">
+                  No {source.integration || "compatible"} connections are available in this project.
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {(events.length > 0 || error) && (
+        <div className="border border-border rounded-md bg-bg-input/40 p-3">
+          <div className="text-text-muted text-xs uppercase tracking-wide mb-2">Progress</div>
+          <div className="space-y-1 max-h-72 overflow-y-auto font-mono text-xs">
+            {events.map((event, i) => (
+              <div key={i} className={event.type === "error" ? "text-red" : "text-text-dim"}>
+                {formatImportEvent(event)}
+              </div>
+            ))}
+          </div>
+          {error && <div className="text-red text-xs mt-2">{error}</div>}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function formatImportEvent(event: { type?: string; message?: string; [key: string]: any }) {
+  if (event.message) return event.message;
+  switch (event.type) {
+    case "started":
+      return `Started ${event.source_id}`;
+    case "base":
+      return `Base: ${event.name || event.id}`;
+    case "table":
+      return `${event.base ? `${event.base} / ` : ""}${event.table || event.destination}: ${event.status}`;
+    case "column":
+      return `${event.destination}: added column ${event.column}`;
+    case "page":
+      return `${event.base} / ${event.table}: page ${event.page}, ${event.rows} rows`;
+    case "table_done":
+      return `${event.base} / ${event.table}: done, ${event.rows} rows`;
+    case "done":
+      return `Done: ${event.stats?.rows || 0} rows, ${event.stats?.tables || 0} tables`;
+    case "error":
+      return event.message || "Import failed";
+    default:
+      return JSON.stringify(event);
+  }
 }
 
 function OverviewTab({ view }: { view: View }) {
@@ -840,4 +1019,3 @@ function ScopeButton({ install, onChanged }: { install: AppRow; onChanged?: () =
     </>
   );
 }
-

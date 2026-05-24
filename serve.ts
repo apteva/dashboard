@@ -39,7 +39,7 @@ console.log(`Version: ${VERSION}`);
 
 // Step 1: Build core
 console.log("Building apteva-core...");
-await $`cd ../core && go build -ldflags="-X main.Version=${VERSION}" -o apteva-core .`;
+await $`cd ../core && go build -ldflags="-X main.Version=${VERSION}" -o apteva-core ./cmd/apteva-core`;
 
 // Step 2: Build dashboard, then copy into server embed dir, then build server
 console.log("Building dashboard...");

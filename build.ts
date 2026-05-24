@@ -218,6 +218,14 @@ const html = `<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Apteva</title>
 
+    <!-- Favicon. SVG goes first so Safari dark mode can use a dark
+         tab-matched tile instead of putting the transparent mark on a
+         white rounded square. PNG remains the fallback; apple-touch-icon
+         stays opaque for iOS/macOS surfaces that expect an app tile. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260523" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/favicon.png?v=20260523" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260523" />
+
     <!-- Theme bootstrap — runs synchronously before any render so the
          first paint already has the right data-theme/data-mode set.
          Without this, every cold load flashes the default theme for
@@ -269,6 +277,16 @@ const html = `<!DOCTYPE html>
 
 await Bun.write("./dist/index.html", html);
 
+// Copy favicons into dist/ so the server's embedded static tree serves
+// them. Skipped silently if missing so a checkout without the icons
+// still builds.
+{
+  const { copyFileSync, existsSync: exists } = await import("fs");
+  for (const f of ["favicon.svg", "favicon.png", "apple-touch-icon.png"]) {
+    if (exists(`./${f}`)) copyFileSync(`./${f}`, `./dist/${f}`);
+  }
+}
+
 console.log("\nBuild complete:");
 for (const output of result.outputs) {
   const size = (output.size / 1024).toFixed(1);
@@ -276,3 +294,4 @@ for (const output of result.outputs) {
 }
 console.log("  style.css");
 console.log("  index.html");
+console.log("  favicon.svg + favicon.png + apple-touch-icon.png");

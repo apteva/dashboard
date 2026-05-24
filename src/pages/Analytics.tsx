@@ -149,9 +149,9 @@ export function Analytics() {
     <div className="flex flex-col h-full">
       <div className="border-b border-border px-6 py-4 flex items-center justify-between">
         <div>
-          <h1 className="text-text text-lg font-bold">Analytics</h1>
+          <h1 className="text-text text-lg font-bold">Usage</h1>
           <p className="text-text-dim text-xs mt-0.5">
-            Project-wide spend, per-instance breakdown, and anomaly signals.
+            Project-wide spend, per-agent breakdown, and anomaly signals.
           </p>
         </div>
         <div className="flex gap-2">

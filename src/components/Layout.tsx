@@ -173,7 +173,7 @@ export function Layout() {
     { to: "/apps", label: "Apps" },
     { to: "/skills", label: "Skills" },
     { to: "/worlds", label: "Worlds" },
-    { to: "/analytics", label: "Analytics" },
+    { to: "/analytics", label: "Usage" },
     { to: "/settings", label: "Settings" },
   ];
   // App-contributed entries from any installed app declaring a

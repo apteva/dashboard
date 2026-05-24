@@ -69,7 +69,10 @@ export function AppProjectPage() {
   // Native path: dynamically import the panel module the app's
   // sidecar serves at panel.entry. The component lives inside our
   // React tree, inherits the importmap'd React + theme + router.
-  const Native = resolvePanelComponent(app.name, panel.entry, app.version);
+  const Native = resolvePanelComponent(app.name, panel.entry, app.version, {
+    installId: app.install_id,
+    projectId: currentProject?.id || "",
+  });
   if (Native) {
     return (
       <div className="h-full">

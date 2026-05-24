@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, type Provider, type ProviderTypeInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser } from "../api";
+import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, type Provider, type ProviderTypeInfo, type ProviderAuthStart, type ProviderAuthStatus, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser } from "../api";
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
@@ -538,6 +538,10 @@ function ProvidersTab() {
   const [types, setTypes] = useState<ProviderTypeInfo[]>([]);
   const [configuring, setConfiguring] = useState<ProviderTypeInfo | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
+  const [authSession, setAuthSession] = useState<ProviderAuthStart | null>(null);
+  const [authStatus, setAuthStatus] = useState<ProviderAuthStatus | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authPollTick, setAuthPollTick] = useState(0);
   const [error, setError] = useState("");
   // makeGlobal — when true, this provider is created with project_id=""
   // (visible across every project the user owns). When false, it's
@@ -588,7 +592,8 @@ function ProvidersTab() {
     makeGlobal || !currentProject ? "" : currentProject.id;
 
   const handleActivate = async (pt: ProviderTypeInfo) => {
-    if (!pt.requires_credentials) {
+    const authType = pt.auth_type || "api_key";
+    if (!pt.requires_credentials || authType === "none") {
       // No credentials needed — activate immediately. Honour the
       // makeGlobal toggle too (it persists across credential-less
       // activations within this tab session).
@@ -598,13 +603,70 @@ function ProvidersTab() {
       } catch {}
       return;
     }
+    if (authType === "oauth_device_code") {
+      setConfiguring(pt);
+      setFields({});
+      setAuthSession(null);
+      setAuthStatus(null);
+      setMakeGlobal(false);
+      setError("");
+      return;
+    }
     // Open credential form. Reset the toggle to project-scoped by
     // default — globals are an explicit opt-in per provider.
     setConfiguring(pt);
     setFields({});
+    setAuthSession(null);
+    setAuthStatus(null);
     setMakeGlobal(false);
     setError("");
   };
+
+  const handleStartAuth = async () => {
+    if (!configuring) return;
+    setError("");
+    setAuthBusy(true);
+    try {
+      const session = await providers.authStart(configuring.id, targetProjectID());
+      setAuthSession(session);
+      setAuthStatus({ status: "pending", next_poll_seconds: session.interval_seconds || 5 });
+      setAuthPollTick(0);
+    } catch (err: any) {
+      setError(err?.message || "Failed to start authentication");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!authSession?.session_id || authStatus?.status !== "pending") return;
+    let cancelled = false;
+    const delay = Math.max(2, authStatus.next_poll_seconds || authSession.interval_seconds || 5) * 1000;
+    const timer = window.setTimeout(async () => {
+      try {
+        const next = await providers.authPoll(authSession.session_id);
+        if (cancelled) return;
+        setAuthStatus(next);
+        if (next.status === "connected") {
+          setConfiguring(null);
+          setAuthSession(null);
+          setAuthStatus(null);
+          setMakeGlobal(false);
+          load();
+        } else if (next.status === "pending") {
+          setAuthPollTick((n) => n + 1);
+        } else if (next.status === "expired" || next.status === "failed") {
+          setError(next.error || `Authentication ${next.status}`);
+        }
+      } catch (err: any) {
+        if (!cancelled) setError(err?.message || "Authentication check failed");
+      }
+    }, delay);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [authSession?.session_id, authStatus?.status, authStatus?.next_poll_seconds, authPollTick]);
 
   const handleSaveCredentials = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -647,6 +709,54 @@ function ProvidersTab() {
       await providers.delete(p.id);
       load();
     }
+  };
+
+  const handleRefreshAuth = async (name: string) => {
+    const p = getActive(name);
+    if (!p) return;
+    setTestingProviderID(p.id);
+    try {
+      const res = await providers.authRefresh(p.id);
+      setTestResultByID((m) => ({
+        ...m,
+        [p.id]: {
+          ok: res.auth_status === "connected",
+          latency_ms: 0,
+          error: res.error || (res.auth_status === "connected" ? "" : res.auth_status || "refresh failed"),
+        },
+      }));
+    } catch (err: any) {
+      setTestResultByID((m) => ({
+        ...m,
+        [p.id]: { ok: false, latency_ms: 0, error: err?.message || "refresh failed" },
+      }));
+    } finally {
+      setTestingProviderID(null);
+    }
+  };
+
+  const handleTestAuth = async (name: string) => {
+    const p = getActive(name);
+    if (!p) return;
+    setTestingProviderID(p.id);
+    try {
+      const res = await providers.authSmokeTest(p.id);
+      setTestResultByID((m) => ({ ...m, [p.id]: res }));
+    } catch (err: any) {
+      setTestResultByID((m) => ({
+        ...m,
+        [p.id]: { ok: false, latency_ms: 0, error: err?.message || "test failed" },
+      }));
+    } finally {
+      setTestingProviderID(null);
+    }
+  };
+
+  const handleLogoutAuth = async (name: string) => {
+    const p = getActive(name);
+    if (!p) return;
+    await providers.authLogout(p.id);
+    load();
   };
 
   // Group types by category. We collapse "browser" and "browserbase" into
@@ -751,14 +861,40 @@ function ProvidersTab() {
                   <p className="text-text-muted text-xs leading-relaxed mb-2">{pt.description}</p>
                   {active ? (
                     <div className="flex items-center gap-3">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleTest(pt.name); }}
-                        className="text-xs text-text-muted hover:text-accent transition-colors disabled:opacity-50"
-                        disabled={testingProviderID === getActive(pt.name)?.id}
-                        title="Probe the upstream with the saved credentials"
-                      >
-                        {testingProviderID === getActive(pt.name)?.id ? "Testing…" : "Test"}
-                      </button>
+                      {(pt.auth_type || "api_key") === "api_key" ? (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleTest(pt.name); }}
+                          className="text-xs text-text-muted hover:text-accent transition-colors disabled:opacity-50"
+                          disabled={testingProviderID === getActive(pt.name)?.id}
+                          title="Probe the upstream with the saved credentials"
+                        >
+                          {testingProviderID === getActive(pt.name)?.id ? "Testing…" : "Test"}
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleTestAuth(pt.name); }}
+                            className="text-xs text-text-muted hover:text-accent transition-colors disabled:opacity-50"
+                            disabled={testingProviderID === getActive(pt.name)?.id}
+                            title="Probe the subscription-backed runtime with the saved auth"
+                          >
+                            {testingProviderID === getActive(pt.name)?.id ? "Testing…" : "Test"}
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleRefreshAuth(pt.name); }}
+                            className="text-xs text-text-muted hover:text-accent transition-colors disabled:opacity-50"
+                            disabled={testingProviderID === getActive(pt.name)?.id}
+                          >
+                            {testingProviderID === getActive(pt.name)?.id ? "Refreshing…" : "Refresh"}
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleLogoutAuth(pt.name); }}
+                            className="text-xs text-text-muted hover:text-red transition-colors"
+                          >
+                            Logout
+                          </button>
+                        </>
+                      )}
                       <button
                         onClick={(e) => { e.stopPropagation(); handleDeactivate(pt.name); }}
                         className="text-xs text-text-muted hover:text-red transition-colors"
@@ -780,7 +916,7 @@ function ProvidersTab() {
                     </div>
                   ) : (
                     <span className="text-xs text-accent">
-                      {pt.requires_credentials ? "Configure" : "Activate"}
+                      {(pt.auth_type || "api_key") === "oauth_device_code" ? "Connect" : pt.requires_credentials ? "Configure" : "Activate"}
                     </span>
                   )}
                 </div>
@@ -792,7 +928,75 @@ function ProvidersTab() {
 
       {/* Credential configuration modal */}
       <Modal open={!!configuring} onClose={() => setConfiguring(null)}>
-        {configuring && (
+        {configuring && (configuring.auth_type || "api_key") === "oauth_device_code" ? (
+          <div className="p-6 space-y-4">
+            <h3 className="text-text text-base font-bold">{configuring.name}</h3>
+            <p className="text-text-muted text-sm">{configuring.description}</p>
+
+            {currentProject && !authSession && (
+              <label className="flex items-start gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={makeGlobal}
+                  onChange={(e) => setMakeGlobal(e.target.checked)}
+                  className="mt-1 accent-accent"
+                />
+                <span className="text-sm text-text-muted leading-snug">
+                  <span className="text-text">Make global</span> — share this sign-in with every project, not just <b>{currentProject.name}</b>.
+                </span>
+              </label>
+            )}
+
+            {authSession ? (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-border bg-bg-hover p-4">
+                  <div className="text-xs uppercase text-text-muted mb-1">Code</div>
+                  <div className="text-text text-2xl font-bold tracking-wide">{authSession.user_code}</div>
+                </div>
+                {authSession.verification_uri && (
+                  <a
+                    href={authSession.verification_uri}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex text-sm text-accent hover:text-accent-hover"
+                  >
+                    Open sign-in page
+                  </a>
+                )}
+                <div className="text-sm text-text-muted">
+                  {authStatus?.status === "pending" ? "Waiting for authorization…" : authStatus?.status}
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleStartAuth}
+                disabled={authBusy}
+                className="w-full px-4 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
+              >
+                {authBusy ? "Starting…" : "Connect"}
+              </button>
+            )}
+
+            {configuring.runtime_status === "auth_only" && (
+              <div className="text-xs text-text-muted bg-bg-hover border border-border rounded-lg p-3">
+                This sign-in can be saved now. Agent runtime support will be enabled separately.
+              </div>
+            )}
+
+            {error && <div className="text-red text-sm">{error}</div>}
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setConfiguring(null)}
+                className="px-4 py-2.5 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        ) : configuring && (
           <form onSubmit={handleSaveCredentials} className="p-6 space-y-4">
             <h3 className="text-text text-base font-bold">{configuring.name}</h3>
             <p className="text-text-muted text-sm">{configuring.description}</p>

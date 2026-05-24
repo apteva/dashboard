@@ -392,7 +392,13 @@ function ProviderStep({ onSaved }: { onSaved?: () => void }) {
         // minimum to make an agent run. Browser/embedding/integration
         // providers can wait for Settings → Providers.
         const llm = all
-          .filter((t) => t.type === "llm" && t.requires_credentials)
+          .filter(
+            (t) =>
+              t.type === "llm" &&
+              t.requires_credentials &&
+              (t.auth_type || "api_key") === "api_key" &&
+              (t.runtime_status || "available") === "available",
+          )
           .sort((a, b) => a.sort_order - b.sort_order);
         setTypes(llm);
         if (llm.length > 0) setSelected(llm[0] ?? null);
