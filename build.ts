@@ -218,13 +218,13 @@ const html = `<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Apteva</title>
 
-    <!-- Favicon. SVG goes first so Safari dark mode can use a dark
-         tab-matched tile instead of putting the transparent mark on a
-         white rounded square. PNG remains the fallback; apple-touch-icon
-         stays opaque for iOS/macOS surfaces that expect an app tile. -->
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260523" />
-    <link rel="icon" type="image/png" sizes="512x512" href="/favicon.png?v=20260523" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260523" />
+    <!-- Favicons. Safari adds a border around dark tiles, so every
+         browser-advertised icon uses a tab-gray tile behind the orange mark. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon-tab.svg?v=20260525g" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/favicon-tab.png?v=20260525g" />
+    <link rel="shortcut icon" href="/favicon-tab.ico?v=20260525g" />
+    <link rel="mask-icon" href="/safari-pinned-tab.svg?v=20260525g" color="#ff9500" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-tab.png?v=20260525g" />
 
     <!-- Theme bootstrap — runs synchronously before any render so the
          first paint already has the right data-theme/data-mode set.
@@ -282,7 +282,29 @@ await Bun.write("./dist/index.html", html);
 // still builds.
 {
   const { copyFileSync, existsSync: exists } = await import("fs");
-  for (const f of ["favicon.svg", "favicon.png", "apple-touch-icon.png"]) {
+  for (const f of [
+    "favicon.svg",
+    "favicon.png",
+    "favicon.ico",
+    "favicon-orange.svg",
+    "favicon-orange.png",
+    "favicon-orange.ico",
+    "favicon-safari.svg",
+    "favicon-safari.png",
+    "favicon-safari.ico",
+    "favicon-dark.svg",
+    "favicon-dark.png",
+    "favicon-dark.ico",
+    "favicon-tab.svg",
+    "favicon-tab.png",
+    "favicon-tab.ico",
+    "safari-pinned-tab.svg",
+    "apple-touch-icon.png",
+    "apple-touch-icon-orange.png",
+    "apple-touch-icon-safari.png",
+    "apple-touch-icon-dark.png",
+    "apple-touch-icon-tab.png",
+  ]) {
     if (exists(`./${f}`)) copyFileSync(`./${f}`, `./dist/${f}`);
   }
 }
@@ -294,4 +316,4 @@ for (const output of result.outputs) {
 }
 console.log("  style.css");
 console.log("  index.html");
-console.log("  favicon.svg + favicon.png + apple-touch-icon.png");
+console.log("  favicons + safari-pinned-tab.svg + apple-touch-icon.png");
