@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   integrations,
   providers,
@@ -87,6 +87,9 @@ export function Integrations() {
   // sticky reassurance on the next session.
   const [testResults, setTestResults] = useState<Record<number, ConnectionTestResult>>({});
   const [testInFlight, setTestInFlight] = useState<Set<number>>(new Set());
+  const [reauthInFlight, setReauthInFlight] = useState<Set<number>>(new Set());
+  const [openMenuFor, setOpenMenuFor] = useState<number | null>(null);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Scope-change state. When set, renders a small confirmation
   // modal asking "move this connection from project to global"
@@ -172,6 +175,18 @@ export function Integrations() {
     integrations.connections(currentProject?.id).then(setConnections).catch(() => {});
   }, [currentProject?.id]);
 
+  useEffect(() => {
+    if (openMenuFor == null) return;
+    const onDocMouseDown = (event: MouseEvent) => {
+      const node = actionMenuRef.current;
+      if (node && event.target instanceof Node && !node.contains(event.target)) {
+        setOpenMenuFor(null);
+      }
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [openMenuFor]);
+
   const loadLocalApps = useCallback(() => {
     // Ask the server to hide apps that are members of a credential
     // group; the suite list below renders one card per group instead.
@@ -246,6 +261,13 @@ export function Integrations() {
 
   // --- Local app interactions ---
 
+  const nextLocalConnectionName = (slug: string, appName: string) => {
+    const existing = (connections || []).filter(
+      (c) => c.app_slug === slug && c.source === "local",
+    );
+    return existing.length === 0 ? appName : `${appName} ${existing.length + 1}`;
+  };
+
   const selectLocalApp = async (slug: string) => {
     const app = await integrations.app(slug);
     setSelectedLocalApp(app);
@@ -254,10 +276,7 @@ export function Integrations() {
     // more connections for this app in the current project, append a
     // suffix so the unique-name server check doesn't immediately reject
     // the submit. The user can still edit the field before saving.
-    const existing = (connections || []).filter(
-      (c) => c.app_slug === slug && c.source === "local",
-    );
-    setConnName(existing.length === 0 ? app.name : `${app.name} ${existing.length + 1}`);
+    setConnName(nextLocalConnectionName(slug, app.name));
     setError("");
     setOAuthClientID("");
     setOAuthClientSecret("");
@@ -478,12 +497,12 @@ export function Integrations() {
 
   // --- OAuth popup + poll ---
 
-  const openOAuthPopup = (url: string) => {
+  const openOAuthPopup = (url: string): Window | null => {
     const w = 540;
     const h = 680;
     const left = window.screenX + (window.outerWidth - w) / 2;
     const top = window.screenY + (window.outerHeight - h) / 2;
-    window.open(
+    return window.open(
       url,
       "apteva-oauth",
       `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no,location=no`,
@@ -515,6 +534,91 @@ export function Integrations() {
       if (attempts < 120) setTimeout(tick, 1500);
     };
     setTimeout(tick, 1500);
+  };
+
+  const waitForOAuthPopupResult = (
+    popup: Window | null,
+    onDone: (ok: boolean | null) => void,
+  ) => {
+    let done = false;
+    let onMessage: (event: MessageEvent) => void;
+    let closePoll: number | undefined;
+    const finish = (ok: boolean | null) => {
+      if (done) return;
+      done = true;
+      window.removeEventListener("message", onMessage);
+      if (closePoll != null) window.clearInterval(closePoll);
+      onDone(ok);
+    };
+    onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data as { type?: string; ok?: boolean } | null;
+      if (!data || data.type !== "apteva-oauth-result") return;
+      finish(!!data.ok);
+    };
+    window.addEventListener("message", onMessage);
+    if (!popup) {
+      finish(false);
+      return;
+    }
+    closePoll = window.setInterval(() => {
+      if (popup.closed) finish(null);
+    }, 500);
+    window.setTimeout(() => finish(false), 180_000);
+  };
+
+  const handleAddOAuthAccount = async (c: ConnectionInfo) => {
+    setOpenMenuFor(null);
+    setError("");
+    setConnecting(true);
+    try {
+      const app = await integrations.app(c.app_slug);
+      const result = await integrations.connect(
+        app.slug,
+        nextLocalConnectionName(app.slug, app.name),
+        {},
+        "oauth2",
+        currentProject?.id,
+        undefined,
+        undefined,
+        true,
+      );
+      const r = result as ConnectCreateResponse;
+      if (r.redirect_url) {
+        openOAuthPopup(r.redirect_url);
+        pollConnection(r.connection.id, true);
+      }
+    } catch (err: any) {
+      setError(err?.message || "Failed to start OAuth");
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const handleReauthConnection = async (c: ConnectionInfo) => {
+    setOpenMenuFor(null);
+    setError("");
+    setReauthInFlight((prev) => new Set(prev).add(c.id));
+    try {
+      const r = await integrations.reauth(c.id);
+      const popup = openOAuthPopup(r.redirect_url || "");
+      waitForOAuthPopupResult(popup, (ok) => {
+        setReauthInFlight((prev) => {
+          const next = new Set(prev);
+          next.delete(c.id);
+          return next;
+        });
+        loadConnections();
+        if (ok === false) setError("OAuth re-auth did not complete");
+      });
+    } catch (err: any) {
+      setReauthInFlight((prev) => {
+        const next = new Set(prev);
+        next.delete(c.id);
+        return next;
+      });
+      setError(err?.message || "Failed to start re-auth");
+    }
   };
 
   useEffect(() => {
@@ -815,23 +919,21 @@ export function Integrations() {
 
   if (!loaded) return null;
 
-  // renderConnectionRow — single source of truth for a connection
-  // row's JSX, called from both the "Project" and "Global" sections
-  // of the Connected list. Closes over every handler the row needs
-  // (testInFlight / openRenameFor / handleDisconnect / …) so adding
-  // a new action is a one-line change inside the JSX, not a prop
-  // threading exercise. Project rows get a "Move to global" action;
-  // global rows get "Move to <current project>" (when one is
-  // selected) — both flow through scopeFlipFor + the confirmation
-  // modal at the bottom of the page.
+  // renderConnectionRow — single source of truth for a connection row.
+  // Secondary operations live behind the overflow menu so adding OAuth
+  // lifecycle actions does not keep stretching each row horizontally.
   const renderConnectionRow = (c: ConnectionInfo) => {
     const isGlobal = !c.project_id;
+    const isLocalOAuth = (c.source || "local") === "local" && c.auth_type === "oauth2";
+    const canMoveScope = c.source !== "composio" && (isGlobal ? currentProject?.id : true);
+    const menuOpen = openMenuFor === c.id;
+    const menuItemClass = "block w-full text-left px-3 py-2 text-sm text-text-muted hover:bg-bg-hover hover:text-text transition-colors";
     return (
       <div
         key={c.id}
-        className="border border-border rounded-lg p-4 bg-bg-card flex items-center justify-between"
+        className="border border-border rounded-lg p-4 bg-bg-card flex items-center justify-between gap-4"
       >
-        <div className="flex items-center gap-3">
+        <div className="min-w-0 flex items-center gap-3">
           <span
             className={`inline-block w-2.5 h-2.5 rounded-full ${
               c.status === "active"
@@ -841,7 +943,7 @@ export function Integrations() {
                   : "bg-red"
             }`}
           />
-          <div>
+          <div className="min-w-0">
             {c.is_group_child ? (
               <span
                 className="text-text text-base font-bold"
@@ -877,65 +979,81 @@ export function Integrations() {
             <span className="text-xs text-warn">pending…</span>
           )}
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex shrink-0 items-center gap-3">
           {c.tool_count > 0 && (
             <span className="text-text-dim text-sm">{c.tool_count} tools</span>
           )}
-          <button
-            onClick={() => openRenameFor(c)}
-            className="text-sm text-text-muted hover:text-text transition-colors"
-            title="Rename"
-          >
-            Rename
-          </button>
-          <button
-            onClick={() => openCredsFor(c)}
-            className="text-sm text-text-muted hover:text-text transition-colors"
-            title="Inspect the stored credentials for this connection"
-          >
-            Credentials
-          </button>
-          <button
-            onClick={() => handleTestConnection(c.id)}
-            disabled={testInFlight.has(c.id)}
-            className="text-sm text-text-muted hover:text-accent transition-colors disabled:opacity-50"
-            title="Run the app's health check against the stored credentials"
-          >
-            {testInFlight.has(c.id) ? "Testing…" : "Test"}
-          </button>
           {testResults[c.id] && (
             <ConnectionTestBadge result={testResults[c.id]} />
           )}
-          {/* Move-scope: shows on every row except composio (server
-              refuses for composio source; surface the same gate
-              client-side so the button isn't there to mock). Hidden
-              when there's no current project AND the connection is
-              global — nowhere to move it to. */}
-          {c.source !== "composio" && (isGlobal ? currentProject?.id : true) && (
+          <div className="relative" ref={menuOpen ? actionMenuRef : null}>
             <button
-              onClick={() => {
-                setScopeFlipErr("");
-                setScopeFlipFor(c);
-              }}
-              className="text-sm text-text-muted hover:text-accent transition-colors"
-              title={isGlobal ? "Bind this connection to the current project" : "Make this connection visible from every project"}
+              type="button"
+              onClick={() => setOpenMenuFor(menuOpen ? null : c.id)}
+              className="w-8 h-8 rounded border border-border text-text-muted hover:text-text hover:bg-bg-hover transition-colors"
+              title="Connection actions"
+              aria-label="Connection actions"
             >
-              {isGlobal ? `Move to ${currentProject?.name || "project"}` : "Move to global"}
+              ⋮
             </button>
-          )}
-          <button
-            onClick={() => openInviteFor(c)}
-            className="text-sm text-text-muted hover:text-accent transition-colors"
-            title="Generate a shareable link to let someone else swap the credentials"
-          >
-            Invite
-          </button>
-          <button
-            onClick={() => handleDisconnect(c.id)}
-            className="text-sm text-text-muted hover:text-red transition-colors"
-          >
-            Disconnect
-          </button>
+            {menuOpen && (
+              <div className="absolute right-0 top-9 z-20 w-52 overflow-hidden rounded-md border border-border bg-bg-card shadow-xl">
+                <button className={menuItemClass} onClick={() => { setOpenMenuFor(null); openRenameFor(c); }}>
+                  Rename
+                </button>
+                <button className={menuItemClass} onClick={() => { setOpenMenuFor(null); openCredsFor(c); }}>
+                  View credentials
+                </button>
+                <button
+                  className={`${menuItemClass} disabled:opacity-50`}
+                  disabled={testInFlight.has(c.id)}
+                  onClick={() => { setOpenMenuFor(null); handleTestConnection(c.id); }}
+                >
+                  {testInFlight.has(c.id) ? "Testing..." : "Test connection"}
+                </button>
+                {isLocalOAuth && (
+                  <>
+                    <button
+                      className={menuItemClass}
+                      disabled={connecting}
+                      onClick={() => handleAddOAuthAccount(c)}
+                    >
+                      Add account
+                    </button>
+                    <button
+                      className={`${menuItemClass} disabled:opacity-50`}
+                      disabled={reauthInFlight.has(c.id)}
+                      onClick={() => handleReauthConnection(c)}
+                    >
+                      {reauthInFlight.has(c.id) ? "Re-authing..." : "Re-auth"}
+                    </button>
+                  </>
+                )}
+                {canMoveScope && (
+                  <button
+                    className={menuItemClass}
+                    onClick={() => {
+                      setOpenMenuFor(null);
+                      setScopeFlipErr("");
+                      setScopeFlipFor(c);
+                    }}
+                  >
+                    {isGlobal ? `Move to ${currentProject?.name || "project"}` : "Move to global"}
+                  </button>
+                )}
+                <button className={menuItemClass} onClick={() => { setOpenMenuFor(null); openInviteFor(c); }}>
+                  Invite
+                </button>
+                <div className="border-t border-border" />
+                <button
+                  className="block w-full text-left px-3 py-2 text-sm text-red hover:bg-bg-hover transition-colors"
+                  onClick={() => { setOpenMenuFor(null); handleDisconnect(c.id); }}
+                >
+                  Disconnect
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );

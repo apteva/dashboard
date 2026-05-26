@@ -1675,6 +1675,12 @@ function MCPServersTab() {
                 {s.source === "local" && (
                   <span className="text-xs px-2 py-0.5 rounded bg-bg-hover text-text-dim">integration</span>
                 )}
+                {s.source === "app" && (
+                  <span className="text-xs px-2 py-0.5 rounded bg-bg-hover text-text-dim">app</span>
+                )}
+                <span className="text-xs px-2 py-0.5 rounded bg-bg-hover text-text-dim">
+                  {s.project_id ? "project" : "global"}
+                </span>
                 {s.source === "remote" && (
                   <span className="text-xs px-2 py-0.5 rounded bg-purple-900/40 text-purple-300">
                     hosted
@@ -2043,7 +2049,7 @@ function MCPServersTab() {
                       if (srv.source === "local" && srv.connection_id > 0) {
                         result = await integrations.execute(srv.connection_id, testingTool.tool.name, input);
                       } else {
-                        result = await mcpServers.callTool(srv.id, testingTool.tool.name, input);
+                        result = await mcpServers.callTool(srv.id, testingTool.tool.name, input, currentProject?.id);
                       }
                       setTestResult(result);
                     } catch (err: any) {

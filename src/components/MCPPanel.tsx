@@ -309,6 +309,9 @@ export function MCPPanel({ instanceId, running }: Props) {
                       {s.source}
                     </span>
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-dim">
+                      {s.project_id ? "project" : "global"}
+                    </span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-dim">
                       {transport}
                     </span>
                     {s.tool_count > 0 && (

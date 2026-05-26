@@ -10,6 +10,8 @@ import {
   synthesizeDirective,
   type AgentTemplate,
   type AppRow,
+  type AppGrantPolicy,
+  type AppPermissionCatalog,
   type AppSummary,
   type ConnectionInfo,
   type EvalMock,
@@ -77,6 +79,14 @@ const STEPS: { id: StepId; label: string }[] = [
 
 type Mode = "autonomous" | "cautious" | "learn";
 
+interface AppAccessDraft {
+  mode: "full" | "limited";
+  folders: string;
+  read: boolean;
+  write: boolean;
+  delete: boolean;
+}
+
 interface DraftEval {
   // Seeded from the template's suggested_evals[0] when the operator
   // picks a template in step 1. description + goals are editable in
@@ -105,6 +115,7 @@ interface WizardState {
   // populates these once both inventories load (see effects below).
   boundAppInstallIDs: Set<number>;
   boundConnectionIDs: Set<number>;
+  appAccess: Record<number, AppAccessDraft>;
   // Verify-step draft. null when the template has no suggested
   // evals or before any template is picked.
   draftEval: DraftEval | null;
@@ -137,11 +148,60 @@ const INITIAL: WizardState = {
   includeChannels: true,
   boundAppInstallIDs: new Set<number>(),
   boundConnectionIDs: new Set<number>(),
+  appAccess: {},
   recommendedApps: [],
   draftEval: null,
   verifyOptions: { max_iterations: 5, strict_mocks: false },
   acceptedEdits: [],
 };
+
+function defaultAppAccessDraft(): AppAccessDraft {
+  return { mode: "full", folders: "/", read: true, write: false, delete: false };
+}
+
+function folderGrantResource(folder: string): string {
+  let f = folder.trim();
+  if (!f || f === "/") return "folder/**";
+  if (!f.startsWith("/")) f = `/${f}`;
+  if (!f.endsWith("/")) f += "/";
+  return `folder/${f.replace(/^\//, "")}**`;
+}
+
+function splitFolderInput(input: string): string[] {
+  return input
+    .split(/[,\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function buildAppGrantPolicies(state: WizardState): AppGrantPolicy[] {
+  const policies: AppGrantPolicy[] = [];
+  for (const installId of state.boundAppInstallIDs) {
+    const draft = state.appAccess[installId];
+    if (!draft || draft.mode !== "limited") continue;
+    const folders = splitFolderInput(draft.folders);
+    if (folders.length === 0) {
+      throw new Error("Limited app access needs at least one folder.");
+    }
+    const permissions = [
+      draft.read ? "media.read" : "",
+      draft.write ? "media.write" : "",
+      draft.delete ? "media.delete" : "",
+    ].filter(Boolean);
+    policies.push({
+      install_id: installId,
+      default_effect: "deny",
+      rules: folders.flatMap((folder) =>
+        permissions.map((permission) => ({
+          effect: "allow" as const,
+          permission,
+          resource: folderGrantResource(folder),
+        })),
+      ),
+    });
+  }
+  return policies;
+}
 
 export function AgentNew() {
   const navigate = useNavigate();
@@ -462,6 +522,7 @@ export function AgentNew() {
       // of the agent's stored directive and bump the directive
       // history audit table at the agent's first run.
       const effectiveDirective = composeDirective(state.directive, state.acceptedEdits);
+      const boundAppGrants = buildAppGrantPolicies(state);
       const created = await instances.create(
         state.name.trim(),
         effectiveDirective,
@@ -475,6 +536,7 @@ export function AgentNew() {
           templateID: state.templateID || undefined,
           boundAppInstallIDs: Array.from(state.boundAppInstallIDs),
           boundConnectionIDs: Array.from(state.boundConnectionIDs),
+          boundAppGrants,
         },
       );
       // Persist the wizard's draft eval as a real agent_evals row
@@ -976,6 +1038,21 @@ function SetupStep({
   );
 
   const runningInstalledApps = installedApps.filter((a) => a.status === "running" || a.status === "pending");
+  const [permissionCatalogs, setPermissionCatalogs] = useState<Record<number, AppPermissionCatalog | null>>({});
+
+  useEffect(() => {
+    for (const id of state.boundAppInstallIDs) {
+      if (permissionCatalogs[id] !== undefined) continue;
+      appsAPI
+        .permissions(id)
+        .then((catalog) => {
+          setPermissionCatalogs((prev) => ({ ...prev, [id]: catalog }));
+        })
+        .catch(() => {
+          setPermissionCatalogs((prev) => ({ ...prev, [id]: null }));
+        });
+    }
+  }, [state.boundAppInstallIDs, permissionCatalogs]);
 
   const toggleConnection = (id: number) => {
     setState((s) => {
@@ -987,9 +1064,25 @@ function SetupStep({
   const toggleApp = (id: number) => {
     setState((s) => {
       const next = new Set(s.boundAppInstallIDs);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return { ...s, boundAppInstallIDs: next };
+      const appAccess = { ...s.appAccess };
+      if (next.has(id)) {
+        next.delete(id);
+        delete appAccess[id];
+      } else {
+        next.add(id);
+        appAccess[id] = appAccess[id] || defaultAppAccessDraft();
+      }
+      return { ...s, boundAppInstallIDs: next, appAccess };
     });
+  };
+  const updateAppAccess = (id: number, patch: Partial<AppAccessDraft>) => {
+    setState((s) => ({
+      ...s,
+      appAccess: {
+        ...s.appAccess,
+        [id]: { ...(s.appAccess[id] || defaultAppAccessDraft()), ...patch },
+      },
+    }));
   };
 
   return (
@@ -1204,6 +1297,8 @@ function SetupStep({
               const checked = state.boundAppInstallIDs.has(a.install_id);
               const toolCount = a.surfaces?.mcp_tool_count || 0;
               const skillCount = a.surfaces?.skill_count || 0;
+              const catalog = permissionCatalogs[a.install_id];
+              const hasScopedAccess = !!catalog?.permissions?.length && !!catalog?.resources?.length;
               // What binding this app brings the agent: its tools (via the
               // gateway) + its skills (attached on bind, server-side).
               const parts: string[] = [];
@@ -1211,16 +1306,25 @@ function SetupStep({
               if (skillCount > 0) parts.push(`${skillCount} skill${skillCount === 1 ? "" : "s"}`);
               const surfaceBadge = parts.length > 0 ? parts.join(" · ") : "MCP";
               return (
-                <SelectableRow
-                  key={a.install_id}
-                  checked={checked}
-                  onToggle={() => toggleApp(a.install_id)}
-                  label={a.display_name || a.name}
-                  meta={`v${a.version}`}
-                  badge={surfaceBadge}
-                  statusDot={a.status === "running" ? "green" : "amber"}
-                  hint={a.project_id ? undefined : "global"}
-                />
+                <React.Fragment key={a.install_id}>
+                  <SelectableRow
+                    checked={checked}
+                    onToggle={() => toggleApp(a.install_id)}
+                    label={a.display_name || a.name}
+                    meta={`v${a.version}`}
+                    badge={hasScopedAccess ? `${surfaceBadge} · scoped` : surfaceBadge}
+                    statusDot={a.status === "running" ? "green" : "amber"}
+                    hint={a.project_id ? undefined : "global"}
+                  />
+                  {checked && hasScopedAccess && (
+                    <ScopedAppAccess
+                      app={a}
+                      catalog={catalog}
+                      draft={state.appAccess[a.install_id] || defaultAppAccessDraft()}
+                      onChange={(patch) => updateAppAccess(a.install_id, patch)}
+                    />
+                  )}
+                </React.Fragment>
               );
             })}
           </ul>
@@ -1271,6 +1375,103 @@ function SetupStep({
         />
       )}
     </div>
+  );
+}
+
+function ScopedAppAccess({
+  app,
+  catalog,
+  draft,
+  onChange,
+}: {
+  app: AppRow;
+  catalog: AppPermissionCatalog;
+  draft: AppAccessDraft;
+  onChange: (patch: Partial<AppAccessDraft>) => void;
+}) {
+  const folderResource = catalog.resources.find((r) => r.name === "folder") || catalog.resources[0];
+  const canRead = catalog.permissions.some((p) => p.name === "media.read");
+  const canWrite = catalog.permissions.some((p) => p.name === "media.write");
+  const canDelete = catalog.permissions.some((p) => p.name === "media.delete");
+
+  return (
+    <li className="bg-bg-card border-t border-border px-4 py-3 text-xs">
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="text-text font-medium">{app.display_name || app.name} access</div>
+            <div className="text-text-muted mt-0.5">
+              Scope this app by {folderResource?.label?.toLowerCase() || "resource"} for this agent.
+            </div>
+          </div>
+          <div className="inline-flex rounded border border-border overflow-hidden">
+            {(["full", "limited"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => onChange({ mode })}
+                className={`px-2.5 py-1 text-[11px] capitalize ${
+                  draft.mode === mode
+                    ? "bg-accent text-bg font-bold"
+                    : "bg-bg text-text-muted hover:text-text"
+                }`}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {draft.mode === "limited" && (
+          <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+            <label className="block">
+              <span className="text-text-muted">Allowed folders</span>
+              <textarea
+                value={draft.folders}
+                onChange={(e) => onChange({ folders: (e.target as HTMLTextAreaElement).value })}
+                placeholder="/clients/acme/&#10;/renders/acme/"
+                className="mt-1 w-full min-h-[70px] bg-bg-input border border-border rounded px-2.5 py-2 text-text font-mono text-xs focus:outline-none focus:border-accent"
+              />
+              <span className="block text-text-dim mt-1">
+                One folder per line. Grants apply recursively.
+              </span>
+            </label>
+            <div className="flex md:flex-col gap-2 md:min-w-[160px]">
+              {canRead && (
+                <label className="flex items-center gap-2 text-text-muted">
+                  <input
+                    type="checkbox"
+                    checked={draft.read}
+                    onChange={(e) => onChange({ read: (e.target as HTMLInputElement).checked })}
+                  />
+                  Read
+                </label>
+              )}
+              {canWrite && (
+                <label className="flex items-center gap-2 text-text-muted">
+                  <input
+                    type="checkbox"
+                    checked={draft.write}
+                    onChange={(e) => onChange({ write: (e.target as HTMLInputElement).checked })}
+                  />
+                  Write
+                </label>
+              )}
+              {canDelete && (
+                <label className="flex items-center gap-2 text-text-muted">
+                  <input
+                    type="checkbox"
+                    checked={draft.delete}
+                    onChange={(e) => onChange({ delete: (e.target as HTMLInputElement).checked })}
+                  />
+                  Delete
+                </label>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </li>
   );
 }
 

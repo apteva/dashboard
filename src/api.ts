@@ -1021,6 +1021,7 @@ export const instances = {
       // gateway, no extra explicit MCP rows).
       boundAppInstallIDs?: number[];
       boundConnectionIDs?: number[];
+      boundAppGrants?: AppGrantPolicy[];
     },
   ) =>
     request<Agent & { warning?: string }>("POST", "/agents", {
@@ -1050,6 +1051,9 @@ export const instances = {
         : {}),
       ...(opts?.boundConnectionIDs && opts.boundConnectionIDs.length > 0
         ? { bound_connection_ids: opts.boundConnectionIDs }
+        : {}),
+      ...(opts?.boundAppGrants && opts.boundAppGrants.length > 0
+        ? { bound_app_grants: opts.boundAppGrants }
         : {}),
     }),
 
@@ -1622,6 +1626,9 @@ export const integrations = {
   // Single-connection fetch — used by OAuth-flow polling.
   get: (id: number) => request<ConnectionInfo>("GET", `/connections/${id}`),
 
+  reauth: (id: number) =>
+    request<ConnectCreateResponse>("POST", `/connections/${id}/oauth/reauth`, {}),
+
   disconnect: (id: number) => request<any>("DELETE", `/connections/${id}`),
 
   rename: (id: number, name: string) =>
@@ -1678,7 +1685,7 @@ export interface MCPServer {
   status: string;          // 'running' | 'stopped' | 'reachable' | 'unprobed'
   tool_count: number;
   pid: number;
-  source: string;          // 'custom' | 'local' | 'remote'
+  source: string;          // 'custom' | 'local' | 'remote' | 'app'
   transport?: string;      // 'stdio' | 'http'
   url?: string;
   provider_id?: number;
@@ -1688,6 +1695,7 @@ export interface MCPServer {
   // by this MCP server row — enforced server-side for local rows and
   // forwarded to Composio as `actions` for remote rows.
   allowed_tools?: string[] | null;
+  project_id?: string;
   proxy_config?: { name: string; transport: string; url?: string; command?: string; args?: string[] };
   created_at: string;
 }
@@ -1751,10 +1759,10 @@ export const mcpServers = {
   //
   // Response shape mirrors integrations.execute for dashboard uniformity:
   //   { success: boolean, status: number, data: any }
-  callTool: (id: number, tool: string, args: Record<string, any>) =>
+  callTool: (id: number, tool: string, args: Record<string, any>, projectId?: string) =>
     request<{ success: boolean; status: number; data: any }>(
       "POST",
-      `/mcp-servers/${id}/call-tool`,
+      `/mcp-servers/${id}/call-tool${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
       { tool, args },
     ),
 };
@@ -2510,6 +2518,19 @@ export const apps = {
   imports: (installId: number) =>
     request<{ imports?: AppImports }>("GET", `/apps/installs/${installId}/imports`),
 
+  permissions: (installId: number) =>
+    request<AppPermissionCatalog>("GET", `/apps/installs/${installId}/permissions`),
+
+  setGrantsForAgent: (installId: number, agentId: number, policy: Omit<AppGrantPolicy, "install_id">) =>
+    request<AppGrantsResponse>(
+      "PUT",
+      `/apps/installs/${installId}/grants/by-instance/${agentId}`,
+      {
+        default_effect: policy.default_effect,
+        rules: policy.rules,
+      },
+    ),
+
   marketplace: (projectId?: string, registryUrl?: string) => {
     // Pass project_id so the server filters the "is installed" check
     // to project-visible installs (own + globals). Without this an
@@ -2525,6 +2546,51 @@ export const apps = {
     );
   },
 };
+
+export interface AppResourceDecl {
+  name: string;
+  label?: string;
+  list_endpoint?: string;
+  matcher: string;
+  picker?: string;
+  listing_visibility?: string;
+}
+
+export interface AppProvidedPermission {
+  name: string;
+  resource?: string;
+  description?: string;
+}
+
+export interface AppPermissionTool {
+  name: string;
+  description?: string;
+  requires?: string;
+  resource_from?: string;
+}
+
+export interface AppPermissionCatalog {
+  resources: AppResourceDecl[];
+  permissions: AppProvidedPermission[];
+  tools: AppPermissionTool[];
+}
+
+export interface AppGrantRule {
+  effect: "allow" | "deny";
+  permission: string;
+  resource: string;
+}
+
+export interface AppGrantPolicy {
+  install_id: number;
+  default_effect: "allow" | "deny";
+  rules: AppGrantRule[];
+}
+
+export interface AppGrantsResponse {
+  default_effect: "allow" | "deny";
+  grants: AppGrantRule[];
+}
 
 export interface MarketplaceEntry {
   name: string;

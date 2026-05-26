@@ -218,13 +218,13 @@ const html = `<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Apteva</title>
 
-    <!-- Favicons. Safari adds a border around dark tiles, so every
-         browser-advertised icon uses a tab-gray tile behind the orange mark. -->
-    <link rel="icon" type="image/svg+xml" href="/favicon-tab.svg?v=20260525g" />
-    <link rel="icon" type="image/png" sizes="512x512" href="/favicon-tab.png?v=20260525g" />
-    <link rel="shortcut icon" href="/favicon-tab.ico?v=20260525g" />
-    <link rel="mask-icon" href="/safari-pinned-tab.svg?v=20260525g" color="#ff9500" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon-tab.png?v=20260525g" />
+    <!-- Favicons. Opaque orange tile with a white mark; avoids Safari's
+         transparent-icon badge and dark-tile border behavior. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon-inverse.svg?v=20260525h" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/favicon-inverse.png?v=20260525h" />
+    <link rel="shortcut icon" href="/favicon-inverse.ico?v=20260525h" />
+    <link rel="mask-icon" href="/safari-pinned-tab.svg?v=20260525h" color="#ff7a00" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-inverse.png?v=20260525h" />
 
     <!-- Theme bootstrap — runs synchronously before any render so the
          first paint already has the right data-theme/data-mode set.
@@ -298,12 +298,16 @@ await Bun.write("./dist/index.html", html);
     "favicon-tab.svg",
     "favicon-tab.png",
     "favicon-tab.ico",
+    "favicon-inverse.svg",
+    "favicon-inverse.png",
+    "favicon-inverse.ico",
     "safari-pinned-tab.svg",
     "apple-touch-icon.png",
     "apple-touch-icon-orange.png",
     "apple-touch-icon-safari.png",
     "apple-touch-icon-dark.png",
     "apple-touch-icon-tab.png",
+    "apple-touch-icon-inverse.png",
   ]) {
     if (exists(`./${f}`)) copyFileSync(`./${f}`, `./dist/${f}`);
   }
