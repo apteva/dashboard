@@ -169,6 +169,18 @@ export function Apps() {
     };
   }, [tab, rows, currentProject?.id]);
 
+  // Keep the installed-app side panel bound to the freshest row. List
+  // polling updates `rows`, but the panel stores the row object that was
+  // clicked; without this, an upgrade can finish in the list while the
+  // open panel still shows the old version until a full page reload.
+  useEffect(() => {
+    if (!detailInstall) return;
+    const fresh = rows.find((r) => r.install_id === detailInstall.install_id);
+    if (fresh && fresh !== detailInstall) {
+      setDetailInstall(fresh);
+    }
+  }, [rows, detailInstall]);
+
   return (
     <div className="flex flex-col h-full">
       <div className="border-b border-border px-6 py-4 flex items-start justify-between">
