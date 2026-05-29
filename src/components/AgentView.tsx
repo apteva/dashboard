@@ -4,11 +4,13 @@ import {
   channels,
   core,
   instances,
+  mcpServers as mcpServersAPI,
   providers as providersAPI,
   type Agent,
   type AppRow,
   type ChannelInfo,
   type ExecutionControlStatus,
+  type MCPServer,
   type MCPServerConfig,
   type ModelInfo,
   type Provider,
@@ -25,8 +27,6 @@ import { ActivityPanel } from "./ActivityPanel";
 import { MemoryPanel } from "./MemoryPanel";
 import { UnconsciousPanel } from "./UnconsciousPanel";
 import { InjectPanel } from "./InjectPanel";
-import { FleetGraph, type FleetEvent } from "./FleetGraph";
-import { FleetCards } from "./FleetCards";
 import { ThreadDetailModal } from "./ThreadDetailModal";
 import { AppPanels } from "./AppPanels";
 import { Modal } from "./Modal";
@@ -34,13 +34,16 @@ import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
 import { EvalsPanel } from "./EvalsPanel";
 
-type RuntimeView = "stream" | "activity" | "fleet" | "cards" | "memory" | "unconscious" | "skills" | "apps" | "evals";
+type RuntimeView = "stream" | "activity" | "memory" | "skills" | "apps" | "evals";
 
 interface RuntimeEventItem {
   key: string;
   kind: "thought" | "tool" | "thread" | "channel" | "error" | "event";
   label: string;
   detail?: string;
+  toolName?: string;
+  toolArgs?: string;
+  toolResult?: string;
   threadId?: string;
   status?: "running" | "success" | "error" | "info";
   durationMs?: number;
@@ -72,6 +75,96 @@ function thoughtEventKey(ev: TelemetryEvent): string {
   return `thought:${ev.thread_id || "main"}:${iteration || ev.id || ev.time}`;
 }
 
+function toolArgsValue(data: Record<string, any>): unknown {
+  if ("args" in data) return data.args;
+  if ("arguments" in data) return data.arguments;
+  if ("input" in data) return data.input;
+  if ("params" in data) return data.params;
+  return undefined;
+}
+
+function toolResultValue(data: Record<string, any>): unknown {
+  if ("result" in data) return data.result;
+  if ("output" in data) return data.output;
+  if ("error" in data) return data.error;
+  if ("message" in data) return data.message;
+  return undefined;
+}
+
+function parseJSONIfPossible(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed || !["{", "["].includes(trimmed[0])) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function sanitizeToolPayload(value: unknown, depth = 0): unknown {
+  const parsed = parseJSONIfPossible(value);
+  if (parsed == null) return parsed;
+  if (typeof parsed === "string") {
+    if (parsed.length > 400) return `${parsed.slice(0, 400)}… (${parsed.length.toLocaleString()} chars)`;
+    return parsed;
+  }
+  if (typeof parsed !== "object") return parsed;
+  if (depth > 5) return "[nested object]";
+  if (Array.isArray(parsed)) {
+    const items = parsed.slice(0, 20).map((item) => sanitizeToolPayload(item, depth + 1));
+    return parsed.length > 20 ? [...items, `… ${parsed.length - 20} more items`] : items;
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  if (obj._binary === true) return "[binary payload]";
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    const lower = key.toLowerCase();
+    if (
+      lower.includes("base64") ||
+      lower.includes("screenshot") ||
+      lower.includes("image") ||
+      lower.includes("audio") ||
+      lower.includes("blob")
+    ) {
+      if (typeof val === "string") {
+        out[key] = `[${val.length.toLocaleString()} chars omitted]`;
+      } else if (val && typeof val === "object") {
+        out[key] = sanitizeToolPayload(val, depth + 1);
+      } else {
+        out[key] = val;
+      }
+      continue;
+    }
+    out[key] = sanitizeToolPayload(val, depth + 1);
+  }
+  return out;
+}
+
+function formatToolPayload(value: unknown, max = 5000): string {
+  if (value === undefined) return "";
+  let text: string;
+  const sanitized = sanitizeToolPayload(value);
+  if (typeof sanitized === "string") {
+    text = sanitized;
+  } else {
+    try {
+      text = JSON.stringify(sanitized, null, 2);
+    } catch {
+      text = String(sanitized);
+    }
+  }
+  if (text.length > max) return `${text.slice(0, max)}\n… (${text.length.toLocaleString()} chars total)`;
+  return text;
+}
+
+function payloadPreview(text?: string, max = 160): string {
+  if (!text) return "";
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length > max ? `${compact.slice(0, max)}…` : compact;
+}
+
 function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
   const data = ev.data || {};
   const threadId = ev.thread_id || "main";
@@ -81,17 +174,36 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
     raw: ev,
   };
 
+  if (ev.type === "llm.tool_chunk") {
+    const name = compactText(data.tool || data.name);
+    if (!name) return null;
+    if (["pace", "done", "channels_respond", "channels_status"].includes(name)) return null;
+    return {
+      ...base,
+      key: toolEventKey(ev, name),
+      kind: "tool",
+      label: `Preparing ${name}`,
+      detail: name,
+      toolName: name,
+      toolArgs: String(data.chunk || ""),
+      status: "running",
+    };
+  }
+
   if (ev.type === "tool.call") {
     const name = compactText(data.name);
     if (!name) return null;
     if (["pace", "done", "channels_respond", "channels_status"].includes(name)) return null;
     const reason = compactText(data.reason, `Running ${name}`);
+    const args = formatToolPayload(toolArgsValue(data));
     return {
       ...base,
       key: toolEventKey(ev, name),
       kind: "tool",
       label: reason,
       detail: name,
+      toolName: name,
+      toolArgs: args,
       status: "running",
     };
   }
@@ -107,6 +219,8 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
       kind: "tool",
       label: compactText(data.reason, name),
       detail: failed ? compactText(data.error || data.message, "Tool failed") : name,
+      toolName: name,
+      toolResult: formatToolPayload(toolResultValue(data)),
       status: failed ? "error" : "success",
       durationMs: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
     };
@@ -213,21 +327,43 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
 function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): RuntimeEventItem[] {
   const item = normalizeRuntimeEvent(ev);
   if (!item) return prev;
-  const idx = prev.findIndex((r) => r.key === item.key);
+  let idx = prev.findIndex((r) => r.key === item.key);
+  if (idx < 0 && item.kind === "tool" && item.toolName) {
+    idx = findRecentRuntimeTool(prev, item);
+  }
   if (idx >= 0) {
     const next = [...prev];
+    const prevItem = next[idx];
+    const args =
+      ev.type === "llm.tool_chunk" && item.toolArgs
+        ? `${prevItem.toolArgs || ""}${item.toolArgs}`
+        : item.toolArgs || prevItem.toolArgs;
     next[idx] = {
-      ...next[idx],
+      ...prevItem,
       ...item,
       label:
         item.kind === "tool" && item.status !== "running" && item.label === item.detail
-          ? next[idx].label
-          : item.label || next[idx].label,
-      detail: item.detail || next[idx].detail,
+          ? prevItem.label
+          : item.label || prevItem.label,
+      detail: item.detail || prevItem.detail,
+      toolArgs: args,
+      toolResult: item.toolResult || prevItem.toolResult,
     };
     return next;
   }
   return [...prev, item].slice(-MAX_RUNTIME_EVENTS);
+}
+
+function findRecentRuntimeTool(prev: RuntimeEventItem[], item: RuntimeEventItem): number {
+  for (let i = prev.length - 1; i >= 0; i--) {
+    const candidate = prev[i];
+    if (candidate.kind !== "tool") continue;
+    if (candidate.threadId !== item.threadId) continue;
+    if (candidate.toolName !== item.toolName && candidate.detail !== item.toolName) continue;
+    if (candidate.status !== "running" && item.status === "running") continue;
+    return i;
+  }
+  return -1;
 }
 
 function telemetryTimeMs(ev: TelemetryEvent): number {
@@ -241,8 +377,8 @@ function restoreCheckpointMs(ev: TelemetryEvent): number {
   return Number.isFinite(ms) ? ms : 0;
 }
 
-// AgentView is the rich per-instance view: chat panel + activity/fleet/cards
-// side panel, lifecycle controls (start/stop/pause/delete), thread detail
+// AgentView is the rich per-instance view: chat panel + runtime side panel,
+// lifecycle controls (start/stop/pause/delete), thread detail
 // modal. Used by the /instances/:id route to render whichever instance the
 // user navigated to.
 //
@@ -265,7 +401,7 @@ export function AgentView({
   // Event bus for fan-out to sibling panels.
   //
   // We used to pass the latest SSE event as a React state prop (`latestEvent`)
-  // to ActivityPanel/FleetCards. That was broken for streaming text: when
+  // to runtime panels. That was broken for streaming text: when
   // several llm.chunk events arrive in the same React tick, setLatestEvent
   // is called rapidly and only the *last* event survives the render — every
   // intermediate chunk is dropped, which is exactly the "missing middle
@@ -299,11 +435,10 @@ export function AgentView({
   // state obvious instead of silently dropping typed messages.
   const [channelsAttached, setChannelsAttached] = useState(true);
 
-  // Track threads, tools, thoughts, events for the fleet graph
+  // Track threads, tools, and active LLM calls for the runtime summary.
   const [graphThreads, setGraphThreads] = useState<Thread[]>(initialThreads);
   const [graphActiveTools, setGraphActiveTools] = useState<Record<string, string>>({});
-  const [graphThoughts, setGraphThoughts] = useState<Record<string, string>>({});
-  const [graphEvents, setGraphEvents] = useState<FleetEvent[]>([]);
+  const [graphThinking, setGraphThinking] = useState<Record<string, boolean>>({});
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeEventItem[]>([]);
 
   // Thread detail modal
@@ -313,12 +448,11 @@ export function AgentView({
   // Reset all live state when the instance changes — critical because
   // react-router keeps the component mounted when navigating between
   // /instances/:id → /instances/:other, and stale threads from the previous
-  // instance would otherwise leak into the fleet graph.
+  // instance would otherwise leak into the runtime summary.
   useEffect(() => {
     setGraphThreads(initialThreads);
     setGraphActiveTools({});
-    setGraphThoughts({});
-    setGraphEvents([]);
+    setGraphThinking({});
     setRuntimeEvents([]);
     setThreadLiveEvents({});
     seenHandledEventsRef.current = new Set();
@@ -408,9 +542,8 @@ export function AgentView({
         }
         return next;
       });
-      setGraphEvents((prev) => prev.filter((e) => e.time < restoreMs));
       setGraphActiveTools({});
-      setGraphThoughts({});
+      setGraphThinking({});
     }
     // Fan out to every subscribed panel synchronously — no React batching.
     listenersRef.current.forEach((cb) => cb(event));
@@ -441,7 +574,7 @@ export function AgentView({
     if (event.type === "thread.done") {
       setGraphThreads((prev) => prev.filter((t) => t.id !== event.thread_id));
       setGraphActiveTools((prev) => { const n = { ...prev }; delete n[event.thread_id]; return n; });
-      setGraphThoughts((prev) => { const n = { ...prev }; delete n[event.thread_id]; return n; });
+      setGraphThinking((prev) => { const n = { ...prev }; delete n[event.thread_id]; return n; });
     }
     if (event.type === "thread.renamed") {
       const oldID = String(data.old_id || event.thread_id || "");
@@ -460,7 +593,7 @@ export function AgentView({
           delete n[oldID];
           return n;
         });
-        setGraphThoughts((prev) => {
+        setGraphThinking((prev) => {
           if (!(oldID in prev)) return prev;
           const n = { ...prev };
           n[newID] = n[oldID];
@@ -468,6 +601,19 @@ export function AgentView({
           return n;
         });
       }
+    }
+
+    const threadId = event.thread_id || "main";
+    if (event.type === "llm.start") {
+      setGraphThinking((prev) => ({ ...prev, [threadId]: true }));
+    }
+    if (event.type === "llm.done" || event.type === "llm.error") {
+      setGraphThinking((prev) => {
+        if (!prev[threadId]) return prev;
+        const n = { ...prev };
+        delete n[threadId];
+        return n;
+      });
     }
 
     // Track active tools — keep visible for 3s after completion
@@ -478,7 +624,6 @@ export function AgentView({
 
     if (event.type === "tool.call" && showTool) {
       setGraphActiveTools((prev) => ({ ...prev, [event.thread_id]: toolName }));
-      setGraphEvents((prev) => [...prev.slice(-30), { type: "tool", from: event.thread_id, to: event.thread_id, text: toolName, time: Date.now() }]);
     }
     if (event.type === "tool.result" && showTool) {
       const threadId = event.thread_id;
@@ -495,28 +640,7 @@ export function AgentView({
       }, 3000);
     }
 
-    // Track thread messages (from→to communication)
-    if (event.type === "thread.message") {
-      const from = data.from || event.thread_id;
-      const to = data.to || "";
-      if (from && to) {
-        setGraphEvents((prev) => [...prev.slice(-30), { type: "message", from, to, text: data.message, time: Date.now() }]);
-      }
-    }
-
-    // Track event.received (messages arriving at threads)
-    if (event.type === "event.received" && data.source === "thread") {
-      const msg = String(data.message || "");
-      const match = msg.match(/\[from:(\S+)\]/);
-      if (match) {
-        setGraphEvents((prev) => [...prev.slice(-30), { type: "message", from: match[1], to: event.thread_id, text: msg.slice(0, 60), time: Date.now() }]);
-      }
-    }
-
-    // Track thoughts
     if (event.type === "llm.done" && data.message) {
-      const text = String(data.message).slice(0, 100);
-      setGraphThoughts((prev) => ({ ...prev, [event.thread_id]: text }));
       setGraphThreads((prev) => prev.map((t) =>
         t.id === event.thread_id ? { ...t, iteration: data.iteration || t.iteration, rate: data.rate || t.rate } : t
       ));
@@ -534,7 +658,7 @@ export function AgentView({
   //
   // Every incoming event goes through handleEvent (top-level dedup)
   // which then fans out to every subscribe(cb) caller. The chat
-  // panel's status dot + the stats badge + Activity + FleetCards are
+  // panel's status dot + the stats badge + Activity are
   // all downstream of this one stream.
   //
   // NB: this call MUST live below `const handleEvent = …`. The hook
@@ -561,22 +685,17 @@ export function AgentView({
   const advancedContent =
     view === "activity" ? (
       <ActivityPanel instance={instance} subscribe={subscribe} onReload={onReload} onThreadOpen={setSelectedThreadId} />
-    ) : view === "fleet" ? (
-      <FleetGraph threads={graphThreads} activeTools={graphActiveTools} thoughts={graphThoughts} events={graphEvents} onNodeClick={setSelectedThreadId} />
     ) : view === "memory" ? (
       instance.status === "running" ? (
-        <MemoryPanel instanceId={instance.id} />
+        <div className="h-full min-h-0 flex flex-col">
+          <UnconsciousPanel instanceId={instance.id} compact />
+          <div className="flex-1 min-h-0">
+            <MemoryPanel instanceId={instance.id} />
+          </div>
+        </div>
       ) : (
         <div className="flex items-center justify-center h-full text-text-muted text-sm">
           Start the agent to view its memory.
-        </div>
-      )
-    ) : view === "unconscious" ? (
-      instance.status === "running" ? (
-        <UnconsciousPanel instanceId={instance.id} />
-      ) : (
-        <div className="flex items-center justify-center h-full text-text-muted text-sm">
-          Start the agent to view its unconscious activity.
         </div>
       )
     ) : view === "skills" ? (
@@ -592,8 +711,6 @@ export function AgentView({
       </div>
     ) : view === "evals" ? (
       <EvalsPanel agentID={instance.id} />
-    ) : view === "cards" ? (
-      <FleetCards threads={graphThreads} subscribe={subscribe} activeTools={graphActiveTools} thoughts={graphThoughts} />
     ) : null;
 
   return (
@@ -720,7 +837,7 @@ export function AgentView({
               <div className="absolute inset-0 flex items-center justify-center p-6">
                 <div className="max-w-xs text-center text-xs text-text-dim bg-bg-card/90 border border-border rounded-lg p-4">
                   Chat is disabled because the <code className="text-text-muted">channels</code> MCP
-                  is not attached. Re-attach it from the MCP panel to restore
+                  is not attached. Re-attach it from Capabilities → Manage to restore
                   chat.
                 </div>
               </div>
@@ -734,7 +851,7 @@ export function AgentView({
           instance={instance}
           threads={graphThreads}
           activeTools={graphActiveTools}
-          thoughts={graphThoughts}
+          thinking={graphThinking}
           events={runtimeEvents}
           view={view}
           onViewChange={setView}
@@ -771,7 +888,7 @@ function AgentRuntimePanel({
   instance,
   threads,
   activeTools,
-  thoughts,
+  thinking,
   events,
   view,
   onViewChange,
@@ -788,7 +905,7 @@ function AgentRuntimePanel({
   instance: Agent;
   threads: Thread[];
   activeTools: Record<string, string>;
-  thoughts: Record<string, string>;
+  thinking: Record<string, boolean>;
   events: RuntimeEventItem[];
   view: RuntimeView;
   onViewChange: (v: RuntimeView) => void;
@@ -804,7 +921,9 @@ function AgentRuntimePanel({
 }) {
   const [mcpServers, setMCPServers] = useState<MCPServerConfig[]>([]);
   const [installedApps, setInstalledApps] = useState<AppRow[]>([]);
+  const [mcpInventory, setMCPInventory] = useState<MCPServer[]>([]);
   const [channelRows, setChannelRows] = useState<ChannelInfo[]>([]);
+  const [showCapabilitiesManage, setShowCapabilitiesManage] = useState(false);
   const [executionControl, setExecutionControl] = useState<ExecutionControlStatus>({
     mode: "auto",
     scope: "instance",
@@ -832,6 +951,11 @@ function AgentRuntimePanel({
       appsAPI.list(instance.project_id)
         .then((rows) => {
           if (!cancelled) setInstalledApps(rows || []);
+        })
+        .catch(() => {});
+      mcpServersAPI.list(instance.project_id)
+        .then((rows) => {
+          if (!cancelled) setMCPInventory(rows || []);
         })
         .catch(() => {});
       channels.list({ instanceId: instance.id })
@@ -903,10 +1027,7 @@ function AgentRuntimePanel({
   const views: RuntimeView[] = [
     "stream",
     "activity",
-    "fleet",
-    "cards",
     "memory",
-    "unconscious",
     "skills",
     "apps",
     "evals",
@@ -914,6 +1035,39 @@ function AgentRuntimePanel({
 
   return (
     <section className="flex-1 min-w-0 flex flex-col bg-bg">
+      <Modal
+        open={showCapabilitiesManage}
+        onClose={() => setShowCapabilitiesManage(false)}
+        width="max-w-[920px]"
+      >
+        <div className="w-full max-h-[84vh] flex flex-col bg-bg-card">
+          <div className="shrink-0 px-4 py-3 border-b border-border flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-text text-sm font-bold">Manage Capabilities</h2>
+              <p className="text-text-dim text-xs mt-1">
+                Choose which MCP capabilities this agent can use.
+              </p>
+            </div>
+            <button
+              onClick={() => setShowCapabilitiesManage(false)}
+              className="text-text-muted hover:text-text text-sm"
+              title="Close"
+            >
+              ×
+            </button>
+          </div>
+          <CapabilitiesManager
+            instanceId={instance.id}
+            projectId={instance.project_id || undefined}
+            attached={mcpServers}
+            apps={installedApps}
+            inventory={mcpInventory}
+            running={instance.status === "running"}
+            onAttachedChange={setMCPServers}
+            onInventoryChange={setMCPInventory}
+          />
+        </div>
+      </Modal>
       <div className="border-b border-border px-4 py-3 space-y-3">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
@@ -965,14 +1119,17 @@ function AgentRuntimePanel({
         <ThreadSummary
           threads={threads}
           activeTools={activeTools}
-          thoughts={thoughts}
+          thinking={thinking}
           onThreadOpen={onThreadOpen}
         />
         <CapabilityShelf
           mcpServers={mcpServers}
           apps={installedApps}
+          inventory={mcpInventory}
+          instanceId={instance.id}
           channels={channelRows}
-          onManage={() => onViewChange("activity")}
+          onAttachedChange={setMCPServers}
+          onManage={() => setShowCapabilitiesManage(true)}
         />
       </div>
 
@@ -1243,15 +1400,563 @@ function truncateUI(value: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
+const SYSTEM_CAPABILITIES = [
+  {
+    key: "channels" as const,
+    names: ["channels", "apteva-channels"],
+    title: "Channels",
+    detail: "Dashboard chat, email, Slack replies",
+  },
+  {
+    key: "apteva-server" as const,
+    names: ["apteva-server"],
+    title: "Apteva Server",
+    detail: "Agent control and platform gateway",
+  },
+];
+
+function CapabilitiesManager({
+  instanceId,
+  projectId,
+  attached,
+  apps,
+  inventory: inventoryProp,
+  running,
+  onAttachedChange,
+  onInventoryChange,
+}: {
+  instanceId: number;
+  projectId?: string;
+  attached: MCPServerConfig[];
+  apps: AppRow[];
+  inventory: MCPServer[];
+  running: boolean;
+  onAttachedChange: (servers: MCPServerConfig[]) => void;
+  onInventoryChange: (servers: MCPServer[]) => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const loadInventory = useCallback(() => {
+    setLoading(true);
+    mcpServersAPI
+      .list(projectId)
+      .then((rows) => onInventoryChange(rows || []))
+      .catch((err) => setError(err?.message || "Failed to load capabilities"))
+      .finally(() => setLoading(false));
+  }, [projectId, onInventoryChange]);
+
+  useEffect(() => {
+    loadInventory();
+  }, [loadInventory]);
+
+  const attachedNames = useMemo(
+    () => new Set(attached.map((server) => server.name)),
+    [attached],
+  );
+  const attachedKeys = useMemo(() => attachedCapabilityKeys(attached), [attached]);
+
+  const writeAttached = async (next: MCPServerConfig[]) => {
+    await core.setMCPServers(instanceId, next);
+    onAttachedChange(next);
+  };
+
+  const refreshAttached = async () => {
+    const cfg = await core.config(instanceId);
+    onAttachedChange(cfg.mcp_servers || []);
+  };
+
+  const attachInventory = async (row: MCPServer, aliases?: string[]) => {
+    const entry = configFromInventory(row);
+    if (!entry) return;
+    setBusyKey(`mcp:${mcpName(row)}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const next = [
+        ...removeAttachedByAliases(attached, [...(aliases || mcpCapabilityAliases(row)), entry.name]),
+        entry,
+      ];
+      await writeAttached(next);
+    } catch (err: any) {
+      setError(err?.message || "Failed to enable capability");
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const detachName = async (name: string, aliases?: string[]) => {
+    setBusyKey(`mcp:${name}`);
+    setError(null);
+    setNotice(null);
+    try {
+      await writeAttached(removeAttachedByAliases(attached, aliases ? [...aliases, name] : [name]));
+    } catch (err: any) {
+      setError(err?.message || "Failed to disable capability");
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const toggleSystem = async (cap: typeof SYSTEM_CAPABILITIES[number], enabled: boolean) => {
+    setBusyKey(`system:${cap.key}`);
+    setError(null);
+    setNotice(null);
+    try {
+      if (enabled) {
+        const next = attached.filter((s) => !cap.names.includes(s.name));
+        await writeAttached(next);
+        await core.toggleSystemMCP(instanceId, cap.key, false);
+      } else {
+        const res = await core.toggleSystemMCP(instanceId, cap.key, true);
+        await refreshAttached().catch(() => {});
+        if (res.restart_required || running) {
+          setNotice(`${cap.title} will be available after the agent is restarted.`);
+        }
+      }
+    } catch (err: any) {
+      setError(err?.message || `Failed to update ${cap.title}`);
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const appInventoryByKey = useMemo(() => {
+    const out = new Map<string, MCPServer>();
+    for (const row of inventoryProp) {
+      if (row.source !== "app") continue;
+      for (const alias of mcpCapabilityAliases(row)) {
+        const key = capabilityKey(alias);
+        if (key && !out.has(key)) out.set(key, row);
+      }
+    }
+    return out;
+  }, [inventoryProp]);
+
+  const appRows = apps
+    .filter((app) => (app.surfaces?.mcp_tool_count || 0) > 0)
+    .sort((a, b) => (a.display_name || a.name).localeCompare(b.display_name || b.name));
+  const matchedAppInventoryIDs = new Set(
+    appRows
+      .map((app) => findAppInventoryRow(app, appInventoryByKey)?.id)
+      .filter((id): id is number => typeof id === "number"),
+  );
+  const integrationRows = inventoryProp
+    .filter((row) => row.source !== "app" && row.source !== "custom")
+    .sort((a, b) => displayMCPName(a).localeCompare(displayMCPName(b)));
+  const customRows = inventoryProp
+    .filter((row) => row.source === "custom")
+    .sort((a, b) => displayMCPName(a).localeCompare(displayMCPName(b)));
+  const orphanAppRows = inventoryProp
+    .filter((row) => row.source === "app" && !matchedAppInventoryIDs.has(row.id))
+    .sort((a, b) => displayMCPName(a).localeCompare(displayMCPName(b)));
+  const appAttachedCount = appRows.filter((app) => {
+    const row = findAppInventoryRow(app, appInventoryByKey);
+    return capabilityIsAttached(attachedKeys, appCapabilityAliases(app, row));
+  }).length;
+
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-5">
+      {error && (
+        <div className="rounded border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
+          {notice}
+        </div>
+      )}
+
+      <CapabilitySection
+        title={`System — ${SYSTEM_CAPABILITIES.filter((cap) => cap.names.some((name) => attachedNames.has(name))).length}/${SYSTEM_CAPABILITIES.length} attached`}
+        hint="Platform-provided capabilities"
+      >
+        {SYSTEM_CAPABILITIES.map((cap) => {
+          const enabled = cap.names.some((name) => attachedNames.has(name));
+          return (
+            <CapabilityToggleRow
+              key={cap.key}
+              title={cap.title}
+              detail={cap.detail}
+              meta={enabled ? "attached" : "not attached"}
+              enabled={enabled}
+              busy={busyKey === `system:${cap.key}`}
+              onToggle={() => toggleSystem(cap, enabled)}
+            />
+          );
+        })}
+      </CapabilitySection>
+
+      <CapabilitySection
+        title={`Apps — ${appAttachedCount}/${appRows.length} attached`}
+        hint="Installed apps exposing MCP tools"
+      >
+        {appRows.length === 0 && orphanAppRows.length === 0 && (
+          <EmptyCapabilityRow text="No running app MCP surfaces in this project." />
+        )}
+        {appRows.map((app) => {
+          const row = findAppInventoryRow(app, appInventoryByKey);
+          const aliases = appCapabilityAliases(app, row);
+          const name = row ? mcpName(row) : app.name;
+          const enabled = capabilityIsAttached(attachedKeys, aliases);
+          return (
+            <CapabilityToggleRow
+              key={`app:${app.install_id}`}
+              title={app.display_name || app.name}
+              detail={app.description || `${app.surfaces?.mcp_tool_count || 0} MCP tools`}
+              meta={`${app.surfaces?.mcp_tool_count || 0} tools`}
+              enabled={enabled}
+              disabled={!row}
+              busy={busyKey === `mcp:${name}`}
+              onToggle={() => row && (enabled ? detachName(name, aliases) : attachInventory(row, aliases))}
+            />
+          );
+        })}
+        {orphanAppRows.map((row) => {
+          const name = mcpName(row);
+          const enabled = attachedNames.has(name);
+          return (
+            <CapabilityToggleRow
+              key={`app-orphan:${row.id}`}
+              title={displayMCPName(row)}
+              detail={row.name}
+              meta={`${row.tool_count || 0} tools`}
+              enabled={enabled}
+              busy={busyKey === `mcp:${name}`}
+              onToggle={() => enabled ? detachName(name) : attachInventory(row)}
+            />
+          );
+        })}
+      </CapabilitySection>
+
+      <CapabilitySection
+        title={`Integrations — ${integrationRows.filter((row) => attachedNames.has(mcpName(row))).length}/${integrationRows.length} attached`}
+        hint="OAuth and integration-backed MCP servers"
+      >
+        {integrationRows.length === 0 && (
+          <EmptyCapabilityRow text="No integration MCP servers available." />
+        )}
+        {integrationRows.map((row) => {
+          const name = mcpName(row);
+          const enabled = attachedNames.has(name);
+          return (
+            <CapabilityToggleRow
+              key={`integration:${row.id}`}
+              title={displayMCPName(row)}
+              detail={row.name}
+              meta={`${row.tool_count || 0} tools · ${sourceLabel(row)}`}
+              enabled={enabled}
+              disabled={!configFromInventory(row)}
+              busy={busyKey === `mcp:${name}`}
+              onToggle={() => enabled ? detachName(name) : attachInventory(row)}
+            />
+          );
+        })}
+      </CapabilitySection>
+
+      <CapabilitySection
+        title={`Custom MCP Servers — ${customRows.filter((row) => attachedNames.has(mcpName(row))).length}/${customRows.length} attached`}
+        hint="Manually registered servers"
+      >
+        {customRows.length === 0 && (
+          <EmptyCapabilityRow text="No custom MCP servers available." />
+        )}
+        {customRows.map((row) => {
+          const name = mcpName(row);
+          const enabled = attachedNames.has(name);
+          return (
+            <CapabilityToggleRow
+              key={`custom:${row.id}`}
+              title={displayMCPName(row)}
+              detail={row.name}
+              meta={`${row.tool_count || 0} tools · ${row.transport || "stdio"}`}
+              enabled={enabled}
+              disabled={!configFromInventory(row)}
+              busy={busyKey === `mcp:${name}`}
+              onToggle={() => enabled ? detachName(name) : attachInventory(row)}
+            />
+          );
+        })}
+      </CapabilitySection>
+
+      {loading && (
+        <div className="text-center text-xs text-text-muted py-2">Loading capabilities…</div>
+      )}
+    </div>
+  );
+}
+
+function CapabilitySection({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint: string;
+  children: ReactNode;
+}) {
+  return (
+    <section>
+      <div className="mb-2 flex items-baseline justify-between gap-3 min-w-0">
+        <h3 className="text-[10px] uppercase tracking-wide text-text-muted font-bold shrink-0">{title}</h3>
+        <span className="hidden sm:block text-[10px] text-text-dim truncate min-w-0">{hint}</span>
+      </div>
+      <div className="overflow-hidden rounded border border-border bg-bg">
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function CapabilityToggleRow({
+  title,
+  detail,
+  meta,
+  enabled,
+  disabled,
+  busy,
+  onToggle,
+}: {
+  title: string;
+  detail: string;
+  meta: string;
+  enabled: boolean;
+  disabled?: boolean;
+  busy?: boolean;
+  onToggle: () => void;
+}) {
+  const canToggle = !disabled && !busy;
+  return (
+    <div
+      className={`group relative flex items-center gap-3 border-b border-border-subtle last:border-b-0 px-3.5 py-3 text-left select-none transition-colors ${
+        enabled
+          ? "bg-accent/10 hover:bg-accent/15"
+          : canToggle
+            ? "bg-bg hover:bg-bg-card cursor-pointer"
+            : "bg-bg opacity-50 cursor-not-allowed"
+      }`}
+      onClick={() => {
+        if (canToggle) onToggle();
+      }}
+      role="checkbox"
+      aria-checked={enabled}
+      tabIndex={canToggle ? 0 : -1}
+      onKeyDown={(e) => {
+        if (!canToggle) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+      title={enabled ? "Click to disable" : "Click to enable"}
+    >
+      <span
+        aria-hidden="true"
+        className={`absolute left-0 top-0 bottom-0 w-[2px] transition-colors ${
+          enabled ? "bg-accent" : "bg-transparent"
+        }`}
+      />
+      <span
+        aria-hidden="true"
+        className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
+          enabled
+            ? "bg-accent border-accent text-bg"
+            : "bg-bg border-border group-hover:border-text-dim"
+        }`}
+      >
+        {enabled && (
+          <svg
+            width="10"
+            height="10"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M3 8.5 L7 12 L13 5" />
+          </svg>
+        )}
+      </span>
+      <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${enabled ? "bg-green" : "bg-text-dim"}`} />
+      <div className="min-w-0 flex-1 pr-2">
+        <div className={`text-sm leading-tight truncate ${enabled ? "text-text font-medium" : "text-text"}`}>
+          {title}
+        </div>
+        <div className="mt-0.5 text-[11px] leading-snug text-text-muted truncate" title={detail}>
+          {detail}
+        </div>
+      </div>
+      <div
+        className={`mt-0.5 shrink-0 rounded px-2 py-1 text-[10px] leading-none whitespace-nowrap ${
+          enabled ? "bg-accent/15 text-accent" : "bg-bg-input text-text-muted"
+        }`}
+      >
+        {meta}
+      </div>
+    </div>
+  );
+}
+
+function EmptyCapabilityRow({ text }: { text: string }) {
+  return <div className="px-3 py-3 text-xs text-text-muted">{text}</div>;
+}
+
+function mcpName(row: MCPServer): string {
+  return row.proxy_config?.name || row.name;
+}
+
+function displayMCPName(row: MCPServer): string {
+  return row.description || row.name;
+}
+
+function sourceLabel(row: MCPServer): string {
+  if (row.source === "remote") return "remote";
+  if (row.source === "local") return "integration";
+  return row.source || "mcp";
+}
+
+function configFromInventory(row: MCPServer): MCPServerConfig | null {
+  if (row.proxy_config) {
+    return {
+      name: row.proxy_config.name,
+      transport: row.proxy_config.transport,
+      url: row.proxy_config.url,
+      command: row.proxy_config.command,
+      args: row.proxy_config.args,
+    };
+  }
+  if (row.url || row.transport === "http") {
+    return {
+      name: row.name,
+      transport: row.transport || "http",
+      url: row.url,
+    };
+  }
+  if (row.command) {
+    return {
+      name: row.name,
+      transport: row.transport || "stdio",
+      command: row.command,
+      args: row.args ? row.args.split(/\s+/).filter(Boolean) : undefined,
+    };
+  }
+  return null;
+}
+
+function capabilityKey(value?: string | number | null): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function uniqueCapabilityAliases(values: Array<string | number | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    const key = capabilityKey(text);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out;
+}
+
+function appMCPURLSlug(rawURL?: string): string {
+  const match = String(rawURL || "").match(/\/api\/apps\/([^/?#]+)\/mcp/);
+  return match?.[1] ? decodeURIComponent(match[1]) : "";
+}
+
+function mcpURLInstallID(rawURL?: string): string {
+  const text = String(rawURL || "");
+  if (!text) return "";
+  try {
+    const parsed = new URL(text, window.location.origin);
+    return parsed.searchParams.get("install_id") || "";
+  } catch {
+    const match = text.match(/[?&]install_id=([^&#]+)/);
+    return match?.[1] ? decodeURIComponent(match[1]) : "";
+  }
+}
+
+function appInstallAliases(installID?: number | string | null): string[] {
+  if (installID === undefined || installID === null || installID === "") return [];
+  return [`install:${installID}`, `app:${installID}`];
+}
+
+function mcpCapabilityAliases(row: MCPServer): string[] {
+  const url = row.proxy_config?.url || row.url || "";
+  const installID = mcpURLInstallID(url);
+  return uniqueCapabilityAliases([
+    row.name,
+    mcpName(row),
+    row.description,
+    appMCPURLSlug(url),
+    ...appInstallAliases(installID),
+  ]);
+}
+
+function appCapabilityAliases(app: AppRow, row?: MCPServer | null): string[] {
+  return uniqueCapabilityAliases([
+    app.name,
+    app.display_name,
+    ...appInstallAliases(app.install_id),
+    ...(row ? mcpCapabilityAliases(row) : []),
+  ]);
+}
+
+function attachedMCPAliases(server: MCPServerConfig): string[] {
+  const installID = mcpURLInstallID(server.url);
+  return uniqueCapabilityAliases([
+    server.name,
+    appMCPURLSlug(server.url),
+    ...appInstallAliases(installID),
+  ]);
+}
+
+function attachedCapabilityKeys(servers: MCPServerConfig[]): Set<string> {
+  const out = new Set<string>();
+  for (const server of servers) {
+    for (const alias of attachedMCPAliases(server)) {
+      const key = capabilityKey(alias);
+      if (key) out.add(key);
+    }
+  }
+  return out;
+}
+
+function capabilityIsAttached(attachedKeys: Set<string>, aliases: string[]): boolean {
+  return aliases.some((alias) => attachedKeys.has(capabilityKey(alias)));
+}
+
+function removeAttachedByAliases(servers: MCPServerConfig[], aliases: string[]): MCPServerConfig[] {
+  const keys = new Set(aliases.map(capabilityKey).filter(Boolean));
+  return servers.filter((server) => !attachedMCPAliases(server).some((alias) => keys.has(capabilityKey(alias))));
+}
+
+function findAppInventoryRow(app: AppRow, inventoryByKey: Map<string, MCPServer>): MCPServer | undefined {
+  for (const alias of appCapabilityAliases(app)) {
+    const row = inventoryByKey.get(capabilityKey(alias));
+    if (row) return row;
+  }
+  return undefined;
+}
+
 function ThreadSummary({
   threads,
   activeTools,
-  thoughts,
+  thinking,
   onThreadOpen,
 }: {
   threads: Thread[];
   activeTools: Record<string, string>;
-  thoughts: Record<string, string>;
+  thinking: Record<string, boolean>;
   onThreadOpen: (id: string) => void;
 }) {
   const rows = threads.length > 0 ? threads : [{ id: "main", directive: "", tools: [], iteration: 0, rate: "", model: "", age: "" }];
@@ -1266,9 +1971,9 @@ function ThreadSummary({
       <div className="space-y-1">
         {sorted.map((t) => {
           const tool = activeTools[t.id];
-          const thought = thoughts[t.id];
+          const isThinking = !!thinking[t.id];
           const depth = Math.min(t.depth || 0, 3);
-          const state = tool ? `tool: ${tool}` : thought ? "thinking" : t.rate || "waiting";
+          const state = tool ? `tool: ${tool}` : isThinking ? "thinking" : t.rate || "waiting";
           return (
             <button
               key={t.id}
@@ -1276,7 +1981,7 @@ function ThreadSummary({
               className="w-full min-w-0 flex items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-bg-hover transition-colors"
               style={{ paddingLeft: 8 + depth * 14 }}
             >
-              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${tool ? "bg-accent animate-pulse" : thought ? "bg-yellow" : "bg-text-dim"}`} />
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${tool ? "bg-accent animate-pulse" : isThinking ? "bg-yellow animate-pulse" : "bg-text-dim"}`} />
               <span className="text-xs text-text truncate">{t.name || t.id}</span>
               <span className="text-[10px] text-text-muted truncate flex-1">{state}</span>
               {t.age && <span className="text-[10px] text-text-dim tabular-nums shrink-0">{t.age}</span>}
@@ -1291,25 +1996,91 @@ function ThreadSummary({
 function CapabilityShelf({
   mcpServers,
   apps,
+  inventory,
+  instanceId,
   channels: channelRows,
+  onAttachedChange,
   onManage,
 }: {
   mcpServers: MCPServerConfig[];
   apps: AppRow[];
+  inventory: MCPServer[];
+  instanceId: number;
   channels: ChannelInfo[];
+  onAttachedChange: (servers: MCPServerConfig[]) => void;
   onManage: () => void;
 }) {
+  const [busyName, setBusyName] = useState<string | null>(null);
   const names = new Set(mcpServers.map((s) => s.name));
+  const attachedKeys = attachedCapabilityKeys(mcpServers);
   const system = [
     { name: "channels", label: "Channels", tools: "chat / email / Slack" },
     { name: "apteva-server", label: "Apteva Server", tools: "agent control" },
   ];
+  const appInventoryByKey = new Map<string, MCPServer>();
+  for (const row of inventory) {
+    if (row.source === "app") {
+      for (const alias of mcpCapabilityAliases(row)) {
+        const key = capabilityKey(alias);
+        if (key && !appInventoryByKey.has(key)) appInventoryByKey.set(key, row);
+      }
+    }
+  }
   const appCaps = apps
-    .filter((a) => a.status === "running" && ((a.surfaces?.mcp_tool_count || 0) > 0 || (a.surfaces?.ui_panel_count || 0) > 0))
-    .slice(0, 5);
-  const custom = mcpServers
-    .filter((m) => !["channels", "apteva-channels", "apteva-server"].includes(m.name))
+    .filter((app) => {
+      const row = findAppInventoryRow(app, appInventoryByKey);
+      const attached = capabilityIsAttached(attachedKeys, appCapabilityAliases(app, row));
+      const hasSurface = (app.surfaces?.mcp_tool_count || 0) > 0 || (app.surfaces?.ui_panel_count || 0) > 0;
+      return attached || (app.status === "running" && hasSurface);
+    })
+    .sort((a, b) => {
+      const aRow = findAppInventoryRow(a, appInventoryByKey);
+      const bRow = findAppInventoryRow(b, appInventoryByKey);
+      const aAttached = capabilityIsAttached(attachedKeys, appCapabilityAliases(a, aRow));
+      const bAttached = capabilityIsAttached(attachedKeys, appCapabilityAliases(b, bRow));
+      if (aAttached !== bAttached) return aAttached ? -1 : 1;
+      if (a.status === "running" && b.status !== "running") return -1;
+      if (a.status !== "running" && b.status === "running") return 1;
+      return (a.display_name || a.name).localeCompare(b.display_name || b.name);
+    });
+  const custom = inventory
+    .filter((row) => row.source !== "app")
+    .filter((row) => !["channels", "apteva-channels", "apteva-server"].includes(mcpName(row)))
     .slice(0, 4);
+
+  const toggleInventory = async (row: MCPServer, enabled: boolean, aliases?: string[]) => {
+    const entry = configFromInventory(row);
+    if (!entry) return;
+    setBusyName(entry.name);
+    try {
+      const next = enabled
+        ? removeAttachedByAliases(mcpServers, aliases ? [...aliases, entry.name] : [entry.name])
+        : [...removeAttachedByAliases(mcpServers, [...(aliases || mcpCapabilityAliases(row)), entry.name]), entry];
+      await core.setMCPServers(instanceId, next);
+      onAttachedChange(next);
+    } finally {
+      setBusyName(null);
+    }
+  };
+
+  const toggleSystemQuick = async (name: "channels" | "apteva-server", enabled: boolean) => {
+    setBusyName(name);
+    try {
+      if (enabled) {
+        const aliases = name === "channels" ? ["channels", "apteva-channels"] : [name];
+        const next = mcpServers.filter((server) => !aliases.includes(server.name));
+        await core.setMCPServers(instanceId, next);
+        await core.toggleSystemMCP(instanceId, name, false);
+        onAttachedChange(next);
+      } else {
+        await core.toggleSystemMCP(instanceId, name, true);
+        const cfg = await core.config(instanceId);
+        onAttachedChange(cfg.mcp_servers || []);
+      }
+    } finally {
+      setBusyName(null);
+    }
+  };
 
   return (
     <div className="p-3 min-w-0">
@@ -1326,11 +2097,12 @@ function CapabilityShelf({
             return (
               <CapabilityRow
                 key={s.name}
-                icon={attached ? "✓" : "○"}
+                checked={attached}
                 name={s.label}
-                detail={s.tools}
-                status={attached ? "attached" : "missing"}
-                tone={attached ? "ok" : "warn"}
+                meta={attached ? "attached" : "missing"}
+                active={attached}
+                busy={busyName === s.name}
+                onClick={() => toggleSystemQuick(s.name as "channels" | "apteva-server", attached)}
               />
             );
           })}
@@ -1338,37 +2110,50 @@ function CapabilityShelf({
         {channelRows.length > 0 && (
           <CapabilityGroup title="Channels">
             {channelRows.slice(0, 4).map((c) => (
-              <CapabilityRow key={c.id} icon="↗" name={c.name || c.type} detail={c.type} status={c.status} tone="ok" />
+              <CapabilityRow key={c.id} checked name={c.name || c.type} meta={c.type} active={c.status === "active"} />
             ))}
           </CapabilityGroup>
         )}
         {appCaps.length > 0 && (
           <CapabilityGroup title="Apps">
-            {appCaps.map((a) => (
-              <CapabilityRow
-                key={a.install_id}
-                icon="◇"
-                imageUrl={a.icon}
-                name={a.display_name || a.name}
-                detail={`${a.surfaces?.mcp_tool_count || 0} tools${a.surfaces?.ui_panel_count ? " · UI" : ""}`}
-                status={a.status}
-                tone="ok"
-              />
-            ))}
+            {appCaps.map((a) => {
+              const row = findAppInventoryRow(a, appInventoryByKey);
+              const aliases = appCapabilityAliases(a, row);
+              const rowName = row ? mcpName(row) : a.name;
+              const checked = capabilityIsAttached(attachedKeys, aliases);
+              return (
+                <CapabilityRow
+                  key={a.install_id}
+                  checked={checked}
+                  name={a.display_name || a.name}
+                  meta={`${a.surfaces?.mcp_tool_count || 0} tools${a.surfaces?.ui_panel_count ? " · UI" : ""}`}
+                  active={a.status === "running"}
+                  disabled={!row}
+                  busy={busyName === rowName}
+                  onClick={() => row && toggleInventory(row, checked, aliases)}
+                />
+              );
+            })}
           </CapabilityGroup>
         )}
         {custom.length > 0 && (
           <CapabilityGroup title="MCPs">
-            {custom.map((m) => (
-              <CapabilityRow
-                key={m.name}
-                icon={m.connected === false ? "○" : "✓"}
-                name={m.name}
-                detail={m.transport || (m.url ? "http" : "stdio")}
-                status={m.connected === false ? "offline" : "attached"}
-                tone={m.connected === false ? "warn" : "ok"}
-              />
-            ))}
+            {custom.map((row) => {
+              const rowName = mcpName(row);
+              const checked = names.has(rowName);
+              return (
+                <CapabilityRow
+                  key={row.id}
+                  checked={checked}
+                  name={displayMCPName(row)}
+                  meta={`${row.tool_count || 0} tools`}
+                  active={row.status === "running" || row.status === "reachable"}
+                  disabled={!configFromInventory(row)}
+                  busy={busyName === rowName}
+                  onClick={() => toggleInventory(row, checked)}
+                />
+              );
+            })}
           </CapabilityGroup>
         )}
       </div>
@@ -1386,46 +2171,51 @@ function CapabilityGroup({ title, children }: { title: string; children: ReactNo
 }
 
 function CapabilityRow({
-  icon,
-  imageUrl,
+  checked,
   name,
-  detail,
-  status,
-  tone,
+  meta,
+  active,
+  disabled,
+  busy,
+  onClick,
 }: {
-  icon: string;
-  imageUrl?: string;
+  checked: boolean;
   name: string;
-  detail: string;
-  status: string;
-  tone: "ok" | "warn";
+  meta: string;
+  active: boolean;
+  disabled?: boolean;
+  busy?: boolean;
+  onClick?: () => void;
 }) {
-  const [brokenImage, setBrokenImage] = useState(false);
-  useEffect(() => {
-    setBrokenImage(false);
-  }, [imageUrl]);
-
-  const canShowImage = !!imageUrl && !brokenImage;
+  const clickable = !!onClick && !disabled && !busy;
   return (
-    <div className="flex items-center gap-2 min-w-0 rounded px-2 py-1.5 bg-bg-card/40">
-      <span className={`w-5 h-5 rounded flex items-center justify-center text-[11px] shrink-0 ${tone === "ok" ? "text-green bg-green/10" : "text-yellow bg-yellow/10"}`}>
-        {canShowImage ? (
-          <img
-            src={imageUrl}
-            alt=""
-            className="w-full h-full rounded object-cover"
-            onError={() => setBrokenImage(true)}
-          />
-        ) : (
-          icon
+    <button
+      type="button"
+      disabled={!clickable}
+      onClick={onClick}
+      className={`relative flex w-full items-center gap-2 min-w-0 rounded px-2 py-1.5 text-left transition-colors ${
+        checked ? "bg-accent/10 hover:bg-accent/15" : clickable ? "bg-bg-card/40 hover:bg-bg-hover" : "bg-bg-card/40"
+      } ${disabled ? "opacity-50 cursor-not-allowed" : clickable ? "cursor-pointer" : "cursor-default"}`}
+      title={clickable ? (checked ? "Click to remove" : "Click to add") : undefined}
+    >
+      <span className={`absolute left-0 top-0 bottom-0 w-[2px] rounded-l ${checked ? "bg-accent" : "bg-transparent"}`} />
+      <span
+        className={`inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
+          checked ? "bg-accent border-accent text-bg" : "border-border"
+        }`}
+      >
+        {checked && (
+          <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 8.5 L7 12 L13 5" />
+          </svg>
         )}
       </span>
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${active ? "bg-green" : "bg-text-dim"}`} />
       <div className="min-w-0 flex-1">
         <div className="text-xs text-text truncate">{name}</div>
-        <div className="text-[10px] text-text-dim truncate">{detail}</div>
       </div>
-      <span className="text-[10px] text-text-muted shrink-0">{status}</span>
-    </div>
+      <span className="text-[10px] text-text-muted shrink-0 max-w-24 truncate">{busy ? "saving…" : meta}</span>
+    </button>
   );
 }
 
@@ -1568,6 +2358,11 @@ function RuntimeRow({ event }: { event: RuntimeEventItem }) {
           {event.detail && (
             <div className="text-[11px] text-text-dim truncate mt-0.5">{event.detail}</div>
           )}
+          {event.kind === "tool" && event.toolArgs && (
+            <div className="text-[10px] text-text-muted truncate mt-0.5 font-mono">
+              args: {payloadPreview(event.toolArgs)}
+            </div>
+          )}
         </div>
         {event.durationMs != null && (
           <span className="text-[10px] text-text-dim tabular-nums shrink-0">{durationLabel(event.durationMs)}</span>
@@ -1577,11 +2372,28 @@ function RuntimeRow({ event }: { event: RuntimeEventItem }) {
         </span>
       </summary>
       <div className="px-8 pb-2">
-        <pre className="text-[10px] text-text-muted bg-bg-input border border-border rounded p-2 overflow-auto max-h-56">
-          {JSON.stringify(event.raw, null, 2)}
-        </pre>
+        <div className="space-y-2">
+          {event.kind === "tool" && event.toolArgs && (
+            <RuntimePayloadBlock title="Arguments" text={event.toolArgs} />
+          )}
+          {event.kind === "tool" && event.toolResult && (
+            <RuntimePayloadBlock title="Result" text={event.toolResult} />
+          )}
+          <RuntimePayloadBlock title="Raw event" text={formatToolPayload(event.raw)} dim />
+        </div>
       </div>
     </details>
+  );
+}
+
+function RuntimePayloadBlock({ title, text, dim }: { title: string; text: string; dim?: boolean }) {
+  return (
+    <div>
+      <div className="mb-1 text-[9px] uppercase tracking-wide text-text-dim">{title}</div>
+      <pre className={`text-[10px] ${dim ? "text-text-muted" : "text-text"} bg-bg-input border border-border rounded p-2 overflow-auto max-h-56`}>
+        {text}
+      </pre>
+    </div>
   );
 }
 

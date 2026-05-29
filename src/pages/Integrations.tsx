@@ -37,6 +37,7 @@ function AppLogo({ src, className }: { src?: string; className?: string }) {
 }
 import { Modal } from "../components/Modal";
 import { SuiteConnect } from "../components/SuiteConnect";
+import { IntegrationExplorerPanel } from "../components/integrations/IntegrationExplorerPanel";
 import { useNavigate } from "react-router-dom";
 import { useProjects } from "../hooks/useProjects";
 
@@ -100,6 +101,7 @@ export function Integrations() {
   const [scopeFlipFor, setScopeFlipFor] = useState<ConnectionInfo | null>(null);
   const [scopeFlipBusy, setScopeFlipBusy] = useState(false);
   const [scopeFlipErr, setScopeFlipErr] = useState("");
+  const [explorerFor, setExplorerFor] = useState<ConnectionInfo | null>(null);
 
   // Tool picker — after a new connection is active, present the catalog
   // of tools exposed by that integration and let the user pick which subset
@@ -926,6 +928,7 @@ export function Integrations() {
     const isGlobal = !c.project_id;
     const isLocalOAuth = (c.source || "local") === "local" && c.auth_type === "oauth2";
     const canMoveScope = c.source !== "composio" && (isGlobal ? currentProject?.id : true);
+    const canExplore = c.source !== "composio" && c.app_slug === "bunny-stream" && c.status === "active";
     const menuOpen = openMenuFor === c.id;
     const menuItemClass = "block w-full text-left px-3 py-2 text-sm text-text-muted hover:bg-bg-hover hover:text-text transition-colors";
     return (
@@ -1004,6 +1007,17 @@ export function Integrations() {
                 <button className={menuItemClass} onClick={() => { setOpenMenuFor(null); openCredsFor(c); }}>
                   View credentials
                 </button>
+                {canExplore && (
+                  <button
+                    className={menuItemClass}
+                    onClick={() => {
+                      setOpenMenuFor(null);
+                      setExplorerFor(c);
+                    }}
+                  >
+                    Explore
+                  </button>
+                )}
                 <button
                   className={`${menuItemClass} disabled:opacity-50`}
                   disabled={testInFlight.has(c.id)}
@@ -1942,6 +1956,12 @@ export function Integrations() {
           );
         })()}
       </Modal>
+
+      <IntegrationExplorerPanel
+        open={!!explorerFor}
+        connection={explorerFor}
+        onClose={() => setExplorerFor(null)}
+      />
     </div>
   );
 }

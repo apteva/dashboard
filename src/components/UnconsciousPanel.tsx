@@ -25,6 +25,7 @@ import { core, instances as instancesAPI, telemetry, type Thread, type Telemetry
 
 interface Props {
   instanceId: number;
+  compact?: boolean;
 }
 
 interface CycleStats {
@@ -175,7 +176,7 @@ function toolColor(name: string): string {
   }
 }
 
-export function UnconsciousPanel({ instanceId }: Props) {
+export function UnconsciousPanel({ instanceId, compact = false }: Props) {
   const [thread, setThread] = useState<Thread | null>(null);
   const [events, setEvents] = useState<TelemetryEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -191,6 +192,13 @@ export function UnconsciousPanel({ instanceId }: Props) {
   const [wakeError, setWakeError] = useState<string | null>(null);
 
   const reload = async () => {
+    if (!Number.isFinite(instanceId) || instanceId <= 0) {
+      setThread(null);
+      setEvents([]);
+      setError("agent_id required");
+      setLoading(false);
+      return;
+    }
     try {
       const [threads, telem] = await Promise.all([
         core.threads(instanceId),
@@ -239,16 +247,94 @@ export function UnconsciousPanel({ instanceId }: Props) {
   const state = useMemo(() => derive(thread, events), [thread, events]);
 
   if (loading) {
-    return <div className="p-4 text-xs text-text-muted">Loading…</div>;
+    return <div className={compact ? "border-b border-border px-4 py-3 text-xs text-text-muted" : "p-4 text-xs text-text-muted"}>Loading…</div>;
   }
   if (error) {
-    return <div className="p-4 text-xs text-red">Error: {error}</div>;
+    return <div className={compact ? "border-b border-border px-4 py-3 text-xs text-red" : "p-4 text-xs text-red"}>Error: {error}</div>;
   }
   if (!state.enabled) {
     return (
-      <div className="p-4 text-xs text-text-muted leading-relaxed">
-        <p className="mb-2">The unconscious thread isn't running for this agent.</p>
-        <p>Enable it by setting <code className="text-accent">unconscious: true</code> in the agent config, then restart.</p>
+      <div className={`${compact ? "border-b border-border px-4 py-3" : "p-4"} text-xs text-text-muted leading-relaxed`}>
+        <p className="mb-1">Background memory is not running for this agent.</p>
+        {!compact && (
+          <p>Enable it by setting <code className="text-accent">unconscious: true</code> in the agent config, then restart.</p>
+        )}
+      </div>
+    );
+  }
+
+  const wakeControl = (
+    <div className="relative">
+      <button
+        onClick={() => {
+          setWakeError(null);
+          setWakeOpen((v) => !v);
+        }}
+        disabled={waking}
+        className="px-3 py-1 text-xs border border-border rounded hover:bg-bg-hover hover:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        title="Send a [wake] event to the background memory thread so it runs a consolidation cycle now"
+      >
+        {waking ? "Waking…" : "Wake up"}
+      </button>
+      {wakeOpen && (
+        <div className="absolute right-0 top-full mt-1 w-72 border border-border rounded bg-bg-card shadow-lg p-3 z-10">
+          <label className="text-text-muted text-xs block mb-1">
+            Reason (optional — surfaces in telemetry)
+          </label>
+          <input
+            type="text"
+            value={wakeReason}
+            onChange={(e) => setWakeReason(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !waking) wake();
+              if (e.key === "Escape") setWakeOpen(false);
+            }}
+            autoFocus
+            placeholder="e.g. consolidating after dev session"
+            className="w-full px-2 py-1 text-xs border border-border rounded bg-bg-base text-text focus:outline-none focus:border-accent"
+          />
+          <div className="flex items-center justify-end gap-2 mt-2">
+            <button
+              onClick={() => setWakeOpen(false)}
+              disabled={waking}
+              className="text-xs text-text-muted hover:text-text transition-colors disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={wake}
+              disabled={waking}
+              className="px-2 py-1 text-xs bg-accent/20 text-accent rounded hover:bg-accent/30 transition-colors disabled:opacity-50"
+            >
+              {waking ? "Sending…" : "Send wake"}
+            </button>
+          </div>
+          {wakeError && (
+            <div className="text-red text-xs mt-2">{wakeError}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  if (compact) {
+    return (
+      <div className="border-b border-border px-4 py-3 space-y-3">
+        <header className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-[10px] uppercase tracking-wide text-text-muted font-bold">Background Memory</h2>
+            <div className="text-text-dim text-xs mt-0.5 truncate">
+              consolidation thread · last activity {relTime(state.lastEventAt)}
+            </div>
+          </div>
+          {wakeControl}
+        </header>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <Stat label="Pace" value={state.thread?.rate || "—"} hint="self-set sleep interval" />
+          <Stat label="Cycles" value={String(state.totals24h.cycles)} hint="24h consolidation cycles" />
+          <Stat label="Writes" value={String(state.totals24h.writes)} hint="24h remember + supersede + drop" />
+          <Stat label="Wakes" value={String(state.totals24h.forceWakes)} hint="24h manual or automatic wakes" />
+        </div>
       </div>
     );
   }
@@ -260,57 +346,7 @@ export function UnconsciousPanel({ instanceId }: Props) {
           <h2 className="text-text text-sm font-bold">// UNCONSCIOUS</h2>
           <span className="text-text-muted text-xs">memory-consolidation thread</span>
         </div>
-        <div className="relative">
-          <button
-            onClick={() => {
-              setWakeError(null);
-              setWakeOpen((v) => !v);
-            }}
-            disabled={waking}
-            className="px-3 py-1 text-xs border border-border rounded hover:bg-bg-hover hover:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Send a [wake] event to the unconscious thread so it runs a consolidation cycle now"
-          >
-            {waking ? "Waking…" : "Wake up"}
-          </button>
-          {wakeOpen && (
-            <div className="absolute right-0 top-full mt-1 w-72 border border-border rounded bg-bg-card shadow-lg p-3 z-10">
-              <label className="text-text-muted text-xs block mb-1">
-                Reason (optional — surfaces in telemetry)
-              </label>
-              <input
-                type="text"
-                value={wakeReason}
-                onChange={(e) => setWakeReason(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !waking) wake();
-                  if (e.key === "Escape") setWakeOpen(false);
-                }}
-                autoFocus
-                placeholder="e.g. consolidating after dev session"
-                className="w-full px-2 py-1 text-xs border border-border rounded bg-bg-base text-text focus:outline-none focus:border-accent"
-              />
-              <div className="flex items-center justify-end gap-2 mt-2">
-                <button
-                  onClick={() => setWakeOpen(false)}
-                  disabled={waking}
-                  className="text-xs text-text-muted hover:text-text transition-colors disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={wake}
-                  disabled={waking}
-                  className="px-2 py-1 text-xs bg-accent/20 text-accent rounded hover:bg-accent/30 transition-colors disabled:opacity-50"
-                >
-                  {waking ? "Sending…" : "Send wake"}
-                </button>
-              </div>
-              {wakeError && (
-                <div className="text-red text-xs mt-2">{wakeError}</div>
-              )}
-            </div>
-          )}
-        </div>
+        {wakeControl}
       </header>
 
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">

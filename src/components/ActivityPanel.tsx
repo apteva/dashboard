@@ -1,8 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { core, instances, type Agent, type RunMode, type Status, type Thread } from "../api";
 import type { SubscribeFn } from "./AgentView";
-import { MCPPanel } from "./MCPPanel";
-import { ComputerPanel } from "./ComputerPanel";
 import { Modal } from "./Modal";
 
 interface ThoughtEntry {
@@ -977,10 +975,6 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
           </div>
         </div>
       )}
-
-      {/* MCP Servers attached to this instance */}
-      <MCPPanel instanceId={instance.id} running={instance.status === "running"} />
-      <ComputerPanel instanceId={instance.id} running={instance.status === "running"} />
 
       {/* Recent tool calls */}
       {tools.length > 0 && (

@@ -7,6 +7,7 @@ import { NotificationsTray } from "./NotificationsTray";
 import { startChatNotifications } from "../state/chatNotifications";
 import { chatConnections, purgeLegacyChatConnectedKeys } from "../state/chatConnections";
 import { apps, platform, type PlatformStatus } from "../api";
+import { ContextAgentChatWidget, readContextAgentChatOpenDefault } from "./ContextAgentChatWidget";
 
 // Sidebar APPS section visible-cap. Above this, the overflow row
 // collapses the rest behind a "More apps (N)" toggle. Five is the
@@ -45,6 +46,7 @@ export function Layout() {
   const { projects, currentProject, setCurrentProject } = useProjects();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const [agentDrawerOpen, setAgentDrawerOpen] = useState(readContextAgentChatOpenDefault);
 
   // Boot the global notifications source once the user is logged in.
   //
@@ -414,6 +416,12 @@ export function Layout() {
           <Outlet />
         </div>
       </main>
+
+      <ContextAgentChatWidget
+        open={agentDrawerOpen}
+        onOpen={() => setAgentDrawerOpen(true)}
+        onClose={() => setAgentDrawerOpen(false)}
+      />
     </div>
   );
 }

@@ -70,7 +70,9 @@ async function request<T>(
         const obj = JSON.parse(text);
         parsed = obj;
         if (obj && typeof obj === "object") {
-          if (typeof obj.error === "string" && obj.error.trim() !== "") {
+          if (obj.health_check && typeof obj.detail === "string" && obj.detail.trim() !== "") {
+            msg = `${obj.error || "Credential check failed"} — ${obj.detail}`;
+          } else if (typeof obj.error === "string" && obj.error.trim() !== "") {
             msg = obj.error;
           } else if (typeof obj.message === "string" && obj.message.trim() !== "") {
             msg = obj.message;
@@ -1031,11 +1033,12 @@ export const instances = {
       project_id: projectId || "",
       // Server default is start=true; pass explicit false to create stopped.
       ...(start === false ? { start: false } : {}),
-      // Server defaults both system-MCP flags to true. Only send them
-      // when the caller wants a non-default value so the wire payload
-      // stays minimal in the common case.
-      ...(opts?.includeAptevaServer === false ? { include_apteva_server: false } : {}),
-      ...(opts?.includeChannels === false ? { include_channels: false } : {}),
+      ...(opts?.includeAptevaServer !== undefined
+        ? { include_apteva_server: opts.includeAptevaServer }
+        : {}),
+      ...(opts?.includeChannels !== undefined
+        ? { include_channels: opts.includeChannels }
+        : {}),
       // Unconscious: when set, spawns the background memory-consolidation
       // thread (core/thinker.go). Per-agent so a personal-assistant
       // template can enable it while a fast/stateless agent stays out.
@@ -1265,6 +1268,34 @@ export interface AppDetail extends AppSummary {
     path: string;
     input_schema: Record<string, any>;
   }>;
+  explorer?: IntegrationExplorerConfig;
+}
+
+export interface IntegrationExplorerConfig {
+  resources: IntegrationExplorerResource[];
+}
+
+export interface IntegrationExplorerResource {
+  id: string;
+  label: string;
+  description?: string;
+  list_tool: string;
+  list_input?: Record<string, any>;
+  response_path?: string;
+  item_id_path?: string;
+  item_label_path?: string;
+  item_subtitle_path?: string;
+  detail_tool?: string;
+  detail_input?: Record<string, any>;
+  actions?: IntegrationExplorerAction[];
+}
+
+export interface IntegrationExplorerAction {
+  label: string;
+  tool: string;
+  input?: Record<string, any>;
+  destructive?: boolean;
+  description?: string;
 }
 
 export interface ConnectionInfo {
@@ -1653,7 +1684,7 @@ export const integrations = {
     ),
 
   tools: (id: number) =>
-    request<Array<{ name: string; description: string; method: string; path: string }>>("GET", `/connections/${id}/tools`),
+    request<Array<{ name: string; description: string; method: string; path: string; input_schema: Record<string, any> }>>("GET", `/connections/${id}/tools`),
 
   execute: (id: number, tool: string, input: Record<string, any>) =>
     request<{ success: boolean; status: number; data: any }>("POST", `/connections/${id}/execute`, { tool, input }),
@@ -2100,28 +2131,7 @@ export const core = {
       execution_checkpoints?: ExecutionCheckpointMeta[];
       auto_approve?: string[];
       mcp_servers?: MCPServerConfig[];
-      computer?: {
-        connected: boolean;
-        type?: string;
-        display?: { width: number; height: number };
-      } | null;
     }>("GET", `/agents/${instanceId}/config`),
-
-  // Hot-attach or detach the browser/computer environment on a running
-  // instance. The server fills in credentials from the saved browser
-  // provider when the type needs them, so the dashboard only sends the
-  // mode (and an optional URL for the "service" CDP type).
-  setComputer: (
-    instanceId: number,
-    computer:
-      | { type: "" }
-      | { type: "local"; width?: number; height?: number }
-      | { type: "browserbase"; width?: number; height?: number }
-      | { type: "service"; url?: string; width?: number; height?: number },
-  ) =>
-    request<{ status: string }>("PUT", `/agents/${instanceId}/config`, {
-      computer,
-    }),
   setMode: (instanceId: number, mode: RunMode) =>
     request<{ status: string }>("PUT", `/agents/${instanceId}/config`, { mode }),
   control: (instanceId: number, action: "run" | "pause" | "step", threadId?: string) =>
@@ -2882,6 +2892,17 @@ export interface ChatMessageRow {
   components?: ChatComponent[];
 }
 
+export interface ChatMessageContext {
+  source: "dashboard-floating";
+  project_id?: string;
+  project_name?: string;
+  route: string;
+  title: string;
+  detail: string;
+  page_kind: string;
+  chips?: string[];
+}
+
 export const chat = {
   // APP_PATH is the HTTP prefix the Apteva Apps framework uses for
   // this app. Keeping it as a constant here means if the slug changes
@@ -2900,11 +2921,11 @@ export const chat = {
       `/apps/channel-chat/messages?chat_id=${encodeURIComponent(chatId)}&since=${since}&limit=${limit}`,
     ),
 
-  post: (chatId: string, content: string) =>
+  post: (chatId: string, content: string, context?: ChatMessageContext) =>
     request<ChatMessageRow>(
       "POST",
       `/apps/channel-chat/messages?chat_id=${encodeURIComponent(chatId)}`,
-      { content },
+      { content, ...(context ? { context } : {}) },
     ),
 
   clear: (chatId: string) =>

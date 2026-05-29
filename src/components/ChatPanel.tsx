@@ -1001,7 +1001,6 @@ const MessageRow = memo(function MessageRow({
         className="chat-md text-text text-xs break-words leading-relaxed"
         dangerouslySetInnerHTML={{ __html: html }}
       />
-      {msg.status === "streaming" && <span className="tool-cursor">▊</span>}
       {msg.components && msg.components.length > 0 && (
         <ChatComponentList
           components={msg.components}
@@ -1037,7 +1036,6 @@ function StreamingBubble({ text }: { text: string }) {
         className="chat-md text-text text-xs break-words leading-relaxed"
         dangerouslySetInnerHTML={{ __html: html }}
       />
-      <span className="tool-cursor">▊</span>
     </div>
   );
 }
