@@ -1309,6 +1309,9 @@ export interface ConnectionInfo {
   provider_id?: number;
   external_id?: string;
   project_id?: string;
+  created_via?: "integration" | "app_install" | string;
+  owner_app_install_id?: number;
+  auto_mcp?: boolean;
   tool_count: number;
   created_at: string;
   // Populated server-side when this connection is a member of a
@@ -1498,9 +1501,12 @@ export const integrations = {
 
   app: (slug: string) => request<AppDetail>("GET", `/integrations/catalog/${slug}`),
 
-  connections: (projectId?: string) => {
-    const params = projectId ? `?project_id=${projectId}` : "";
-    return request<ConnectionInfo[]>("GET", `/connections${params}`);
+  connections: (projectId?: string, opts?: { includeAppOwned?: boolean }) => {
+    const params = new URLSearchParams();
+    if (projectId) params.set("project_id", projectId);
+    if (opts?.includeAppOwned) params.set("include_app_owned", "1");
+    const qs = params.toString();
+    return request<ConnectionInfo[]>("GET", `/connections${qs ? `?${qs}` : ""}`);
   },
 
   // Owner-only credential reveal. Returns the decrypted token map for
@@ -1721,6 +1727,8 @@ export interface MCPServer {
   url?: string;
   provider_id?: number;
   connection_id: number;
+  created_via?: "integration" | "app_install" | string;
+  owner_app_install_id?: number;
   // allowed_tools is the persisted tool filter. Empty/null means "all tools
   // exposed" (legacy). A populated array means only those tools are served
   // by this MCP server row — enforced server-side for local rows and
@@ -1746,9 +1754,12 @@ export interface MCPServerToolsResponse {
 }
 
 export const mcpServers = {
-  list: (projectId?: string) => {
-    const params = projectId ? `?project_id=${projectId}` : "";
-    return request<MCPServer[]>("GET", `/mcp-servers${params}`);
+  list: (projectId?: string, opts?: { includeAppOwned?: boolean }) => {
+    const params = new URLSearchParams();
+    if (projectId) params.set("project_id", projectId);
+    if (opts?.includeAppOwned) params.set("include_app_owned", "1");
+    const qs = params.toString();
+    return request<MCPServer[]>("GET", `/mcp-servers${qs ? `?${qs}` : ""}`);
   },
 
   create: (name: string, command: string, args: string[], env: Record<string, string>, description: string, projectId?: string) =>
