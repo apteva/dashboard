@@ -1,15 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   apps as appsApi,
+  instances,
   integrations,
-  worlds as worldsApi,
-  worldSnapshots as snapsApi,
+  environments as environmentsApi,
+  environmentSnapshots as snapsApi,
+  type Agent,
   type AppMCPTool,
   type AppRow,
   type ConnectionInfo,
   type InterceptedCall,
-  type WorldSnapshotManifest,
-  type WorldSummary,
+  type TelemetryEvent,
+  type ThreadContextMessage,
+  type EnvironmentAgentStatus,
+  type EnvironmentSnapshotManifest,
+  type EnvironmentSummary,
 } from "../api";
 import { useProjects } from "../hooks/useProjects";
 
@@ -34,14 +39,24 @@ type FixtureDraft = {
   data: string;
 };
 
-export function Worlds() {
+type EnvironmentAgentContext = {
+  id: string;
+  iteration: number;
+  model: string;
+  count: number;
+  total_chars: number;
+  messages: ThreadContextMessage[];
+};
+
+export function Environments() {
   const { currentProject } = useProjects();
   const projectId = currentProject?.id || "";
 
-  const [worlds, setWorlds] = useState<WorldSummary[]>([]);
-  const [snaps, setSnaps] = useState<WorldSnapshotManifest[]>([]);
+  const [environments, setEnvironments] = useState<EnvironmentSummary[]>([]);
+  const [snaps, setSnaps] = useState<EnvironmentSnapshotManifest[]>([]);
   const [installedApps, setInstalledApps] = useState<AppRow[]>([]);
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,10 +75,12 @@ export function Worlds() {
 
   const [openCalls, setOpenCalls] = useState<string | null>(null);
   const [calls, setCalls] = useState<InterceptedCall[]>([]);
+  const [destroyTarget, setDestroyTarget] = useState<EnvironmentSummary | null>(null);
+  const [destroying, setDestroying] = useState(false);
 
-  const visibleWorlds = useMemo(
-    () => worlds.filter((w) => !projectId || w.project_id === projectId),
-    [worlds, projectId],
+  const visibleEnvironments = useMemo(
+    () => environments.filter((w) => !projectId || w.project_id === projectId),
+    [environments, projectId],
   );
 
   const selectableApps = useMemo(
@@ -112,16 +129,18 @@ export function Worlds() {
   const refresh = () => {
     setLoading(true);
     Promise.all([
-      worldsApi.list(),
+      environmentsApi.list(),
       snapsApi.list(),
       projectId ? appsApi.list(projectId) : Promise.resolve([] as AppRow[]),
       projectId ? integrations.connections(projectId) : Promise.resolve([] as ConnectionInfo[]),
+      projectId ? instances.list(projectId) : Promise.resolve([] as Agent[]),
     ])
-      .then(([w, s, a, c]) => {
-        setWorlds(w || []);
+      .then(([w, s, a, c, ag]) => {
+        setEnvironments(w || []);
         setSnaps(s || []);
         setInstalledApps(a || []);
         setConnections(c || []);
+        setAgents(ag || []);
         setError(null);
       })
       .catch((e: Error) => setError(e.message))
@@ -239,7 +258,7 @@ export function Worlds() {
           status: Number(row.status || 200),
           data: parseJSON(row.data, `${row.app}.${row.tool} mock response`),
         }));
-      await worldsApi.create({
+      await environmentsApi.create({
         id: newId.trim() || undefined,
         project_id: projectId,
         app_install_ids: Array.from(selectedApps),
@@ -266,20 +285,24 @@ export function Worlds() {
     }
   };
 
-  const destroy = async (id: string) => {
-    if (!confirm(`Tear down world "${id}"?`)) return;
+  const confirmDestroy = async () => {
+    if (!destroyTarget) return;
+    setDestroying(true);
     try {
-      await worldsApi.destroy(id);
-      if (openCalls === id) setOpenCalls(null);
+      await environmentsApi.destroy(destroyTarget.id);
+      if (openCalls === destroyTarget.id) setOpenCalls(null);
+      setDestroyTarget(null);
       refresh();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setDestroying(false);
     }
   };
 
   const snapshot = async (id: string) => {
     try {
-      await worldsApi.snapshot(id, {});
+      await environmentsApi.snapshot(id, {});
       refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -292,7 +315,7 @@ export function Worlds() {
       return;
     }
     try {
-      const c = await worldsApi.calls(id);
+      const c = await environmentsApi.calls(id);
       setCalls(c || []);
       setOpenCalls(id);
     } catch (e) {
@@ -305,7 +328,7 @@ export function Worlds() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold text-text">Worlds</h1>
+            <h1 className="text-xl font-semibold text-text">Environments</h1>
             {currentProject && (
               <span className="text-xs px-2 py-1 rounded border border-border text-text-muted">
                 {currentProject.name}
@@ -321,14 +344,14 @@ export function Worlds() {
           onClick={() => setShowCreate((v) => !v)}
           disabled={!projectId}
         >
-          {showCreate ? "Cancel" : "+ New world"}
+          {showCreate ? "Cancel" : "+ New environment"}
         </button>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Metric label="Running" value={visibleWorlds.length} />
-        <Metric label="Apps" value={visibleWorlds.reduce((n, w) => n + Object.keys(w.apps || {}).length, 0)} />
-        <Metric label="Connections" value={visibleWorlds.reduce((n, w) => n + (w.connections?.length || 0), 0)} />
+        <Metric label="Running" value={visibleEnvironments.length} />
+        <Metric label="Apps" value={visibleEnvironments.reduce((n, w) => n + Object.keys(w.apps || {}).length, 0)} />
+        <Metric label="Connections" value={visibleEnvironments.reduce((n, w) => n + (w.connections?.length || 0), 0)} />
         <Metric label="Snapshots" value={snaps.filter((s) => !projectId || s.project_id === projectId).length} />
       </div>
 
@@ -340,7 +363,7 @@ export function Worlds() {
 
       {!projectId && (
         <div className="rounded border border-border bg-bg-subtle px-3 py-2 text-sm text-text-muted">
-          Select a project in the dashboard header to create a world.
+          Select a project in the dashboard header to create an environment.
         </div>
       )}
 
@@ -350,7 +373,7 @@ export function Worlds() {
             <div className="p-4 flex flex-col gap-5">
               <section className="grid md:grid-cols-3 gap-3">
                 <label className="text-sm text-text-muted flex flex-col gap-1">
-                  World id
+                  Environment id
                   <input
                     className="px-2 py-1.5 rounded border border-border bg-bg text-text"
                     value={newId}
@@ -359,7 +382,7 @@ export function Worlds() {
                   />
                 </label>
                 <label className="text-sm text-text-muted flex flex-col gap-1">
-                  Edge mode
+                  Network mode
                   <select
                     className="px-2 py-1.5 rounded border border-border bg-bg text-text"
                     value={newMode}
@@ -379,7 +402,7 @@ export function Worlds() {
                     value={newSnapshot}
                     onChange={(e) => setNewSnapshot((e.target as any).value)}
                   >
-                    <option value="">Blank world</option>
+                    <option value="">Blank environment</option>
                     {snaps
                       .filter((s) => !s.project_id || s.project_id === projectId)
                       .map((s) => (
@@ -551,8 +574,13 @@ export function Worlds() {
                 onClick={create}
                 disabled={busy}
               >
-                {busy ? "Creating..." : "Create world"}
+                {busy ? "Creating..." : "Create environment"}
               </button>
+              {busy && (
+                <p className="text-xs text-text-muted">
+                  Building selected local apps, starting sidecars, and waiting for health checks.
+                </p>
+              )}
             </aside>
           </div>
         </div>
@@ -560,51 +588,71 @@ export function Worlds() {
 
       {loading ? (
         <p className="text-text-muted text-sm">Loading...</p>
-      ) : visibleWorlds.length === 0 ? (
-        <p className="text-text-muted text-sm">No worlds running in this project.</p>
+      ) : visibleEnvironments.length === 0 ? (
+        <p className="text-text-muted text-sm">No environments running in this project.</p>
       ) : (
         <div className="flex flex-col gap-3">
-          {visibleWorlds.map((w) => (
-            <WorldCard
+          {visibleEnvironments.map((w) => (
+            <EnvironmentCard
               key={w.id}
-              world={w}
+              environment={w}
               callsOpen={openCalls === w.id}
               calls={calls}
               onCalls={() => inspectCalls(w.id)}
               onSnapshot={() => snapshot(w.id)}
-              onDestroy={() => destroy(w.id)}
+              onDestroy={() => setDestroyTarget(w)}
+              agents={agents}
+              onError={(message) => setError(message)}
             />
           ))}
         </div>
+      )}
+
+      {destroyTarget && (
+        <ConfirmDialog
+          title="Destroy environment"
+          body={`Destroy ${destroyTarget.id}? This stops its in-environment apps and removes the live environment. Snapshots are kept.`}
+          confirmLabel={destroying ? "Destroying..." : "Destroy"}
+          tone="danger"
+          busy={destroying}
+          onCancel={() => {
+            if (!destroying) setDestroyTarget(null);
+          }}
+          onConfirm={confirmDestroy}
+        />
       )}
     </div>
   );
 }
 
-function WorldCard({
-  world,
+function EnvironmentCard({
+  environment,
   callsOpen,
   calls,
   onCalls,
   onSnapshot,
   onDestroy,
+  agents,
+  onError,
 }: {
-  world: WorldSummary;
+  environment: EnvironmentSummary;
   callsOpen: boolean;
   calls: InterceptedCall[];
   onCalls: () => void;
   onSnapshot: () => void;
   onDestroy: () => void;
+  agents: Agent[];
+  onError: (message: string) => void;
 }) {
-  const appNames = Object.keys(world.apps || {});
+  const appNames = Object.keys(environment.apps || {});
   return (
     <div className="rounded border border-border bg-bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="font-medium text-text truncate">{world.id}</span>
-          <span className="text-xs px-1.5 py-0.5 rounded bg-bg-subtle text-text-muted">{world.mode}</span>
+          <span className="font-medium text-text truncate">{environment.id}</span>
+          <span className="text-xs px-1.5 py-0.5 rounded bg-bg-subtle text-text-muted">{environment.mode}</span>
           <span className="text-xs text-text-muted">{appNames.length} apps</span>
-          <span className="text-xs text-text-muted">{world.connections?.length || 0} connections</span>
+          <span className="text-xs text-text-muted">{environment.connections?.length || 0} connections</span>
         </div>
         <div className="flex gap-2">
           <button className={buttonClass} onClick={onCalls}>{callsOpen ? "Hide calls" : "Calls"}</button>
@@ -626,11 +674,11 @@ function WorldCard({
                 <a
                   key={name}
                   className="text-xs px-2 py-1 rounded border border-border hover:bg-bg-subtle text-text"
-                  href={`${worldsApi.appBase(world.id, name)}/`}
+                  href={`${environmentsApi.appBase(environment.id, name)}/`}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  {name} {world.apps[name]?.kind === "install" ? "install" : "legacy"}
+                  {name} {environment.apps[name]?.kind === "install" ? "install" : "legacy"}
                 </a>
               ))
             )}
@@ -639,10 +687,10 @@ function WorldCard({
         <div>
           <h3 className="text-xs font-semibold text-text-muted uppercase">Connections</h3>
           <div className="mt-2 flex flex-wrap gap-2">
-            {(world.connections || []).length === 0 ? (
+            {(environment.connections || []).length === 0 ? (
               <span className="text-xs text-text-muted">No connections</span>
             ) : (
-              (world.connections || []).map((conn) => (
+              (environment.connections || []).map((conn) => (
                 <span key={conn.id} className="text-xs px-2 py-1 rounded border border-border text-text">
                   {conn.name || conn.app_slug}
                 </span>
@@ -651,6 +699,8 @@ function WorldCard({
           </div>
         </div>
       </div>
+
+      <EnvironmentAgentPanel environment={environment} agents={agents} onError={onError} />
 
       {callsOpen && (
         <div className="mt-3 border-t border-border pt-3">
@@ -682,6 +732,497 @@ function WorldCard({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function EnvironmentAgentPanel({
+  environment,
+  agents,
+  onError,
+}: {
+  environment: EnvironmentSummary;
+  agents: Agent[];
+  onError: (message: string) => void;
+}) {
+  const [sourceAgentID, setSourceAgentID] = useState("");
+  const [alias, setAlias] = useState("");
+  const [directive, setDirective] = useState("");
+  const [environmentAgents, setEnvironmentAgents] = useState<EnvironmentAgentStatus[]>(environment.agents || []);
+  const [activeAgentID, setActiveAgentID] = useState<number | null>((environment.agents || [])[0]?.agent_id || null);
+  const [threadID, setThreadID] = useState("main");
+  const [message, setMessage] = useState("");
+  const [agentsLoading, setAgentsLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [streamState, setStreamState] = useState<"idle" | "connecting" | "live" | "reconnecting" | "closed">("idle");
+  const [events, setEvents] = useState<TelemetryEvent[]>([]);
+  const [context, setContext] = useState<EnvironmentAgentContext | null>(null);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [contextError, setContextError] = useState<string | null>(null);
+  const [stopTarget, setStopTarget] = useState<EnvironmentAgentStatus | null>(null);
+  const activeAgentRef = useRef<EnvironmentAgentStatus | null>(null);
+  const threadRef = useRef("main");
+  const contextRefreshRef = useRef<() => void>(() => {});
+  const refreshTimerRef = useRef<number | null>(null);
+
+  const activeAgent = environmentAgents.find((agent) => agent.agent_id === activeAgentID) || null;
+  const statusLabel = agentsLoading ? "Checking" : `${environmentAgents.length} running`;
+  const statusClass = environmentAgents.length > 0
+    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+    : agentsLoading
+      ? "border-border bg-bg-subtle text-text-muted"
+      : "border-border bg-bg text-text-muted";
+
+  useEffect(() => {
+    if (!sourceAgentID && agents.length > 0) setSourceAgentID(String(agents[0].id));
+  }, [agents, sourceAgentID]);
+
+  useEffect(() => {
+    threadRef.current = threadID.trim() || "main";
+  }, [threadID]);
+
+  useEffect(() => {
+    activeAgentRef.current = activeAgent;
+  }, [activeAgent]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAgentsLoading(true);
+    environmentsApi
+      .agents(environment.id)
+      .then((next) => {
+        if (cancelled) return;
+        const list = next || [];
+        setEnvironmentAgents(list);
+        setActiveAgentID((current) => (current && list.some((agent) => agent.agent_id === current) ? current : list[0]?.agent_id || null));
+      })
+      .catch((e: any) => {
+        if (cancelled) return;
+        setEnvironmentAgents([]);
+        setActiveAgentID(null);
+        if (e?.status && e.status !== 404) onError(e.message || "Failed to load environment agents.");
+      })
+      .finally(() => {
+        if (!cancelled) setAgentsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [environment.id, environment.agents]);
+
+  const loadContext = async (nextThreadID = threadRef.current) => {
+    const agent = activeAgentRef.current;
+    if (!agent) return;
+    setContextLoading(true);
+    setContextError(null);
+    try {
+      const next = await environmentsApi.agentContext(environment.id, nextThreadID || "main", agent.agent_id);
+      setContext({
+        id: next.id,
+        iteration: next.iteration,
+        model: next.model,
+        count: next.count,
+        total_chars: next.total_chars,
+        messages: next.messages || [],
+      });
+    } catch (e) {
+      setContextError((e as Error).message);
+    } finally {
+      setContextLoading(false);
+    }
+  };
+
+  contextRefreshRef.current = () => {
+    void loadContext(threadRef.current);
+  };
+
+  useEffect(() => {
+    if (!activeAgent) {
+      setStreamState("idle");
+      setEvents([]);
+      setContext(null);
+      return;
+    }
+    void loadContext(threadRef.current);
+  }, [environment.id, activeAgent?.agent_id]);
+
+  useEffect(() => {
+    if (!activeAgent) {
+      setStreamState("idle");
+      return;
+    }
+    setStreamState("connecting");
+    const source = new EventSource(environmentsApi.agentEventsURL(environment.id, activeAgent.agent_id), { withCredentials: true });
+    source.onopen = () => setStreamState("live");
+    source.onmessage = (e) => {
+      let ev: TelemetryEvent;
+      try {
+        ev = JSON.parse(e.data) as TelemetryEvent;
+      } catch {
+        return;
+      }
+      setEvents((prev) => {
+        if (prev.some((seen) => seen.id && seen.id === ev.id)) return prev;
+        return [...prev, ev].slice(-100);
+      });
+      if (!ev.thread_id || ev.thread_id === threadRef.current) {
+        if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = window.setTimeout(() => {
+          refreshTimerRef.current = null;
+          contextRefreshRef.current();
+        }, 350);
+      }
+    };
+    source.onerror = () => {
+      setStreamState(source.readyState === EventSource.CLOSED ? "closed" : "reconnecting");
+    };
+    return () => {
+      source.close();
+      if (refreshTimerRef.current) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [environment.id, activeAgent?.agent_id]);
+
+  const spawn = async () => {
+    const sourceID = Number(sourceAgentID);
+    if (!sourceID) {
+      onError("Pick a source agent to spawn into the environment.");
+      return;
+    }
+    setBusy("spawn");
+    try {
+      const next = await environmentsApi.spawnAgent(environment.id, {
+        source_agent_id: sourceID,
+        directive: directive.trim() || undefined,
+        alias: alias.trim() || undefined,
+      });
+      setEnvironmentAgents((prev) => [...prev.filter((agent) => agent.agent_id !== next.agent_id), next]);
+      setActiveAgentID(next.agent_id);
+      setAlias("");
+      setDirective("");
+      setEvents([]);
+      setContext(null);
+      setContextError(null);
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const send = async () => {
+    if (!activeAgent) return;
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    setBusy("send");
+    try {
+      await environmentsApi.sendAgentEvent(environment.id, { message: trimmed, thread_id: threadID.trim() || "main" }, activeAgent.agent_id);
+      setMessage("");
+      void loadContext(threadID.trim() || "main");
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const stop = async (agent: EnvironmentAgentStatus) => {
+    setBusy("stop");
+    try {
+      await environmentsApi.stopAgent(environment.id, agent.agent_id);
+      setEnvironmentAgents((prev) => {
+        const next = prev.filter((item) => item.agent_id !== agent.agent_id);
+        setActiveAgentID((current) => (current === agent.agent_id ? next[0]?.agent_id || null : current));
+        return next;
+      });
+      setStopTarget(null);
+      if (activeAgentID === agent.agent_id) {
+        activeAgentRef.current = null;
+        setStreamState("closed");
+        setEvents([]);
+        setContext(null);
+      }
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="mt-3 border-t border-border pt-3 flex flex-col gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-semibold text-text">Environment Agents</h3>
+            <span className={`text-[11px] px-2 py-0.5 rounded-full border ${statusClass}`}>{statusLabel}</span>
+          </div>
+          <div className="mt-1 text-xs text-text-muted">
+            {activeAgent ? `${agentLabel(activeAgent)} - port ${activeAgent.port} - telemetry ${streamState}` : "Spawn one or more project agents into this environment."}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid xl:grid-cols-[minmax(0,1fr)_360px] gap-3">
+        <div className="rounded border border-border bg-bg p-3 min-w-0">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h3 className="text-xs font-semibold text-text-muted uppercase">Spawned Agents</h3>
+            <span className="text-xs text-text-muted">{environmentAgents.length}</span>
+          </div>
+          {environmentAgents.length === 0 ? (
+            <p className="text-xs text-text-muted">No agents running in this environment.</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {environmentAgents.map((agent) => (
+                <button
+                  key={agent.agent_id}
+                  className={`rounded border px-3 py-2 text-left hover:bg-bg-subtle ${
+                    activeAgentID === agent.agent_id ? "border-accent bg-accent/10" : "border-border bg-bg-card"
+                  }`}
+                  onClick={() => setActiveAgentID(agent.agent_id)}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm text-text truncate">{agentLabel(agent)}</span>
+                    <span className="text-[11px] text-text-muted shrink-0">:{agent.port}</span>
+                  </div>
+                  <div className="text-xs text-text-muted truncate">
+                    source {agent.source_name || agent.source_agent_id || "agent"} - #{agent.agent_id}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="rounded border border-border bg-bg p-3">
+          <h3 className="text-xs font-semibold text-text-muted uppercase mb-2">Spawn Agent</h3>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-text-muted flex flex-col gap-1">
+              Source agent
+              <select
+                className={inputClass}
+                value={sourceAgentID}
+                onChange={(e) => setSourceAgentID((e.target as HTMLSelectElement).value)}
+                disabled={agents.length === 0}
+              >
+                {agents.length === 0 ? (
+                  <option value="">No agents</option>
+                ) : (
+                  agents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name || `Agent ${agent.id}`} #{agent.id}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+            <label className="text-xs text-text-muted flex flex-col gap-1">
+              Alias
+              <input className={inputClass} value={alias} onChange={(e) => setAlias((e.target as HTMLInputElement).value)} placeholder="main, reviewer, worker" />
+            </label>
+            <label className="text-xs text-text-muted flex flex-col gap-1">
+              Directive override
+              <textarea
+                className={`${inputClass} min-h-20 text-sm`}
+                value={directive}
+                onChange={(e) => setDirective((e.target as HTMLTextAreaElement).value)}
+                placeholder="Optional"
+              />
+            </label>
+            <button className={`${buttonClass} self-start`} onClick={spawn} disabled={busy === "spawn" || agents.length === 0}>
+              {busy === "spawn" ? "Spawning..." : "Spawn"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {activeAgent && (
+        <>
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold text-text-muted uppercase">Drive {agentLabel(activeAgent)}</h3>
+            <button
+              className="text-xs px-2 py-1 rounded border border-red-500/40 text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+              onClick={() => setStopTarget(activeAgent)}
+              disabled={busy === "stop"}
+            >
+              Stop
+            </button>
+          </div>
+          <div className="grid lg:grid-cols-[150px_1fr_auto] gap-2 items-end">
+            <label className="text-xs text-text-muted flex flex-col gap-1">
+              Thread
+              <input
+                className={inputClass}
+                value={threadID}
+                onChange={(e) => setThreadID((e.target as HTMLInputElement).value)}
+                placeholder="main"
+              />
+            </label>
+            <label className="text-xs text-text-muted flex flex-col gap-1">
+              Message
+              <textarea
+                className={`${inputClass} min-h-16 text-sm`}
+                value={message}
+                onChange={(e) => setMessage((e.target as HTMLTextAreaElement).value)}
+                placeholder="Send an event to the agent"
+              />
+            </label>
+            <button className={`${buttonClass} mb-1`} onClick={send} disabled={busy === "send" || !message.trim()}>
+              {busy === "send" ? "Sending..." : "Send"}
+            </button>
+          </div>
+
+          <div className="grid xl:grid-cols-2 gap-3">
+            <div className="rounded border border-border bg-bg p-3 min-w-0">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <h3 className="text-xs font-semibold text-text-muted uppercase">Telemetry</h3>
+                <span className="text-xs text-text-muted">{events.length} live events</span>
+              </div>
+              <div className="max-h-72 overflow-auto flex flex-col gap-2">
+                {events.length === 0 ? (
+                  <p className="text-xs text-text-muted">
+                    {streamState === "live" ? "Waiting for agent telemetry." : `Telemetry ${streamState}.`}
+                  </p>
+                ) : (
+                  [...events].reverse().map((ev, i) => <EnvironmentTelemetryRow key={ev.id || `${ev.time}-${i}`} event={ev} />)
+                )}
+              </div>
+            </div>
+
+            <div className="rounded border border-border bg-bg p-3 min-w-0">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div>
+                  <h3 className="text-xs font-semibold text-text-muted uppercase">Context</h3>
+                  {context && (
+                    <p className="text-[11px] text-text-muted">
+                      {context.id} - {context.count} messages - iteration {context.iteration}
+                    </p>
+                  )}
+                </div>
+                <button className={buttonClass} onClick={() => loadContext(threadID.trim() || "main")} disabled={contextLoading || !activeAgent}>
+                  {contextLoading ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+              {contextError && <p className="text-xs text-red-400 mb-2">{contextError}</p>}
+              <div className="max-h-72 overflow-auto flex flex-col gap-2">
+                {!context ? (
+                  <p className="text-xs text-text-muted">No context snapshot yet.</p>
+                ) : context.messages.length === 0 ? (
+                  <p className="text-xs text-text-muted">Context is empty.</p>
+                ) : (
+                  context.messages.map((msg, i) => <EnvironmentContextMessageRow key={i} message={msg} />)
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {stopTarget && (
+        <ConfirmDialog
+          title="Stop environment agent"
+          body={`Stop ${agentLabel(stopTarget)} in ${environment.id}? The environment and its apps will stay running.`}
+          confirmLabel={busy === "stop" ? "Stopping..." : "Stop agent"}
+          tone="danger"
+          busy={busy === "stop"}
+          onCancel={() => {
+            if (busy !== "stop") setStopTarget(null);
+          }}
+          onConfirm={() => stop(stopTarget)}
+        />
+      )}
+    </div>
+  );
+}
+
+function EnvironmentTelemetryRow({ event }: { event: TelemetryEvent }) {
+  return (
+    <div className="rounded border border-border bg-bg-card px-2 py-1.5 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-text">{event.type}</span>
+        <span className="text-text-muted shrink-0">{formatTime(event.time)}</span>
+      </div>
+      <div className="text-text-muted break-words">{telemetrySummary(event)}</div>
+      {event.thread_id && <div className="text-[11px] text-text-muted mt-1">thread {event.thread_id}</div>}
+    </div>
+  );
+}
+
+function agentLabel(agent: EnvironmentAgentStatus): string {
+  const alias = (agent.alias || "").trim();
+  if (alias) return `${alias} #${agent.agent_id}`;
+  if (agent.source_name) return `${agent.source_name} #${agent.agent_id}`;
+  return `Agent #${agent.agent_id}`;
+}
+
+function EnvironmentContextMessageRow({ message }: { message: ThreadContextMessage }) {
+  const body = contextMessageBody(message);
+  return (
+    <div className="rounded border border-border bg-bg-card px-2 py-1.5 text-xs">
+      <div className="font-mono text-text mb-1">{message.role || "message"}</div>
+      {body && <pre className="whitespace-pre-wrap break-words text-text-muted font-sans">{body}</pre>}
+      {(message.tool_calls || []).map((call, i) => (
+        <div key={`call-${call.id || i}`} className="mt-1 text-text-muted">
+          tool call: <span className="font-mono text-text">{call.name || call.id || "tool"}</span>{" "}
+          {summarizeValue(call.arguments)}
+        </div>
+      ))}
+      {(message.tool_results || []).map((result, i) => (
+        <div key={`result-${result.id || i}`} className="mt-1 text-text-muted">
+          tool result: <span className="font-mono text-text">{result.id || "result"}</span>{" "}
+          {shortText(result.content || summarizeValue(result.image), 240)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  title,
+  body,
+  confirmLabel,
+  tone,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  tone?: "danger" | "default";
+  busy?: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const danger = tone === "danger";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4">
+      <div className="w-full max-w-md rounded border border-border bg-bg-card shadow-xl">
+        <div className="p-4 border-b border-border">
+          <h2 className="text-base font-semibold text-text">{title}</h2>
+        </div>
+        <div className="p-4">
+          <p className="text-sm text-text-muted">{body}</p>
+        </div>
+        <div className="p-4 border-t border-border flex justify-end gap-2">
+          <button className={buttonClass} onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            className={`text-xs px-3 py-1.5 rounded border disabled:opacity-50 ${
+              danger
+                ? "border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/20"
+                : "border-border bg-accent text-white hover:bg-accent-hover"
+            }`}
+            onClick={onConfirm}
+            disabled={busy}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -958,6 +1499,66 @@ function placeholderFor(field: SchemaField): string {
   if (field.type === "array") return "[]";
   if (field.type === "object") return "{}";
   return "";
+}
+
+function telemetrySummary(event: TelemetryEvent): string {
+  const data = event.data || {};
+  const candidates = [
+    data.message,
+    data.error,
+    data.final_response,
+    data.response,
+    data.content,
+    data.text,
+    data.name,
+    data.tool_name,
+    data.tool,
+  ];
+  const first = candidates.find((v) => v !== undefined && v !== null && String(v).trim() !== "");
+  if (first !== undefined) return shortText(summarizeValue(first), 240);
+  const compact = { ...data };
+  for (const key of ["prompt", "messages", "context"]) {
+    if (compact[key] !== undefined) compact[key] = shortText(summarizeValue(compact[key]), 80);
+  }
+  return shortText(summarizeValue(compact), 240);
+}
+
+function contextMessageBody(message: ThreadContextMessage): string {
+  if (message.content) return shortText(String(message.content), 1200);
+  const parts = message.parts || [];
+  if (parts.length === 0) return "";
+  return parts
+    .map((part) => {
+      if (part.text) return part.text;
+      if (part.image_url?.url) return `[image] ${part.image_url.url}`;
+      if (part.audio_url?.url) return `[audio] ${part.audio_url.url}`;
+      if (part.input_audio) return `[input_audio] ${part.input_audio.format}`;
+      return `[${part.type || "part"}]`;
+    })
+    .join("\n");
+}
+
+function summarizeValue(value: any): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function shortText(value: string, limit: number): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= limit) return compact;
+  return `${compact.slice(0, Math.max(0, limit - 1))}...`;
+}
+
+function formatTime(value: string): string {
+  if (!value) return "";
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return value;
+  return new Date(ms).toLocaleTimeString();
 }
 
 function parseJSON(raw: string, label: string): Record<string, any> {

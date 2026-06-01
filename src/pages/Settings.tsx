@@ -2265,6 +2265,7 @@ function SubscriptionsTab() {
   const [instanceId, setInstanceId] = useState(0);
   const [description, setDescription] = useState("");
   const [hmacSecret, setHmacSecret] = useState("");
+  const [notifyAgent, setNotifyAgent] = useState(false);
   const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -2323,6 +2324,7 @@ function SubscriptionsTab() {
     setInstanceId(0);
     setDescription("");
     setHmacSecret("");
+    setNotifyAgent(false);
     setSelectedEvents(new Set());
     setSelectedTrigger("");
     setTriggerConfig({});
@@ -2391,6 +2393,7 @@ function SubscriptionsTab() {
               description: description.trim(),
               projectId: currentProject?.id,
               source: "app_event",
+              notifyAgent,
             },
           )
         ));
@@ -2413,6 +2416,7 @@ function SubscriptionsTab() {
             projectId: currentProject?.id,
             triggerSlug: selectedTrigger,
             triggerConfig,
+            notifyAgent,
           },
         );
       } else {
@@ -2427,6 +2431,7 @@ function SubscriptionsTab() {
             hmacSecret: hmacSecret.trim(),
             events: Array.from(selectedEvents),
             projectId: currentProject?.id,
+            notifyAgent,
           },
         );
       }
@@ -2445,6 +2450,11 @@ function SubscriptionsTab() {
   const handleToggle = async (id: string, enabled: boolean) => {
     if (enabled) await subscriptions.disable(id);
     else await subscriptions.enable(id);
+    load();
+  };
+
+  const handleNotifyAgent = async (id: string, notifyAgent: boolean) => {
+    await subscriptions.setNotifyAgent(id, notifyAgent);
     load();
   };
 
@@ -2540,6 +2550,20 @@ function SubscriptionsTab() {
                   <dt className="text-text-dim">Agent</dt>
                   <dd className="text-text">
                     {inst ? inst.name : <span className="text-text-dim">#{sub.instance_id} (not found)</span>}
+                  </dd>
+                  <dt className="text-text-dim">Agent notifications</dt>
+                  <dd>
+                    <label className="inline-flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={sub.notify_agent}
+                        onChange={(e) => handleNotifyAgent(sub.id, e.target.checked)}
+                        className="accent-accent"
+                      />
+                      <span className={sub.notify_agent ? "text-green" : "text-text-dim"}>
+                        {sub.notify_agent ? "on" : "off"}
+                      </span>
+                    </label>
                   </dd>
                   <dt className="text-text-dim">Events</dt>
                   <dd>
@@ -3072,6 +3096,21 @@ function SubscriptionsTab() {
               </div>
             )}
 
+            <label className="flex items-start gap-3 border border-border rounded-lg bg-bg-input px-3 py-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={notifyAgent}
+                onChange={(e) => setNotifyAgent(e.target.checked)}
+                className="mt-1 accent-accent"
+              />
+              <div>
+                <div className="text-text text-sm">Notify agent about this subscription</div>
+                <p className="text-text-dim text-xs mt-0.5">
+                  Sends lifecycle updates and startup summaries to the target agent. Off by default.
+                </p>
+              </div>
+            </label>
+
             {error && <div className="text-red text-sm">{error}</div>}
 
             <div className="flex justify-end gap-3">
@@ -3326,7 +3365,7 @@ function DataTab() {
 // ─── Server Tab ───
 //
 // Admin-editable server-wide settings. Today: just `public_url`, the URL
-// the outside world uses to reach this server (Google, GitHub, etc., for
+// the public internet uses to reach this server (Google, GitHub, etc., for
 // OAuth callbacks; webhook providers for delivery). Stored in
 // server_settings table so it survives container redeploys and doesn't
 // require a server restart to change.
@@ -3382,7 +3421,7 @@ function ServerTab() {
         <h2 className="text-text text-base font-bold">Server</h2>
         <p className="text-text-muted text-sm mt-1">
           Server-wide settings that affect how this Apteva instance is reached
-          from the outside world.
+          from the public internet.
         </p>
       </div>
 
@@ -3390,7 +3429,7 @@ function ServerTab() {
         <div>
           <label className="block text-text text-sm font-bold mb-1">Public URL</label>
           <p className="text-text-muted text-xs mb-3 leading-relaxed">
-            The base URL the outside world uses to reach this server. Required
+            The base URL external services use to reach this server. Required
             for OAuth callbacks (GitHub, Google, etc.) and incoming webhooks.
             Set this to the public hostname you've pointed at the server,
             including the scheme. Example: <code className="text-text">https://agents.example.com</code>.

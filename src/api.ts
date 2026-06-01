@@ -416,9 +416,9 @@ export interface Eval {
 export interface RunOptions {
   max_iterations?: number;
   strict_mocks?: boolean;
-  // Run the agent inside an isolated World — a throwaway clone of its real
+  // Run the agent inside an isolated Environment — a throwaway clone of its real
   // apps (real DB writes) with only the edge (third-party APIs) virtualised.
-  use_world?: boolean;
+  use_environment?: boolean;
 }
 
 export interface ToolCallRecord {
@@ -742,14 +742,14 @@ export const evals = {
     ),
 };
 
-// ─── Worlds — isolated test environments ───────────────────────────────
+// ─── Environments — isolated test environments ───────────────────────────────
 //
-// A World is a set of real app sidecars (real DB writes) sharing one HTTP
-// edge that virtualises outbound calls. See server/world*.go. The dashboard
-// uses these to run/inspect test Worlds and to drive an app panel against a
-// sandbox instance ("open in test World").
+// An Environment is a set of real app sidecars (real DB writes) sharing one HTTP
+// edge that virtualises outbound calls. The dashboard
+// uses these to run/inspect test Environments and to drive an app panel against a
+// sandbox instance ("open in test Environment").
 
-export interface WorldAppInfo {
+export interface EnvironmentAppInfo {
   url: string;
   mcp_url: string;
   data_dir: string;
@@ -757,7 +757,7 @@ export interface WorldAppInfo {
   install_id?: number;
 }
 
-export interface WorldConnectionInfo {
+export interface EnvironmentConnectionInfo {
   id: number;
   app_slug: string;
   app_name: string;
@@ -766,16 +766,26 @@ export interface WorldConnectionInfo {
   project_id: string;
 }
 
-export interface WorldSummary {
+export interface EnvironmentSummary {
   id: string;
   project_id: string;
   mode: string; // block | passthrough | mock | record | replay
   proxy_url: string;
-  apps: Record<string, WorldAppInfo>;
-  connections?: WorldConnectionInfo[];
+  apps: Record<string, EnvironmentAppInfo>;
+  connections?: EnvironmentConnectionInfo[];
+  agents?: EnvironmentAgentStatus[];
 }
 
-// One outbound call the World edge classified — the raw material for edge
+export interface EnvironmentAgentStatus {
+  agent_id: number;
+  source_agent_id?: number;
+  source_name?: string;
+  alias?: string;
+  port: number;
+  created_at?: string;
+}
+
+// One outbound call the Environment edge classified — the raw material for edge
 // assertions and the call inspector.
 export interface InterceptedCall {
   host: string;
@@ -791,7 +801,7 @@ export interface InterceptedCall {
   ts: string;
 }
 
-export interface WorldSnapshotManifest {
+export interface EnvironmentSnapshotManifest {
   id: string;
   project_id: string;
   description?: string;
@@ -801,7 +811,7 @@ export interface WorldSnapshotManifest {
   created_at: string;
 }
 
-export interface WorldAssertion {
+export interface EnvironmentAssertion {
   name: string;
   kind: "edge" | "state" | "trajectory";
   edge?: { host?: string; path?: string; method?: string; count?: number; min?: number; max?: number };
@@ -809,14 +819,14 @@ export interface WorldAssertion {
   trajectory?: { tool_called?: string; tool_not_called?: string; before?: string };
 }
 
-export interface WorldAssertionResult {
+export interface EnvironmentAssertionResult {
   name: string;
   kind: string;
   pass: boolean;
   detail: string;
 }
 
-export interface CreateWorldBody {
+export interface CreateEnvironmentBody {
   id?: string;
   project_id?: string;
   apps?: string[];
@@ -829,35 +839,75 @@ export interface CreateWorldBody {
   snapshot_id?: string;
 }
 
-export const worlds = {
-  list: () => request<WorldSummary[]>("GET", "/worlds"),
-  create: (body: CreateWorldBody) => request<WorldSummary>("POST", "/worlds", body),
-  get: (id: string) => request<WorldSummary>("GET", `/worlds/${encodeURIComponent(id)}`),
-  destroy: (id: string) => request<{ destroyed: string }>("DELETE", `/worlds/${encodeURIComponent(id)}`),
-  calls: (id: string) => request<InterceptedCall[]>("GET", `/worlds/${encodeURIComponent(id)}/calls`),
-  assert: (id: string, body: { assertions: WorldAssertion[]; tool_sequence?: string[] }) =>
-    request<{ all_pass: boolean; results: WorldAssertionResult[] }>(
+export const environments = {
+  list: () => request<EnvironmentSummary[]>("GET", "/environments"),
+  create: (body: CreateEnvironmentBody) => request<EnvironmentSummary>("POST", "/environments", body),
+  get: (id: string) => request<EnvironmentSummary>("GET", `/environments/${encodeURIComponent(id)}`),
+  destroy: (id: string) => request<{ destroyed: string }>("DELETE", `/environments/${encodeURIComponent(id)}`),
+  calls: (id: string) => request<InterceptedCall[]>("GET", `/environments/${encodeURIComponent(id)}/calls`),
+  assert: (id: string, body: { assertions: EnvironmentAssertion[]; tool_sequence?: string[] }) =>
+    request<{ all_pass: boolean; results: EnvironmentAssertionResult[] }>(
       "POST",
-      `/worlds/${encodeURIComponent(id)}/assert`,
+      `/environments/${encodeURIComponent(id)}/assert`,
       body,
     ),
   snapshot: (id: string, body: { snapshot_id?: string; description?: string }) =>
-    request<WorldSnapshotManifest>("POST", `/worlds/${encodeURIComponent(id)}/snapshot`, body),
+    request<EnvironmentSnapshotManifest>("POST", `/environments/${encodeURIComponent(id)}/snapshot`, body),
   seed: (id: string, body: { calls: Array<{ app: string; tool: string; input: Record<string, any> }> }) =>
-    request<{ results: any[] }>("POST", `/worlds/${encodeURIComponent(id)}/seed`, body),
-  spawnAgent: (id: string, body: { source_agent_id: number; directive?: string }) =>
-    request<{ agent_id: number; port: number }>("POST", `/worlds/${encodeURIComponent(id)}/agent`, body),
-  stopAgent: (id: string) => request<{ stopped: boolean }>("DELETE", `/worlds/${encodeURIComponent(id)}/agent`),
-  // Base path a panel/iframe uses to talk to an in-world sidecar.
-  appBase: (worldId: string, app: string) =>
-    `${BASE}/worlds/${encodeURIComponent(worldId)}/apps/${encodeURIComponent(app)}`,
+    request<{ results: any[] }>("POST", `/environments/${encodeURIComponent(id)}/seed`, body),
+  spawnAgent: (id: string, body: { source_agent_id: number; directive?: string; alias?: string }) =>
+    request<EnvironmentAgentStatus>("POST", `/environments/${encodeURIComponent(id)}/agents`, body),
+  agents: (id: string) =>
+    request<EnvironmentAgentStatus[]>("GET", `/environments/${encodeURIComponent(id)}/agents`),
+  agentStatus: (id: string) =>
+    request<EnvironmentAgentStatus>("GET", `/environments/${encodeURIComponent(id)}/agent`),
+  agent: (id: string, agentId: number | string) =>
+    request<EnvironmentAgentStatus>("GET", `/environments/${encodeURIComponent(id)}/agents/${encodeURIComponent(String(agentId))}`),
+  sendAgentEvent: (id: string, body: { message: string; thread_id?: string }, agentId?: number | string) =>
+    request<{ status: string; thread_id: string }>(
+      "POST",
+      agentId === undefined
+        ? `/environments/${encodeURIComponent(id)}/agent/event`
+        : `/environments/${encodeURIComponent(id)}/agents/${encodeURIComponent(String(agentId))}/event`,
+      body,
+    ),
+  agentContext: (id: string, threadId: string, agentId?: number | string) =>
+    request<{
+      id: string;
+      iteration: number;
+      model: string;
+      count: number;
+      total_chars: number;
+      messages: ThreadContextMessage[];
+      composition: PromptComposition;
+    }>(
+      "GET",
+      agentId === undefined
+        ? `/environments/${encodeURIComponent(id)}/agent/threads/${encodeURIComponent(threadId)}/context`
+        : `/environments/${encodeURIComponent(id)}/agents/${encodeURIComponent(String(agentId))}/threads/${encodeURIComponent(threadId)}/context`,
+    ),
+  agentEventsURL: (id: string, agentId?: number | string) =>
+    agentId === undefined
+      ? `${BASE}/environments/${encodeURIComponent(id)}/agent/events`
+      : `${BASE}/environments/${encodeURIComponent(id)}/agents/${encodeURIComponent(String(agentId))}/events`,
+  stopAgent: (id: string, agentId?: number | string) =>
+    request<{ stopped: boolean }>(
+      "DELETE",
+      agentId === undefined
+        ? `/environments/${encodeURIComponent(id)}/agent`
+        : `/environments/${encodeURIComponent(id)}/agents/${encodeURIComponent(String(agentId))}`,
+    ),
+  // Base path a panel/iframe uses to talk to an in-environment sidecar.
+  appBase: (environmentId: string, app: string) =>
+    `${BASE}/environments/${encodeURIComponent(environmentId)}/apps/${encodeURIComponent(app)}`,
 };
 
-export const worldSnapshots = {
-  list: () => request<WorldSnapshotManifest[]>("GET", "/world-snapshots"),
-  get: (id: string) => request<WorldSnapshotManifest>("GET", `/world-snapshots/${encodeURIComponent(id)}`),
-  delete: (id: string) => request<{ deleted: string }>("DELETE", `/world-snapshots/${encodeURIComponent(id)}`),
+export const environmentSnapshots = {
+  list: () => request<EnvironmentSnapshotManifest[]>("GET", "/environment-snapshots"),
+  get: (id: string) => request<EnvironmentSnapshotManifest>("GET", `/environment-snapshots/${encodeURIComponent(id)}`),
+  delete: (id: string) => request<{ deleted: string }>("DELETE", `/environment-snapshots/${encodeURIComponent(id)}`),
 };
+
 
 export const projects = {
   list: () => request<Project[]>("GET", "/projects"),
@@ -1820,6 +1870,7 @@ export interface SubscriptionInfo {
   webhook_path: string;
   webhook_url: string;
   enabled: boolean;
+  notify_agent: boolean;
   events: string[];
   thread_id?: string;
   created_at: string;
@@ -1850,6 +1901,7 @@ export const subscriptions = {
       // and its config fields (varies per trigger template).
       triggerSlug?: string;
       triggerConfig?: Record<string, any>;
+      notifyAgent?: boolean;
     },
   ) =>
     request<{ subscription: SubscriptionInfo; webhook_url: string; auto_registered: boolean; trigger_id?: string; trigger_slug?: string }>(
@@ -1868,6 +1920,7 @@ export const subscriptions = {
         source: opts?.source || "webhook",
         trigger_slug: opts?.triggerSlug || "",
         trigger_config: opts?.triggerConfig || {},
+        notify_agent: opts?.notifyAgent || false,
       },
     ),
 
@@ -1876,6 +1929,9 @@ export const subscriptions = {
   enable: (id: string) => request<any>("POST", `/subscriptions/${id}/enable`),
 
   disable: (id: string) => request<any>("POST", `/subscriptions/${id}/disable`),
+
+  setNotifyAgent: (id: string, notifyAgent: boolean) =>
+    request<any>("POST", `/subscriptions/${id}/notify-agent`, { notify_agent: notifyAgent }),
 
   test: (id: string, opts?: { event?: string; payload?: Record<string, any> }) =>
     request<{ status: string; event: string; payload: any }>("POST", `/subscriptions/${id}/test`, opts || {}),
