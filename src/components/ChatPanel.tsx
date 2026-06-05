@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
 import { marked } from "marked";
-import { chat, type ChatMessageRow, type TelemetryEvent } from "../api";
+import { chat, type ChatMessageRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import {
   ChatComponentList,
@@ -26,11 +26,6 @@ interface Props {
   // Telemetry subscribe — used ONLY for the status dot. Chat messages
   // come from the channel-chat app's SSE stream, not telemetry.
   subscribe: SubscribeFn;
-  // onEvent is the legacy callback the AgentView wires up to fan
-  // events to sibling panels. Kept for backward compatibility — we
-  // forward nothing from the chat path, but the prop signature stays
-  // stable so AgentView doesn't need a conditional.
-  onEvent?: (event: TelemetryEvent) => void;
 }
 
 // LiveTool — one tool call surfaced inline in the chat timeline.

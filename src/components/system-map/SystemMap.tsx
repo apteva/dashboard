@@ -18,7 +18,7 @@ import {
 export type SystemMapScope = "project" | "environment";
 export type SystemMapNodeKind = "agent" | "thread" | "app" | "event" | "subscription" | "external" | "gateway" | "tool";
 export type SystemMapStatus = "running" | "idle" | "ok" | "warning" | "error" | "blocked" | "mocked" | "unknown";
-export type SystemMapEdgeKind = "owns" | "tool" | "event" | "integration" | "boundary" | "message";
+export type SystemMapEdgeKind = "owns" | "tool" | "dependency" | "event" | "integration" | "boundary" | "message";
 export type SystemMapNodeLatestKind = "event" | "tool" | "result" | "thinking" | "message" | "error";
 
 export interface SystemMapNode {
@@ -660,7 +660,7 @@ function buildFlowModel(
       type: "systemEdge",
       selected: selectedID === edge.id,
       interactionWidth: 18,
-      markerEnd: edge.kind === "tool" ? undefined : { type: MarkerType.ArrowClosed, color, width: 16, height: 16 },
+      markerEnd: edge.kind === "tool" || edge.kind === "dependency" ? undefined : { type: MarkerType.ArrowClosed, color, width: 16, height: 16 },
       data: {
         edge,
         color,
@@ -672,9 +672,9 @@ function buildFlowModel(
       },
       style: {
         stroke: color,
-        strokeWidth: selectedID === edge.id || active ? 3 : 2.25,
-        opacity: active ? 1 : 0.9,
-        strokeDasharray: edge.kind === "integration" || edge.kind === "boundary" ? "6 5" : undefined,
+        strokeWidth: edge.kind === "dependency" ? (selectedID === edge.id ? 2 : 1.35) : selectedID === edge.id || active ? 3 : 2.25,
+        opacity: edge.kind === "dependency" ? (selectedID === edge.id ? 0.8 : 0.42) : active ? 1 : 0.9,
+        strokeDasharray: edge.kind === "dependency" ? "3 6" : edge.kind === "integration" || edge.kind === "boundary" ? "6 5" : undefined,
       },
       labelStyle: { fill: "var(--text-muted)", fontSize: 11, fontWeight: 600 },
       labelBgStyle: { fill: "var(--bg)", fillOpacity: 0.9 },
@@ -908,6 +908,7 @@ function nodeActiveClass(kind: SystemMapEdgeKind | undefined, nodeKind?: SystemM
   if (nodeKind === "thread") return "system-map-thread-active";
   if (kind === "event") return "system-map-node-event";
   if (kind === "tool") return "system-map-node-tool";
+  if (kind === "dependency") return "";
   if (kind === "integration" || kind === "boundary") return "system-map-node-boundary";
   return "system-map-node-active";
 }
@@ -1015,6 +1016,7 @@ function edgeColor(status: SystemMapStatus | undefined, kind: SystemMapEdgeKind)
   if (kind === "integration" || kind === "boundary") return "#f97316";
   if (kind === "event") return "#06b6d4";
   if (kind === "tool") return "#60a5fa";
+  if (kind === "dependency") return "#64748b";
   if (status === "running") return "#22c55e";
   return "#8b949e";
 }

@@ -4,11 +4,14 @@ import {
   core,
   instances,
   integrations,
+  mcpServers,
   subscriptions,
   telemetry,
   type Agent,
   type AppRow,
   type ConnectionInfo,
+  type MCPServer,
+  type MCPServerConfig,
   type TelemetryEvent,
   type Thread,
   type ThreadContextMessage,
@@ -52,6 +55,11 @@ type ActivityModel = {
   stats: Array<{ label: string; value: string | number }>;
 };
 
+type AgentConfigSnapshot = {
+  mcp_servers?: MCPServerConfig[];
+  threads?: Thread[];
+};
+
 const hiddenSystemTools = new Set(["pace", "done", "channels_respond", "channels_status"]);
 
 export function Activity() {
@@ -60,7 +68,9 @@ export function Activity() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [projectApps, setProjectApps] = useState<AppRow[]>([]);
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
+  const [projectMCPServers, setProjectMCPServers] = useState<MCPServer[]>([]);
   const [projectSubscriptions, setProjectSubscriptions] = useState<SubscriptionInfo[]>([]);
+  const [agentConfigs, setAgentConfigs] = useState<Record<number, AgentConfigSnapshot>>({});
   const [threadsByAgent, setThreadsByAgent] = useState<Record<number, Thread[]>>({});
   const [contexts, setContexts] = useState<Record<string, ThreadContextSnapshot>>({});
   const [events, setEvents] = useState<TelemetryEvent[]>([]);
@@ -72,7 +82,9 @@ export function Activity() {
     setAgents([]);
     setProjectApps([]);
     setConnections([]);
+    setProjectMCPServers([]);
     setProjectSubscriptions([]);
+    setAgentConfigs({});
     setThreadsByAgent({});
     setContexts({});
     setEvents([]);
@@ -88,19 +100,34 @@ export function Activity() {
       const seq = ++loadSeq;
       if (showLoading) setLoading(true);
       try {
-        const [nextAgents, nextApps, nextConnections, nextSubscriptions] = await Promise.all([
+        const [nextAgents, nextApps, nextConnections, nextMCPServers, nextSubscriptions] = await Promise.all([
           instances.list(projectId),
           apps.list(projectId),
           integrations.connections(projectId),
+          mcpServers.list(projectId, { includeAppOwned: true }),
           subscriptions.list(projectId),
         ]);
         if (cancelled || seq !== loadSeq) return;
         setAgents(nextAgents || []);
         setProjectApps(nextApps || []);
         setConnections(nextConnections || []);
+        setProjectMCPServers(nextMCPServers || []);
         setProjectSubscriptions(nextSubscriptions || []);
         setError(null);
         setLoading(false);
+
+        const configPairs = await Promise.all(
+          (nextAgents || []).map(async (agent) => {
+            const config = await withTimeout(core.config(agent.id), 2200, null);
+            return [agent.id, normalizeAgentConfig(config) || normalizeAgentConfigFromRow(agent.config)] as const;
+          }),
+        );
+        if (cancelled || seq !== loadSeq) return;
+        const nextConfigs: Record<number, AgentConfigSnapshot> = {};
+        configPairs.forEach(([agentID, config]) => {
+          if (config) nextConfigs[agentID] = config;
+        });
+        setAgentConfigs(nextConfigs);
 
         const threadPairs = await Promise.all(
           (nextAgents || []).map(async (agent) => {
@@ -200,8 +227,8 @@ export function Activity() {
   }, [projectId, appBusKey]);
 
   const model = useMemo(
-    () => buildProjectActivityModel(currentProject?.name || projectId, agents, projectApps, connections, projectSubscriptions, threadsByAgent, contexts, events, appBusEvents),
-    [currentProject?.name, projectId, agents, projectApps, connections, projectSubscriptions, threadsByAgent, contexts, events, appBusEvents],
+    () => buildProjectActivityModel(currentProject?.name || projectId, agents, projectApps, connections, projectMCPServers, projectSubscriptions, agentConfigs, threadsByAgent, contexts, events, appBusEvents),
+    [currentProject?.name, projectId, agents, projectApps, connections, projectMCPServers, projectSubscriptions, agentConfigs, threadsByAgent, contexts, events, appBusEvents],
   );
 
   if (!projectId) {
@@ -277,12 +304,31 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
   });
 }
 
+function normalizeAgentConfig(config: any): AgentConfigSnapshot | null {
+  if (!config || typeof config !== "object") return null;
+  return {
+    mcp_servers: Array.isArray(config.mcp_servers) ? config.mcp_servers : undefined,
+    threads: Array.isArray(config.threads) ? config.threads : undefined,
+  };
+}
+
+function normalizeAgentConfigFromRow(raw: string | undefined): AgentConfigSnapshot | null {
+  if (!raw) return null;
+  try {
+    return normalizeAgentConfig(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
 function buildProjectActivityModel(
   projectLabel: string,
   agents: Agent[],
   projectApps: AppRow[],
   connections: ConnectionInfo[],
+  projectMCPServers: MCPServer[],
   projectSubscriptions: SubscriptionInfo[],
+  agentConfigs: Record<number, AgentConfigSnapshot>,
   threadsByAgent: Record<number, Thread[]>,
   contexts: Record<string, ThreadContextSnapshot>,
   events: TelemetryEvent[],
@@ -294,6 +340,7 @@ function buildProjectActivityModel(
   const appNames = projectApps.map((app) => app.name);
   const appByName = new Map(projectApps.map((app) => [app.name, app]));
   const agentsByID = new Map(agents.map((agent) => [agent.id, agent]));
+  const mcpByID = new Map(projectMCPServers.map((server) => [server.id, server]));
   const streamingToolByCall = new Map<string, string>();
   const threadStreamText = new Map<string, string>();
 
@@ -389,7 +436,7 @@ function buildProjectActivityModel(
         id: `appdep:${appNodeID(app.name)}:${appNodeID(depName)}`,
         source: appNodeID(app.name),
         target: appNodeID(depName),
-        kind: "tool",
+        kind: "dependency",
         status: "ok",
         label: dep.reason ? shortText(dep.reason, 32) : "requires",
         detail: `${app.name} requires ${depName}${dep.reason ? `\n${dep.reason}` : ""}`,
@@ -411,8 +458,11 @@ function buildProjectActivityModel(
     });
   });
 
-	  agents.forEach((agent, index) => {
-    const agentThreads = threadsByAgent[agent.id] || [];
+  agents.forEach((agent, index) => {
+    const configuredMCPs = configuredMCPServers(agentConfigs[agent.id]);
+    const configuredThreads = agentConfigs[agent.id]?.threads || [];
+    const agentThreads = (threadsByAgent[agent.id] || []).length > 0 ? threadsByAgent[agent.id] : configuredThreads;
+    const configuredMCPsForEdges = agentThreads.length > 0 ? [] : configuredMCPs;
     const agentID = agentNodeID(agent.id);
     addNode({
       id: agentID,
@@ -422,9 +472,15 @@ function buildProjectActivityModel(
       subtitle: `${agent.mode || "agent"} #${agent.id}`,
       detail: agent.directive || "",
       ...agentSlot(index, Math.max(1, agents.length)),
-	  });
+    });
 
-	    agentThreads.forEach((thread, threadIndex) => {
+    const renderedThreads = agentThreads.length > 0
+      ? agentThreads
+      : configuredMCPsForEdges.length > 0
+        ? [configuredMainThread()]
+        : [];
+
+    renderedThreads.forEach((thread, threadIndex) => {
       const threadID = threadNodeID(agent.id, thread.id || "main");
       addNode({
         id: threadID,
@@ -443,23 +499,38 @@ function buildProjectActivityModel(
         label: "thread",
         status: "ok",
       });
-      (thread.mcp_names || thread.tools || []).forEach((name) => {
+      const threadTools = new Set([...(thread.mcp_names || []), ...(thread.tools || [])]);
+      configuredMCPsForEdges.forEach((server) => threadTools.add(server.name || ""));
+      threadTools.forEach((name) => {
         if (isHiddenSystemTool(name)) return;
-        const app = appForTool(name, appNames);
-        const connection = connectionForTool(name, connections);
-        const target = app ? appNodeID(app) : connection ? connectionNodeID(connection.id) : "";
+        const targetInfo = targetForMCP(name, undefined, appNames, connections, mcpByID);
+        const target = targetInfo?.id || "";
         if (!target) return;
         addEdge({
           id: `mcp:${threadID}:${target}`,
           source: threadID,
           target,
           kind: "tool",
-          label: app ? `${app} MCP` : `${connection?.app_slug || name} MCP`,
+          label: `${targetInfo?.label || name} MCP`,
           status: "ok",
         });
       });
-	    });
-	  });
+      configuredMCPsForEdges.forEach((server) => {
+        if (!server.name || isHiddenSystemTool(server.name)) return;
+        const targetInfo = targetForMCP(server.name, server.url, appNames, connections, mcpByID);
+        if (!targetInfo?.id) return;
+        addEdge({
+          id: `mcp:${threadID}:${targetInfo.id}`,
+          source: threadID,
+          target: targetInfo.id,
+          kind: "tool",
+          label: `${targetInfo.label} MCP`,
+          status: "ok",
+          detail: server.url || server.name,
+        });
+      });
+    });
+  });
 
 	  projectSubscriptions.forEach((sub, index) => {
 	    const sourceID = subscriptionSourceID(sub);
@@ -772,16 +843,18 @@ function buildProjectActivityModel(
       });
     });
 
+  const visible = pruneDenseIsolatedTopology(Array.from(nodes.values()), Array.from(edges.values()));
+
   return {
-    nodes: Array.from(nodes.values()),
-    edges: Array.from(edges.values()),
+    nodes: visible.nodes,
+    edges: visible.edges,
     activity: activity.sort((a, b) => a.time - b.time).slice(-100),
     stats: [
       { label: "project", value: projectLabel || "project" },
       { label: "agents", value: agents.length },
-      { label: "apps", value: projectApps.length },
+      { label: "apps", value: visible.visibleApps === projectApps.length ? projectApps.length : `${visible.visibleApps}/${projectApps.length}` },
       { label: "threads", value: Object.values(threadsByAgent).reduce((n, list) => n + list.length, 0) },
-	      { label: "connections", value: connections.length },
+      { label: "connections", value: visible.visibleConnections === connections.length ? connections.length : `${visible.visibleConnections}/${connections.length}` },
 	      { label: "subscriptions", value: projectSubscriptions.length },
 	      { label: "events", value: events.length + appBusEvents.length },
     ],
@@ -834,6 +907,95 @@ function threadSlot(agentIndex: number, agentCount: number, threadIndex: number,
   const baseX = agentCount <= 1 ? 68 : 38 + (agentIndex * 42) / Math.max(1, agentCount - 1);
   const offset = threadCount <= 1 ? 0 : (threadIndex - (threadCount - 1) / 2) * 9;
   return { x: Math.max(28, Math.min(82, baseX + offset)), y: 54 + (threadIndex % 3) * 10 };
+}
+
+function configuredMCPServers(config: AgentConfigSnapshot | undefined): MCPServerConfig[] {
+  return (config?.mcp_servers || []).filter((server) => {
+    const name = String(server?.name || "").trim();
+    return !!name && !server.no_spawn && !isHiddenSystemTool(name);
+  });
+}
+
+function configuredMainThread(): Thread {
+  return {
+    id: "main",
+    name: "main",
+    directive: "",
+    tools: [],
+    mcp_names: [],
+    iteration: 0,
+    rate: "configured",
+    model: "MCP",
+    age: "",
+  };
+}
+
+function targetForMCP(
+  name: string,
+  url: string | undefined,
+  appNames: string[],
+  connections: ConnectionInfo[],
+  mcpByID: Map<number, MCPServer>,
+): { id: string; label: string } | null {
+  const rowID = mcpIDFromURL(url);
+  const row = rowID ? mcpByID.get(rowID) : undefined;
+  if (row?.connection_id) {
+    const conn = connections.find((item) => item.id === row.connection_id);
+    return {
+      id: connectionNodeID(row.connection_id),
+      label: conn?.app_slug || conn?.name || row.name || name,
+    };
+  }
+  const rowName = row?.name || name;
+  const app = appForTool(rowName, appNames);
+  if (app) return { id: appNodeID(app), label: app };
+  const connection = connectionForTool(rowName, connections);
+  if (connection) return { id: connectionNodeID(connection.id), label: connection.app_slug || connection.name || rowName };
+  return null;
+}
+
+function mcpIDFromURL(url: string | undefined): number | null {
+  const match = String(url || "").match(/\/mcp\/(\d+)(?:\?|$|\/)/);
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function pruneDenseIsolatedTopology(nodes: SystemMapNode[], edges: SystemMapEdge[]) {
+  const appIDs = new Set(nodes.filter((node) => node.kind === "app").map((node) => node.id));
+  const connectionIDs = new Set(nodes.filter((node) => node.kind === "external").map((node) => node.id));
+  const dense = appIDs.size + connectionIDs.size > 28;
+  if (!dense) {
+    return {
+      nodes,
+      edges,
+      visibleApps: appIDs.size,
+      visibleConnections: connectionIDs.size,
+    };
+  }
+
+  const incident = new Set<string>();
+  edges.forEach((edge) => {
+    incident.add(edge.source);
+    incident.add(edge.target);
+  });
+  nodes.forEach((node) => {
+    if (node.lastActiveAt || node.badges?.length || node.kind === "agent" || node.kind === "thread" || node.kind === "event") {
+      incident.add(node.id);
+    }
+  });
+  const filteredNodes = nodes.filter((node) => {
+    if (node.kind !== "app" && node.kind !== "external") return true;
+    return incident.has(node.id);
+  });
+  const visibleIDs = new Set(filteredNodes.map((node) => node.id));
+  const filteredEdges = edges.filter((edge) => visibleIDs.has(edge.source) && visibleIDs.has(edge.target));
+  return {
+    nodes: filteredNodes,
+    edges: filteredEdges,
+    visibleApps: filteredNodes.filter((node) => node.kind === "app").length,
+    visibleConnections: filteredNodes.filter((node) => node.kind === "external").length,
+  };
 }
 
 function agentNodeID(id: number) {

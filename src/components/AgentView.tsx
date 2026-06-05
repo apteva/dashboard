@@ -830,20 +830,15 @@ export function AgentView({
               Agent is stopped. Start it to begin chatting.
             </div>
           ) : !channelsAttached ? (
-            <div className="relative h-full">
-              <div className="pointer-events-none opacity-40 h-full">
-                <ChatPanel instanceId={instance.id} subscribe={subscribe} onEvent={handleEvent} />
-              </div>
-              <div className="absolute inset-0 flex items-center justify-center p-6">
-                <div className="max-w-xs text-center text-xs text-text-dim bg-bg-card/90 border border-border rounded-lg p-4">
-                  Chat is disabled because the <code className="text-text-muted">channels</code> MCP
-                  is not attached. Re-attach it from Capabilities → Manage to restore
-                  chat.
-                </div>
+            <div className="flex h-full items-center justify-center p-6">
+              <div className="max-w-xs text-center text-xs text-text-dim bg-bg-card border border-border rounded-lg p-4">
+                Chat is disabled because the <code className="text-text-muted">channels</code> MCP
+                is not attached. Re-attach it from Capabilities → Manage to restore
+                chat.
               </div>
             </div>
           ) : (
-            <ChatPanel instanceId={instance.id} subscribe={subscribe} onEvent={handleEvent} />
+            <ChatPanel instanceId={instance.id} subscribe={subscribe} />
           )}
         </div>
 

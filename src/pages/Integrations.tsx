@@ -57,6 +57,7 @@ type SourceTab = "local" | "composio";
 
 function defaultLocalAuthType(app: AppDetail | null | undefined): string {
   const types = app?.auth?.types || [];
+  if (app?.slug === "google-sheets" && types.includes("oauth2")) return "oauth2";
   if (types.includes("oauth_device_code")) return "oauth_device_code";
   const nonOAuth = types.find((t) => t !== "oauth2");
   return nonOAuth || types[0] || "";
