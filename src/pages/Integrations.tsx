@@ -55,6 +55,13 @@ type SuiteSummary = {
 
 type SourceTab = "local" | "composio";
 
+function defaultLocalAuthType(app: AppDetail | null | undefined): string {
+  const types = app?.auth?.types || [];
+  if (types.includes("oauth_device_code")) return "oauth_device_code";
+  const nonOAuth = types.find((t) => t !== "oauth2");
+  return nonOAuth || types[0] || "";
+}
+
 export function Integrations() {
   const { currentProject } = useProjects();
   const navigate = useNavigate();
@@ -292,7 +299,7 @@ export function Integrations() {
     // For OAuth2 apps, find out whether the user already registered an
     // OAuth client for this app+project. If yes, hide the form. If no,
     // we'll show two fields plus the callback URL helper.
-    if (app.auth.types.includes("oauth2")) {
+    if (defaultLocalAuthType(app) === "oauth2") {
       try {
         const status = await integrations.oauthClientStatus(slug, currentProject?.id);
         setOAuthClientResolved(status.resolved);
@@ -310,21 +317,17 @@ export function Integrations() {
     setError("");
     setConnecting(true);
     try {
-      const isOAuth2 = selectedLocalApp.auth.types.includes("oauth2");
-      const isDeviceCode = selectedLocalApp.auth.types.includes("oauth_device_code");
+      const authType = defaultLocalAuthType(selectedLocalApp);
+      const isOAuth2 = authType === "oauth2";
+      const isDeviceCode = authType === "oauth_device_code";
       const oauthCreds = isOAuth2 && !oauthClientResolved
         ? { client_id: oauthClientID.trim(), client_secret: oauthClientSecret.trim() }
         : undefined;
-      // Pin auth_type to "oauth2" when the app supports it, even if the
-      // server's default-picker would also choose it. Templates that list
-      // ["bearer", "oauth2"] could otherwise be routed to the non-OAuth
-      // path (silent "connected" with empty creds) if the picker drifts.
-      const explicitAuthType = isDeviceCode ? "oauth_device_code" : isOAuth2 ? "oauth2" : undefined;
       const result = await integrations.connect(
         selectedLocalApp.slug,
         connName.trim(),
         credentials,
-        explicitAuthType,
+        authType || undefined,
         currentProject?.id,
         oauthCreds,
         undefined,        // createdVia — default 'integration'
@@ -1460,21 +1463,21 @@ export function Integrations() {
               Auth: {selectedLocalApp.auth.types.join(", ")} · {selectedLocalApp.tools.length} tools
             </div>
 
-            {selectedLocalApp.auth.types.includes("oauth_device_code") && !deviceAuth && (
+            {defaultLocalAuthType(selectedLocalApp) === "oauth_device_code" && !deviceAuth && (
               <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted">
                 Click <b>Connect</b> to get a short sign-in code, then authorize
                 this connection with your OpenAI account.
               </div>
             )}
 
-            {selectedLocalApp.auth.types.includes("oauth2") && oauthClientResolved && (
+            {defaultLocalAuthType(selectedLocalApp) === "oauth2" && oauthClientResolved && (
               <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted">
                 OAuth client already registered for this project. Click <b>Authorize</b>
                 to open {selectedLocalApp.name} in a popup.
               </div>
             )}
 
-            {selectedLocalApp.auth.types.includes("oauth2") && !oauthClientResolved && (
+            {defaultLocalAuthType(selectedLocalApp) === "oauth2" && !oauthClientResolved && (
               <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted space-y-2">
                 <p>
                   <b>{selectedLocalApp.name} OAuth setup.</b> You need to register an OAuth
@@ -1529,7 +1532,7 @@ export function Integrations() {
                 </div>
               )}
 
-              {selectedLocalApp.auth.types.includes("oauth2") && !oauthClientResolved && (
+              {defaultLocalAuthType(selectedLocalApp) === "oauth2" && !oauthClientResolved && (
                 <>
                   <div>
                     <label className="block text-text-muted text-sm mb-2">
@@ -1561,8 +1564,8 @@ export function Integrations() {
                 </>
               )}
 
-              {!selectedLocalApp.auth.types.includes("oauth2") &&
-                !selectedLocalApp.auth.types.includes("oauth_device_code") &&
+              {defaultLocalAuthType(selectedLocalApp) !== "oauth2" &&
+                defaultLocalAuthType(selectedLocalApp) !== "oauth_device_code" &&
                 selectedLocalApp.auth.credential_fields?.map((field) => (
                   <div key={field.name}>
                     <label className="block text-text-muted text-sm mb-2">{field.label}</label>
@@ -1606,8 +1609,8 @@ export function Integrations() {
                 {connecting
                   ? "Connecting..."
                   : deviceAuth
-                    ? "Waiting for authorization..."
-                  : selectedLocalApp.auth.types.includes("oauth2")
+                  ? "Waiting for authorization..."
+                  : defaultLocalAuthType(selectedLocalApp) === "oauth2"
                     ? "Authorize"
                     : "Connect"}
               </button>
@@ -1776,28 +1779,33 @@ export function Integrations() {
                   ? "••••"
                   : "•".repeat(Math.max(8, value.length - 4)) + value.slice(-4);
                 return (
-                  <div key={key} className="flex items-center gap-2">
-                    <div className="w-32 shrink-0 text-xs text-text-muted font-mono">{key}</div>
-                    <input
+                  <div key={key} className="rounded-lg border border-border bg-bg-card p-3">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div className="min-w-0 truncate text-xs text-text-muted font-mono">{key}</div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          onClick={() => toggleCredReveal(key)}
+                          className="px-2 py-1.5 border border-border rounded text-xs text-text-muted hover:text-text"
+                          title={revealed ? "Hide" : "Reveal"}
+                        >
+                          {revealed ? "Hide" : "Reveal"}
+                        </button>
+                        <button
+                          onClick={() => copyCred(key, value)}
+                          className="px-2 py-1.5 border border-border rounded text-xs text-text-muted hover:text-text"
+                          title="Copy to clipboard"
+                        >
+                          {credsCopied === key ? "Copied" : "Copy"}
+                        </button>
+                      </div>
+                    </div>
+                    <textarea
                       readOnly
                       value={revealed ? value : masked}
+                      rows={revealed && value.length > 56 ? 3 : 1}
                       onFocus={(e) => e.currentTarget.select()}
-                      className="flex-1 bg-bg-input border border-border rounded-lg px-3 py-2 text-xs text-text font-mono focus:outline-none focus:border-accent"
+                      className="block w-full resize-none overflow-hidden rounded border border-border bg-bg-input px-3 py-2 font-mono text-xs leading-relaxed text-text focus:border-accent focus:outline-none"
                     />
-                    <button
-                      onClick={() => toggleCredReveal(key)}
-                      className="px-2 py-2 border border-border rounded-lg text-xs text-text-muted hover:text-text"
-                      title={revealed ? "Hide" : "Reveal"}
-                    >
-                      {revealed ? "Hide" : "Reveal"}
-                    </button>
-                    <button
-                      onClick={() => copyCred(key, value)}
-                      className="px-2 py-2 border border-border rounded-lg text-xs text-text-muted hover:text-text"
-                      title="Copy to clipboard"
-                    >
-                      {credsCopied === key ? "Copied" : "Copy"}
-                    </button>
                   </div>
                 );
               })}

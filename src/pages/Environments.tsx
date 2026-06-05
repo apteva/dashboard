@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   apps as appsApi,
   instances,
@@ -9,16 +10,30 @@ import {
   type AppMCPTool,
   type AppRow,
   type ConnectionInfo,
+  type EnvironmentConnectionInfo,
   type InterceptedCall,
   type TelemetryEvent,
+  type Thread,
   type ThreadContextMessage,
-  type EnvironmentAgentStatus,
-  type EnvironmentSnapshotManifest,
-  type EnvironmentSummary,
-} from "../api";
+	  type EnvironmentAgentStatus,
+	  type EnvironmentSnapshotManifest,
+	  type EnvironmentSummary,
+	  type EnvironmentSubscriptionInfo,
+	} from "../api";
+import {
+  SystemMap,
+  type SystemMapActivity,
+  type SystemMapEdge,
+  type SystemMapEdgeKind,
+  type SystemMapNode,
+  type SystemMapNodeLatestKind,
+  type SystemMapStatus,
+} from "../components/system-map/SystemMap";
+import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 
-const MODES = ["block", "mock", "record", "replay", "passthrough"] as const;
+const NETWORK_MODES = ["passthrough", "block", "record", "replay"] as const;
+const INTEGRATION_MODES = ["mock", "real"] as const;
 const inputClass = "px-2 py-1.5 rounded border border-border bg-bg text-text";
 const buttonClass = "text-xs px-2 py-1 rounded border border-border hover:bg-bg-subtle disabled:opacity-50";
 
@@ -39,6 +54,16 @@ type FixtureDraft = {
   data: string;
 };
 
+type EnvironmentAppBusEvent = {
+  topic: string;
+  app: string;
+  project_id: string;
+  install_id: number;
+  seq: number;
+  time: string;
+  data: unknown;
+};
+
 type EnvironmentAgentContext = {
   id: string;
   iteration: number;
@@ -51,6 +76,7 @@ type EnvironmentAgentContext = {
 export function Environments() {
   const { currentProject } = useProjects();
   const projectId = currentProject?.id || "";
+  const navigate = useNavigate();
 
   const [environments, setEnvironments] = useState<EnvironmentSummary[]>([]);
   const [snaps, setSnaps] = useState<EnvironmentSnapshotManifest[]>([]);
@@ -62,7 +88,8 @@ export function Environments() {
 
   const [showCreate, setShowCreate] = useState(false);
   const [newId, setNewId] = useState("");
-  const [newMode, setNewMode] = useState<string>("block");
+  const [newNetworkMode, setNewNetworkMode] = useState<string>("passthrough");
+  const [newIntegrationMode, setNewIntegrationMode] = useState<string>("mock");
   const [newSnapshot, setNewSnapshot] = useState("");
   const [selectedApps, setSelectedApps] = useState<Set<number>>(new Set());
   const [selectedConnections, setSelectedConnections] = useState<Set<number>>(new Set());
@@ -263,13 +290,17 @@ export function Environments() {
         project_id: projectId,
         app_install_ids: Array.from(selectedApps),
         connection_ids: Array.from(selectedConnections),
-        mode: newMode,
+        mode: newNetworkMode,
+        network_mode: newNetworkMode,
+        integration_mode: newIntegrationMode,
         snapshot_id: newSnapshot || undefined,
         seed_plan: seedPlan,
         integration_fixtures: fixtures,
       });
       setShowCreate(false);
       setNewId("");
+      setNewNetworkMode("passthrough");
+      setNewIntegrationMode("mock");
       setNewSnapshot("");
       setSelectedApps(new Set());
       setSelectedConnections(new Set());
@@ -303,6 +334,24 @@ export function Environments() {
   const snapshot = async (id: string) => {
     try {
       await environmentsApi.snapshot(id, {});
+      refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const startEnvironment = async (id: string) => {
+    try {
+      await environmentsApi.start(id);
+      refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const stopEnvironment = async (id: string) => {
+    try {
+      await environmentsApi.stop(id);
       refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -349,7 +398,7 @@ export function Environments() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Metric label="Running" value={visibleEnvironments.length} />
+        <Metric label="Running" value={visibleEnvironments.filter((w) => environmentIsRunning(w)).length} />
         <Metric label="Apps" value={visibleEnvironments.reduce((n, w) => n + Object.keys(w.apps || {}).length, 0)} />
         <Metric label="Connections" value={visibleEnvironments.reduce((n, w) => n + (w.connections?.length || 0), 0)} />
         <Metric label="Snapshots" value={snaps.filter((s) => !projectId || s.project_id === projectId).length} />
@@ -371,7 +420,7 @@ export function Environments() {
         <div className="rounded border border-border bg-bg-card">
           <div className="grid lg:grid-cols-[1fr_320px]">
             <div className="p-4 flex flex-col gap-5">
-              <section className="grid md:grid-cols-3 gap-3">
+              <section className="grid md:grid-cols-4 gap-3">
                 <label className="text-sm text-text-muted flex flex-col gap-1">
                   Environment id
                   <input
@@ -382,13 +431,27 @@ export function Environments() {
                   />
                 </label>
                 <label className="text-sm text-text-muted flex flex-col gap-1">
-                  Network mode
+                  Network
                   <select
                     className="px-2 py-1.5 rounded border border-border bg-bg text-text"
-                    value={newMode}
-                    onChange={(e) => setNewMode((e.target as any).value)}
+                    value={newNetworkMode}
+                    onChange={(e) => setNewNetworkMode((e.target as any).value)}
                   >
-                    {MODES.map((m) => (
+                    {NETWORK_MODES.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-sm text-text-muted flex flex-col gap-1">
+                  Integrations
+                  <select
+                    className="px-2 py-1.5 rounded border border-border bg-bg text-text"
+                    value={newIntegrationMode}
+                    onChange={(e) => setNewIntegrationMode((e.target as any).value)}
+                  >
+                    {INTEGRATION_MODES.map((m) => (
                       <option key={m} value={m}>
                         {m}
                       </option>
@@ -600,9 +663,10 @@ export function Environments() {
               calls={calls}
               onCalls={() => inspectCalls(w.id)}
               onSnapshot={() => snapshot(w.id)}
+              onStart={() => startEnvironment(w.id)}
+              onStop={() => stopEnvironment(w.id)}
               onDestroy={() => setDestroyTarget(w)}
-              agents={agents}
-              onError={(message) => setError(message)}
+              onOpen={() => navigate(`/environments/${encodeURIComponent(w.id)}`)}
             />
           ))}
         </div>
@@ -631,37 +695,58 @@ function EnvironmentCard({
   calls,
   onCalls,
   onSnapshot,
+  onStart,
+  onStop,
   onDestroy,
-  agents,
-  onError,
+  onOpen,
 }: {
   environment: EnvironmentSummary;
   callsOpen: boolean;
   calls: InterceptedCall[];
   onCalls: () => void;
   onSnapshot: () => void;
+  onStart: () => void;
+  onStop: () => void;
   onDestroy: () => void;
-  agents: Agent[];
-  onError: (message: string) => void;
+  onOpen: () => void;
 }) {
   const appNames = Object.keys(environment.apps || {});
+  const running = environmentIsRunning(environment);
+  const networkMode = environmentNetworkMode(environment);
+  const integrationMode = environmentIntegrationMode(environment);
   return (
     <div className="rounded border border-border bg-bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-medium text-text truncate">{environment.id}</span>
-          <span className="text-xs px-1.5 py-0.5 rounded bg-bg-subtle text-text-muted">{environment.mode}</span>
+          <span className="text-xs px-1.5 py-0.5 rounded bg-bg-subtle text-text-muted">network: {networkMode}</span>
+          <span className="text-xs px-1.5 py-0.5 rounded bg-bg-subtle text-text-muted">integrations: {integrationMode}</span>
+          <span className={`text-xs px-1.5 py-0.5 rounded border ${environmentStatusClass(environment)}`}>
+            {environment.status || (running ? "running" : "stopped")}
+          </span>
+          {environment.persisted && <span className="text-xs px-1.5 py-0.5 rounded border border-border text-text-muted">persistent</span>}
+          {environment.ephemeral && <span className="text-xs px-1.5 py-0.5 rounded border border-yellow/40 text-yellow">ephemeral</span>}
           <span className="text-xs text-text-muted">{appNames.length} apps</span>
           <span className="text-xs text-text-muted">{environment.connections?.length || 0} connections</span>
         </div>
-        <div className="flex gap-2">
-          <button className={buttonClass} onClick={onCalls}>{callsOpen ? "Hide calls" : "Calls"}</button>
-          <button className={buttonClass} onClick={onSnapshot}>Snapshot</button>
+        <div className="flex flex-wrap gap-2">
+          <button className="text-xs px-2 py-1 rounded border border-accent/50 text-accent hover:bg-accent/10" onClick={onOpen}>
+            Open
+          </button>
+          {!running && environment.persisted && <button className={buttonClass} onClick={onStart}>Start</button>}
+          {running && environment.persisted && <button className={buttonClass} onClick={onStop}>Stop</button>}
+          <button className={buttonClass} onClick={onCalls} disabled={!running}>{callsOpen ? "Hide calls" : "Calls"}</button>
+          <button className={buttonClass} onClick={onSnapshot} disabled={!running}>Snapshot</button>
           <button className="text-xs px-2 py-1 rounded border border-red-500/40 text-red-400 hover:bg-red-500/10" onClick={onDestroy}>
-            Destroy
+            Delete
           </button>
         </div>
       </div>
+      {environment.error_message && (
+        <div className="mt-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-xs text-red-400">
+          {environment.error_message}
+        </div>
+      )}
 
       <div className="mt-3 grid md:grid-cols-2 gap-3">
         <div>
@@ -700,9 +785,7 @@ function EnvironmentCard({
         </div>
       </div>
 
-      <EnvironmentAgentPanel environment={environment} agents={agents} onError={onError} />
-
-      {callsOpen && (
+      {callsOpen && running && (
         <div className="mt-3 border-t border-border pt-3">
           {calls.length === 0 ? (
             <p className="text-xs text-text-muted">No edge calls recorded yet.</p>
@@ -736,14 +819,603 @@ function EnvironmentCard({
   );
 }
 
+export function EnvironmentDetail() {
+  const { id = "" } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { currentProject } = useProjects();
+  const [environment, setEnvironment] = useState<EnvironmentSummary | null>(null);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [calls, setCalls] = useState<InterceptedCall[]>([]);
+  const [showCalls, setShowCalls] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [destroyTarget, setDestroyTarget] = useState<EnvironmentSummary | null>(null);
+  const [destroying, setDestroying] = useState(false);
+
+  const load = async (showLoading = false) => {
+    if (!id) return;
+    if (showLoading) setLoading(true);
+    try {
+      const env = await environmentsApi.get(id);
+      setEnvironment(env);
+      const projectID = env.project_id || currentProject?.id || "";
+      const projectAgents = projectID ? await instances.list(projectID).catch(() => [] as Agent[]) : [];
+      setAgents(projectAgents || []);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load(true);
+    const timer = window.setInterval(() => {
+      void load(false);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [id, currentProject?.id]);
+
+  const running = environment ? environmentIsRunning(environment) : false;
+  const appNames = environment ? Object.keys(environment.apps || {}) : [];
+  const networkMode = environment ? environmentNetworkMode(environment) : "";
+  const integrationMode = environment ? environmentIntegrationMode(environment) : "";
+
+  const start = async () => {
+    if (!environment) return;
+    try {
+      const next = await environmentsApi.start(environment.id);
+      setEnvironment(next);
+      setRefreshKey((key) => key + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const stop = async () => {
+    if (!environment) return;
+    try {
+      await environmentsApi.stop(environment.id);
+      await load(false);
+      setRefreshKey((key) => key + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const snapshot = async () => {
+    if (!environment) return;
+    try {
+      await environmentsApi.snapshot(environment.id, {});
+      await load(false);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const inspectCalls = async () => {
+    if (!environment) return;
+    if (showCalls) {
+      setShowCalls(false);
+      return;
+    }
+    try {
+      const next = await environmentsApi.calls(environment.id);
+      setCalls(next || []);
+      setShowCalls(true);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const confirmDestroy = async () => {
+    if (!destroyTarget) return;
+    setDestroying(true);
+    try {
+      await environmentsApi.destroy(destroyTarget.id);
+      navigate("/environments");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDestroying(false);
+    }
+  };
+
+  const handleAgentsChanged = () => {
+    setRefreshKey((key) => key + 1);
+    void load(false);
+  };
+
+  if (loading && !environment) {
+    return <div className="h-full overflow-auto p-6 text-sm text-text-muted">Loading environment...</div>;
+  }
+
+  if (!environment) {
+    return (
+      <div className="h-full overflow-auto p-6">
+        <button className={buttonClass} onClick={() => navigate("/environments")}>Back</button>
+        <div className="mt-4 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+          {error || "Environment not found."}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-auto p-4 space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <button className={buttonClass} onClick={() => navigate("/environments")}>Back</button>
+            <h1 className="text-xl font-semibold text-text truncate">{environment.id}</h1>
+            <span className="text-xs px-1.5 py-0.5 rounded bg-bg-subtle text-text-muted">network: {networkMode}</span>
+            <span className="text-xs px-1.5 py-0.5 rounded bg-bg-subtle text-text-muted">integrations: {integrationMode}</span>
+            <span className={`text-xs px-1.5 py-0.5 rounded border ${environmentStatusClass(environment)}`}>
+              {environment.status || (running ? "running" : "stopped")}
+            </span>
+            {environment.persisted && <span className="text-xs px-1.5 py-0.5 rounded border border-border text-text-muted">persistent</span>}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-text-muted">
+            <span>{appNames.length} app{appNames.length === 1 ? "" : "s"}</span>
+            <span>·</span>
+            <span>{(environment.agents || []).length} agent{(environment.agents || []).length === 1 ? "" : "s"}</span>
+            <span>·</span>
+            <span>{environment.connections?.length || 0} connection{(environment.connections?.length || 0) === 1 ? "" : "s"}</span>
+            <span>·</span>
+            <span>{calls.length} call{calls.length === 1 ? "" : "s"}</span>
+            {appNames.map((name) => (
+              <a
+                key={name}
+                className="ml-1 rounded border border-border px-1.5 py-0.5 text-text hover:bg-bg-subtle"
+                href={`${environmentsApi.appBase(environment.id, name)}/`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {name} {environment.apps[name]?.kind === "install" ? `#${environment.apps[name]?.install_id}` : "legacy"}
+              </a>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {!running && environment.persisted && <button className={buttonClass} onClick={start}>Start</button>}
+          {running && environment.persisted && <button className={buttonClass} onClick={stop}>Stop</button>}
+          <button className={buttonClass} onClick={inspectCalls} disabled={!running}>{showCalls ? "Hide calls" : "Calls"}</button>
+          <button className={buttonClass} onClick={snapshot} disabled={!running}>Snapshot</button>
+          <button className="text-xs px-2 py-1 rounded border border-red-500/40 text-red-400 hover:bg-red-500/10" onClick={() => setDestroyTarget(environment)}>
+            Delete
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="rounded border border-red-500/40 bg-red-500/10 text-red-400 text-sm px-3 py-2">
+          {error}
+        </div>
+      )}
+
+      <EnvironmentSystemMap environment={environment} refreshKey={refreshKey} wide />
+
+      <EnvironmentSubscriptionsPanel
+        environment={environment}
+        onError={(message) => setError(message)}
+        onChanged={() => {
+          setRefreshKey((key) => key + 1);
+          void load(false);
+        }}
+      />
+
+      {running ? (
+        <EnvironmentAgentPanel
+          environment={environment}
+          agents={agents}
+          onError={(message) => setError(message)}
+          onAgentsChanged={handleAgentsChanged}
+        />
+      ) : (
+        <div className="rounded border border-border bg-bg-card p-4 text-sm text-text-muted">
+          Start this environment to inspect live agents, threads, telemetry, and app state.
+        </div>
+      )}
+
+      {showCalls && running && (
+        <EnvironmentCallsTable calls={calls} />
+      )}
+
+      {destroyTarget && (
+        <ConfirmDialog
+          title="Delete environment"
+          body={`Delete ${destroyTarget.id}? This stops its in-environment apps and removes the live environment. Snapshots are kept.`}
+          confirmLabel={destroying ? "Deleting..." : "Delete"}
+          tone="danger"
+          busy={destroying}
+          onCancel={() => {
+            if (!destroying) setDestroyTarget(null);
+          }}
+          onConfirm={confirmDestroy}
+        />
+      )}
+    </div>
+  );
+}
+
+function EnvironmentCallsTable({ calls }: { calls: InterceptedCall[] }) {
+  return (
+    <div className="rounded border border-border bg-bg-card p-3">
+      {calls.length === 0 ? (
+        <p className="text-xs text-text-muted">No edge calls recorded yet.</p>
+      ) : (
+        <table className="w-full text-xs">
+          <thead className="text-text-muted text-left">
+            <tr>
+              <th className="py-1">Method</th>
+              <th>Host</th>
+              <th>Path</th>
+              <th>Status</th>
+              <th>Disposition</th>
+            </tr>
+          </thead>
+          <tbody>
+            {calls.map((c, i) => (
+              <tr key={`${c.ts}-${i}`} className="border-t border-border/60">
+                <td className="py-1 text-text">{c.method}</td>
+                <td className="text-text-muted">{c.host}</td>
+                <td className="text-text-muted truncate max-w-[42rem]">{c.path}</td>
+                <td className="text-text-muted">{c.status || "-"}</td>
+                <td className="text-text-muted">{c.mocked ? "mocked" : c.allowed ? "allowed" : c.recorded ? "recorded" : c.blocked ? "blocked" : "seen"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function EnvironmentSystemMap({
+  environment,
+  refreshKey = 0,
+  wide,
+}: {
+  environment: EnvironmentSummary;
+  refreshKey?: number;
+  wide?: boolean;
+}) {
+  const [mapAgents, setMapAgents] = useState<EnvironmentAgentStatus[]>(environment.agents || []);
+  const [threadsByAgent, setThreadsByAgent] = useState<Record<number, Thread[]>>({});
+  const [contexts, setContexts] = useState<Record<string, EnvironmentAgentContext>>({});
+  const [calls, setCalls] = useState<InterceptedCall[]>([]);
+  const [events, setEvents] = useState<TelemetryEvent[]>([]);
+  const [appBusEvents, setAppBusEvents] = useState<EnvironmentAppBusEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const loadedOnceRef = useRef(false);
+  const runningAgentIDs = useMemo(
+    () =>
+      mapAgents
+        .filter((agent) => (agent.status || "running") === "running")
+        .map((agent) => agent.agent_id)
+        .sort((a, b) => a - b)
+        .join(","),
+    [mapAgents],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const fallbackAgents = environment.agents || [];
+    setEvents([]);
+    setAppBusEvents([]);
+    const load = async (showLoading = false) => {
+      if (showLoading && !loadedOnceRef.current) setLoading(true);
+      try {
+        const [agents, edgeCalls] = await Promise.all([
+          environmentsApi.agents(environment.id).catch(() => fallbackAgents),
+          environmentsApi.calls(environment.id).catch(() => [] as InterceptedCall[]),
+        ]);
+        if (cancelled) return;
+        setMapAgents(agents || []);
+        setCalls(edgeCalls || []);
+
+        const threadPairs = await Promise.all(
+          (agents || []).map(async (agent) => {
+            const threads = await environmentsApi.agentThreads(environment.id, agent.agent_id).catch(() => [] as Thread[]);
+            return [agent.agent_id, threads || []] as const;
+          }),
+        );
+        if (cancelled) return;
+        const nextThreads: Record<number, Thread[]> = {};
+        threadPairs.forEach(([agentID, threads]) => {
+          nextThreads[agentID] = threads;
+        });
+        setThreadsByAgent(nextThreads);
+
+        const contextEntries = await Promise.all(
+          threadPairs.flatMap(([agentID, threads]) =>
+            threads.slice(0, 8).map(async (thread) => {
+              const context = await environmentsApi
+                .agentContext(environment.id, thread.id || "main", agentID)
+                .catch(() => null);
+              return context ? [`${agentID}:${thread.id}`, context] as const : null;
+            }),
+          ),
+        );
+        if (cancelled) return;
+        const nextContexts: Record<string, EnvironmentAgentContext> = {};
+        contextEntries.forEach((entry) => {
+          if (entry) nextContexts[entry[0]] = {
+            id: entry[1].id,
+            iteration: entry[1].iteration,
+            model: entry[1].model,
+            count: entry[1].count,
+            total_chars: entry[1].total_chars,
+            messages: entry[1].messages || [],
+          };
+        });
+        setContexts(nextContexts);
+      } finally {
+        if (!cancelled) {
+          loadedOnceRef.current = true;
+          setLoading(false);
+        }
+      }
+    };
+    void load(true);
+    const timer = environmentIsRunning(environment)
+      ? window.setInterval(() => {
+          void load(false);
+        }, 3000)
+      : null;
+    return () => {
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
+    };
+  }, [environment.id, environment.status, refreshKey]);
+
+  const appBusKey = useMemo(() => Object.keys(environment.apps || {}).sort().join(","), [environment.apps]);
+
+  useEffect(() => {
+    const appNames = appBusKey ? appBusKey.split(",").filter(Boolean) : [];
+    if (!environmentIsRunning(environment) || appNames.length === 0) return;
+    const sources = appNames.map((app) => {
+      const source = new EventSource(
+        `/api/app-events/${encodeURIComponent(app)}?project_id=${encodeURIComponent(environment.id)}`,
+        { withCredentials: true },
+      );
+      source.onmessage = (e) => {
+        try {
+          const ev = JSON.parse(e.data) as EnvironmentAppBusEvent;
+          setAppBusEvents((prev) => {
+            const key = appBusEventKey(ev);
+            if (prev.some((seen) => appBusEventKey(seen) === key)) return prev;
+            return [...prev, ev].slice(-160);
+          });
+        } catch {
+          // Ignore malformed appbus frames.
+        }
+      };
+      return source;
+    });
+    return () => {
+      sources.forEach((source) => source.close());
+    };
+  }, [environment.id, environment.status, appBusKey]);
+
+  useEffect(() => {
+    if (!runningAgentIDs) return;
+    const sources = mapAgents
+      .filter((agent) => (agent.status || "running") === "running")
+      .map((agent) => {
+        const source = new EventSource(environmentsApi.agentEventsURL(environment.id, agent.agent_id), { withCredentials: true });
+        source.onmessage = (e) => {
+          try {
+            const ev = JSON.parse(e.data) as TelemetryEvent;
+            setEvents((prev) => {
+              const key = telemetryEventKey(ev);
+              if (prev.some((seen) => telemetryEventKey(seen) === key)) return prev;
+              return [...prev, ev].slice(-160);
+            });
+          } catch {
+            // Ignore malformed telemetry frames.
+          }
+        };
+        return source;
+      });
+    return () => {
+      sources.forEach((source) => source.close());
+    };
+  }, [environment.id, runningAgentIDs]);
+
+  const model = useMemo(
+    () => buildEnvironmentSystemMap(environment, mapAgents, threadsByAgent, contexts, calls, events, appBusEvents),
+    [environment, mapAgents, threadsByAgent, contexts, calls, events, appBusEvents],
+  );
+
+  return (
+    <div className="mt-3">
+      <SystemMap
+        title="System Map"
+        subtitle="Agents, threads, app tools, telemetry, and network policy."
+        scope="environment"
+        boundaryLabel={environment.id}
+        nodes={model.nodes}
+        edges={model.edges}
+        activity={model.activity}
+        stats={model.stats}
+        loading={loading}
+        wide={wide}
+        heightClass={wide ? "h-[520px] min-h-[420px]" : undefined}
+        notice={
+          environmentIsRunning(environment) && mapAgents.length === 0
+            ? {
+                title: "No agents in this environment yet",
+                detail: "Spawn an agent to see live threads, tool calls, and telemetry.",
+              }
+            : undefined
+        }
+      />
+    </div>
+  );
+}
+
+function environmentIsRunning(environment: EnvironmentSummary): boolean {
+  return (environment.status || "running") === "running";
+}
+
+function telemetryEventKey(event: TelemetryEvent): string {
+  if (event.id) return `id:${event.id}`;
+  return [
+    event.time || "",
+    event.instance_id || "",
+    event.thread_id || "",
+    event.type || "",
+    JSON.stringify(event.data || {}),
+  ].join("|");
+}
+
+function environmentStatusClass(environment: EnvironmentSummary): string {
+  switch (environment.status || "running") {
+    case "running":
+      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-400";
+    case "error":
+      return "border-red-500/40 bg-red-500/10 text-red-400";
+    case "starting":
+      return "border-yellow/40 bg-yellow/10 text-yellow";
+    default:
+      return "border-border bg-bg-subtle text-text-muted";
+  }
+}
+
+function EnvironmentSubscriptionsPanel({
+  environment,
+  onError,
+  onChanged,
+}: {
+  environment: EnvironmentSummary;
+  onError: (message: string) => void;
+  onChanged: () => void;
+}) {
+  const appNames = Object.keys(environment.apps || {}).sort();
+  const agentAliases = (environment.agents || []).map((agent) => agent.alias || "main");
+  const [app, setApp] = useState(appNames[0] || "");
+  const [topic, setTopic] = useState("");
+  const [targetAlias, setTargetAlias] = useState(agentAliases[0] || "main");
+  const [threadID, setThreadID] = useState("main");
+  const [busy, setBusy] = useState<string | null>(null);
+  const subscriptions = environment.subscriptions || [];
+
+  useEffect(() => {
+    if (!app && appNames.length > 0) setApp(appNames[0]);
+  }, [app, appNames.join(",")]);
+
+  useEffect(() => {
+    if (!targetAlias && agentAliases.length > 0) setTargetAlias(agentAliases[0]);
+  }, [targetAlias, agentAliases.join(",")]);
+
+  const create = async () => {
+    const trimmedTopic = topic.trim();
+    if (!app || !trimmedTopic) {
+      onError("Pick an app and topic for the subscription.");
+      return;
+    }
+    setBusy("create");
+    try {
+      await environmentsApi.createSubscription(environment.id, {
+        app,
+        topic: trimmedTopic,
+        target_agent_alias: targetAlias.trim() || "main",
+        thread_id: threadID.trim() || "main",
+      });
+      setTopic("");
+      onChanged();
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const remove = async (sub: EnvironmentSubscriptionInfo) => {
+    setBusy(sub.id);
+    try {
+      await environmentsApi.deleteSubscription(environment.id, sub.id);
+      onChanged();
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="rounded border border-border bg-bg-card p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-text">Subscriptions</h3>
+          <p className="mt-0.5 text-xs text-text-muted">Environment-owned app-event routes into agent threads.</p>
+        </div>
+        <span className="text-xs px-2 py-1 rounded border border-border bg-bg text-text-muted">
+          {subscriptions.length} route{subscriptions.length === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      <div className="mt-3 grid lg:grid-cols-[minmax(120px,180px)_minmax(160px,1fr)_minmax(120px,180px)_minmax(100px,140px)_auto] gap-2 items-end">
+        <label className="text-xs text-text-muted flex flex-col gap-1">
+          App
+          <select className={inputClass} value={app} onChange={(e) => setApp((e.target as HTMLSelectElement).value)} disabled={appNames.length === 0}>
+            {appNames.length === 0 ? <option value="">No apps</option> : appNames.map((name) => <option key={name} value={name}>{name}</option>)}
+          </select>
+        </label>
+        <label className="text-xs text-text-muted flex flex-col gap-1">
+          Topic
+          <input className={inputClass} value={topic} onChange={(e) => setTopic((e.target as HTMLInputElement).value)} placeholder="media.completed or row.*" />
+        </label>
+        <label className="text-xs text-text-muted flex flex-col gap-1">
+          Agent alias
+          <select className={inputClass} value={targetAlias} onChange={(e) => setTargetAlias((e.target as HTMLSelectElement).value)}>
+            {(agentAliases.length > 0 ? agentAliases : ["main"]).map((alias) => <option key={alias} value={alias}>{alias}</option>)}
+          </select>
+        </label>
+        <label className="text-xs text-text-muted flex flex-col gap-1">
+          Thread
+          <input className={inputClass} value={threadID} onChange={(e) => setThreadID((e.target as HTMLInputElement).value)} placeholder="main" />
+        </label>
+        <button className={`${buttonClass} mb-0.5`} onClick={create} disabled={busy === "create" || appNames.length === 0 || !topic.trim()}>
+          {busy === "create" ? "Adding..." : "Add"}
+        </button>
+      </div>
+
+      {subscriptions.length > 0 && (
+        <div className="mt-3 grid gap-2">
+          {subscriptions.map((sub) => (
+            <div key={sub.id} className="flex flex-wrap items-center justify-between gap-2 rounded border border-border bg-bg px-3 py-2 text-xs">
+              <div className="min-w-0">
+                <div className="text-text truncate">{sub.app}.{sub.topic}</div>
+                <div className="text-text-muted truncate">
+                  {sub.target_agent_alias || "main"}/{sub.thread_id || "main"} - {sub.status}
+                  {sub.subscription_id ? ` - row ${sub.subscription_id}` : ""}
+                </div>
+              </div>
+              <button className="px-2 py-1 rounded border border-border hover:bg-bg-subtle disabled:opacity-50" onClick={() => remove(sub)} disabled={busy === sub.id}>
+                {busy === sub.id ? "Removing..." : "Remove"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EnvironmentAgentPanel({
   environment,
   agents,
   onError,
+  onAgentsChanged,
 }: {
   environment: EnvironmentSummary;
   agents: Agent[];
   onError: (message: string) => void;
+  onAgentsChanged?: () => void;
 }) {
   const [sourceAgentID, setSourceAgentID] = useState("");
   const [alias, setAlias] = useState("");
@@ -760,14 +1432,16 @@ function EnvironmentAgentPanel({
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState<string | null>(null);
   const [stopTarget, setStopTarget] = useState<EnvironmentAgentStatus | null>(null);
+  const [showSpawn, setShowSpawn] = useState(false);
   const activeAgentRef = useRef<EnvironmentAgentStatus | null>(null);
   const threadRef = useRef("main");
   const contextRefreshRef = useRef<() => void>(() => {});
   const refreshTimerRef = useRef<number | null>(null);
 
   const activeAgent = environmentAgents.find((agent) => agent.agent_id === activeAgentID) || null;
-  const statusLabel = agentsLoading ? "Checking" : `${environmentAgents.length} running`;
-  const statusClass = environmentAgents.length > 0
+  const runningAgents = environmentAgents.filter((agent) => (agent.status || "running") === "running");
+  const statusLabel = agentsLoading ? "Checking" : `${runningAgents.length} running`;
+  const statusClass = runningAgents.length > 0
     ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
     : agentsLoading
       ? "border-border bg-bg-subtle text-text-muted"
@@ -905,6 +1579,8 @@ function EnvironmentAgentPanel({
       setEvents([]);
       setContext(null);
       setContextError(null);
+      setShowSpawn(false);
+      onAgentsChanged?.();
     } catch (e) {
       onError((e as Error).message);
     } finally {
@@ -944,6 +1620,7 @@ function EnvironmentAgentPanel({
         setEvents([]);
         setContext(null);
       }
+      onAgentsChanged?.();
     } catch (e) {
       onError((e as Error).message);
     } finally {
@@ -960,12 +1637,17 @@ function EnvironmentAgentPanel({
             <span className={`text-[11px] px-2 py-0.5 rounded-full border ${statusClass}`}>{statusLabel}</span>
           </div>
           <div className="mt-1 text-xs text-text-muted">
-            {activeAgent ? `${agentLabel(activeAgent)} - port ${activeAgent.port} - telemetry ${streamState}` : "Spawn one or more project agents into this environment."}
+            {activeAgent
+              ? `${agentLabel(activeAgent)} - ${activeAgent.status || "running"} on port ${activeAgent.port} - telemetry ${streamState}`
+              : "Spawn one or more project agents into this environment."}
           </div>
         </div>
+        <button className="text-xs px-3 py-1.5 rounded border border-accent/50 text-accent hover:bg-accent/10" onClick={() => setShowSpawn(true)}>
+          Spawn Agent
+        </button>
       </div>
 
-      <div className="grid xl:grid-cols-[minmax(0,1fr)_360px] gap-3">
+      <div className="grid xl:grid-cols-[minmax(0,1fr)_320px] gap-3">
         <div className="rounded border border-border bg-bg p-3 min-w-0">
           <div className="flex items-center justify-between gap-2 mb-2">
             <h3 className="text-xs font-semibold text-text-muted uppercase">Spawned Agents</h3>
@@ -985,7 +1667,7 @@ function EnvironmentAgentPanel({
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-sm text-text truncate">{agentLabel(agent)}</span>
-                    <span className="text-[11px] text-text-muted shrink-0">:{agent.port}</span>
+                    <span className="text-[11px] text-text-muted shrink-0">{agent.status || "running"} :{agent.port}</span>
                   </div>
                   <div className="text-xs text-text-muted truncate">
                     source {agent.source_name || agent.source_agent_id || "agent"} - #{agent.agent_id}
@@ -996,60 +1678,31 @@ function EnvironmentAgentPanel({
           )}
         </div>
 
-        <div className="rounded border border-border bg-bg p-3">
-          <h3 className="text-xs font-semibold text-text-muted uppercase mb-2">Spawn Agent</h3>
-          <div className="flex flex-col gap-2">
-            <label className="text-xs text-text-muted flex flex-col gap-1">
-              Source agent
-              <select
-                className={inputClass}
-                value={sourceAgentID}
-                onChange={(e) => setSourceAgentID((e.target as HTMLSelectElement).value)}
-                disabled={agents.length === 0}
+        <div className="rounded border border-border bg-bg p-3 min-w-0">
+          <h3 className="text-xs font-semibold text-text-muted uppercase mb-2">Selected Agent</h3>
+          {activeAgent ? (
+            <div className="space-y-2 text-xs">
+              <div className="text-sm text-text">{agentLabel(activeAgent)}</div>
+              <div className="text-text-muted">status {activeAgent.status || "running"}</div>
+              <div className="text-text-muted">port {activeAgent.port}</div>
+              <div className="text-text-muted">telemetry {streamState}</div>
+              <button
+                className="mt-2 text-xs px-2 py-1 rounded border border-red-500/40 text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                onClick={() => setStopTarget(activeAgent)}
+                disabled={busy === "stop"}
               >
-                {agents.length === 0 ? (
-                  <option value="">No agents</option>
-                ) : (
-                  agents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>
-                      {agent.name || `Agent ${agent.id}`} #{agent.id}
-                    </option>
-                  ))
-                )}
-              </select>
-            </label>
-            <label className="text-xs text-text-muted flex flex-col gap-1">
-              Alias
-              <input className={inputClass} value={alias} onChange={(e) => setAlias((e.target as HTMLInputElement).value)} placeholder="main, reviewer, worker" />
-            </label>
-            <label className="text-xs text-text-muted flex flex-col gap-1">
-              Directive override
-              <textarea
-                className={`${inputClass} min-h-20 text-sm`}
-                value={directive}
-                onChange={(e) => setDirective((e.target as HTMLTextAreaElement).value)}
-                placeholder="Optional"
-              />
-            </label>
-            <button className={`${buttonClass} self-start`} onClick={spawn} disabled={busy === "spawn" || agents.length === 0}>
-              {busy === "spawn" ? "Spawning..." : "Spawn"}
-            </button>
-          </div>
+                Stop
+              </button>
+            </div>
+          ) : (
+            <p className="text-xs text-text-muted">No selected environment agent.</p>
+          )}
         </div>
       </div>
 
       {activeAgent && (
         <>
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="text-xs font-semibold text-text-muted uppercase">Drive {agentLabel(activeAgent)}</h3>
-            <button
-              className="text-xs px-2 py-1 rounded border border-red-500/40 text-red-400 hover:bg-red-500/10 disabled:opacity-50"
-              onClick={() => setStopTarget(activeAgent)}
-              disabled={busy === "stop"}
-            >
-              Stop
-            </button>
-          </div>
+          <h3 className="text-xs font-semibold text-text-muted uppercase">Drive {agentLabel(activeAgent)}</h3>
           <div className="grid lg:grid-cols-[150px_1fr_auto] gap-2 items-end">
             <label className="text-xs text-text-muted flex flex-col gap-1">
               Thread
@@ -1133,6 +1786,55 @@ function EnvironmentAgentPanel({
           onConfirm={() => stop(stopTarget)}
         />
       )}
+
+      <Modal open={showSpawn} onClose={() => {
+        if (busy !== "spawn") setShowSpawn(false);
+      }} width="max-w-xl">
+        <div className="p-4 border-b border-border">
+          <h2 className="text-base font-semibold text-text">Spawn Agent</h2>
+          <p className="mt-1 text-sm text-text-muted">Create an isolated copy of a project agent inside {environment.id}.</p>
+        </div>
+        <div className="p-4 flex flex-col gap-3 overflow-auto">
+          <label className="text-xs text-text-muted flex flex-col gap-1">
+            Source agent
+            <select
+              className={inputClass}
+              value={sourceAgentID}
+              onChange={(e) => setSourceAgentID((e.target as HTMLSelectElement).value)}
+              disabled={agents.length === 0}
+            >
+              {agents.length === 0 ? (
+                <option value="">No agents</option>
+              ) : (
+                agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name || `Agent ${agent.id}`} #{agent.id}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+          <label className="text-xs text-text-muted flex flex-col gap-1">
+            Alias
+            <input className={inputClass} value={alias} onChange={(e) => setAlias((e.target as HTMLInputElement).value)} placeholder="main, reviewer, worker" />
+          </label>
+          <label className="text-xs text-text-muted flex flex-col gap-1">
+            Directive override
+            <textarea
+              className={`${inputClass} min-h-28 text-sm`}
+              value={directive}
+              onChange={(e) => setDirective((e.target as HTMLTextAreaElement).value)}
+              placeholder="Optional"
+            />
+          </label>
+        </div>
+        <div className="p-4 border-t border-border flex justify-end gap-2">
+          <button className={buttonClass} onClick={() => setShowSpawn(false)} disabled={busy === "spawn"}>Cancel</button>
+          <button className="text-xs px-3 py-1.5 rounded bg-accent text-white disabled:opacity-50" onClick={spawn} disabled={busy === "spawn" || agents.length === 0}>
+            {busy === "spawn" ? "Spawning..." : "Spawn"}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }
@@ -1499,6 +2201,967 @@ function placeholderFor(field: SchemaField): string {
   if (field.type === "array") return "[]";
   if (field.type === "object") return "{}";
   return "";
+}
+
+function buildEnvironmentSystemMap(
+  environment: EnvironmentSummary,
+  agents: EnvironmentAgentStatus[],
+  threadsByAgent: Record<number, Thread[]>,
+  contexts: Record<string, EnvironmentAgentContext>,
+  calls: InterceptedCall[],
+  events: TelemetryEvent[],
+  appBusEvents: EnvironmentAppBusEvent[],
+): { nodes: SystemMapNode[]; edges: SystemMapEdge[]; activity: SystemMapActivity[]; stats: Array<{ label: string; value: string | number }> } {
+  const nodes = new Map<string, SystemMapNode>();
+  const edges = new Map<string, SystemMapEdge>();
+  const activity: SystemMapActivity[] = [];
+  const appNames = Object.keys(environment.apps || {});
+	  const connections = environment.connections || [];
+	  const subscriptions = environment.subscriptions || [];
+	  const networkMode = environmentNetworkMode(environment);
+  const integrationMode = environmentIntegrationMode(environment);
+  const boundaryPortID = "boundary:network";
+  const streamingToolByCall = new Map<string, string>();
+  const threadStreamText = new Map<string, string>();
+
+  const addNode = (node: SystemMapNode) => {
+    const current = nodes.get(node.id);
+    if (!current) {
+      nodes.set(node.id, node);
+      return;
+    }
+    const currentActiveAt = current.lastActiveAt || 0;
+    const nodeActiveAt = node.lastActiveAt || 0;
+	    nodes.set(node.id, {
+	      ...current,
+	      ...node,
+	      badges: mergeBadges(current.badges, node.badges),
+	      latest: latestNodeActivity(current.latest, node.latest),
+	      activeKind: nodeActiveAt >= currentActiveAt ? node.activeKind || current.activeKind : current.activeKind,
+	      lastActiveAt: Math.max(currentActiveAt, nodeActiveAt) || undefined,
+	    });
+	  };
+  const touchNodeActivity = (id: string, activeKind: SystemMapEdgeKind, time: number) => {
+    const current = nodes.get(id);
+    if (!current) return;
+    nodes.set(id, {
+      ...current,
+      status: current.kind === "thread" ? "running" : current.status,
+      activeKind,
+      lastActiveAt: Math.max(current.lastActiveAt || 0, time),
+    });
+  };
+  const setThreadLatest = (id: string, kind: SystemMapNodeLatestKind, text: string, time: number) => {
+    const current = nodes.get(id);
+    if (!current) return;
+    const compact = shortText(text, 58);
+    if (!compact) return;
+    nodes.set(id, {
+      ...current,
+      latest: latestNodeActivity(current.latest, { kind, text: compact, time }),
+    });
+  };
+  const appendThreadStream = (id: string, kind: Extract<SystemMapNodeLatestKind, "thinking" | "message">, data: Record<string, unknown>, time: number) => {
+    const text = String(data.text || "");
+    if (!text) return;
+    const streamKey = `${id}:${kind}:${String(data.iteration || data.id || data.call_id || "latest")}`;
+    const next = `${threadStreamText.get(streamKey) || ""}${text}`.slice(-1000);
+    threadStreamText.set(streamKey, next);
+    setThreadLatest(id, kind, next, time);
+  };
+  const addEdge = (edge: SystemMapEdge) => {
+    const current = edges.get(edge.id);
+    if (!current) {
+      edges.set(edge.id, edge);
+      return;
+    }
+    edges.set(edge.id, {
+      ...current,
+      kind:
+        (edge.lastActiveAt || edge.softActiveAt || 0) >= (current.lastActiveAt || current.softActiveAt || 0) &&
+        (edge.lastActiveAt || edge.softActiveAt)
+          ? edge.kind
+          : current.kind,
+      count: Math.max(current.count || 0, edge.count || 0),
+      lastActiveAt: Math.max(current.lastActiveAt || 0, edge.lastActiveAt || 0) || undefined,
+      softActiveAt: Math.max(current.softActiveAt || 0, edge.softActiveAt || 0) || undefined,
+      packetDirection:
+        (edge.lastActiveAt || 0) >= (current.lastActiveAt || 0)
+          ? edge.packetDirection || current.packetDirection
+          : current.packetDirection,
+      label: edge.label || current.label,
+      status: edge.status || current.status,
+      detail: edge.detail || current.detail,
+    });
+  };
+
+  appNames.forEach((name, index) => {
+    const app = environment.apps[name];
+    addNode({
+      id: appNodeID(name),
+      kind: "app",
+      label: name,
+      status: app?.kind === "install" ? "running" : "unknown",
+      subtitle: app?.kind === "install" ? `install #${app.install_id}` : app?.kind || "app",
+      detail: app?.data_dir ? `Data dir: ${app.data_dir}` : app?.url || "",
+      ...appSlot(index, Math.max(1, appNames.length), agents.length > 0),
+    });
+  });
+
+  const appNameByInstallID = new Map<number, string>();
+  appNames.forEach((name) => {
+    const installID = environment.apps[name]?.install_id;
+    if (installID) appNameByInstallID.set(installID, name);
+  });
+
+  appNames.forEach((name) => {
+    const bindings = environment.apps[name]?.bindings || {};
+    Object.entries(bindings).forEach(([role, installID]) => {
+      const targetName = appNameByInstallID.get(Number(installID));
+      if (!targetName || targetName === name) return;
+      addEdge({
+        id: `appdep:${appNodeID(name)}:${appNodeID(targetName)}`,
+        source: appNodeID(name),
+        target: appNodeID(targetName),
+        kind: "tool",
+        status: "ok",
+        label: `requires ${role}`,
+        detail: `${name} is bound to ${targetName} install #${installID}`,
+      });
+    });
+  });
+
+  const rawCalls = calls.filter((call) => !connectionForHost(call.host || "", connections));
+  const topologyNetworkCalls = rawCalls.filter((call) => shouldShowNetworkCallOnMap(call, networkMode));
+  if (topologyNetworkCalls.length > 0) {
+    addNode({
+      id: boundaryPortID,
+      kind: "gateway",
+      label: "network",
+      status: networkMode === "block" ? "blocked" : "running",
+      subtitle: networkMode,
+      detail: `Network policy: ${networkMode}\nProxy: ${environment.proxy_url}`,
+      x: 94,
+      y: agents.length > 0 ? 55 : 50,
+    });
+  }
+
+	  agents.forEach((agent, index) => {
+    const agentThreads = threadsByAgent[agent.agent_id] || [];
+    const agentID = agentNodeID(agent.agent_id);
+    addNode({
+      id: agentID,
+      kind: "agent",
+      label: agent.alias || agent.source_name || `Agent ${agent.agent_id}`,
+      status: ((agent.status || "running") === "running" ? "running" : "idle") as SystemMapStatus,
+      subtitle: `${agent.source_name || "source agent"} #${agent.agent_id}`,
+      detail: `Port ${agent.port}`,
+      ...agentSlot(index, Math.max(1, agents.length)),
+	  });
+
+	    agentThreads.forEach((thread, threadIndex) => {
+      const threadID = threadNodeID(agent.agent_id, thread.id);
+      addNode({
+        id: threadID,
+        kind: "thread",
+        label: thread.id || "main",
+        status: thread.rate === "sleep" || thread.rate?.includes("h") ? "idle" : "running",
+        subtitle: `${thread.model || "model"} - ${thread.rate || "active"}`,
+        detail: thread.directive || "",
+        ...threadSlot(index, agents.length, threadIndex, agentThreads.length),
+      });
+      addEdge({
+        id: `owns:${agentID}:${threadID}`,
+        source: agentID,
+        target: threadID,
+        kind: "owns",
+        label: "thread",
+        status: "ok",
+      });
+      (thread.mcp_names || []).forEach((name) => {
+        if (isHiddenSystemTool(name)) return;
+        const connection = connectionForTool(name, connections);
+        if (connection) {
+        addEdge({
+          id: `mcp:${threadID}:${connectionNodeID(connection.id)}`,
+          source: threadID,
+          target: connectionNodeID(connection.id),
+          kind: "tool",
+          label: `${connection.app_slug} MCP`,
+          status: connection.status === "disabled" ? "warning" : "ok",
+          detail: `${connection.name || connection.app_name || connection.app_slug}\n${integrationMode} connection MCP`,
+        });
+        return;
+      }
+        if (!appNames.includes(name)) return;
+        addEdge({
+          id: `mcp:${threadID}:${appNodeID(name)}`,
+          source: threadID,
+          target: appNodeID(name),
+          kind: "tool",
+          label: `${name} MCP`,
+          status: "ok",
+        });
+      });
+	    });
+	  });
+
+	  subscriptions.forEach((sub, index) => {
+	    const sourceID = sub.app && appNames.includes(sub.app) ? appNodeID(sub.app) : "external:events";
+	    const targetAgent = agents.find((agent) => (agent.alias || "main") === (sub.target_agent_alias || "main") || agent.agent_id === sub.target_agent_id);
+	    const targetThread = targetAgent ? threadNodeID(targetAgent.agent_id, sub.thread_id || "main") : "";
+	    const badge = `sub ${shortText(sub.topic || "event", 18)}`;
+	    if (sub.app && appNames.includes(sub.app)) {
+	      const appInfo = environment.apps[sub.app];
+	      addNode({
+	        id: sourceID,
+	        kind: "app",
+	        label: sub.app,
+	        status: appInfo?.kind === "install" ? "running" : "unknown",
+	        subtitle: appInfo?.kind === "install" ? `install #${appInfo.install_id}` : appInfo?.kind || "app",
+	        badges: [badge],
+	      });
+	    } else {
+	      addNode({ id: sourceID, kind: "event", label: "events", status: "running", subtitle: "incoming", badges: [badge], x: 18, y: 50 });
+	    }
+	    if (!targetAgent || !targetThread) return;
+	    if (!nodes.has(targetThread)) {
+	      const agentIndex = Math.max(0, agents.findIndex((agent) => agent.agent_id === targetAgent.agent_id));
+	      addNode({
+	        id: targetThread,
+	        kind: "thread",
+	        label: sub.thread_id || "main",
+	        status: "idle",
+	        subtitle: "subscribed",
+	        ...threadSlot(agentIndex, Math.max(1, agents.length), index, Math.max(1, subscriptions.length)),
+	      });
+	      addEdge({
+	        id: `owns:${agentNodeID(targetAgent.agent_id)}:${targetThread}`,
+	        source: agentNodeID(targetAgent.agent_id),
+	        target: targetThread,
+	        kind: "owns",
+	        label: "thread",
+	        status: "ok",
+	      });
+	    }
+	    addEdge({
+	      id: subscriptionEdgeID(sourceID, targetThread, sub),
+	      source: sourceID,
+	      target: targetThread,
+	      kind: "event",
+	      status: sub.status === "active" ? "ok" : "warning",
+	      label: sub.topic || "event",
+	      detail: `${sub.name || sub.id}\n${sub.description || ""}\n${sub.subscription_id ? `row ${sub.subscription_id}` : sub.status}`,
+	    });
+	  });
+
+	  Object.entries(contexts).forEach(([key, context]) => {
+    const [agentID] = key.split(":");
+    const source = threadNodeID(Number(agentID), context.id || "main");
+    context.messages.forEach((message) => {
+      (message.tool_calls || []).forEach((call) => {
+        const tool = call.name || "";
+        if (isHiddenSystemTool(tool)) return;
+        const app = appForTool(tool, appNames);
+        const connection = connectionForTool(tool, connections);
+        const target = app ? appNodeID(app) : connection ? connectionNodeID(connection.id) : "";
+        if (!target) return;
+        addEdge({
+          id: `tool:${source}:${target}`,
+          source,
+          target,
+          kind: "tool",
+          label: tool,
+          status: "ok",
+          count: 1,
+          detail: `${tool}\n${shortText(summarizeValue(call.arguments), 320)}`,
+        });
+      });
+    });
+  });
+
+  const externalHosts = Array.from(new Set(topologyNetworkCalls.map((call) => call.host).filter(Boolean))).slice(0, 8);
+  externalHosts.forEach((host, index) => {
+    addNode({
+      id: externalNodeID(host),
+      kind: "external",
+      label: host,
+      status: "unknown",
+      subtitle: "outside",
+      detail: host,
+      ...externalSlot(index, externalHosts.length, 32),
+    });
+  });
+  connections.forEach((conn, index) => {
+    const id = connectionNodeID(conn.id);
+    addNode({
+      id,
+      kind: "external",
+      label: conn.name || conn.app_name || conn.app_slug,
+      status: connectionMapStatus(conn, integrationMode),
+      subtitle: connectionSubtitle(integrationMode),
+      detail: `${conn.app_slug} #${conn.id}\nIntegrations: ${integrationMode}`,
+      iconUrl: connectionIconUrl(conn),
+      ...externalSlot(index, connections.length, 50),
+    });
+  });
+
+  calls.forEach((call, index) => {
+    const mappedConnection = connectionForHost(call.host || "", connections);
+    const time = Date.parse(call.ts) || Date.now();
+    const target = externalNodeID(call.host || "outside");
+    const status = statusForCall(call);
+    if (mappedConnection) {
+      const connectionID = connectionNodeID(mappedConnection.id);
+      touchNodeActivity(connectionID, "boundary", time);
+      activity.push({
+        id: `call:${index}:${call.ts}`,
+        time,
+        source: connectionID,
+        target: connectionID,
+        label: `${call.method} ${mappedConnection.app_slug}`,
+        detail: `${callDisposition(call)} ${call.path}`,
+        status,
+      });
+      return;
+    }
+    if (!shouldShowNetworkCallOnMap(call, networkMode)) return;
+    addEdge({
+      id: `boundary:${boundaryPortID}:${target}`,
+      source: boundaryPortID,
+      target,
+      kind: "boundary",
+      status,
+      label: call.method,
+      count: (edges.get(`boundary:${boundaryPortID}:${target}`)?.count || 0) + 1,
+      lastActiveAt: time || undefined,
+      detail: `${call.method} ${call.host}${call.path}\n${callDisposition(call)} ${call.status || ""}`,
+    });
+    activity.push({
+      id: `call:${index}:${call.ts}`,
+      time,
+      source: boundaryPortID,
+      target,
+      label: `${call.method} ${call.host}`,
+      detail: `${callDisposition(call)} ${call.path}`,
+      status,
+    });
+  });
+
+  [...events]
+    .sort((a, b) => (Date.parse(a.time) || 0) - (Date.parse(b.time) || 0))
+    .forEach((event) => {
+    const time = Date.parse(event.time) || Date.now();
+    const threadID = threadNodeID(event.instance_id, event.thread_id || "main");
+    const data = event.data || {};
+    if (!nodes.has(threadID)) {
+      addNode({
+        id: threadID,
+        kind: "thread",
+        label: event.thread_id || "main",
+        status: "running",
+        subtitle: "live",
+      });
+    }
+    touchNodeActivity(threadID, telemetryActivityKind(event.type), time);
+    if (event.type === "thread.spawn") {
+      const spawned = String(data.thread_id || data.id || data.name || data.to || "");
+      if (spawned) {
+        const target = threadNodeID(event.instance_id, spawned);
+        addNode({
+          id: target,
+          kind: "thread",
+          label: spawned,
+          status: "running",
+          subtitle: "spawned",
+          detail: String(data.directive || ""),
+        });
+        touchNodeActivity(target, "message", time);
+        setThreadLatest(threadID, "message", `spawned ${spawned}`, time);
+        addEdge({
+          id: `spawn:${threadID}:${target}`,
+          source: threadID,
+          target,
+          kind: "message",
+          status: "running",
+          label: "spawn",
+          lastActiveAt: time,
+        });
+      }
+    }
+	    if (event.type === "event.received") {
+	      const snippet = eventSnippet(data);
+	      setThreadLatest(threadID, "event", snippet || "incoming event", time);
+	      const routed = subscriptionForDeliveredEvent(event, subscriptions, agents);
+	      if (routed) {
+	        const sourceID = routed.app && appNames.includes(routed.app) ? appNodeID(routed.app) : "external:events";
+	        touchNodeActivity(sourceID, "event", time);
+	        addEdge({
+	          id: subscriptionEdgeID(sourceID, threadID, routed),
+	          source: sourceID,
+	          target: threadID,
+	          kind: "event",
+	          status: "running",
+	          label: snippet || routed.topic || "event",
+	          lastActiveAt: time,
+	          detail: snippet ? `${routed.app}.${routed.topic}\n${snippet}` : `${routed.app}.${routed.topic}`,
+	        });
+	      } else {
+	        addNode({ id: "external:events", kind: "event", label: "events", status: "running", subtitle: "incoming", x: 18, y: 50 });
+	        addEdge({
+	          id: `event:external:events:${threadID}`,
+	          source: "external:events",
+	          target: threadID,
+	          kind: "event",
+	          status: "running",
+	          label: snippet || "event",
+	          lastActiveAt: time,
+	          detail: snippet ? `event\n${snippet}` : "event",
+	        });
+	      }
+	    }
+    if (event.type === "tool.call" || event.type === "tool.result") {
+      const tool = String(data.name || data.tool || "");
+      if (isHiddenSystemTool(tool)) {
+        const activityItem = activityFromTelemetry(event, appNames, connections);
+        if (activityItem) activity.push(activityItem);
+        return;
+      }
+      const app = appForTool(tool, appNames);
+      const connection = connectionForTool(tool, connections);
+      const targetID = app ? appNodeID(app) : connection ? connectionNodeID(connection.id) : "";
+      const isResult = event.type === "tool.result";
+      setThreadLatest(
+        threadID,
+        isResult ? (data.is_error ? "error" : "result") : "tool",
+        isResult ? (data.is_error ? `${shortToolName(tool)} failed` : `${shortToolName(tool)} ok`) : shortToolName(tool),
+        time,
+      );
+      if (targetID) {
+        const edgeID = `tool:${threadID}:${targetID}`;
+        addEdge({
+          id: edgeID,
+          source: threadID,
+          target: targetID,
+          kind: "tool",
+          status: isResult && data.is_error ? "error" : "running",
+          label: isResult ? `${tool} result` : tool,
+          count: (edges.get(edgeID)?.count || 0) + 1,
+          lastActiveAt: time,
+          packetDirection: isResult ? "reverse" : "forward",
+          detail: isResult ? `${tool} result` : tool,
+        });
+      }
+    }
+    if (event.type === "llm.tool_chunk") {
+      const key = toolChunkKey(threadID, data);
+      const detectedTool = toolNameFromTelemetry(data, appNames, connections);
+      const tool = detectedTool || streamingToolByCall.get(key) || "";
+      if (isHiddenSystemTool(tool)) {
+        const activityItem = activityFromTelemetry(event, appNames, connections);
+        if (activityItem) activity.push(activityItem);
+        return;
+      }
+      if (detectedTool) streamingToolByCall.set(key, detectedTool);
+      setThreadLatest(threadID, "tool", tool ? `preparing ${shortToolName(tool)}` : "preparing tool call", time);
+      const app = appForTool(tool, appNames);
+      const connection = connectionForTool(tool, connections);
+      const targetID = app ? appNodeID(app) : connection ? connectionNodeID(connection.id) : "";
+      if (targetID) {
+        addEdge({
+          id: `tool:${threadID}:${targetID}`,
+          source: threadID,
+          target: targetID,
+          kind: "tool",
+          status: "running",
+          label: tool,
+          softActiveAt: time,
+          detail: tool ? `preparing ${tool}` : "preparing tool call",
+        });
+      }
+    }
+    if (event.type === "llm.start") {
+      setThreadLatest(threadID, "thinking", "thinking", time);
+    }
+    if (event.type === "llm.thinking" && data.text) {
+      appendThreadStream(threadID, "thinking", data, time);
+    }
+    if (event.type === "llm.chunk" && data.text) {
+      appendThreadStream(threadID, "message", data, time);
+    }
+    if (event.type === "llm.done") {
+      const finalMessage = String(data.message || data.summary || "");
+      if (finalMessage) setThreadLatest(threadID, "message", finalMessage, time);
+    }
+    if (event.type === "llm.error") {
+      setThreadLatest(threadID, "error", String(data.error || data.message || "LLM error"), time);
+    }
+    if (event.type === "thread.message") {
+      setThreadLatest(threadID, "message", String(data.message || data.text || "thread message"), time);
+    }
+    const activityItem = activityFromTelemetry(event, appNames, connections);
+    if (activityItem) activity.push(activityItem);
+  });
+
+  [...appBusEvents]
+    .sort((a, b) => (Date.parse(a.time) || 0) - (Date.parse(b.time) || 0))
+    .forEach((event) => {
+      const sourceName = event.app;
+      if (!sourceName || !appNames.includes(sourceName)) return;
+      const time = Date.parse(event.time) || Date.now();
+      const sourceID = appNodeID(sourceName);
+      const dependents = appNames.filter((name) =>
+        Object.values(environment.apps[name]?.bindings || {}).some((installID) => Number(installID) === Number(event.install_id)),
+      );
+	      touchNodeActivity(sourceID, "event", time);
+	      const detail = appBusEventDetail(event);
+	      subscriptions
+	        .filter((sub) => sub.app === sourceName && topicMatches(sub.topic || "", event.topic || ""))
+	        .forEach((sub) => {
+	          const targetAgent = agents.find((agent) => (agent.alias || "main") === (sub.target_agent_alias || "main") || agent.agent_id === sub.target_agent_id);
+	          const targetThread = targetAgent ? threadNodeID(targetAgent.agent_id, sub.thread_id || "main") : "";
+	          if (!targetThread) return;
+	          const edgeID = subscriptionEdgeID(sourceID, targetThread, sub);
+	          addEdge({
+	            id: edgeID,
+	            source: sourceID,
+	            target: targetThread,
+	            kind: "event",
+	            status: "running",
+	            label: event.topic || sub.topic || "app event",
+	            count: (edges.get(edgeID)?.count || 0) + 1,
+	            lastActiveAt: time,
+	            detail,
+	          });
+	        });
+	      if (dependents.length === 0) {
+        activity.push({
+          id: `appbus:${event.app}:${event.seq}`,
+          time,
+          source: sourceID,
+          label: event.topic || "app event",
+          detail,
+          status: "ok",
+        });
+        return;
+      }
+      dependents.forEach((targetName) => {
+        const targetID = appNodeID(targetName);
+        touchNodeActivity(targetID, "event", time);
+        const edgeID = `appdep:${targetID}:${sourceID}`;
+        addEdge({
+          id: edgeID,
+          source: targetID,
+          target: sourceID,
+          kind: "event",
+          status: "running",
+          label: event.topic || "app event",
+          count: (edges.get(edgeID)?.count || 0) + 1,
+          lastActiveAt: time,
+          packetDirection: "reverse",
+          detail,
+        });
+        activity.push({
+          id: `appbus:${event.app}:${event.seq}:${targetName}`,
+          time,
+          source: sourceID,
+          target: targetID,
+          label: event.topic || "app event",
+          detail,
+          status: "ok",
+        });
+      });
+    });
+
+  return {
+    nodes: Array.from(nodes.values()),
+    edges: Array.from(edges.values()),
+    activity: activity.sort((a, b) => a.time - b.time).slice(-80),
+    stats: [
+      { label: "agents", value: agents.length },
+      { label: "apps", value: appNames.length },
+	      { label: "threads", value: Object.values(threadsByAgent).reduce((n, list) => n + list.length, 0) },
+	      { label: "subscriptions", value: subscriptions.length },
+	      { label: "calls", value: calls.length },
+      { label: "network", value: networkMode },
+      { label: "integrations", value: integrationMode },
+    ],
+  };
+}
+
+function appSlot(index: number, total: number, hasAgents: boolean) {
+  if (!hasAgents && total <= 1) return { x: 38, y: 43 };
+  if (!hasAgents) return gridSlot(index, total, 16, 84, 36, 10, 7);
+  if (total <= 1) return { x: 30, y: 76 };
+  return gridSlot(index, total, 14, 86, 58, 9, 7);
+}
+
+function agentSlot(index: number, total: number) {
+  if (total <= 1) return { x: 57, y: 34 };
+  return gridSlot(index, total, 20, 80, 25, 18, 4);
+}
+
+function gridSlot(index: number, total: number, leftX: number, rightX: number, startY: number, rowStep: number, maxColumns: number) {
+  if (total <= 1) return { x: (leftX + rightX) / 2, y: startY };
+  const columns = layoutColumns(total, maxColumns);
+  const col = index % columns;
+  const row = Math.floor(index / columns);
+  const rowItems = Math.min(columns, total - row * columns);
+  const rowLeft = rowItems === columns ? leftX : leftX + ((columns - rowItems) * (rightX - leftX)) / Math.max(1, columns - 1) / 2;
+  const rowRight = rowItems === columns ? rightX : rightX - ((columns - rowItems) * (rightX - leftX)) / Math.max(1, columns - 1) / 2;
+  const x = rowItems <= 1 ? (leftX + rightX) / 2 : rowLeft + (col * (rowRight - rowLeft)) / Math.max(1, rowItems - 1);
+  const y = startY + row * rowStep;
+  return { x, y };
+}
+
+function externalSlot(index: number, total: number, centerY: number) {
+  if (total <= 1) return { x: 114, y: centerY };
+  const span = Math.min(96, Math.max(34, (total - 1) * 8));
+  const start = Math.max(10, centerY - span / 2);
+  return { x: 114, y: start + (index * span) / Math.max(1, total - 1) };
+}
+
+function layoutColumns(total: number, maxColumns: number) {
+  if (total <= 0) return 1;
+  if (total <= 2) return total;
+  if (total <= 4) return total;
+  if (total <= 8) return Math.min(total, 4);
+  if (total <= 14) return Math.min(total, 5);
+  if (total <= 24) return Math.min(total, 6);
+  return Math.min(total, maxColumns);
+}
+
+function threadSlot(agentIndex: number, agentCount: number, threadIndex: number, threadCount: number) {
+  const baseX = agentCount <= 1 ? 68 : 38 + (agentIndex * 42) / Math.max(1, agentCount - 1);
+  const offset = threadCount <= 1 ? 0 : (threadIndex - (threadCount - 1) / 2) * 9;
+  return { x: Math.max(28, Math.min(82, baseX + offset)), y: 54 + (threadIndex % 3) * 10 };
+}
+
+function agentNodeID(id: number) {
+  return `agent:${id}`;
+}
+
+function threadNodeID(agentID: number, threadID: string) {
+  return `thread:${agentID}:${threadID || "main"}`;
+}
+
+function appNodeID(name: string) {
+  return `app:${name}`;
+}
+
+function externalNodeID(name: string) {
+  return `external:${name}`;
+}
+
+function connectionNodeID(id: number) {
+  return `external:connection:${id}`;
+}
+
+function subscriptionEdgeID(sourceID: string, targetThreadID: string, sub: EnvironmentSubscriptionInfo): string {
+  return `subscription:${sourceID}:${targetThreadID}:${sub.id || `${sub.app}:${sub.topic}`}`;
+}
+
+function mergeBadges(a?: string[], b?: string[]): string[] | undefined {
+  const merged = [...(a || []), ...(b || [])].filter(Boolean);
+  if (merged.length === 0) return undefined;
+  return Array.from(new Set(merged));
+}
+
+function subscriptionForDeliveredEvent(
+  event: TelemetryEvent,
+  subscriptions: EnvironmentSubscriptionInfo[],
+  agents: EnvironmentAgentStatus[],
+): EnvironmentSubscriptionInfo | null {
+  const delivered = parseDeliveredAppEvent(event);
+  if (!delivered) return null;
+  const threadID = event.thread_id || "main";
+  return subscriptions.find((sub) => {
+    if (sub.app !== delivered.app || !topicMatches(sub.topic || "", delivered.topic)) return false;
+    if ((sub.thread_id || "main") !== threadID) return false;
+    const target = agents.find((agent) => agent.agent_id === event.instance_id);
+    if (!target) return sub.target_agent_id === event.instance_id;
+    return (sub.target_agent_alias || "main") === (target.alias || "main") || sub.target_agent_id === target.agent_id;
+  }) || null;
+}
+
+function parseDeliveredAppEvent(event: TelemetryEvent): { app: string; topic: string } | null {
+  const candidates = [
+    String((event.data || {}).source || ""),
+    String((event.data || {}).message || ""),
+    String((event.data || {}).text || ""),
+    String((event.data || {}).event || ""),
+  ];
+  for (const value of candidates) {
+    const match = value.match(/\[app:([^:\]]+):([^\]]+)\]/);
+    if (match) return { app: match[1], topic: match[2] };
+  }
+  return null;
+}
+
+function topicMatches(pattern: string, topic: string): boolean {
+  if (!pattern || !topic) return false;
+  if (pattern === topic || pattern === "*") return true;
+  if (pattern.endsWith("*")) return topic.startsWith(pattern.slice(0, -1));
+  return false;
+}
+
+function appForTool(tool: string, appNames: string[]): string | null {
+  if (!tool) return null;
+  return appNames.find((name) => tool === name || tool.startsWith(`${name}_`) || tool.startsWith(`${name}.`)) || null;
+}
+
+const hiddenSystemTools = new Set(["pace", "done", "channels_respond", "channels_status"]);
+
+function isHiddenSystemTool(tool: string): boolean {
+  const normalized = String(tool || "").trim().toLowerCase();
+  return !!normalized && (hiddenSystemTools.has(normalized) || normalized.startsWith("channels_"));
+}
+
+function connectionForTool(tool: string, connections: EnvironmentConnectionInfo[]): EnvironmentConnectionInfo | null {
+  if (!tool) return null;
+  const normalizedTool = normalizeToolToken(tool);
+  return connections.find((conn) => {
+    const aliases = [conn.app_slug, conn.app_name, conn.name].map(normalizeToolToken).filter(Boolean);
+    return aliases.some((alias) => normalizedTool === alias || normalizedTool.startsWith(`${alias}_`) || normalizedTool.startsWith(`${alias}.`));
+  }) || null;
+}
+
+function connectionForHost(host: string, connections: EnvironmentConnectionInfo[]): EnvironmentConnectionInfo | null {
+  if (!host) return null;
+  const compactHost = compactToken(host);
+  return connections.find((conn) => {
+    const aliases = [conn.app_slug, conn.app_name, conn.name].map(compactToken).filter(Boolean);
+    return aliases.some((alias) => alias.length >= 3 && compactHost.includes(alias));
+  }) || null;
+}
+
+function environmentNetworkMode(environment: EnvironmentSummary): string {
+  const explicit = String(environment.network_mode || "").trim();
+  if (explicit) return explicit;
+  const legacy = String(environment.mode || "").trim();
+  return legacy === "mock" || !legacy ? "passthrough" : legacy;
+}
+
+function environmentIntegrationMode(environment: EnvironmentSummary): string {
+  const explicit = String(environment.integration_mode || "").trim();
+  if (explicit) return explicit;
+  return "mock";
+}
+
+function connectionMapStatus(conn: EnvironmentConnectionInfo, mode: string): SystemMapStatus {
+  if (conn.status === "disabled") return "warning";
+  if (mode === "mock") return "mocked";
+  return "ok";
+}
+
+function connectionSubtitle(mode: string): string {
+  if (mode === "mock") return "mocked";
+  if (mode === "real") return "real";
+  return mode || "connection";
+}
+
+function connectionIconUrl(conn: EnvironmentConnectionInfo): string | undefined {
+  if (conn.logo) return conn.logo;
+  if (normalizeToolToken(conn.app_slug) === "pushover") return "https://www.google.com/s2/favicons?domain=pushover.net&sz=128";
+  return undefined;
+}
+
+function normalizeToolToken(value: string | undefined): string {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+function compactToken(value: string | undefined): string {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function toolChunkKey(threadID: string, data: Record<string, unknown>): string {
+  return `${threadID}:${String(data.id || data.call_id || data.tool_call_id || data.index || "latest")}`;
+}
+
+function toolNameFromTelemetry(data: Record<string, unknown>, appNames: string[], connections: EnvironmentConnectionInfo[]): string {
+  const nestedFunction = data.function && typeof data.function === "object" ? (data.function as Record<string, unknown>) : undefined;
+  const candidates = [
+    data.tool,
+    data.name,
+    data.tool_name,
+    data.function_name,
+    nestedFunction?.name,
+  ];
+  for (const candidate of candidates) {
+    const tool = String(candidate || "");
+    if (isHiddenSystemTool(tool)) continue;
+    if (appForTool(tool, appNames) || connectionForTool(tool, connections)) return tool;
+  }
+  const chunkTool = toolNameFromText(String(data.chunk || data.delta || data.text || ""), appNames, connections);
+  return chunkTool || "";
+}
+
+function toolNameFromText(text: string, appNames: string[], connections: EnvironmentConnectionInfo[]): string {
+  if (!text) return "";
+  const aliases = [...appNames, ...connections.flatMap((conn) => [conn.app_slug, conn.app_name, conn.name])].filter(Boolean);
+  for (const alias of aliases) {
+    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = text.match(new RegExp(`["']?(${escaped}[_.][A-Za-z0-9_.:-]+)["']?`));
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function statusForCall(call: InterceptedCall): SystemMapStatus {
+  if (call.blocked) return "blocked";
+  if (call.mocked) return "mocked";
+  if (call.status >= 400) return "error";
+  if (call.allowed || call.recorded) return "ok";
+  return "unknown";
+}
+
+function callDisposition(call: InterceptedCall): string {
+  if (call.mocked) return "mocked";
+  if (call.blocked) return "blocked";
+  if (call.recorded) return "recorded";
+  if (call.allowed) return "allowed";
+  return "seen";
+}
+
+function shouldShowNetworkCallOnMap(call: InterceptedCall, networkMode: string): boolean {
+  if (call.blocked || call.mocked || call.recorded) return true;
+  if ((call.status || 0) >= 400) return true;
+  return networkMode !== "passthrough" && !call.allowed;
+}
+
+function latestNodeActivity(
+  current: SystemMapNode["latest"] | undefined,
+  next: SystemMapNode["latest"] | undefined,
+): SystemMapNode["latest"] | undefined {
+  if (!next?.text) return current;
+  if (!current?.text) return next;
+  return (next.time || 0) >= (current.time || 0) ? next : current;
+}
+
+function shortToolName(tool: string): string {
+  const compact = String(tool || "tool").trim();
+  if (!compact) return "tool";
+  const parts = compact.split(/[_.]/).filter(Boolean);
+  if (parts.length >= 2) return parts.slice(1).join("_");
+  return compact;
+}
+
+function eventSnippet(data: Record<string, unknown>): string {
+  const candidate =
+    data.message ||
+    data.text ||
+    data.event ||
+    data.payload ||
+    data.input ||
+    data.body ||
+    data;
+  return shortText(summarizeValue(candidate), 42);
+}
+
+function appBusEventKey(event: EnvironmentAppBusEvent): string {
+  return `${event.app}:${event.project_id}:${event.seq}:${event.topic}`;
+}
+
+function appBusEventDetail(event: EnvironmentAppBusEvent): string {
+  const snippet = shortText(summarizeValue(event.data), 140);
+  return snippet ? `${event.app}.${event.topic}\n${snippet}` : `${event.app}.${event.topic}`;
+}
+
+function telemetryActivityKind(type: string): SystemMapEdgeKind {
+  if (type === "event.received") return "event";
+  if (type === "tool.call" || type === "tool.result") return "tool";
+  if (type === "thread.spawn" || type === "thread.message") return "message";
+  if (type.startsWith("llm.") || type.includes("chunk") || type.includes("delta")) return "message";
+  return "message";
+}
+
+function activityFromTelemetry(event: TelemetryEvent, appNames: string[], connections: EnvironmentConnectionInfo[]): SystemMapActivity | null {
+  const data = event.data || {};
+  const time = Date.parse(event.time) || Date.now();
+  const thread = event.thread_id || "main";
+  const targetThread = threadNodeID(event.instance_id, thread);
+  switch (event.type) {
+    case "tool.call": {
+      const tool = String(data.name || data.tool || "tool");
+      if (isHiddenSystemTool(tool)) return null;
+      const app = appForTool(tool, appNames);
+      const connection = connectionForTool(tool, connections);
+      return {
+        id: event.id || `${time}:tool.call:${tool}`,
+        time,
+        source: targetThread,
+        target: app ? appNodeID(app) : connection ? connectionNodeID(connection.id) : undefined,
+        label: tool,
+        detail: shortText(summarizeValue(data.args || data.arguments || data.reason), 180),
+        status: "running",
+      };
+    }
+    case "tool.result": {
+      const tool = String(data.name || data.tool || "tool");
+      if (isHiddenSystemTool(tool)) return null;
+      const app = appForTool(tool, appNames);
+      const connection = connectionForTool(tool, connections);
+      return {
+        id: event.id || `${time}:tool.result:${tool}`,
+        time,
+        source: app ? appNodeID(app) : connection ? connectionNodeID(connection.id) : undefined,
+        target: targetThread,
+        label: `${tool} result`,
+        detail: data.is_error ? shortText(String(data.error || data.message || ""), 180) : "completed",
+        status: data.is_error ? "error" : "ok",
+      };
+    }
+    case "thread.spawn":
+      return {
+        id: event.id || `${time}:thread.spawn`,
+        time,
+        source: targetThread,
+        target: threadNodeID(event.instance_id, String(data.thread_id || data.id || data.name || "")),
+        label: "spawned thread",
+        detail: String(data.thread_id || data.id || data.name || ""),
+        status: "running",
+      };
+    case "thread.message":
+      return {
+        id: event.id || `${time}:thread.message`,
+        time,
+        source: targetThread,
+        label: "thread message",
+        detail: shortText(String(data.message || data.text || ""), 180),
+        status: "ok",
+      };
+    case "event.received":
+      return {
+        id: event.id || `${time}:event.received`,
+        time,
+        source: "external:events",
+        target: targetThread,
+        label: "incoming event",
+        detail: eventSnippet(data),
+        status: "running",
+      };
+    case "llm.done":
+      return {
+        id: event.id || `${time}:llm.done`,
+        time,
+        source: targetThread,
+        label: "reasoning step",
+        detail: String(data.model || ""),
+        status: "ok",
+      };
+    case "error":
+    case "llm.error":
+      return {
+        id: event.id || `${time}:error`,
+        time,
+        source: targetThread,
+        label: "error",
+        detail: shortText(String(data.error || data.message || ""), 180),
+        status: "error",
+      };
+    default:
+      return null;
+  }
 }
 
 function telemetrySummary(event: TelemetryEvent): string {

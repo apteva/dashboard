@@ -17,6 +17,7 @@ import { Connect } from "./pages/Connect";
 import { Onboarding } from "./pages/Onboarding";
 import { Dashboard } from "./pages/Dashboard";
 import { Chat } from "./pages/Chat";
+import { Activity } from "./pages/Activity";
 import { Agents } from "./pages/Agents";
 import { Agent } from "./pages/Agent";
 import { AgentNew } from "./pages/AgentNew";
@@ -25,7 +26,7 @@ import { Analytics } from "./pages/Analytics";
 import { Settings } from "./pages/Settings";
 import { Apps } from "./pages/Apps";
 import { Skills } from "./pages/Skills";
-import { Environments } from "./pages/Environments";
+import { EnvironmentDetail, Environments } from "./pages/Environments";
 import { AppProjectPage } from "./pages/AppProjectPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -86,6 +87,7 @@ export default function App() {
           >
             <Route path="/" element={<Dashboard />} />
             <Route path="/agents" element={<Agents />} />
+            <Route path="/activity" element={<Activity />} />
             <Route path="/agents/new" element={<AgentNew />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/chat/:chatId" element={<Chat />} />
@@ -101,6 +103,7 @@ export default function App() {
             <Route path="/apps" element={<Apps />} />
             <Route path="/skills" element={<Skills />} />
             <Route path="/environments" element={<Environments />} />
+            <Route path="/environments/:id" element={<EnvironmentDetail />} />
             {/* Generic per-app project-level page. The project.page
                 slot of any installed app's manifest gets rendered here.
                 One route serves every app — :name in the URL picks

@@ -503,7 +503,9 @@ function SkillAssignments({ skill }: { skill: Skill }) {
 
   const summary = useMemo(() => {
     const total = instances.length;
-    const assigned = Object.values(byInstance).filter(Boolean).length;
+    const assigned = Object.values(byInstance).filter(
+      (r) => r && r.status !== "missing",
+    ).length;
     const stale = Object.values(byInstance).filter((r) => r?.status === "stale").length;
     return { total, assigned, stale };
   }, [instances, byInstance]);
@@ -528,7 +530,7 @@ function SkillAssignments({ skill }: { skill: Skill }) {
           <ul className="divide-y divide-border">
             {instances.map((inst) => {
               const assignment = byInstance[inst.id];
-              const assigned = !!assignment;
+              const assigned = !!assignment && assignment.status !== "missing";
               const busy = busyInstanceID === inst.id;
               return (
                 <li
@@ -548,7 +550,7 @@ function SkillAssignments({ skill }: { skill: Skill }) {
                   <span className="text-text-dim text-[10px] uppercase tracking-wide">
                     {inst.status}
                   </span>
-                  {assigned && assignment && (
+                  {assignment && (
                     <StatusPill status={assignment.status} />
                   )}
                 </li>

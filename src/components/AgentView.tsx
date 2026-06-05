@@ -1545,10 +1545,10 @@ function CapabilitiesManager({
   );
   const integrationRows = inventoryProp
     .filter((row) => row.source !== "app" && row.source !== "custom")
-    .sort((a, b) => displayMCPName(a).localeCompare(displayMCPName(b)));
+    .sort((a, b) => compareMCPRowsByAttachment(a, b, attachedKeys));
   const customRows = inventoryProp
     .filter((row) => row.source === "custom")
-    .sort((a, b) => displayMCPName(a).localeCompare(displayMCPName(b)));
+    .sort((a, b) => compareMCPRowsByAttachment(a, b, attachedKeys));
   const orphanAppRows = inventoryProp
     .filter((row) => row.source === "app" && !matchedAppInventoryIDs.has(row.id))
     .sort((a, b) => displayMCPName(a).localeCompare(displayMCPName(b)));
@@ -1633,7 +1633,7 @@ function CapabilitiesManager({
       </CapabilitySection>
 
       <CapabilitySection
-        title={`Integrations — ${integrationRows.filter((row) => attachedNames.has(mcpName(row))).length}/${integrationRows.length} attached`}
+        title={`Integrations — ${integrationRows.filter((row) => mcpRowIsAttached(attachedKeys, row)).length}/${integrationRows.length} attached`}
         hint="OAuth and integration-backed MCP servers"
       >
         {integrationRows.length === 0 && (
@@ -1641,7 +1641,8 @@ function CapabilitiesManager({
         )}
         {integrationRows.map((row) => {
           const name = mcpName(row);
-          const enabled = attachedNames.has(name);
+          const aliases = mcpCapabilityAliases(row);
+          const enabled = capabilityIsAttached(attachedKeys, aliases);
           return (
             <CapabilityToggleRow
               key={`integration:${row.id}`}
@@ -1651,14 +1652,14 @@ function CapabilitiesManager({
               enabled={enabled}
               disabled={!configFromInventory(row)}
               busy={busyKey === `mcp:${name}`}
-              onToggle={() => enabled ? detachName(name) : attachInventory(row)}
+              onToggle={() => enabled ? detachName(name, aliases) : attachInventory(row, aliases)}
             />
           );
         })}
       </CapabilitySection>
 
       <CapabilitySection
-        title={`Custom MCP Servers — ${customRows.filter((row) => attachedNames.has(mcpName(row))).length}/${customRows.length} attached`}
+        title={`Custom MCP Servers — ${customRows.filter((row) => mcpRowIsAttached(attachedKeys, row)).length}/${customRows.length} attached`}
         hint="Manually registered servers"
       >
         {customRows.length === 0 && (
@@ -1666,7 +1667,8 @@ function CapabilitiesManager({
         )}
         {customRows.map((row) => {
           const name = mcpName(row);
-          const enabled = attachedNames.has(name);
+          const aliases = mcpCapabilityAliases(row);
+          const enabled = capabilityIsAttached(attachedKeys, aliases);
           return (
             <CapabilityToggleRow
               key={`custom:${row.id}`}
@@ -1676,7 +1678,7 @@ function CapabilitiesManager({
               enabled={enabled}
               disabled={!configFromInventory(row)}
               busy={busyKey === `mcp:${name}`}
-              onToggle={() => enabled ? detachName(name) : attachInventory(row)}
+              onToggle={() => enabled ? detachName(name, aliases) : attachInventory(row, aliases)}
             />
           );
         })}
@@ -1935,6 +1937,20 @@ function capabilityIsAttached(attachedKeys: Set<string>, aliases: string[]): boo
   return aliases.some((alias) => attachedKeys.has(capabilityKey(alias)));
 }
 
+function mcpRowIsAttached(attachedKeys: Set<string>, row: MCPServer): boolean {
+  return capabilityIsAttached(attachedKeys, mcpCapabilityAliases(row));
+}
+
+function compareMCPRowsByAttachment(a: MCPServer, b: MCPServer, attachedKeys: Set<string>): number {
+  const aAttached = mcpRowIsAttached(attachedKeys, a);
+  const bAttached = mcpRowIsAttached(attachedKeys, b);
+  if (aAttached !== bAttached) return aAttached ? -1 : 1;
+  const aActive = a.status === "running" || a.status === "reachable";
+  const bActive = b.status === "running" || b.status === "reachable";
+  if (aActive !== bActive) return aActive ? -1 : 1;
+  return displayMCPName(a).localeCompare(displayMCPName(b));
+}
+
 function removeAttachedByAliases(servers: MCPServerConfig[], aliases: string[]): MCPServerConfig[] {
   const keys = new Set(aliases.map(capabilityKey).filter(Boolean));
   return servers.filter((server) => !attachedMCPAliases(server).some((alias) => keys.has(capabilityKey(alias))));
@@ -2046,6 +2062,7 @@ function CapabilityShelf({
   const custom = inventory
     .filter((row) => row.source !== "app")
     .filter((row) => !["channels", "apteva-channels", "apteva-server"].includes(mcpName(row)))
+    .sort((a, b) => compareMCPRowsByAttachment(a, b, attachedKeys))
     .slice(0, 4);
 
   const toggleInventory = async (row: MCPServer, enabled: boolean, aliases?: string[]) => {
@@ -2140,7 +2157,8 @@ function CapabilityShelf({
           <CapabilityGroup title="MCPs">
             {custom.map((row) => {
               const rowName = mcpName(row);
-              const checked = names.has(rowName);
+              const aliases = mcpCapabilityAliases(row);
+              const checked = capabilityIsAttached(attachedKeys, aliases);
               return (
                 <CapabilityRow
                   key={row.id}
@@ -2150,7 +2168,7 @@ function CapabilityShelf({
                   active={row.status === "running" || row.status === "reachable"}
                   disabled={!configFromInventory(row)}
                   busy={busyName === rowName}
-                  onClick={() => toggleInventory(row, checked)}
+                  onClick={() => toggleInventory(row, checked, aliases)}
                 />
               );
             })}

@@ -755,6 +755,7 @@ export interface EnvironmentAppInfo {
   data_dir: string;
   kind?: "legacy" | "install";
   install_id?: number;
+  bindings?: Record<string, number>;
 }
 
 export interface EnvironmentConnectionInfo {
@@ -764,16 +765,24 @@ export interface EnvironmentConnectionInfo {
   name: string;
   status: string;
   project_id: string;
+  logo?: string;
 }
 
 export interface EnvironmentSummary {
   id: string;
   project_id: string;
-  mode: string; // block | passthrough | mock | record | replay
+  mode: string; // legacy alias for network_mode
+  network_mode?: string; // block | passthrough | record | replay
+  integration_mode?: string; // mock | real
+  status?: string;
+  persisted?: boolean;
+  ephemeral?: boolean;
+  error_message?: string;
   proxy_url: string;
   apps: Record<string, EnvironmentAppInfo>;
   connections?: EnvironmentConnectionInfo[];
   agents?: EnvironmentAgentStatus[];
+  subscriptions?: EnvironmentSubscriptionInfo[];
 }
 
 export interface EnvironmentAgentStatus {
@@ -781,8 +790,29 @@ export interface EnvironmentAgentStatus {
   source_agent_id?: number;
   source_name?: string;
   alias?: string;
+  status?: string;
   port: number;
   created_at?: string;
+}
+
+export interface EnvironmentSubscriptionSpec {
+  id?: string;
+  source?: "app_event";
+  app: string;
+  topic: string;
+  target_agent_alias?: string;
+  thread_id?: string;
+  name?: string;
+  description?: string;
+  enabled?: boolean;
+}
+
+export interface EnvironmentSubscriptionInfo extends EnvironmentSubscriptionSpec {
+  id: string;
+  subscription_id?: string;
+  target_agent_id?: number;
+  status: "active" | "pending" | "waiting_for_agent" | "disabled" | "error" | string;
+  error?: string;
 }
 
 // One outbound call the Environment edge classified — the raw material for edge
@@ -833,16 +863,23 @@ export interface CreateEnvironmentBody {
   app_install_ids?: number[];
   connection_ids?: number[];
   mode?: string;
+  network_mode?: string;
+  integration_mode?: string;
   allow_suffixes?: string[];
   integration_fixtures?: Array<{ app: string; tool: string; status?: number; data: any }>;
+  subscriptions?: EnvironmentSubscriptionSpec[];
   seed_plan?: Array<{ app: string; tool: string; input: Record<string, any> }>;
   snapshot_id?: string;
+  ephemeral?: boolean;
+  autostart?: boolean;
 }
 
 export const environments = {
   list: () => request<EnvironmentSummary[]>("GET", "/environments"),
   create: (body: CreateEnvironmentBody) => request<EnvironmentSummary>("POST", "/environments", body),
   get: (id: string) => request<EnvironmentSummary>("GET", `/environments/${encodeURIComponent(id)}`),
+  start: (id: string) => request<EnvironmentSummary>("POST", `/environments/${encodeURIComponent(id)}/start`, {}),
+  stop: (id: string) => request<EnvironmentSummary | { stopped: boolean }>("POST", `/environments/${encodeURIComponent(id)}/stop`, {}),
   destroy: (id: string) => request<{ destroyed: string }>("DELETE", `/environments/${encodeURIComponent(id)}`),
   calls: (id: string) => request<InterceptedCall[]>("GET", `/environments/${encodeURIComponent(id)}/calls`),
   assert: (id: string, body: { assertions: EnvironmentAssertion[]; tool_sequence?: string[] }) =>
@@ -863,6 +900,8 @@ export const environments = {
     request<EnvironmentAgentStatus>("GET", `/environments/${encodeURIComponent(id)}/agent`),
   agent: (id: string, agentId: number | string) =>
     request<EnvironmentAgentStatus>("GET", `/environments/${encodeURIComponent(id)}/agents/${encodeURIComponent(String(agentId))}`),
+  agentThreads: (id: string, agentId: number | string) =>
+    request<Thread[]>("GET", `/environments/${encodeURIComponent(id)}/agents/${encodeURIComponent(String(agentId))}/threads`),
   sendAgentEvent: (id: string, body: { message: string; thread_id?: string }, agentId?: number | string) =>
     request<{ status: string; thread_id: string }>(
       "POST",
@@ -870,6 +909,15 @@ export const environments = {
         ? `/environments/${encodeURIComponent(id)}/agent/event`
         : `/environments/${encodeURIComponent(id)}/agents/${encodeURIComponent(String(agentId))}/event`,
       body,
+    ),
+  subscriptions: (id: string) =>
+    request<EnvironmentSubscriptionInfo[]>("GET", `/environments/${encodeURIComponent(id)}/subscriptions`),
+  createSubscription: (id: string, body: EnvironmentSubscriptionSpec) =>
+    request<EnvironmentSubscriptionInfo[]>("POST", `/environments/${encodeURIComponent(id)}/subscriptions`, body),
+  deleteSubscription: (id: string, subscriptionID: string) =>
+    request<{ deleted: string }>(
+      "DELETE",
+      `/environments/${encodeURIComponent(id)}/subscriptions/${encodeURIComponent(subscriptionID)}`,
     ),
   agentContext: (id: string, threadId: string, agentId?: number | string) =>
     request<{
@@ -1873,6 +1921,10 @@ export interface SubscriptionInfo {
   notify_agent: boolean;
   events: string[];
   thread_id?: string;
+  project_id?: string;
+  external_webhook_id?: string;
+  source?: "webhook" | "app_event" | string;
+  last_seq_delivered?: number;
   created_at: string;
 }
 

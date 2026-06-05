@@ -168,6 +168,7 @@ export function Layout() {
   const primaryNav = [
     { to: "/", label: "Overview" },
     { to: "/agents", label: "Agents" },
+    { to: "/activity", label: "Activity" },
     { to: "/chat", label: "Chat" },
   ];
   const manageNav = [

@@ -2453,11 +2453,6 @@ function SubscriptionsTab() {
     load();
   };
 
-  const handleNotifyAgent = async (id: string, notifyAgent: boolean) => {
-    await subscriptions.setNotifyAgent(id, notifyAgent);
-    load();
-  };
-
   const [testingSub, setTestingSub] = useState<any | null>(null);
   const [testEvent, setTestEvent] = useState("");
   const [testPayload, setTestPayload] = useState("{}");
@@ -2550,20 +2545,6 @@ function SubscriptionsTab() {
                   <dt className="text-text-dim">Agent</dt>
                   <dd className="text-text">
                     {inst ? inst.name : <span className="text-text-dim">#{sub.instance_id} (not found)</span>}
-                  </dd>
-                  <dt className="text-text-dim">Agent notifications</dt>
-                  <dd>
-                    <label className="inline-flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={sub.notify_agent}
-                        onChange={(e) => handleNotifyAgent(sub.id, e.target.checked)}
-                        className="accent-accent"
-                      />
-                      <span className={sub.notify_agent ? "text-green" : "text-text-dim"}>
-                        {sub.notify_agent ? "on" : "off"}
-                      </span>
-                    </label>
                   </dd>
                   <dt className="text-text-dim">Events</dt>
                   <dd>
@@ -3104,9 +3085,9 @@ function SubscriptionsTab() {
                 className="mt-1 accent-accent"
               />
               <div>
-                <div className="text-text text-sm">Notify agent about this subscription</div>
+                <div className="text-text text-sm">Tell the agent about this subscription</div>
                 <p className="text-text-dim text-xs mt-0.5">
-                  Sends lifecycle updates and startup summaries to the target agent. Off by default.
+                  Optional agent context. The subscription stays active when this is unchecked.
                 </p>
               </div>
             </label>

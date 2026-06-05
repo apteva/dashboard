@@ -221,6 +221,132 @@ body {
    * media query equivalence the cascade enforces. */
   color-scheme: dark;
 }
+
+/* ─── System Map Motion ──────────────────────────────────────────
+ * Telemetry-driven only: packets and glows appear when a recent event
+ * updates an edge/node, without moving layout or refitting React Flow.
+ */
+.system-map-packet {
+  filter: drop-shadow(0 0 6px currentColor);
+  opacity: 0.95;
+}
+
+.system-map-flow .react-flow__node.selected,
+.system-map-flow .react-flow__node:focus,
+.system-map-flow .react-flow__node:focus-visible {
+  box-shadow: none;
+  outline: none;
+}
+
+.system-map-edge-label {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--border-strong), transparent 20%);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg), black 12%);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  white-space: nowrap;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.35),
+    0 4px 10px rgb(0 0 0 / 0.35);
+}
+
+.system-map-edge-label-active {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--info), transparent 35%);
+  animation: system-map-bubble 1.4s ease-out both;
+}
+
+.system-map-node-active,
+.system-map-node-tool,
+.system-map-node-event,
+.system-map-node-boundary {
+  animation: system-map-node-glow 1.6s ease-out both;
+}
+
+.system-map-node-tool {
+  box-shadow: 0 0 0 1px rgb(96 165 250 / 0.38), 0 0 18px rgb(96 165 250 / 0.18);
+}
+
+.system-map-node-event {
+  box-shadow: 0 0 0 1px rgb(34 211 238 / 0.38), 0 0 18px rgb(34 211 238 / 0.18);
+}
+
+.system-map-node-boundary {
+  box-shadow: 0 0 0 1px rgb(249 115 22 / 0.4), 0 0 20px rgb(249 115 22 / 0.18);
+}
+
+.system-map-thread-active {
+  border-color: rgb(96 165 250 / 0.52);
+  background:
+    linear-gradient(180deg, rgb(59 130 246 / 0.1), transparent 62%),
+    color-mix(in srgb, var(--bg), transparent 5%);
+  box-shadow:
+    0 0 0 1px rgb(96 165 250 / 0.24),
+    0 0 18px rgb(96 165 250 / 0.14);
+}
+
+.system-map-thread-live {
+  margin-left: auto;
+  flex-shrink: 0;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgb(147 197 253 / 0.28);
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: rgb(191 219 254 / 0.72);
+  background: rgb(15 23 42 / 0.48);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  box-shadow: inset 0 0 8px rgb(147 197 253 / 0.06);
+}
+
+.system-map-thread-live::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgb(125 211 252 / 0.88);
+  box-shadow: 0 0 8px rgb(56 189 248 / 0.42);
+  animation: system-map-thread-dot 1.5s ease-in-out infinite;
+}
+
+@keyframes system-map-node-glow {
+  0% { filter: brightness(1.24); }
+  100% { filter: brightness(1); }
+}
+
+@keyframes system-map-bubble {
+  0% { opacity: 0; filter: brightness(1.4); }
+  15% { opacity: 1; }
+  100% { opacity: 0.86; filter: brightness(1); }
+}
+
+@keyframes system-map-thread-dot {
+  0%, 100% { opacity: 0.48; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.12); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .system-map-packet,
+  .system-map-edge-label-active,
+  .system-map-node-active,
+  .system-map-node-tool,
+  .system-map-node-event,
+  .system-map-node-boundary,
+  .system-map-thread-live::before {
+    animation: none;
+  }
+}
 [data-mode="light"] body {
   color-scheme: light;
 }
