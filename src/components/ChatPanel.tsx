@@ -77,6 +77,8 @@ function shouldHideTool(name: string, reason = ""): boolean {
 // dropped — losing them mid-flight would leave the timeline with a
 // "started but never finished" state we couldn't reason about.
 const MAX_LIVE_TOOLS = 200;
+const TOOL_GROUP_MIN = 3;
+const TOOL_GROUP_GAP_MS = 2000;
 
 // enforceCap drops the oldest completed entries when the map exceeds
 // MAX_LIVE_TOOLS. Mutates and returns the same map for callsite
@@ -130,6 +132,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   // mid-stream), so the same tool transitions cleanly through its
   // streaming → called → done lifecycle without duplicating rows.
   const [liveTools, setLiveTools] = useState<Map<string, LiveTool>>(() => new Map());
+  const [expandedToolGroups, setExpandedToolGroups] = useState<Set<string>>(() => new Set());
 
   // Ephemeral streaming bubble — the LLM-args text for an in-progress
   // `channels_respond` tool call, surfaced as the user's reply arrives
@@ -466,6 +469,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   // entries from a previous instance briefly leak into the new view.
   useEffect(() => {
     setLiveTools(new Map());
+    setExpandedToolGroups(new Set());
     setStreamingText(null);
   }, [instanceId, chatId]);
 
@@ -631,6 +635,9 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
     type Item =
       | { kind: "msg"; ts: number; msg: ChatMessageRow }
       | { kind: "tool"; ts: number; tool: LiveTool };
+    type TimelineItem =
+      | Item
+      | { kind: "toolGroup"; ts: number; key: string; tools: LiveTool[] };
     const items: Item[] = [];
     for (const m of orderedMessages) {
       items.push({ kind: "msg", ts: Date.parse(m.created_at) || 0, msg: m });
@@ -648,8 +655,54 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
       }
       return 0;
     });
-    return items;
+    const grouped: TimelineItem[] = [];
+    let pending: LiveTool[] = [];
+
+    const flushTools = () => {
+      if (pending.length === 0) return;
+      if (pending.length >= TOOL_GROUP_MIN) {
+        const first = pending[0]!;
+        grouped.push({
+          kind: "toolGroup",
+          ts: first.startedAt,
+          key: `${first.id}:${first.startedAt}`,
+          tools: pending,
+        });
+      } else {
+        for (const tool of pending) {
+          grouped.push({ kind: "tool", ts: tool.startedAt, tool });
+        }
+      }
+      pending = [];
+    };
+
+    for (const item of items) {
+      if (item.kind === "msg") {
+        flushTools();
+        grouped.push(item);
+        continue;
+      }
+      const last = pending[pending.length - 1];
+      if (last && item.tool.startedAt - last.startedAt > TOOL_GROUP_GAP_MS) {
+        flushTools();
+      }
+      pending.push(item.tool);
+    }
+    flushTools();
+    return grouped;
   }, [orderedMessages, liveTools]);
+
+  const toggleToolGroup = useCallback((key: string) => {
+    setExpandedToolGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
 
   return (
     <div className="flex flex-col h-full min-w-0">
@@ -775,6 +828,13 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
               msg={item.msg}
               projectId={projectId}
               apps={installedApps}
+            />
+          ) : item.kind === "toolGroup" ? (
+            <ToolGroupRow
+              key={`tg${item.key}`}
+              tools={item.tools}
+              expanded={expandedToolGroups.has(item.key)}
+              onToggle={() => toggleToolGroup(item.key)}
             />
           ) : (
             <ToolRow key={`t${item.tool.id}`} t={item.tool} />
@@ -1065,24 +1125,106 @@ function closeOpenMarkdown(s: string): string {
 // reads as background activity, not as a primary turn. Layout:
 //
 //   ⟳ agent's reason                                         (1.2s)
-function ToolRow({ t }: { t: LiveTool }) {
+function toolLabel(t: LiveTool): string {
+  return t.reason || (t.state === "streaming" ? "Starting..." : "Working...");
+}
+
+function toolDurationLabel(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
+function plural(n: number, singular: string, pluralValue = `${singular}s`): string {
+  return `${n} ${n === 1 ? singular : pluralValue}`;
+}
+
+function compactLabels(tools: LiveTool[], limit: number): { text: string; more: number } {
+  const labels: string[] = [];
+  for (const t of tools) {
+    const label = toolLabel(t);
+    if (!label || labels.includes(label)) continue;
+    labels.push(label);
+    if (labels.length >= limit) break;
+  }
+  return { text: labels.join(", "), more: Math.max(0, tools.length - labels.length) };
+}
+
+function ToolGroupRow({
+  tools,
+  expanded,
+  onToggle,
+}: {
+  tools: LiveTool[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const active = tools.filter((t) => t.state !== "done");
+  const failed = tools.filter((t) => t.state === "done" && t.success === false);
+  const completed = tools.filter((t) => t.state === "done");
+  const durationTotal = completed.reduce((sum, t) => sum + (t.durationMs || 0), 0);
+  const labelSource = failed.length > 0 ? [...failed, ...tools.filter((t) => !failed.includes(t))] : active.length > 0 ? [...active, ...tools.filter((t) => !active.includes(t))] : tools;
+  const labels = compactLabels(labelSource, 2);
+  const icon =
+    failed.length > 0
+      ? <span className="text-red shrink-0">✗</span>
+      : active.length > 0
+      ? <span className="text-accent shrink-0 animate-spin">⟳</span>
+      : <span className="text-green shrink-0">✓</span>;
+  const status =
+    failed.length > 0
+      ? `${plural(failed.length, "tool")} failed`
+      : active.length > 0
+      ? `${plural(active.length, "tool")} running`
+      : `${plural(tools.length, "tool")} completed`;
+  const detailParts = [
+    durationTotal > 0 && active.length === 0 ? toolDurationLabel(durationTotal) : "",
+    labels.text,
+    labels.more > 0 ? `+${labels.more}` : "",
+  ].filter(Boolean);
+
+  return (
+    <div className="min-w-0 pl-3">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex max-w-full items-center gap-1.5 text-[10px] text-text-dim hover:text-text-muted leading-tight"
+        title={expanded ? "Hide tool calls" : "Show tool calls"}
+      >
+        {icon}
+        <span className={failed.length > 0 ? "text-red shrink-0" : "shrink-0"}>{status}</span>
+        {detailParts.length > 0 && <span className="shrink-0">·</span>}
+        {detailParts.length > 0 && (
+          <span className="truncate text-left">
+            {detailParts.join(" · ")}
+          </span>
+        )}
+        <span className="shrink-0 text-text-dim opacity-70">{expanded ? "Hide" : "Details"}</span>
+      </button>
+      {expanded && (
+        <div className="mt-1 space-y-1 border-l border-border/70 pl-2">
+          {tools.map((tool) => (
+            <ToolRow key={tool.id} t={tool} compact />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolRow({ t, compact = false }: { t: LiveTool; compact?: boolean }) {
   const icon =
     t.state === "streaming"
       ? <span className="text-yellow shrink-0 animate-pulse">◐</span>
       : t.state === "called"
       ? <span className="text-accent shrink-0 animate-spin">⟳</span>
       : <span className={`shrink-0 ${t.success ? "text-green" : "text-red"}`}>{t.success ? "✓" : "✗"}</span>;
-  const label =
-    t.reason || (t.state === "streaming" ? "Starting..." : "Working...");
+  const label = toolLabel(t);
   const dur =
     t.state === "done" && t.durationMs != null
-      ? t.durationMs >= 1000
-        ? `${(t.durationMs / 1000).toFixed(1)}s`
-        : `${t.durationMs}ms`
+      ? toolDurationLabel(t.durationMs)
       : "";
 
   return (
-    <div className="flex items-center gap-1.5 min-w-0 leading-tight pl-3 text-[10px] text-text-dim">
+    <div className={`flex items-center gap-1.5 min-w-0 leading-tight text-[10px] text-text-dim ${compact ? "" : "pl-3"}`}>
       {icon}
       <span
         className={t.state === "streaming" ? "truncate italic" : "truncate"}
