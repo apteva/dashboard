@@ -101,10 +101,10 @@ export function ConnectIntegrationModal({
   const isOAuth2 = !!detail && (detail.auth?.types || []).includes("oauth2");
   const onlyOAuth2 =
     !!detail && (detail.auth?.types || []).every((t) => t === "oauth2");
-  // Pick the auth_type to send on the wire. For apps that support
-  // both, default to the non-OAuth path so operators with an
-  // existing API key don't go through the popup unnecessarily.
-  const authType = onlyOAuth2
+  // Pick the auth_type to send on the wire. For apps that support both
+  // OAuth and a real API key, keep the non-OAuth default. If the only
+  // non-OAuth fields are OAuth token internals, prefer the OAuth flow.
+  const authType = onlyOAuth2 || shouldPreferOAuth2(detail)
     ? "oauth2"
     : (detail?.auth?.types || []).find((t) => t !== "oauth2") || "api_key";
   const usingOAuthPath = authType === "oauth2";
@@ -270,5 +270,26 @@ export function ConnectIntegrationModal({
         )}
       </div>
     </Modal>
+  );
+}
+
+function shouldPreferOAuth2(detail: AppDetail | null): boolean {
+  if (!detail?.auth?.types?.includes("oauth2") || !detail.auth.oauth2) return false;
+  const fields = detail.auth.credential_fields || [];
+  if (fields.length === 0) return true;
+  const tokenFieldNames = new Set([
+    "token",
+    "accesstoken",
+    "access_token",
+    "refresh_token",
+    "refreshtoken",
+    "expires_in",
+    "expiresin",
+    "token_type",
+    "tokentype",
+    "scope",
+  ]);
+  return fields.every((field) =>
+    tokenFieldNames.has(String(field.name || "").toLowerCase())
   );
 }

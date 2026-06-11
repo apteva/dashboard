@@ -54,7 +54,11 @@ export function CredentialFields({
   oauthClientResolved,
 }: CredentialFieldsProps) {
   const types = detail.auth?.types || [];
-  const picked = authType || types.find((t) => t !== "oauth2") || types[0] || "api_key";
+  const picked =
+    authType ||
+    (types.includes("oauth2") && shouldPreferOAuth2(detail)
+      ? "oauth2"
+      : types.find((t) => t !== "oauth2") || types[0] || "api_key");
   const isOAuth2 = picked === "oauth2";
   const fields = detail.auth?.credential_fields || [];
 
@@ -122,6 +126,27 @@ export function CredentialFields({
         </FieldRow>
       ))}
     </div>
+  );
+}
+
+function shouldPreferOAuth2(detail: AppDetail): boolean {
+  if (!detail.auth?.oauth2) return false;
+  const fields = detail.auth?.credential_fields || [];
+  if (fields.length === 0) return true;
+  const tokenFieldNames = new Set([
+    "token",
+    "accesstoken",
+    "access_token",
+    "refresh_token",
+    "refreshtoken",
+    "expires_in",
+    "expiresin",
+    "token_type",
+    "tokentype",
+    "scope",
+  ]);
+  return fields.every((field) =>
+    tokenFieldNames.has(String(field.name || "").toLowerCase())
   );
 }
 

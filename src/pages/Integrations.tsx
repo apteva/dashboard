@@ -57,10 +57,31 @@ type SourceTab = "local" | "composio";
 
 function defaultLocalAuthType(app: AppDetail | null | undefined): string {
   const types = app?.auth?.types || [];
-  if (app?.slug === "google-sheets" && types.includes("oauth2")) return "oauth2";
   if (types.includes("oauth_device_code")) return "oauth_device_code";
+  if (types.includes("oauth2") && shouldPreferOAuth2(app)) return "oauth2";
   const nonOAuth = types.find((t) => t !== "oauth2");
   return nonOAuth || types[0] || "";
+}
+
+function shouldPreferOAuth2(app: AppDetail | null | undefined): boolean {
+  if (!app?.auth?.oauth2) return false;
+  const fields = app.auth.credential_fields || [];
+  if (fields.length === 0) return true;
+  const tokenFieldNames = new Set([
+    "token",
+    "accesstoken",
+    "access_token",
+    "refresh_token",
+    "refreshtoken",
+    "expires_in",
+    "expiresin",
+    "token_type",
+    "tokentype",
+    "scope",
+  ]);
+  return fields.every((field) =>
+    tokenFieldNames.has(String(field.name || "").toLowerCase())
+  );
 }
 
 export function Integrations() {
