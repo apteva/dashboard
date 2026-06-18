@@ -22,8 +22,11 @@ import { ActivityFeed } from "../components/dashboard/ActivityFeed";
 import { ProjectChat } from "../components/dashboard/ProjectChat";
 import { ToolsUsageCard } from "../components/dashboard/ToolsUsageCard";
 import { CostCard } from "../components/dashboard/CostCard";
+import { usePageTitle } from "../hooks/usePageTitle";
 
 export function Dashboard() {
+  usePageTitle("Overview");
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <div className="border-b border-border px-6 py-4">

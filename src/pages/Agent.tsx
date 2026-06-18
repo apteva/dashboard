@@ -4,6 +4,7 @@ import { instances, core, type Agent as InstanceType, type Thread } from "../api
 import { AgentView } from "../components/AgentView";
 import { chatConnections } from "../state/chatConnections";
 import { forgetChat } from "../state/chatNotifications";
+import { usePageTitle } from "../hooks/usePageTitle";
 
 // Agent is the per-id wrapper. Resolves :id from the URL, fetches the
 // instance metadata + preloaded threads, and hands off to AgentView.
@@ -18,6 +19,7 @@ export function Agent() {
   const [notFound, setNotFound] = useState(false);
 
   const instanceId = id ? parseInt(id, 10) : 0;
+  usePageTitle(instance ? ["Agent", instance.name] : ["Agent", instanceId || "loading"]);
 
   const load = () => {
     if (!instanceId) return;

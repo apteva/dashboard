@@ -1171,7 +1171,7 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
       )}
 
       <Modal open={!!killTargetId} onClose={() => !killBusy && setKillTargetId(null)}>
-        <div className="p-6 w-[480px] max-w-full space-y-3">
+        <div className="p-4 sm:p-6 w-full max-w-[480px] space-y-3">
           <h2 className="text-text text-base font-bold">
             Kill thread <code className="text-text-muted">{killTargetId}</code>?
           </h2>

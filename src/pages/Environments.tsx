@@ -31,6 +31,7 @@ import {
 } from "../components/system-map/SystemMap";
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
+import { usePageTitle } from "../hooks/usePageTitle";
 
 const NETWORK_MODES = ["passthrough", "block", "record", "replay"] as const;
 const INTEGRATION_MODES = ["mock", "real"] as const;
@@ -74,6 +75,8 @@ type EnvironmentAgentContext = {
 };
 
 export function Environments() {
+  usePageTitle("Environments");
+
   const { currentProject } = useProjects();
   const projectId = currentProject?.id || "";
   const navigate = useNavigate();
@@ -832,6 +835,7 @@ export function EnvironmentDetail() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [destroyTarget, setDestroyTarget] = useState<EnvironmentSummary | null>(null);
   const [destroying, setDestroying] = useState(false);
+  usePageTitle(["Environment", environment?.id || id || "loading"]);
 
   const load = async (showLoading = false) => {
     if (!id) return;

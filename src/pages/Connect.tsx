@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { invites, type PublicInviteInfo } from "../api";
+import { usePageTitle } from "../hooks/usePageTitle";
 
 // Connect — public page for end clients who don't have a dashboard login.
 // The operator shared /connect/:token with them; the server validates the
@@ -12,6 +13,7 @@ import { invites, type PublicInviteInfo } from "../api";
 export function Connect() {
   const { token = "" } = useParams<{ token: string }>();
   const [info, setInfo] = useState<PublicInviteInfo | null>(null);
+  usePageTitle(["Connect", info?.app_name || info?.name || "Invite"]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 

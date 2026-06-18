@@ -558,9 +558,9 @@ export function SuiteConnect({ group, projectId, onClose, onConnectionsChanged }
                 <p className="text-text-dim text-xs mb-2">
                   Pick a project, then toggle which services run against it.
                 </p>
-                <div className="border border-border rounded-lg flex h-[60vh] min-h-[320px] overflow-hidden">
+                <div className="border border-border rounded-lg flex flex-col md:flex-row h-[70vh] md:h-[60vh] min-h-[320px] overflow-hidden">
                   {/* Left pane: filter + project list */}
-                  <div className="w-72 flex-shrink-0 border-r border-border flex flex-col bg-bg-input/30">
+                  <div className="w-full md:w-72 flex-shrink-0 border-b md:border-b-0 md:border-r border-border flex flex-col bg-bg-input/30 max-h-52 md:max-h-none">
                     <div className="p-2 border-b border-border">
                       <input
                         type="text"

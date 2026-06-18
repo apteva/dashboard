@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   apps,
   core,
@@ -18,7 +19,6 @@ import {
   type SubscriptionInfo,
 } from "../api";
 import {
-  SystemMap,
   type SystemMapActivity,
   type SystemMapEdge,
   type SystemMapEdgeKind,
@@ -28,6 +28,7 @@ import {
 } from "../components/system-map/SystemMap";
 import { useProjects } from "../hooks/useProjects";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
+import { usePageTitle } from "../hooks/usePageTitle";
 
 type ThreadContextSnapshot = {
   id: string;
@@ -63,6 +64,8 @@ type AgentConfigSnapshot = {
 const hiddenSystemTools = new Set(["pace", "done", "channels_respond", "channels_status"]);
 
 export function Activity() {
+  usePageTitle("Activity");
+
   const { currentProject } = useProjects();
   const projectId = currentProject?.id || "";
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -194,42 +197,11 @@ export function Activity() {
     setEvents((prev) => dedupeTelemetry([...prev, event]).slice(-240));
   });
 
-  const appBusKey = useMemo(
-    () => projectApps.filter((app) => app.status === "running").map((app) => app.name).sort().join(","),
-    [projectApps],
-  );
-
-  useEffect(() => {
-    if (!projectId || !appBusKey) return;
-    const appNames = appBusKey.split(",").filter(Boolean);
-    const sources = appNames.map((app) => {
-      const source = new EventSource(
-        `/api/app-events/${encodeURIComponent(app)}?project_id=${encodeURIComponent(projectId)}`,
-        { withCredentials: true },
-      );
-      source.onmessage = (e) => {
-        try {
-          const event = JSON.parse(e.data) as AppBusEvent;
-          setAppBusEvents((prev) => {
-            const key = appBusEventKey(event);
-            if (prev.some((seen) => appBusEventKey(seen) === key)) return prev;
-            return [...prev, event].slice(-160);
-          });
-        } catch {
-          // Ignore malformed app bus frames.
-        }
-      };
-      return source;
-    });
-    return () => {
-      sources.forEach((source) => source.close());
-    };
-  }, [projectId, appBusKey]);
-
-  const model = useMemo(
-    () => buildProjectActivityModel(currentProject?.name || projectId, agents, projectApps, connections, projectMCPServers, projectSubscriptions, agentConfigs, threadsByAgent, contexts, events, appBusEvents),
-    [currentProject?.name, projectId, agents, projectApps, connections, projectMCPServers, projectSubscriptions, agentConfigs, threadsByAgent, contexts, events, appBusEvents],
-  );
+  // Keep Activity focused on agent actions. The system map used to
+  // subscribe to every running app's bus stream, which is too noisy
+  // for this page and creates many server-side SSE subscriptions.
+  // App bus event support stays in the model code for the map, but
+  // the default Activity surface is telemetry-only for now.
 
   if (!projectId) {
     return (
@@ -251,7 +223,7 @@ export function Activity() {
             </span>
           </div>
           <p className="mt-1 text-sm text-text-muted">
-            Live project view from agents, threads, app tools, telemetry, and app events.
+            Live actions from agents, threads, app tools, telemetry, and app events.
           </p>
         </div>
         <div className="flex flex-wrap gap-2 text-xs text-text-muted">
@@ -268,27 +240,11 @@ export function Activity() {
         </div>
       )}
 
-      <SystemMap
-        title="Live System"
-        subtitle="Project agents, threads, app tools, app events, and integration activity."
-        scope="project"
-        boundaryLabel={currentProject?.name || projectId}
-        nodes={model.nodes}
-        edges={model.edges}
-        activity={model.activity}
-        stats={model.stats}
+      <AgentActionTimeline
+        agents={agents}
+        events={events}
+        appBusEvents={appBusEvents}
         loading={loading}
-        wide
-        heightClass="h-[620px] min-h-[460px]"
-        emptyText="No project activity data yet."
-        notice={
-          !loading && agents.length === 0
-            ? {
-                title: "No agents in this project yet",
-                detail: "Create or start an agent to see live threads, tool calls, and telemetry.",
-              }
-            : undefined
-        }
       />
     </div>
   );
@@ -319,6 +275,663 @@ function normalizeAgentConfigFromRow(raw: string | undefined): AgentConfigSnapsh
   } catch {
     return null;
   }
+}
+
+type ActionKind = "thought" | "tool" | "reply" | "thread" | "event" | "error";
+type ActionStatus = "running" | "success" | "error" | "info";
+
+type AgentAction = {
+  id: string;
+  time: number;
+  agentId?: number;
+  agentName: string;
+  threadId: string;
+  kind: ActionKind;
+  status: ActionStatus;
+  title: string;
+  detail?: string;
+  args?: string;
+  result?: string;
+  durationMs?: number;
+  raw: unknown[];
+};
+
+type ActionTab = "all" | ActionKind;
+
+const ACTION_LIMIT = 320;
+
+function AgentActionTimeline({
+  agents,
+  events,
+  appBusEvents,
+  loading,
+}: {
+  agents: Agent[];
+  events: TelemetryEvent[];
+  appBusEvents: AppBusEvent[];
+  loading: boolean;
+}) {
+  const [tab, setTab] = useState<ActionTab>("all");
+  const [status, setStatus] = useState<"all" | ActionStatus>("all");
+  const [agentFilter, setAgentFilter] = useState<string>("all");
+  const [query, setQuery] = useState("");
+
+  const actions = useMemo(
+    () => buildAgentActions(events, appBusEvents, agents),
+    [events, appBusEvents, agents],
+  );
+
+  const filtered = actions.filter((action) => {
+    if (tab !== "all" && action.kind !== tab) return false;
+    if (status !== "all" && action.status !== status) return false;
+    if (agentFilter !== "all" && String(action.agentId || action.agentName) !== agentFilter) return false;
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return [
+      action.agentName,
+      action.threadId,
+      action.kind,
+      action.status,
+      action.title,
+      action.detail || "",
+      action.args || "",
+      action.result || "",
+    ].join(" ").toLowerCase().includes(q);
+  });
+
+  const tabs: ActionTab[] = ["all", "thought", "tool", "reply", "thread", "event", "error"];
+  const statusOptions: Array<"all" | ActionStatus> = ["all", "running", "success", "error", "info"];
+  const agentsWithEvents = agents.filter((agent) => actions.some((action) => action.agentId === agent.id));
+
+  return (
+    <div className="min-h-0 rounded border border-border bg-bg-card">
+      <div className="border-b border-border px-3 py-3 space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-text">Agent Actions</h2>
+              <span className={`h-2 w-2 rounded-full ${actions.length > 0 ? "bg-green" : "bg-text-dim"}`} />
+            </div>
+            <p className="mt-1 text-xs text-text-muted">
+              Live timeline from project telemetry. Rows merge streaming chunks, tool calls, and results into one action where possible.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 text-[11px] text-text-muted">
+            <span className="rounded border border-border bg-bg px-2 py-1">{actions.length} actions</span>
+            <span className="rounded border border-border bg-bg px-2 py-1">{actions.filter((a) => a.status === "running").length} running</span>
+            <span className="rounded border border-border bg-bg px-2 py-1">{actions.filter((a) => a.status === "error").length} errors</span>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex max-w-full items-center gap-1 overflow-x-auto">
+            {tabs.map((nextTab) => {
+              const active = tab === nextTab;
+              const count = nextTab === "all" ? actions.length : actions.filter((a) => a.kind === nextTab).length;
+              return (
+                <button
+                  key={nextTab}
+                  type="button"
+                  onClick={() => setTab(nextTab)}
+                  className={`rounded px-2 py-1 text-[11px] capitalize whitespace-nowrap ${
+                    active ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"
+                  }`}
+                >
+                  {nextTab}
+                  {count > 0 && <span className="ml-1 text-text-dim">{count}</span>}
+                </button>
+              );
+            })}
+          </div>
+
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value as "all" | ActionStatus)}
+            className="bg-bg-input border border-border rounded px-2 py-1 text-[11px] text-text focus:outline-none focus:border-accent"
+          >
+            {statusOptions.map((option) => (
+              <option key={option} value={option}>{option === "all" ? "all status" : option}</option>
+            ))}
+          </select>
+
+          <select
+            value={agentFilter}
+            onChange={(e) => setAgentFilter(e.target.value)}
+            className="bg-bg-input border border-border rounded px-2 py-1 text-[11px] text-text focus:outline-none focus:border-accent"
+          >
+            <option value="all">all agents</option>
+            {agentsWithEvents.map((agent) => (
+              <option key={agent.id} value={String(agent.id)}>{agent.name || `agent ${agent.id}`}</option>
+            ))}
+          </select>
+
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search actions"
+            className="ml-auto min-w-[160px] flex-1 sm:flex-none sm:w-64 bg-bg-input border border-border rounded px-2 py-1 text-[11px] text-text focus:outline-none focus:border-accent"
+          />
+        </div>
+      </div>
+
+      <div className="max-h-[calc(100vh-260px)] min-h-[420px] overflow-auto">
+        {filtered.length === 0 ? (
+          <div className="flex h-56 items-center justify-center px-4 text-center">
+            <div>
+              <div className="text-sm text-text-muted">
+                {loading ? "Loading project activity..." : actions.length === 0 ? "No agent actions yet." : "No actions match the current filters."}
+              </div>
+              {!loading && actions.length === 0 && (
+                <div className="mt-1 text-xs text-text-dim">Start or message an agent to see thoughts, tool calls, replies, and events here.</div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="divide-y divide-border">
+            {filtered.map((action) => (
+              <AgentActionRow key={action.id} action={action} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AgentActionRow({ action }: { action: AgentAction }) {
+  const [open, setOpen] = useState(false);
+  const visual = actionVisual(action);
+  const hasDetails = !!action.args || !!action.result;
+  return (
+    <details className="group" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="list-none cursor-pointer px-3 py-2.5 hover:bg-bg-hover">
+        <div className="grid grid-cols-[70px_minmax(88px,140px)_minmax(0,1fr)_auto] items-start gap-2 text-xs">
+          <div className="font-mono text-text-dim tabular-nums">{formatActionTime(action.time)}</div>
+          <div className="min-w-0">
+            {action.agentId ? (
+              <Link
+                to={`/agents/${action.agentId}`}
+                className="block truncate text-text-muted hover:text-text"
+                title={action.agentName}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {action.agentName}
+              </Link>
+            ) : (
+              <span className="block truncate text-text-muted" title={action.agentName}>{action.agentName}</span>
+            )}
+            {action.threadId && <div className="mt-0.5 truncate font-mono text-[10px] text-text-dim">{action.threadId}</div>}
+          </div>
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${visual.badgeClass}`}>{action.kind}</span>
+              <span className={`truncate font-medium ${visual.titleClass}`}>{action.title}</span>
+            </div>
+            {action.detail && <div className="mt-1 truncate text-[11px] text-text-muted">{action.detail}</div>}
+            {action.args && <div className="mt-1 truncate font-mono text-[10px] text-text-dim">args: {payloadPreview(action.args, 180)}</div>}
+            {action.result && <div className="mt-1 truncate font-mono text-[10px] text-text-dim">result: {payloadPreview(action.result, 180)}</div>}
+          </div>
+          <div className="flex items-center gap-2 justify-end">
+            {action.durationMs != null && <span className="hidden sm:inline text-[10px] text-text-dim tabular-nums">{durationLabel(action.durationMs)}</span>}
+            <span className={`h-2 w-2 rounded-full ${visual.dotClass}`} title={action.status} />
+          </div>
+        </div>
+      </summary>
+      {open && hasDetails && (
+        <div className="px-3 pb-3 pl-[calc(70px+0.75rem)]">
+          <div className="space-y-2">
+            {action.args && <ActionPayloadBlock title="Arguments" text={action.args} />}
+            {action.result && <ActionPayloadBlock title="Result" text={action.result} />}
+          </div>
+        </div>
+      )}
+    </details>
+  );
+}
+
+function ActionPayloadBlock({ title, text, dim }: { title: string; text: string; dim?: boolean }) {
+  return (
+    <div>
+      <div className="mb-1 text-[9px] uppercase tracking-wide text-text-dim">{title}</div>
+      <pre className={`max-h-64 overflow-auto rounded border border-border bg-bg-input p-2 text-[10px] ${dim ? "text-text-muted" : "text-text"}`}>
+        {text}
+      </pre>
+    </div>
+  );
+}
+
+function buildAgentActions(events: TelemetryEvent[], appBusEvents: AppBusEvent[], agents: Agent[]): AgentAction[] {
+  const agentNameByID = new Map(agents.map((agent) => [agent.id, agent.name || `agent ${agent.id}`]));
+  const rows = new Map<string, AgentAction>();
+  const order: string[] = [];
+  const activeThoughtByThread = new Map<string, string>();
+  const thoughtBuffers = new Map<string, { thinking: string; output: string }>();
+
+  const put = (key: string, patch: Omit<Partial<AgentAction>, "id" | "raw"> & { id?: string; raw?: unknown }) => {
+    const current = rows.get(key);
+    if (!current) {
+      const row: AgentAction = {
+        id: patch.id || key,
+        time: patch.time || Date.now(),
+        agentId: patch.agentId,
+        agentName: patch.agentName || (patch.agentId ? agentNameByID.get(patch.agentId) || `agent ${patch.agentId}` : "system"),
+        threadId: patch.threadId || "",
+        kind: patch.kind || "event",
+        status: patch.status || "info",
+        title: patch.title || "event",
+        detail: patch.detail,
+        args: patch.args,
+        result: patch.result,
+        durationMs: patch.durationMs,
+        raw: patch.raw !== undefined ? [patch.raw] : [],
+      };
+      rows.set(key, row);
+      order.push(key);
+      return;
+    }
+    rows.set(key, {
+      ...current,
+      ...patch,
+      id: current.id,
+      time: Math.max(current.time, patch.time || current.time),
+      agentName: patch.agentName || current.agentName,
+      raw: patch.raw !== undefined ? [...current.raw, patch.raw].slice(-8) : current.raw,
+    });
+  };
+
+  [...events].sort((a, b) => eventTime(a) - eventTime(b)).forEach((event) => {
+    const data = event.data || {};
+    const time = eventTime(event);
+    const agentId = event.instance_id;
+    const agentName = agentNameByID.get(agentId) || `agent ${agentId}`;
+    const threadId = event.thread_id || "main";
+    const iteration = data.iteration != null ? String(data.iteration) : "";
+    const threadKey = `${agentId}:${threadId}`;
+
+    if (event.type === "llm.start") {
+      const key = actionThoughtKey(agentId, threadId, iteration || event.id || String(time));
+      activeThoughtByThread.set(threadKey, key);
+      if (!thoughtBuffers.has(key)) thoughtBuffers.set(key, { thinking: "", output: "" });
+      put(key, {
+        agentId, agentName, threadId, time,
+        kind: "thought", status: "running",
+        title: "Thinking",
+        detail: compactActionText(data.model || data.provider || ""),
+        raw: event,
+      });
+      return;
+    }
+
+    if (event.type === "llm.thinking" || event.type === "llm.chunk") {
+      const key = iteration
+        ? actionThoughtKey(agentId, threadId, iteration)
+        : activeThoughtByThread.get(threadKey) || actionThoughtKey(agentId, threadId, "live");
+      activeThoughtByThread.set(threadKey, key);
+      const text = compactActionText(data.text || data.chunk || "");
+      const buffer = appendThoughtChunk(thoughtBuffers, key, event.type === "llm.thinking" ? "thinking" : "output", String(data.text || data.chunk || ""));
+      const preview = thoughtPreview(buffer);
+      put(key, {
+        agentId, agentName, threadId, time,
+        kind: "thought", status: "running",
+        title: buffer.output ? "Composing output" : "Thinking",
+        detail: preview || (text ? shortText(text, 240) : undefined),
+        result: formatThoughtBuffer(buffer),
+      });
+      return;
+    }
+
+    if (event.type === "llm.done") {
+      const key = iteration
+        ? actionThoughtKey(agentId, threadId, iteration)
+        : activeThoughtByThread.get(threadKey) || actionThoughtKey(agentId, threadId, event.id || String(time));
+      const tokens = formatTokenSummary(data);
+      const message = compactActionText(data.message || data.summary || data.model || "");
+      const buffer = thoughtBuffers.get(key) || { thinking: "", output: "" };
+      if (!buffer.output && message) buffer.output = message;
+      thoughtBuffers.set(key, buffer);
+      activeThoughtByThread.delete(threadKey);
+      put(key, {
+        agentId, agentName, threadId, time,
+        kind: "thought", status: "success",
+        title: "Reasoning step",
+        detail: [message ? shortText(message, 260) : thoughtPreview(buffer), tokens].filter(Boolean).join(" - "),
+        result: formatThoughtBuffer(buffer),
+        durationMs: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
+        raw: event,
+      });
+      return;
+    }
+
+    if (event.type === "llm.error" || event.type === "error") {
+      put(`error:${agentId}:${threadId}:${event.id || time}`, {
+        agentId, agentName, threadId, time,
+        kind: "error", status: "error",
+        title: event.type === "llm.error" ? "LLM error" : "Error",
+        detail: compactActionText(data.error || data.message || ""),
+        raw: event,
+      });
+      return;
+    }
+
+    if (event.type === "llm.tool_chunk") {
+      const tool = String(data.tool || data.name || "");
+      if (isHiddenActionTool(tool) && tool !== "channels_respond") return;
+      const callID = actionCallID(data, event);
+      const key = `tool:${agentId}:${threadId}:${callID}`;
+      const chunk = String(data.chunk || data.delta || data.text || "");
+      if (tool === "channels_respond") {
+        const replyText = extractTextFieldFromJSONish(chunk);
+        put(key, {
+          agentId, agentName, threadId, time,
+          kind: "reply", status: "running",
+          title: "Drafting chat reply",
+          detail: replyText ? shortText(replyText, 240) : "channels_respond",
+          args: chunk ? formatActionPayload(chunk, 4000) : undefined,
+        });
+        return;
+      }
+      put(key, {
+        agentId, agentName, threadId, time,
+        kind: "tool", status: "running",
+        title: `Preparing ${shortToolName(tool || "tool")}`,
+        detail: tool || undefined,
+        args: chunk ? formatActionPayload(chunk, 4000) : undefined,
+      });
+      return;
+    }
+
+    if (event.type === "tool.call") {
+      const tool = String(data.name || data.tool || "");
+      if (isHiddenActionTool(tool) && tool !== "channels_respond") return;
+      const callID = actionCallID(data, event);
+      const key = `tool:${agentId}:${threadId}:${callID}`;
+      const argsValue = actionArgsValue(data);
+      const args = formatActionPayload(argsValue, 5000);
+      const reason = compactActionText(data.reason || "");
+      if (tool === "channels_respond") {
+        const replyText = respondText(argsValue);
+        put(key, {
+          agentId, agentName, threadId, time,
+          kind: "reply", status: "running",
+          title: "Replying in chat",
+          detail: replyText ? shortText(replyText, 260) : reason || "chat",
+          args,
+          raw: event,
+        });
+        return;
+      }
+      put(key, {
+        agentId, agentName, threadId, time,
+        kind: "tool", status: "running",
+        title: reason || `Running ${shortToolName(tool || "tool")}`,
+        detail: tool || undefined,
+        args,
+        raw: event,
+      });
+      return;
+    }
+
+    if (event.type === "tool.result") {
+      const tool = String(data.name || data.tool || "");
+      if (isHiddenActionTool(tool) && tool !== "channels_respond") return;
+      const callID = actionCallID(data, event);
+      const key = `tool:${agentId}:${threadId}:${callID}`;
+      const failed = !!data.is_error || data.success === false;
+      const result = formatActionPayload(actionResultValue(data), 5000);
+      put(key, {
+        agentId, agentName, threadId, time,
+        kind: tool === "channels_respond" ? "reply" : "tool",
+        status: failed ? "error" : "success",
+        title: tool === "channels_respond" ? "Chat reply delivered" : `${shortToolName(tool || "tool")} ${failed ? "failed" : "completed"}`,
+        detail: failed ? compactActionText(data.error || data.message || "failed") : tool || "completed",
+        result,
+        durationMs: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
+        raw: event,
+      });
+      return;
+    }
+
+    if (event.type === "thread.spawn") {
+      const spawned = String(data.thread_id || data.id || data.name || "");
+      put(`thread:${agentId}:${threadId}:spawn:${spawned || event.id || time}`, {
+        agentId, agentName, threadId, time,
+        kind: "thread", status: "running",
+        title: spawned ? `Spawned ${spawned}` : "Spawned thread",
+        detail: compactActionText(data.directive || data.prompt || ""),
+        raw: event,
+      });
+      return;
+    }
+
+    if (event.type === "thread.message") {
+      put(`thread:${agentId}:${threadId}:message:${event.id || time}`, {
+        agentId, agentName, threadId, time,
+        kind: "thread", status: "info",
+        title: "Thread message",
+        detail: compactActionText(data.message || data.text || ""),
+        raw: event,
+      });
+      return;
+    }
+
+    if (event.type === "thread.done") {
+      put(`thread:${agentId}:${threadId}:done:${event.id || time}`, {
+        agentId, agentName, threadId, time,
+        kind: "thread", status: "success",
+        title: "Thread done",
+        detail: compactActionText(data.result || data.message || threadId),
+        raw: event,
+      });
+      return;
+    }
+
+    if (event.type === "event.received") {
+      put(`event:${agentId}:${threadId}:${event.id || time}`, {
+        agentId, agentName, threadId, time,
+        kind: "event", status: "info",
+        title: compactActionText(data.source || "Incoming event"),
+        detail: compactActionText(data.message || data.text || data.event || ""),
+        raw: event,
+      });
+    }
+  });
+
+  appBusEvents.forEach((event) => {
+    const time = Date.parse(event.time) || Date.now();
+    put(`app-event:${event.app}:${event.project_id}:${event.seq}:${event.topic}`, {
+      agentName: event.app,
+      threadId: "app bus",
+      time,
+      kind: "event",
+      status: "info",
+      title: event.topic || "app event",
+      detail: shortText(summarizeValue(event.data), 240),
+      result: formatActionPayload(event.data, 5000),
+      raw: event,
+    });
+  });
+
+  return order
+    .map((key) => rows.get(key))
+    .filter((row): row is AgentAction => !!row)
+    .sort((a, b) => b.time - a.time)
+    .slice(0, ACTION_LIMIT);
+}
+
+function actionVisual(action: AgentAction): { badgeClass: string; titleClass: string; dotClass: string } {
+  if (action.status === "error") {
+    return { badgeClass: "bg-red/10 text-red", titleClass: "text-red", dotClass: "bg-red" };
+  }
+  if (action.status === "running") {
+    return { badgeClass: "bg-yellow/10 text-yellow", titleClass: "text-text", dotClass: "bg-yellow animate-pulse" };
+  }
+  if (action.kind === "reply") {
+    return { badgeClass: "bg-green/10 text-green", titleClass: "text-text", dotClass: "bg-green" };
+  }
+  if (action.kind === "thought") {
+    return { badgeClass: "bg-accent/10 text-accent", titleClass: "text-text", dotClass: "bg-accent" };
+  }
+  if (action.kind === "event") {
+    return { badgeClass: "bg-blue/10 text-blue", titleClass: "text-text", dotClass: "bg-blue" };
+  }
+  return { badgeClass: "bg-bg-hover text-text-muted", titleClass: "text-text", dotClass: "bg-green" };
+}
+
+function formatActionTime(ms: number): string {
+  const d = new Date(ms);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function compactActionText(value: unknown): string {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function durationLabel(ms?: number): string {
+  if (ms == null || !Number.isFinite(ms)) return "";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
+function payloadPreview(text: string, max: number): string {
+  const sample = text.length > max * 4 ? text.slice(0, max * 4) : text;
+  const compact = sample.replace(/\s+/g, " ").trim();
+  return compact.length > max ? `${compact.slice(0, Math.max(0, max - 1))}...` : compact;
+}
+
+function isHiddenActionTool(tool: string): boolean {
+  const normalized = String(tool || "").trim().toLowerCase();
+  return normalized === "pace" || normalized === "done" || normalized === "channels_status";
+}
+
+function actionCallID(data: Record<string, any>, event: TelemetryEvent): string {
+  return String(data.id || data.call_id || data.tool_call_id || data.index || event.id || `${event.type}:${event.time}`);
+}
+
+function actionThoughtKey(agentId: number, threadId: string, suffix: string): string {
+  return `thought:${agentId}:${threadId}:${suffix}`;
+}
+
+function appendThoughtChunk(
+  buffers: Map<string, { thinking: string; output: string }>,
+  key: string,
+  field: "thinking" | "output",
+  chunk: string,
+): { thinking: string; output: string } {
+  const current = buffers.get(key) || { thinking: "", output: "" };
+  if (chunk) {
+    current[field] += chunk;
+    buffers.set(key, current);
+  }
+  return current;
+}
+
+function thoughtPreview(buffer: { thinking: string; output: string }): string {
+  const source = buffer.output || buffer.thinking;
+  return source ? shortText(compactActionText(source), 260) : "";
+}
+
+function formatThoughtBuffer(buffer: { thinking: string; output: string }): string {
+  const parts: string[] = [];
+  if (buffer.thinking.trim()) parts.push(`Thinking\n${buffer.thinking.trim()}`);
+  if (buffer.output.trim()) parts.push(`Output\n${buffer.output.trim()}`);
+  return parts.join("\n\n");
+}
+
+function actionArgsValue(data: Record<string, any>): unknown {
+  if ("args" in data) return data.args;
+  if ("arguments" in data) return data.arguments;
+  if ("input" in data) return data.input;
+  if ("params" in data) return data.params;
+  return undefined;
+}
+
+function actionResultValue(data: Record<string, any>): unknown {
+  if ("result" in data) return data.result;
+  if ("output" in data) return data.output;
+  if ("error" in data) return data.error;
+  if ("message" in data) return data.message;
+  return undefined;
+}
+
+function respondText(value: unknown): string {
+  const parsed = parseActionJSON(value);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return compactActionText((parsed as Record<string, unknown>).text);
+  }
+  return "";
+}
+
+function parseActionJSON(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function formatActionPayload(value: unknown, max = 5000): string {
+  if (value === undefined) return "";
+  const sanitized = sanitizeActionPayload(value);
+  let text: string;
+  if (typeof sanitized === "string") {
+    text = sanitized;
+  } else {
+    try {
+      text = JSON.stringify(sanitized, null, 2);
+    } catch {
+      text = String(sanitized);
+    }
+  }
+  return text.length > max ? `${text.slice(0, max)}\n... (${text.length.toLocaleString()} chars total)` : text;
+}
+
+function sanitizeActionPayload(value: unknown, depth = 0): unknown {
+  const parsed = parseActionJSON(value);
+  if (parsed == null) return parsed;
+  if (typeof parsed === "string") {
+    return parsed.length > 600 ? `${parsed.slice(0, 600)}... (${parsed.length.toLocaleString()} chars)` : parsed;
+  }
+  if (typeof parsed !== "object") return parsed;
+  if (depth > 5) return "[nested object]";
+  if (Array.isArray(parsed)) {
+    const items = parsed.slice(0, 20).map((item) => sanitizeActionPayload(item, depth + 1));
+    return parsed.length > 20 ? [...items, `... ${parsed.length - 20} more items`] : items;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
+    const lower = key.toLowerCase();
+    if (lower.includes("base64") || lower.includes("screenshot") || lower.includes("image") || lower.includes("audio") || lower.includes("blob")) {
+      out[key] = typeof val === "string" ? `[${val.length.toLocaleString()} chars omitted]` : sanitizeActionPayload(val, depth + 1);
+      continue;
+    }
+    out[key] = sanitizeActionPayload(val, depth + 1);
+  }
+  return out;
+}
+
+function extractTextFieldFromJSONish(raw: string): string {
+  if (!raw) return "";
+  const parsed = parseActionJSON(raw);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return compactActionText((parsed as Record<string, unknown>).text);
+  }
+  const match = raw.match(/"text"\s*:\s*"((?:\\.|[^"\\])*)/s);
+  if (!match) return "";
+  return match[1]
+    .replace(/\\"/g, "\"")
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\\\/g, "\\");
+}
+
+function formatTokenSummary(data: Record<string, any>): string {
+  const input = data.tokens_in ?? data.prompt_tokens;
+  const output = data.tokens_out ?? data.completion_tokens;
+  const cost = typeof data.cost_usd === "number" ? `$${data.cost_usd.toFixed(4)}` : "";
+  const tokens = input != null || output != null ? `${input ?? 0} in / ${output ?? 0} out` : "";
+  return [tokens, cost].filter(Boolean).join(" ");
 }
 
 function buildProjectActivityModel(

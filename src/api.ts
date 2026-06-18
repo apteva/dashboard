@@ -1503,6 +1503,39 @@ export interface CatalogStatus {
   last_updated: string | null;
 }
 
+export interface IntegrationUsageRow {
+  app_slug: string;
+  tool: string;
+  unit: string;
+  direction: string;
+  grant_id?: string;
+  grant_resource?: string;
+  connection_id?: number;
+  parent_connection_id?: number;
+  child_install_id?: number;
+  child_connection_id?: number;
+  caller_install_id?: number;
+  caller_app_name?: string;
+  quantity: number;
+  calls: number;
+  errors: number;
+  last_used_at?: string;
+}
+
+export interface IntegrationUsageTotal {
+  app_slug: string;
+  unit: string;
+  quantity: number;
+  calls: number;
+  errors: number;
+}
+
+export interface IntegrationUsageSummary {
+  since: string;
+  rows: IntegrationUsageRow[];
+  totals: IntegrationUsageTotal[];
+}
+
 export const integrations = {
   catalog: (q?: string, opts?: { collapseGroups?: boolean }) => {
     const qs = new URLSearchParams();
@@ -1596,6 +1629,14 @@ export const integrations = {
   catalogStatus: () => request<CatalogStatus>("GET", "/integrations/catalog/status"),
 
   downloadCatalog: () => request<{ status: string; count: number }>("POST", "/integrations/catalog/download"),
+
+  usage: (opts?: { projectId?: string; period?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.projectId) params.set("project_id", opts.projectId);
+    if (opts?.period) params.set("period", opts.period);
+    const qs = params.toString();
+    return request<IntegrationUsageSummary>("GET", `/integrations/usage${qs ? `?${qs}` : ""}`);
+  },
 
   app: (slug: string) => request<AppDetail>("GET", `/integrations/catalog/${slug}`),
 

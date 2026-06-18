@@ -4,6 +4,7 @@ import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme, type ThemeName, type ThemeMode } from "../hooks/useTheme";
+import { usePageTitle } from "../hooks/usePageTitle";
 
 interface Key {
   id: number;
@@ -58,6 +59,8 @@ export function Settings() {
     { id: "account", label: "Account" },
     ...(isAdmin ? [{ id: "users" as Tab, label: "Users" }] : []),
   ];
+  const activeTab = tabs.find((t) => t.id === tab);
+  usePageTitle(["Settings", activeTab?.label || "Projects"]);
 
   return (
     <div className="flex flex-col h-full">
@@ -2070,7 +2073,7 @@ function MCPServersTab() {
 
       {/* Tool scope picker — select which tools this MCP server exposes */}
       <Modal open={!!renameMCP} onClose={() => !renameMCPBusy && setRenameMCP(null)}>
-        <div className="p-6 w-[480px] max-w-full space-y-3">
+        <div className="p-4 sm:p-6 w-full max-w-[480px] space-y-3">
           <h2 className="text-text text-base font-bold">Rename MCP server</h2>
           <p className="text-text-dim text-xs leading-snug">
             Changes the display name only. The underlying slug
@@ -2109,7 +2112,7 @@ function MCPServersTab() {
 
       <Modal open={!!scopeModal} onClose={() => setScopeModal(null)}>
         {scopeModal && (
-          <div className="p-6 flex flex-col max-h-[80vh] min-w-[560px]">
+          <div className="p-4 sm:p-6 flex flex-col max-h-[80vh] w-full max-w-[560px]">
             <div className="shrink-0 mb-4">
               <h3 className="text-text text-base font-bold">
                 Tool scope: {scopeModal.server.name}
@@ -2603,7 +2606,7 @@ function SubscriptionsTab() {
             matches(c.app_name) || matches(c.name),
           );
           return (
-            <div className="p-6 w-[640px] max-w-full space-y-4">
+            <div className="p-4 sm:p-6 w-full max-w-[640px] space-y-4">
               <div>
                 <h3 className="text-text text-base font-bold">New subscription</h3>
                 <p className="text-text-muted text-sm mt-1">
@@ -2719,7 +2722,7 @@ function SubscriptionsTab() {
         })()}
 
         {adding && (
-          <form onSubmit={handleSubscribe} className="p-6 w-[560px] max-w-full space-y-4">
+          <form onSubmit={handleSubscribe} className="p-4 sm:p-6 w-full max-w-[560px] space-y-4">
             <div className="flex items-start justify-between gap-2">
               <div>
                 <h3 className="text-text text-base font-bold">
@@ -3946,7 +3949,7 @@ function ProjectMembersPane({
   };
 
   return (
-    <div className="p-6 space-y-5 min-w-[420px] max-w-lg">
+    <div className="p-4 sm:p-6 space-y-5 w-full max-w-lg">
       <div>
         <h3 className="text-text text-base font-bold">Members of {projectName}</h3>
         <p className="text-text-muted text-xs mt-1">

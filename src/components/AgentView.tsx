@@ -429,6 +429,7 @@ export function AgentView({
   const [resetBusy, setResetBusy] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [view, setView] = useState<RuntimeView>("stream");
+  const [mobilePane, setMobilePane] = useState<"chat" | "runtime">("runtime");
   // Whether the channels MCP is currently attached to this instance.
   // When the user detaches it via the MCP panel the chat bridge stops
   // receiving user messages — we gray out the chat column to make that
@@ -822,9 +823,33 @@ export function AgentView({
       />
 
       {/* Main content */}
-      <div className="flex-1 flex min-h-0">
+      <div className="flex-1 flex flex-col lg:flex-row min-h-0">
+        <div className="lg:hidden shrink-0 border-b border-border px-3 py-2 flex items-center gap-2 bg-bg">
+          <button
+            type="button"
+            onClick={() => setMobilePane("chat")}
+            className={`flex-1 rounded border px-3 py-1.5 text-xs font-medium transition-colors ${
+              mobilePane === "chat"
+                ? "border-accent bg-accent/10 text-accent"
+                : "border-border text-text-muted hover:text-text"
+            }`}
+          >
+            Chat
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobilePane("runtime")}
+            className={`flex-1 rounded border px-3 py-1.5 text-xs font-medium transition-colors ${
+              mobilePane === "runtime"
+                ? "border-accent bg-accent/10 text-accent"
+                : "border-border text-text-muted hover:text-text"
+            }`}
+          >
+            Runtime
+          </button>
+        </div>
         {/* Chat panel */}
-        <div className="border-r border-border w-1/3 min-w-[320px]">
+        <div className={`${mobilePane === "chat" ? "flex" : "hidden"} lg:flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-border lg:w-1/3 lg:min-w-[320px]`}>
           {instance.status !== "running" ? (
             <div className="flex items-center justify-center h-full text-text-muted text-sm">
               Agent is stopped. Start it to begin chatting.
@@ -842,24 +867,26 @@ export function AgentView({
           )}
         </div>
 
-        <AgentRuntimePanel
-          instance={instance}
-          threads={graphThreads}
-          activeTools={graphActiveTools}
-          thinking={graphThinking}
-          events={runtimeEvents}
-          view={view}
-          onViewChange={setView}
-          onThreadOpen={setSelectedThreadId}
-          subscribe={subscribe}
-          onPause={async () => { await instances.pause(instance.id); onReload(); }}
-          onStop={async () => { await instances.stop(instance.id); onReload(); }}
-          onStart={async () => { await instances.start(instance.id); onReload(); }}
-          onConfig={() => setShowConfig(true)}
-          onReset={() => setShowResetConfirm(true)}
-          onDelete={() => setShowDeleteConfirm(true)}
-          advancedContent={advancedContent}
-        />
+        <div className={`${mobilePane === "runtime" ? "flex" : "hidden"} lg:flex flex-1 min-w-0 min-h-0`}>
+          <AgentRuntimePanel
+            instance={instance}
+            threads={graphThreads}
+            activeTools={graphActiveTools}
+            thinking={graphThinking}
+            events={runtimeEvents}
+            view={view}
+            onViewChange={setView}
+            onThreadOpen={setSelectedThreadId}
+            subscribe={subscribe}
+            onPause={async () => { await instances.pause(instance.id); onReload(); }}
+            onStop={async () => { await instances.stop(instance.id); onReload(); }}
+            onStart={async () => { await instances.start(instance.id); onReload(); }}
+            onConfig={() => setShowConfig(true)}
+            onReset={() => setShowResetConfirm(true)}
+            onDelete={() => setShowDeleteConfirm(true)}
+            advancedContent={advancedContent}
+          />
+        </div>
       </div>
 
       {/* Thread detail modal */}
@@ -919,6 +946,7 @@ function AgentRuntimePanel({
   const [mcpInventory, setMCPInventory] = useState<MCPServer[]>([]);
   const [channelRows, setChannelRows] = useState<ChannelInfo[]>([]);
   const [showCapabilitiesManage, setShowCapabilitiesManage] = useState(false);
+  const [selectedRuntimeThread, setSelectedRuntimeThread] = useState("main");
   const [executionControl, setExecutionControl] = useState<ExecutionControlStatus>({
     mode: "auto",
     scope: "instance",
@@ -926,6 +954,15 @@ function AgentRuntimePanel({
     waiting: false,
   });
   const [executionBusy, setExecutionBusy] = useState<"run" | "pause" | "step" | "back" | null>(null);
+
+  useEffect(() => {
+    setSelectedRuntimeThread("main");
+  }, [instance.id]);
+
+  const selectRuntimeThread = (threadId: string) => {
+    setSelectedRuntimeThread(threadId);
+    onViewChange("stream");
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1115,6 +1152,8 @@ function AgentRuntimePanel({
           threads={threads}
           activeTools={activeTools}
           thinking={thinking}
+          selectedThreadId={selectedRuntimeThread}
+          onThreadSelect={selectRuntimeThread}
           onThreadOpen={onThreadOpen}
         />
         <CapabilityShelf
@@ -1146,7 +1185,9 @@ function AgentRuntimePanel({
       </div>
 
       <div className="flex-1 min-h-0">
-        {view === "stream" ? <RuntimeStream events={events} /> : advancedContent}
+        {view === "stream" ? (
+          <RuntimeStream events={events} selectedThreadId={selectedRuntimeThread} />
+        ) : advancedContent}
       </div>
       {instance.status === "running" && (
         <InjectPanel instanceId={instance.id} threads={threads} />
@@ -1963,15 +2004,21 @@ function ThreadSummary({
   threads,
   activeTools,
   thinking,
+  selectedThreadId,
+  onThreadSelect,
   onThreadOpen,
 }: {
   threads: Thread[];
   activeTools: Record<string, string>;
   thinking: Record<string, boolean>;
+  selectedThreadId: string;
+  onThreadSelect: (id: string) => void;
   onThreadOpen: (id: string) => void;
 }) {
-  const rows = threads.length > 0 ? threads : [{ id: "main", directive: "", tools: [], iteration: 0, rate: "", model: "", age: "" }];
+  const mainThread: Thread = { id: "main", directive: "", tools: [], iteration: 0, rate: "", model: "", age: "" };
+  const rows = threads.some((t) => t.id === "main") ? threads : [mainThread, ...threads];
   const sorted = [...rows].sort((a, b) => (a.depth || 0) - (b.depth || 0) || a.id.localeCompare(b.id)).slice(0, 8);
+  const allSelected = selectedThreadId === "all";
 
   return (
     <div className="p-3 min-w-0">
@@ -1980,23 +2027,51 @@ function ThreadSummary({
         <span className="text-[10px] text-text-dim">{rows.length} threads</span>
       </div>
       <div className="space-y-1">
+        <button
+          type="button"
+          onClick={() => onThreadSelect("all")}
+          className={`w-full min-w-0 flex items-center gap-2 rounded px-2 py-1.5 text-left transition-colors ${
+            allSelected ? "bg-accent/10 ring-1 ring-accent/40" : "hover:bg-bg-hover"
+          }`}
+        >
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${allSelected ? "bg-accent" : "bg-text-dim"}`} />
+          <span className={`text-xs truncate ${allSelected ? "text-accent font-medium" : "text-text"}`}>All threads</span>
+          <span className="text-[10px] text-text-muted truncate flex-1">mixed stream</span>
+        </button>
         {sorted.map((t) => {
           const tool = activeTools[t.id];
           const isThinking = !!thinking[t.id];
           const depth = Math.min(t.depth || 0, 3);
           const state = tool ? `tool: ${tool}` : isThinking ? "thinking" : t.rate || "waiting";
+          const selected = selectedThreadId === t.id;
           return (
-            <button
+            <div
               key={t.id}
-              onClick={() => onThreadOpen(t.id)}
-              className="w-full min-w-0 flex items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-bg-hover transition-colors"
+              className={`group w-full min-w-0 flex items-center gap-1 rounded transition-colors ${
+                selected ? "bg-accent/10 ring-1 ring-accent/40" : "hover:bg-bg-hover"
+              }`}
               style={{ paddingLeft: 8 + depth * 14 }}
             >
-              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${tool ? "bg-accent animate-pulse" : isThinking ? "bg-yellow animate-pulse" : "bg-text-dim"}`} />
-              <span className="text-xs text-text truncate">{t.name || t.id}</span>
-              <span className="text-[10px] text-text-muted truncate flex-1">{state}</span>
-              {t.age && <span className="text-[10px] text-text-dim tabular-nums shrink-0">{t.age}</span>}
-            </button>
+              <button
+                type="button"
+                onClick={() => onThreadSelect(t.id)}
+                className="min-w-0 flex flex-1 items-center gap-2 py-1.5 pr-1 text-left"
+                title={`Show runtime stream for ${t.name || t.id}`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${tool ? "bg-accent animate-pulse" : isThinking ? "bg-yellow animate-pulse" : selected ? "bg-accent" : "bg-text-dim"}`} />
+                <span className={`text-xs truncate ${selected ? "text-accent font-medium" : "text-text"}`}>{t.name || t.id}</span>
+                <span className="text-[10px] text-text-muted truncate flex-1">{state}</span>
+                {t.age && <span className="text-[10px] text-text-dim tabular-nums shrink-0">{t.age}</span>}
+              </button>
+              <button
+                type="button"
+                onClick={() => onThreadOpen(t.id)}
+                className="mr-1 inline-flex shrink-0 rounded px-1.5 py-0.5 text-[10px] text-text-dim hover:bg-bg-hover hover:text-text"
+                title={`Open ${t.name || t.id} details`}
+              >
+                open
+              </button>
+            </div>
           );
         })}
       </div>
@@ -2232,10 +2307,17 @@ function CapabilityRow({
   );
 }
 
-function RuntimeStream({ events }: { events: RuntimeEventItem[] }) {
+function RuntimeStream({
+  events,
+  selectedThreadId,
+}: {
+  events: RuntimeEventItem[];
+  selectedThreadId: string;
+}) {
   const [filter, setFilter] = useState<"all" | RuntimeEventItem["kind"]>("all");
   const [query, setQuery] = useState("");
   const visible = events
+    .filter((e) => selectedThreadId === "all" || (e.threadId || "main") === selectedThreadId)
     .filter((e) => filter === "all" || e.kind === filter)
     .filter((e) => {
       const q = query.trim().toLowerCase();
@@ -2263,17 +2345,22 @@ function RuntimeStream({ events }: { events: RuntimeEventItem[] }) {
             </button>
           ))}
         </div>
+        <span className="hidden sm:inline-flex shrink-0 rounded bg-bg-hover px-2 py-1 text-[10px] text-text-muted">
+          thread: <span className="ml-1 text-text">{selectedThreadId === "all" ? "all" : selectedThreadId}</span>
+        </span>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search stream"
-          className="ml-auto w-44 bg-bg-input border border-border rounded px-2 py-1 text-[11px] text-text focus:outline-none focus:border-accent"
+          className="ml-auto w-32 sm:w-44 bg-bg-input border border-border rounded px-2 py-1 text-[11px] text-text focus:outline-none focus:border-accent"
         />
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
         {visible.length === 0 ? (
           <div className="h-full flex items-center justify-center text-text-dim text-sm">
-            Runtime events will appear here.
+            {selectedThreadId === "all"
+              ? "Runtime events will appear here."
+              : `No runtime events for ${selectedThreadId}.`}
           </div>
         ) : (
           <div className="space-y-1.5">

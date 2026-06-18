@@ -23,6 +23,7 @@ import {
   type MarketplaceEntry,
 } from "../api";
 import { useProjects } from "../hooks/useProjects";
+import { usePageTitle } from "../hooks/usePageTitle";
 import { ConnectIntegrationModal } from "../components/integrations/ConnectIntegrationModal";
 
 // AgentNew — guided "build your first agent" wizard. Four steps:
@@ -204,6 +205,8 @@ function buildAppGrantPolicies(state: WizardState): AppGrantPolicy[] {
 }
 
 export function AgentNew() {
+  usePageTitle("New Agent");
+
   const navigate = useNavigate();
   const { currentProject } = useProjects();
   const [stepIdx, setStepIdx] = useState(0);

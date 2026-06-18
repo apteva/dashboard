@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
@@ -45,8 +45,10 @@ export function Layout() {
   const [refreshing, setRefreshing] = useState(false);
   const { projects, currentProject, setCurrentProject } = useProjects();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, logout } = useAuth();
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(readContextAgentChatOpenDefault);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // Boot the global notifications source once the user is logged in.
   //
@@ -254,147 +256,187 @@ export function Layout() {
   // another's" active-link disambiguation. Doesn't change rendering.
   const navItems = [...primaryNav, ...appNav, ...manageNav];
 
-  return (
-    <div className="flex h-screen bg-bg">
-      {/* Sidebar */}
-      <nav className="w-56 border-r border-border flex flex-col">
-        <div className="px-5 py-4 border-b border-border">
-          <span className="text-accent font-bold text-lg">Apteva</span>
-        </div>
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname]);
 
-        {/* Project selector. Projects the current user didn't create
-            (typically because they were invited as a member, or because
-            they're a platform admin seeing every project) get a
-            "(shared)" tag so the picker UI signals "you're peeking
-            into someone else's workspace." */}
-        {projects.length > 0 && (
-          <div className="px-3 py-3 border-b border-border">
-            <select
-              value={currentProject?.id || ""}
-              onChange={(e) => {
-                const p = projects.find((p) => p.id === e.target.value);
-                setCurrentProject(p || null);
-              }}
-              className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
-            >
-              {projects.map((p) => {
-                const mine = user && user !== false && p.user_id === user.id;
-                return (
-                  <option key={p.id} value={p.id}>
-                    {p.name}{mine ? "" : " (shared)"}
-                  </option>
-                );
-              })}
-            </select>
-          </div>
-        )}
-
-        {/* Primary call-to-action — building a new agent is the
-            highest-frequency creative action in the app, so it sits
-            above the nav rail (not behind a "go to Agents → click +"
-            two-step). Filled accent so it stays the focal point of
-            the sidebar regardless of which page is selected. */}
-        <div className="px-3 py-3 border-b border-border">
+  const renderSidebar = (mobile = false) => (
+    <>
+      <div className="px-5 py-4 border-b border-border flex items-center justify-between">
+        <span className="text-accent font-bold text-lg">Apteva</span>
+        {mobile && (
           <button
-            onClick={() => navigate("/agents/new")}
-            className="w-full flex items-center justify-center gap-2 bg-accent text-bg rounded-lg px-3 py-2 text-sm font-bold hover:bg-accent-hover transition-colors"
-            title="Build a new agent"
+            type="button"
+            onClick={() => setMobileNavOpen(false)}
+            className="h-8 w-8 inline-flex items-center justify-center rounded border border-border text-text-muted hover:text-text hover:bg-bg-hover"
+            aria-label="Close navigation"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M12 5v14" />
-              <path d="M5 12h14" />
-            </svg>
-            New agent
+            x
           </button>
-        </div>
-
-        <div className="flex-1 py-3 overflow-y-auto">
-          {/* Primary group — the platform's daily-use verbs.
-              No section label: this group IS the dashboard's default. */}
-          {primaryNav.map((item) => (
-            <SidebarLink
-              key={item.to}
-              item={item}
-              navItems={navItems}
-            />
-          ))}
-
-          {/* Apps group — only rendered when ≥1 installed app has a
-              project.page panel. Header label tells the user these are
-              contributed by sidecars, and each entry carries the app's
-              own icon to reinforce the "third-party" visual cue.
-              Caps the visible list at SIDEBAR_APPS_VISIBLE so an
-              installer with 20+ apps doesn't bury the MANAGE section
-              below the fold. Anything beyond the cap collapses behind
-              a "More apps (N)" toggle. Pinning lands in a later PR; for
-              now the first SIDEBAR_APPS_VISIBLE entries (server's sort
-              order) are the ones shown. */}
-          {appNav.length > 0 && (() => {
-            const visibleApps = showAllApps ? appNav : appNav.slice(0, SIDEBAR_APPS_VISIBLE);
-            const overflow = appNav.length - visibleApps.length;
-            return (
-              <>
-                <SidebarSectionHeader label="APPS" />
-                {visibleApps.map((item) => (
-                  <SidebarLink
-                    key={item.to}
-                    item={item}
-                    navItems={navItems}
-                    iconUrl={item.icon}
-                  />
-                ))}
-                {(overflow > 0 || showAllApps) && (
-                  <button
-                    onClick={toggleShowAllApps}
-                    className="w-full px-5 py-2 text-xs text-text-muted hover:text-text text-left transition-colors"
-                  >
-                    {showAllApps
-                      ? "Show less"
-                      : `+ More apps (${overflow})`}
-                  </button>
-                )}
-              </>
-            );
-          })()}
-
-          {/* Manage group — platform-administration verbs. Things you
-              do TO the platform, not WITH the platform's daily surfaces. */}
-          <SidebarSectionHeader label="MANAGE" />
-          {manageNav.map((item) => (
-            <SidebarLink
-              key={item.to}
-              item={item}
-              navItems={navItems}
-            />
-          ))}
-        </div>
-        {/* Logged-in user + account menu (change password, logout). Rendered
-            above the version line so it sits in the same footer area. */}
-        {user && user !== false && (
-          <AccountMenu user={user} onLogout={logout} />
         )}
+      </div>
 
-        {version && (
-          <div className="px-5 py-3 border-t border-border flex items-center gap-2">
-            <span
-              className="text-text-muted text-xs"
-              title={versionTip}
+      {/* Project selector. Projects the current user didn't create
+          (typically because they were invited as a member, or because
+          they're a platform admin seeing every project) get a
+          "(shared)" tag so the picker UI signals "you're peeking
+          into someone else's workspace." */}
+      {projects.length > 0 && (
+        <div className="px-3 py-3 border-b border-border">
+          <select
+            value={currentProject?.id || ""}
+            onChange={(e) => {
+              const p = projects.find((p) => p.id === e.target.value);
+              setCurrentProject(p || null);
+            }}
+            className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+          >
+            {projects.map((p) => {
+              const mine = user && user !== false && p.user_id === user.id;
+              return (
+                <option key={p.id} value={p.id}>
+                  {p.name}{mine ? "" : " (shared)"}
+                </option>
+              );
+            })}
+          </select>
+        </div>
+      )}
+
+      {/* Primary call-to-action — building a new agent is the
+          highest-frequency creative action in the app, so it sits
+          above the nav rail (not behind a "go to Agents → click +"
+          two-step). Filled accent so it stays the focal point of
+          the sidebar regardless of which page is selected. */}
+      <div className="px-3 py-3 border-b border-border">
+        <button
+          onClick={() => {
+            navigate("/agents/new");
+            if (mobile) setMobileNavOpen(false);
+          }}
+          className="w-full flex items-center justify-center gap-2 bg-accent text-bg rounded-lg px-3 py-2 text-sm font-bold hover:bg-accent-hover transition-colors"
+          title="Build a new agent"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
+          </svg>
+          New agent
+        </button>
+      </div>
+
+      <div className="flex-1 py-3 overflow-y-auto">
+        {/* Primary group — the platform's daily-use verbs.
+            No section label: this group IS the dashboard's default. */}
+        {primaryNav.map((item) => (
+          <SidebarLink
+            key={item.to}
+            item={item}
+            navItems={navItems}
+            onNavigate={mobile ? () => setMobileNavOpen(false) : undefined}
+          />
+        ))}
+
+        {/* Apps group — only rendered when >=1 installed app has a
+            project.page panel. Header label tells the user these are
+            contributed by sidecars, and each entry carries the app's
+            own icon to reinforce the "third-party" visual cue.
+            Caps the visible list at SIDEBAR_APPS_VISIBLE so an
+            installer with 20+ apps doesn't bury the MANAGE section
+            below the fold. Anything beyond the cap collapses behind
+            a "More apps (N)" toggle. Pinning lands in a later PR; for
+            now the first SIDEBAR_APPS_VISIBLE entries (server's sort
+            order) are the ones shown. */}
+        {appNav.length > 0 && (() => {
+          const visibleApps = showAllApps ? appNav : appNav.slice(0, SIDEBAR_APPS_VISIBLE);
+          const overflow = appNav.length - visibleApps.length;
+          return (
+            <>
+              <SidebarSectionHeader label="APPS" />
+              {visibleApps.map((item) => (
+                <SidebarLink
+                  key={item.to}
+                  item={item}
+                  navItems={navItems}
+                  iconUrl={item.icon}
+                  onNavigate={mobile ? () => setMobileNavOpen(false) : undefined}
+                />
+              ))}
+              {(overflow > 0 || showAllApps) && (
+                <button
+                  onClick={toggleShowAllApps}
+                  className="w-full px-5 py-2 text-xs text-text-muted hover:text-text text-left transition-colors"
+                >
+                  {showAllApps
+                    ? "Show less"
+                    : `+ More apps (${overflow})`}
+                </button>
+              )}
+            </>
+          );
+        })()}
+
+        {/* Manage group — platform-administration verbs. Things you
+            do TO the platform, not WITH the platform's daily surfaces. */}
+        <SidebarSectionHeader label="MANAGE" />
+        {manageNav.map((item) => (
+          <SidebarLink
+            key={item.to}
+            item={item}
+            navItems={navItems}
+            onNavigate={mobile ? () => setMobileNavOpen(false) : undefined}
+          />
+        ))}
+      </div>
+      {/* Logged-in user + account menu (change password, logout). Rendered
+          above the version line so it sits in the same footer area. */}
+      {user && user !== false && (
+        <AccountMenu user={user} onLogout={logout} />
+      )}
+
+      {version && (
+        <div className="px-5 py-3 border-t border-border flex items-center gap-2">
+          <span
+            className="text-text-muted text-xs"
+            title={versionTip}
+          >
+            v{version}
+          </span>
+          {platformStatus?.update_available && (
+            <button
+              type="button"
+              onClick={() => setUpdateModalOpen(true)}
+              className="text-xs px-2 py-0.5 rounded bg-yellow/15 text-yellow hover:bg-yellow/25 transition-colors"
+              title="Click for update details"
             >
-              v{version}
-            </span>
-            {platformStatus?.update_available && (
-              <button
-                type="button"
-                onClick={() => setUpdateModalOpen(true)}
-                className="text-xs px-2 py-0.5 rounded bg-yellow/15 text-yellow hover:bg-yellow/25 transition-colors"
-                title="Click for update details"
-              >
-                update available
-              </button>
-            )}
-          </div>
-        )}
+              update available
+            </button>
+          )}
+        </div>
+      )}
+    </>
+  );
+
+  return (
+    <div className="flex h-dvh min-h-dvh bg-bg overflow-hidden">
+      {/* Sidebar */}
+      <nav className="hidden md:flex w-56 shrink-0 border-r border-border flex-col">
+        {renderSidebar(false)}
       </nav>
+
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/50"
+            onClick={() => setMobileNavOpen(false)}
+            aria-label="Close navigation"
+          />
+          <nav className="relative h-full w-[min(20rem,86vw)] bg-bg border-r border-border flex flex-col shadow-xl">
+            {renderSidebar(true)}
+          </nav>
+        </div>
+      )}
 
       {updateModalOpen && platformStatus && (
         <PlatformUpdateModal
@@ -406,11 +448,30 @@ export function Layout() {
       )}
 
       {/* Main content */}
-      <main className="flex-1 overflow-hidden flex flex-col">
+      <main className="flex-1 min-w-0 overflow-hidden flex flex-col">
         {/* Slim top bar — global controls. Currently just the
             notifications tray; placeholder for future search,
             user-shortcut, or quick-create surfaces. */}
-        <div className="h-10 border-b border-border flex items-center justify-end px-3 flex-shrink-0">
+        <div className="h-12 md:h-10 border-b border-border flex items-center justify-between md:justify-end gap-3 px-3 flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => setMobileNavOpen(true)}
+            className="md:hidden h-9 w-9 inline-flex items-center justify-center rounded border border-border text-text-muted hover:text-text hover:bg-bg-hover"
+            aria-label="Open navigation"
+          >
+            <span className="sr-only">Open navigation</span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M4 7h16" />
+              <path d="M4 12h16" />
+              <path d="M4 17h16" />
+            </svg>
+          </button>
+          <div className="md:hidden min-w-0 flex-1">
+            <div className="text-sm font-bold text-accent truncate">Apteva</div>
+            {currentProject && (
+              <div className="text-[11px] text-text-dim truncate">{currentProject.name}</div>
+            )}
+          </div>
           <NotificationsTray />
         </div>
         <div className="flex-1 overflow-hidden">
@@ -548,10 +609,12 @@ function SidebarLink({
   item,
   navItems,
   iconUrl,
+  onNavigate,
 }: {
   item: { to: string; label: string };
   navItems: { to: string; label: string }[];
   iconUrl?: string;
+  onNavigate?: () => void;
 }) {
   const isPrefixOfAnother = navItems.some(
     (other) => other !== item && other.to.startsWith(item.to + (item.to === "/" ? "" : "/")),
@@ -560,6 +623,7 @@ function SidebarLink({
     <NavLink
       to={item.to}
       end={item.to === "/" || isPrefixOfAnother}
+      onClick={onNavigate}
       className={({ isActive }) =>
         `flex items-center gap-2 px-5 py-2 text-sm transition-colors ${
           isActive

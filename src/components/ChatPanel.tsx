@@ -480,7 +480,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   useEffect(() => {
     if (!chatId) return;
     return chatConnections.subscribeStream(chatId, (f) => {
-      setStreamingText(f ? f.text : null);
+      setStreamingText(f && !f.done ? f.text : null);
     });
   }, [chatId]);
 

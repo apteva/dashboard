@@ -15,6 +15,7 @@ import {
   type PreflightAppCandidate,
 } from "../api";
 import { useProjects } from "../hooks/useProjects";
+import { usePageTitle } from "../hooks/usePageTitle";
 import { Modal } from "../components/Modal";
 import { AppSurfaceBadges } from "../components/apps/AppSurfaceBadges";
 import { AppDetailPanel } from "../components/apps/AppDetailPanel";
@@ -54,6 +55,7 @@ function AppIcon({ url, name }: { url?: string; name: string }) {
 export function Apps() {
   const { currentProject } = useProjects();
   const [tab, setTab] = useState<Tab>("installed");
+  usePageTitle(["Apps", tab === "marketplace" ? "Marketplace" : "Installed"]);
   const [rows, setRows] = useState<AppRow[]>([]);
   const [marketplace, setMarketplace] = useState<MarketplaceEntry[]>([]);
   const [registryURL, setRegistryURL] = useState<string>("");

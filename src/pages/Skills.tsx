@@ -21,10 +21,13 @@ import {
   type InstanceSkillStatus,
 } from "../api";
 import { useProjects } from "../hooks/useProjects";
+import { usePageTitle } from "../hooks/usePageTitle";
 
 type SourceFilter = "all" | "user" | "app" | "builtin";
 
 export function Skills() {
+  usePageTitle("Skills");
+
   const { currentProject } = useProjects();
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
@@ -100,7 +103,7 @@ export function Skills() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search by name, description, command…"
-          className="ml-auto bg-bg-input border border-border rounded px-2 py-1 text-sm text-text focus:outline-none focus:border-accent w-64"
+          className="w-full sm:w-64 sm:ml-auto bg-bg-input border border-border rounded px-2 py-1 text-sm text-text focus:outline-none focus:border-accent"
         />
         <button
           type="button"
@@ -289,7 +292,7 @@ function SkillPanel({
   return (
     <>
       <div className="fixed inset-0 bg-bg-overlay z-40" onClick={onClose} />
-      <aside className="fixed top-0 right-0 h-full w-[640px] max-w-[95vw] bg-bg-card border-l border-border z-50 flex flex-col shadow-xl">
+      <aside className="fixed inset-x-0 bottom-0 top-12 sm:inset-y-0 sm:left-auto sm:w-[640px] sm:max-w-[95vw] bg-bg-card border-t sm:border-t-0 sm:border-l border-border z-50 flex flex-col shadow-xl">
         <header className="px-5 py-3 border-b border-border flex items-center gap-3">
           <h2 className="text-text font-medium flex-1">
             {isCreate ? "New skill" : skill!.name}

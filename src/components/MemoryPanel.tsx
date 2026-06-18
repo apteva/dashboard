@@ -232,7 +232,7 @@ export function MemoryPanel({ instanceId }: Props) {
       </div>
 
       <Modal open={!!editing} onClose={() => setEditing(null)}>
-        <div className="p-6 w-[560px] max-w-full space-y-3">
+        <div className="p-4 sm:p-6 w-full max-w-[560px] space-y-3">
           <h2 className="text-text text-base font-bold">Edit memory #{editing?.index}</h2>
           <p className="text-text-dim text-xs leading-snug">
             Saving will recompute the embedding, so recall will surface the
@@ -266,7 +266,7 @@ export function MemoryPanel({ instanceId }: Props) {
       </Modal>
 
       <Modal open={!!deleting} onClose={() => !deletingBusy && setDeleting(null)}>
-        <div className="p-6 w-[480px] max-w-full space-y-3">
+        <div className="p-4 sm:p-6 w-full max-w-[480px] space-y-3">
           <h2 className="text-text text-base font-bold">Delete memory #{deleting?.index}?</h2>
           <p className="text-text-dim text-xs leading-snug">
             The agent will forget this immediately. Future recall will no

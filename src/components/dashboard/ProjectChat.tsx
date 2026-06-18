@@ -110,6 +110,10 @@ export function ProjectChat() {
     try { localStorage.setItem(FOCUSED_KEY, String(focused)); } catch {}
   }, [focused]);
 
+  const focusedAgent = focused !== null
+    ? list.find((inst) => inst.id === focused) || null
+    : null;
+
   if (list.length === 0) {
     return (
       <div className="border border-border rounded-lg p-6 flex items-center justify-center min-h-[280px]">
@@ -119,17 +123,38 @@ export function ProjectChat() {
   }
 
   return (
-    <div className="border border-border rounded-lg flex flex-col min-h-[420px] max-h-[60vh] overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-        <div className="text-xs text-text-dim uppercase tracking-wide">
-          Project chat
+    <div className="border border-border rounded-lg flex flex-col min-h-[420px] max-h-[70vh] md:max-h-[60vh] overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-border">
+        <div className="min-w-0">
+          <div className="text-xs text-text-dim uppercase tracking-wide">
+            Project chat
+          </div>
+          {focusedAgent && (
+            <div className="md:hidden text-xs text-text-muted truncate mt-0.5">
+              {focusedAgent.name}
+            </div>
+          )}
         </div>
-        <div className="text-xs text-text-muted">{list.length} agents</div>
+        <select
+          value={focused ?? ""}
+          onChange={(e) => {
+            const n = parseInt(e.target.value, 10);
+            setFocused(Number.isFinite(n) ? n : null);
+          }}
+          className="md:hidden max-w-[55%] bg-bg-input border border-border rounded px-2 py-1 text-xs text-text focus:outline-none focus:border-accent"
+        >
+          {list.map((inst) => (
+            <option key={inst.id} value={inst.id}>
+              {inst.name}
+            </option>
+          ))}
+        </select>
+        <div className="hidden md:block text-xs text-text-muted">{list.length} agents</div>
       </div>
 
-      <div className="flex-1 grid grid-cols-[180px_minmax(0,1fr)] divide-x divide-border overflow-hidden">
+      <div className="flex-1 min-h-0 flex md:grid md:grid-cols-[180px_minmax(0,1fr)] md:divide-x md:divide-border overflow-hidden">
         {/* Sidebar — instance list */}
-        <div className="overflow-y-auto">
+        <div className="hidden md:block overflow-y-auto">
           <ul>
             {list.map((inst) => {
               const unread = unreadByInstance.get(inst.id) || 0;
@@ -168,7 +193,7 @@ export function ProjectChat() {
         </div>
 
         {/* Main pane — focused chat */}
-        <div className="flex flex-col min-h-0">
+        <div className="flex flex-1 flex-col min-h-0">
           {focused !== null ? (
             <ChatPanel
               key={focused /* force ChatPanel state to reset on switch */}

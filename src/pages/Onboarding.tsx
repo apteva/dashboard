@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { auth, providerTypes, providers, projects, type ProviderTypeInfo, type Project } from "../api";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme, type ThemeMode } from "../hooks/useTheme";
+import { usePageTitle } from "../hooks/usePageTitle";
 
 // Welcome flow gated on users.onboarded_at being NULL (see
 // <OnboardingGate> in App.tsx). Skip is allowed at every step; the
@@ -32,6 +33,7 @@ const STEPS: StepDef[] = [
 
 export function Onboarding() {
   const [stepIdx, setStepIdx] = useState(0);
+  usePageTitle("Onboarding");
   const [finishing, setFinishing] = useState(false);
   // providerAdded — flipped by ProviderStep when it successfully
   // saves a key. Drives the post-onboarding redirect: with a provider,

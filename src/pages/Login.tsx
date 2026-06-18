@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { usePageTitle } from "../hooks/usePageTitle";
 import { auth, projectInvites, type InvitePreview } from "../api";
 
 // Login renders one of three flows depending on the server's registration mode:
@@ -19,6 +20,7 @@ export function Login() {
   const [mode, setMode] = useState<"loading" | "setup" | "login" | "register">(
     "loading",
   );
+  usePageTitle(mode === "setup" ? "Setup" : mode === "register" ? "Create Account" : "Login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [setupToken, setSetupToken] = useState("");

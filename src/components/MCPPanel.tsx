@@ -226,7 +226,7 @@ export function MCPPanel({ instanceId, running }: Props) {
 
       {/* Picker modal */}
       <Modal open={picker} onClose={() => setPicker(false)}>
-        <div className="p-6 max-h-[70vh] flex flex-col min-w-[480px]">
+        <div className="p-4 sm:p-6 max-h-[70vh] flex flex-col w-full max-w-[480px]">
           <div className="shrink-0 mb-4">
             <h3 className="text-text text-base font-bold">Attach MCP server</h3>
             <p className="text-text-muted text-sm mt-1">

@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apps, type AppRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
+import { usePageTitle } from "../hooks/usePageTitle";
 import { resolvePanelComponent } from "../components/apps/nativePanels";
 
 export function AppProjectPage() {
@@ -18,6 +19,7 @@ export function AppProjectPage() {
   const { currentProject } = useProjects();
   const [app, setApp] = useState<AppRow | null>(null);
   const [error, setError] = useState("");
+  usePageTitle(["App", app?.display_name || app?.name || name || "loading"]);
 
   useEffect(() => {
     if (!name) return;

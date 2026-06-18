@@ -27,12 +27,12 @@ export function Modal({ open, onClose, children, width = "max-w-2xl" }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4"
       onClick={onClose}
     >
       <div className="absolute inset-0 bg-bg/80 backdrop-blur-sm" />
       <div
-        className={`relative bg-bg-card border border-border rounded-lg shadow-lg ${width} w-full mx-4 overflow-hidden flex flex-col max-h-[90vh]`}
+        className={`relative bg-bg-card border border-border rounded-lg shadow-lg ${width} w-full overflow-hidden flex flex-col max-h-[90vh]`}
         onClick={(e) => e.stopPropagation()}
       >
         {children}

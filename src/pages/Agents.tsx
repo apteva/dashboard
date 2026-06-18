@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { instances, core, type Agent, type RunMode, type Status, type TelemetryEvent } from "../api";
+import { instances, core, subscriptions, type Agent, type RunMode, type Status, type SubscriptionInfo, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
+import { usePageTitle } from "../hooks/usePageTitle";
 import { Modal } from "../components/Modal";
 
 // Per-instance live activity snapshot built from the all-instances SSE
@@ -32,11 +33,14 @@ interface LiveActivity {
 // with status + quick lifecycle actions + a create form. Clicking a row
 // navigates to /instances/:id which renders the full AgentView.
 export function Agents() {
+  usePageTitle("Agents");
+
   const { currentProject } = useProjects();
   const projectId = currentProject?.id;
   const navigate = useNavigate();
 
   const [list, setList] = useState<Agent[]>([]);
+  const [agentSubscriptions, setAgentSubscriptions] = useState<Record<number, SubscriptionInfo[]>>({});
   const [loaded, setLoaded] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
@@ -136,13 +140,16 @@ export function Agents() {
   const loadGen = useRef(0);
   const load = () => {
     const myGen = loadGen.current;
-    instances
-      .list(projectId)
-      .then((items) => {
+    Promise.all([
+      instances.list(projectId),
+      subscriptions.list(projectId).catch(() => [] as SubscriptionInfo[]),
+    ])
+      .then(([items, subs]) => {
         // Drop the response if a new project was selected (or the
         // component unmounted) since this fetch fired.
         if (myGen !== loadGen.current) return;
         setList(items || []);
+        setAgentSubscriptions(groupSubscriptionsByAgent(subs || []));
         setLoaded(true);
       })
       .catch(() => {
@@ -157,6 +164,7 @@ export function Agents() {
     // projectId stops writing state.
     loadGen.current += 1;
     setList([]);
+    setAgentSubscriptions({});
     setLoaded(false);
     setLiveStatus({});
     load();
@@ -468,6 +476,7 @@ export function Agents() {
           {list.map((inst) => {
             const live = liveStatus[inst.id];
             const isRunning = inst.status === "running";
+            const pointingSubscriptions = agentSubscriptions[inst.id] || [];
             return (
               <div
                 key={inst.id}
@@ -614,6 +623,35 @@ export function Agents() {
                           <span className="opacity-50">stopped</span>
                         )}
                       </div>
+                      {pointingSubscriptions.length > 0 && (
+                        <div className="flex items-center flex-wrap gap-1 mt-1.5">
+                          <span className="text-[10px] text-text-dim">subs:</span>
+                          {pointingSubscriptions.slice(0, 3).map((sub) => (
+                            <span
+                              key={sub.id}
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] max-w-[13rem] ${
+                                sub.enabled
+                                  ? "bg-green/10 text-green"
+                                  : "bg-border text-text-muted"
+                              }`}
+                              title={subscriptionTitle(sub)}
+                            >
+                              <span className="truncate">{subscriptionLabel(sub)}</span>
+                              {sub.thread_id && sub.thread_id !== "main" && (
+                                <span className="opacity-70 font-mono">#{sub.thread_id}</span>
+                              )}
+                            </span>
+                          ))}
+                          {pointingSubscriptions.length > 3 && (
+                            <span
+                              className="text-[10px] text-text-dim px-1.5 py-0.5"
+                              title={pointingSubscriptions.slice(3).map(subscriptionTitle).join("\n")}
+                            >
+                              +{pointingSubscriptions.length - 3} more
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {/* Attached MCP servers for this agent. The
                           main/catalog split is gone post-discovery
                           refactor — every attached MCP is reachable
@@ -801,7 +839,7 @@ export function Agents() {
         {editTarget && (
           <form
             onSubmit={(e) => { e.preventDefault(); void saveEdit(); }}
-            className="p-6 w-[560px] max-w-full space-y-4"
+            className="p-4 sm:p-6 w-full max-w-[560px] space-y-4"
           >
             <div>
               <h2 className="text-text text-base font-bold">Edit agent</h2>
@@ -870,7 +908,7 @@ export function Agents() {
           covers the full viewport regardless of which list row the
           user was viewing when they clicked + New Agent. */}
       <Modal open={showCreate} onClose={() => { setShowCreate(false); setError(""); }}>
-        <form onSubmit={handleCreate} className="p-6 w-[520px] max-w-full space-y-4">
+        <form onSubmit={handleCreate} className="p-4 sm:p-6 w-full max-w-[520px] space-y-4">
           <h2 className="text-text text-base font-bold">Create agent</h2>
           <div>
             <label className="block text-text-muted text-sm mb-2">Name</label>
@@ -940,4 +978,40 @@ export function Agents() {
       </Modal>
     </div>
   );
+}
+
+function groupSubscriptionsByAgent(subs: SubscriptionInfo[]): Record<number, SubscriptionInfo[]> {
+  const grouped: Record<number, SubscriptionInfo[]> = {};
+  for (const sub of subs) {
+    const id = Number(sub.instance_id || 0);
+    if (!id) continue;
+    if (!grouped[id]) grouped[id] = [];
+    grouped[id].push(sub);
+  }
+  for (const id of Object.keys(grouped)) {
+    grouped[Number(id)].sort((a, b) => subscriptionLabel(a).localeCompare(subscriptionLabel(b)));
+  }
+  return grouped;
+}
+
+function subscriptionLabel(sub: SubscriptionInfo): string {
+  const name = (sub.name || "").trim();
+  if (name) return name;
+  const firstEvent = (sub.events || []).find(Boolean);
+  if (firstEvent) return firstEvent;
+  const slug = (sub.slug || "").trim();
+  if (slug) return slug.replace(":", ".");
+  return sub.source === "app_event" ? "app event" : "webhook";
+}
+
+function subscriptionTitle(sub: SubscriptionInfo): string {
+  const parts = [
+    subscriptionLabel(sub),
+    sub.enabled ? "enabled" : "disabled",
+    sub.source ? `source: ${sub.source}` : "",
+    sub.thread_id ? `thread: ${sub.thread_id}` : "thread: main",
+    (sub.events || []).length > 0 ? `events: ${(sub.events || []).join(", ")}` : "",
+    sub.slug ? `slug: ${sub.slug}` : "",
+  ].filter(Boolean);
+  return parts.join("\n");
 }

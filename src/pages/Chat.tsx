@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { instances, chat, type Agent, type UnreadSummaryRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
+import { usePageTitle } from "../hooks/usePageTitle";
 import { ChatSidebar } from "../components/chat/ChatSidebar";
 import { ChatMain } from "../components/chat/ChatMain";
 import { AgentContextCard } from "../components/chat/AgentContextCard";
@@ -35,6 +36,7 @@ export function Chat() {
   const [summary, setSummary] = useState<UnreadSummaryRow[]>([]);
   const [showRightPane, setShowRightPane] = useState(true);
   const [showSwitcher, setShowSwitcher] = useState(false);
+  const [showMobileList, setShowMobileList] = useState(false);
 
   // Notifications drive unread badges.
   const allNotifs = useSyncExternalStore(
@@ -115,6 +117,8 @@ export function Chat() {
     [list, focusedInstanceId],
   );
 
+  usePageTitle(focusedInstance ? ["Chat", focusedInstance.name] : "Chat");
+
   // Cmd-K / Ctrl-K opens the switch palette.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -133,29 +137,53 @@ export function Chat() {
   const selectChat = (chatId: string) => {
     navigate(`/chat/${chatId}`);
     setShowSwitcher(false);
+    setShowMobileList(false);
   };
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <div className="border-b border-border px-6 py-3 flex items-center justify-between">
-        <h1 className="text-text text-lg font-bold">Chat</h1>
+      <div className="border-b border-border px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <button
+            onClick={() => setShowMobileList(true)}
+            className="md:hidden text-xs text-text-muted hover:text-text border border-border rounded px-2 py-1"
+            title="Show agents"
+          >
+            agents
+          </button>
+          <h1 className="text-text text-lg font-bold truncate">Chat</h1>
+        </div>
         <button
           onClick={() => setShowSwitcher(true)}
-          className="text-xs text-text-muted hover:text-text border border-border rounded px-2 py-1 font-mono"
+          className="shrink-0 text-xs text-text-muted hover:text-text border border-border rounded px-2 py-1 font-mono"
           title="Switch chat (⌘K)"
         >
           ⌘K
         </button>
       </div>
 
-      <div className="flex-1 grid grid-cols-[240px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)_280px] divide-x divide-border overflow-hidden">
-        <ChatSidebar
-          instances={list}
-          summary={projectSummary}
-          unreadByInstance={unreadByInstance}
-          focusedChatId={focusedChatId}
-          onSelect={selectChat}
-        />
+      <div className="flex-1 min-h-0 relative md:grid md:grid-cols-[240px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)_280px] md:divide-x md:divide-border overflow-hidden">
+        {showMobileList && (
+          <button
+            type="button"
+            className="absolute inset-0 z-20 bg-black/40 md:hidden"
+            onClick={() => setShowMobileList(false)}
+            aria-label="Close agents"
+          />
+        )}
+        <div
+          className={`absolute inset-y-0 left-0 z-30 w-[min(20rem,86vw)] bg-bg border-r border-border shadow-xl md:static md:block md:w-auto md:shadow-none ${
+            showMobileList ? "block" : "hidden"
+          }`}
+        >
+          <ChatSidebar
+            instances={list}
+            summary={projectSummary}
+            unreadByInstance={unreadByInstance}
+            focusedChatId={focusedChatId}
+            onSelect={selectChat}
+          />
+        </div>
 
         <ChatMain
           chatId={focusedChatId}

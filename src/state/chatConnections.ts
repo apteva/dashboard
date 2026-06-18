@@ -309,6 +309,11 @@ class ChatConnectionsManager {
       try {
         const f = JSON.parse((ev as MessageEvent).data) as StreamFrame;
         if (!f || f.type !== "stream") return;
+        if (f.done) {
+          c.currentStream = null;
+          for (const fn of c.streamListeners) fn(null);
+          return;
+        }
         c.currentStream = f;
         for (const fn of c.streamListeners) fn(f);
       } catch {

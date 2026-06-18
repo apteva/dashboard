@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useNotifications, type Notification } from "../state/notifications";
 import { markChatSeen, markAllChatsSeen, setDesktopNotificationsEnabled, desktopNotificationsEnabled } from "../state/chatNotifications";
+import { setUnreadTitleCount } from "../state/documentTitle";
 
 function formatRelative(iso: string): string {
   const ts = Date.parse(iso);
@@ -38,15 +39,11 @@ export function NotificationsTray() {
   const ref = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
-  // Reflect unread count into the browser tab title so it shows up in
-  // pinned tabs / window switchers / cmd-tab. Standard "(N) Apteva"
-  // pattern (Slack/Gmail/Discord); the original title is captured once
-  // on first mount and restored when the count drops back to 0.
+  // Reflect unread count into the browser tab title so it composes with
+  // the current route title, e.g. "(3) Chat: Computer - Apteva".
   useEffect(() => {
-    const original = document.title.replace(/^\(\d+\)\s+/, "");
-    document.title = unreadCount > 0
-      ? `(${unreadCount > 99 ? "99+" : unreadCount}) ${original}`
-      : original;
+    setUnreadTitleCount(unreadCount);
+    return () => setUnreadTitleCount(0);
   }, [unreadCount]);
 
   // Click-outside to close the dropdown.
@@ -103,7 +100,7 @@ export function NotificationsTray() {
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-[360px] max-h-[480px] overflow-hidden rounded-lg border border-border bg-bg-card shadow-xl z-50 flex flex-col">
+        <div className="absolute right-0 mt-2 w-[min(360px,calc(100vw-1rem))] max-h-[480px] overflow-hidden rounded-lg border border-border bg-bg-card shadow-xl z-50 flex flex-col">
           <div className="px-4 py-3 border-b border-border flex items-center justify-between">
             <span className="text-text font-medium text-sm">Notifications</span>
             {items.length > 0 && (

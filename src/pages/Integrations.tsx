@@ -8,6 +8,7 @@ import {
   type AppDetail,
   type ConnectionInfo,
   type ConnectionTestResult,
+  type IntegrationUsageSummary,
   type Provider,
   type ComposioApp,
   type ComposioToolkitDetails,
@@ -40,6 +41,7 @@ import { SuiteConnect } from "../components/SuiteConnect";
 import { IntegrationExplorerPanel } from "../components/integrations/IntegrationExplorerPanel";
 import { useNavigate } from "react-router-dom";
 import { useProjects } from "../hooks/useProjects";
+import { usePageTitle } from "../hooks/usePageTitle";
 
 // Credential-group suite summary — from GET /integrations/groups.
 // The dashboard collapses each suite into a single catalog card.
@@ -53,7 +55,7 @@ type SuiteSummary = {
   has_project_scope: boolean;
 };
 
-type SourceTab = "local" | "composio";
+type SourceTab = "local" | "composio" | "usage";
 
 function defaultLocalAuthType(app: AppDetail | null | undefined): string {
   const types = app?.auth?.types || [];
@@ -85,6 +87,8 @@ function shouldPreferOAuth2(app: AppDetail | null | undefined): boolean {
 }
 
 export function Integrations() {
+  usePageTitle("Integrations");
+
   const { currentProject } = useProjects();
   const navigate = useNavigate();
 
@@ -1131,6 +1135,16 @@ export function Integrations() {
         >
           Composio {!hasComposio && "· inactive"}
         </button>
+        <button
+          onClick={() => setTab("usage")}
+          className={`px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
+            tab === "usage"
+              ? "text-accent border-accent"
+              : "text-text-muted border-transparent hover:text-text"
+          }`}
+        >
+          Usage
+        </button>
       </div>
 
       <div className="flex-1 flex min-h-0">
@@ -1357,11 +1371,15 @@ export function Integrations() {
               </p>
             </section>
           )}
+
+          {tab === "usage" && (
+            <IntegrationUsagePanel projectId={currentProject?.id} />
+          )}
         </div>
 
         {/* Composio toolkit connect form (right panel) */}
         {tab === "composio" && composioPicked && (
-          <div className="w-96 border-l border-border overflow-y-auto p-6">
+          <div className="fixed inset-x-0 bottom-0 top-12 z-40 bg-bg border-t border-border overflow-y-auto p-4 shadow-xl md:static md:z-auto md:w-96 md:shrink-0 md:border-t-0 md:border-l md:p-6 md:shadow-none">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-text text-base font-bold">{composioPicked.name}</h2>
               <button
@@ -1461,7 +1479,7 @@ export function Integrations() {
 
         {/* Local app connect form (right panel) */}
         {tab === "local" && selectedLocalApp && (
-          <div className="w-96 border-l border-border overflow-y-auto p-6">
+          <div className="fixed inset-x-0 bottom-0 top-12 z-40 bg-bg border-t border-border overflow-y-auto p-4 shadow-xl md:static md:z-auto md:w-96 md:shrink-0 md:border-t-0 md:border-l md:p-6 md:shadow-none">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
                 <AppLogo src={selectedLocalApp.logo} className="w-8 h-8 rounded" />
@@ -1677,7 +1695,7 @@ export function Integrations() {
       )}
 
       <Modal open={!!pickerFor} onClose={() => !pickerBusy && setPickerFor(null)}>
-        <div className="p-6 w-[620px] max-w-full space-y-3">
+        <div className="p-4 sm:p-6 w-full max-w-[620px] space-y-3">
           <div>
             <h2 className="text-text text-base font-bold">
               Select tools — {pickerFor?.app_name || pickerFor?.app_slug}
@@ -1778,7 +1796,7 @@ export function Integrations() {
       </Modal>
 
       <Modal open={!!credsFor} onClose={closeCreds}>
-        <div className="p-6 w-[560px] max-w-full space-y-3">
+        <div className="p-4 sm:p-6 w-full max-w-[560px] space-y-3">
           <h2 className="text-text text-base font-bold">
             Credentials — {credsFor?.name}
           </h2>
@@ -1845,7 +1863,7 @@ export function Integrations() {
       </Modal>
 
       <Modal open={!!renameFor} onClose={() => !renameBusy && setRenameFor(null)}>
-        <div className="p-6 w-[420px] max-w-full space-y-3">
+        <div className="p-4 sm:p-6 w-full max-w-[420px] space-y-3">
           <h2 className="text-text text-base font-bold">Rename connection</h2>
           <p className="text-text-dim text-xs leading-snug">
             Only the display name changes. Credentials, project, and the
@@ -1879,7 +1897,7 @@ export function Integrations() {
       </Modal>
 
       <Modal open={!!inviteFor} onClose={() => { setInviteFor(null); setInviteLink(null); setInviteErr(""); }}>
-        <div className="p-6 w-[560px] max-w-full space-y-3">
+        <div className="p-4 sm:p-6 w-full max-w-[560px] space-y-3">
           <h2 className="text-text text-base font-bold">
             Invite link — {inviteFor?.name}
           </h2>
@@ -1994,6 +2012,182 @@ export function Integrations() {
       />
     </div>
   );
+}
+
+function IntegrationUsagePanel({ projectId }: { projectId?: string }) {
+  const [period, setPeriod] = useState("7d");
+  const [summary, setSummary] = useState<IntegrationUsageSummary | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setError("");
+    integrations
+      .usage({ projectId, period })
+      .then(setSummary)
+      .catch((e: any) => setError(e?.message || "failed to load usage"))
+      .finally(() => setLoading(false));
+  }, [projectId, period]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const totalCalls = (summary?.totals || []).reduce((sum, total) => sum + total.calls, 0);
+  const totalErrors = (summary?.totals || []).reduce((sum, total) => sum + total.errors, 0);
+  const providers = new Set((summary?.totals || []).map((total) => total.app_slug)).size;
+  const unitTotals = (summary?.totals || []).reduce<Record<string, number>>((acc, total) => {
+    acc[total.unit] = (acc[total.unit] || 0) + total.quantity;
+    return acc;
+  }, {});
+  const unitSummary = Object.entries(unitTotals)
+    .sort((a, b) => b[1] - a[1])
+    .map(([unit, quantity]) => `${formatUsageNumber(quantity)} ${formatUsageUnit(unit, quantity)}`)
+    .join(", ");
+
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-text text-base font-bold">Integration Usage</h2>
+        <div className="flex items-center gap-2">
+          {["24h", "7d", "30d", "90d"].map((option) => (
+            <button
+              key={option}
+              onClick={() => setPeriod(option)}
+              className={`px-3 py-1.5 rounded border text-xs transition-colors ${
+                period === option
+                  ? "border-accent bg-accent/10 text-accent"
+                  : "border-border text-text-muted hover:text-text hover:bg-bg-hover"
+              }`}
+            >
+              {option}
+            </button>
+          ))}
+          <button
+            onClick={load}
+            disabled={loading}
+            className="px-3 py-1.5 rounded border border-border text-xs text-text-muted hover:text-text hover:bg-bg-hover disabled:opacity-50"
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="text-red text-sm">{error}</div>}
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <UsageStat label="Calls" value={formatUsageNumber(totalCalls)} />
+        <UsageStat label="Errors" value={formatUsageNumber(totalErrors)} tone={totalErrors > 0 ? "red" : "default"} />
+        <UsageStat label="Providers" value={formatUsageNumber(providers)} />
+        <UsageStat label="Volume" value={unitSummary || "0 requests"} />
+      </div>
+
+      <div className="border border-border rounded-lg bg-bg-card overflow-hidden">
+        <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
+          <div className="text-text text-sm font-bold">By Provider And Tool</div>
+          {summary?.since && (
+            <div className="text-text-dim text-xs">
+              Since {new Date(summary.since).toLocaleString()}
+            </div>
+          )}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[860px] text-sm">
+            <thead className="text-text-dim border-b border-border">
+              <tr>
+                <th className="text-left font-normal px-4 py-2">Provider</th>
+                <th className="text-left font-normal px-4 py-2">Tool</th>
+                <th className="text-right font-normal px-4 py-2">Quantity</th>
+                <th className="text-right font-normal px-4 py-2">Calls</th>
+                <th className="text-right font-normal px-4 py-2">Errors</th>
+                <th className="text-left font-normal px-4 py-2">Direction</th>
+                <th className="text-left font-normal px-4 py-2">Grant</th>
+                <th className="text-left font-normal px-4 py-2">Caller</th>
+                <th className="text-left font-normal px-4 py-2">Last</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan={9} className="px-4 py-6 text-center text-text-muted">
+                    Loading usage…
+                  </td>
+                </tr>
+              )}
+              {!loading && (!summary || summary.rows.length === 0) && (
+                <tr>
+                  <td colSpan={9} className="px-4 py-6 text-center text-text-muted">
+                    No usage recorded.
+                  </td>
+                </tr>
+              )}
+              {!loading && summary?.rows.map((row, idx) => (
+                <tr key={`${row.app_slug}:${row.tool}:${row.unit}:${row.grant_id || ""}:${idx}`} className="border-t border-border/70">
+                  <td className="px-4 py-3 text-text font-medium">{row.app_slug || "unknown"}</td>
+                  <td className="px-4 py-3 text-text-muted font-mono text-xs">{row.tool || "tool"}</td>
+                  <td className="px-4 py-3 text-right text-text">
+                    {formatUsageNumber(row.quantity)} {formatUsageUnit(row.unit, row.quantity)}
+                  </td>
+                  <td className="px-4 py-3 text-right text-text-muted">{formatUsageNumber(row.calls)}</td>
+                  <td className={`px-4 py-3 text-right ${row.errors > 0 ? "text-red" : "text-text-muted"}`}>
+                    {formatUsageNumber(row.errors)}
+                  </td>
+                  <td className="px-4 py-3 text-text-muted">
+                    <span className="inline-flex rounded bg-bg-hover px-1.5 py-0.5 text-xs">
+                      {row.direction || "local"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-text-muted">
+                    {row.grant_id ? (
+                      <span className="font-mono text-xs" title={row.grant_resource || undefined}>
+                        {shortUsageID(row.grant_id)}
+                      </span>
+                    ) : (
+                      <span className="text-text-dim">-</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-text-muted">
+                    {row.caller_app_name || (row.caller_install_id ? `install ${row.caller_install_id}` : "-")}
+                  </td>
+                  <td className="px-4 py-3 text-text-muted">
+                    {row.last_used_at ? new Date(row.last_used_at).toLocaleString() : "-"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function UsageStat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "red" }) {
+  return (
+    <div className="border border-border rounded-lg bg-bg-card p-4 min-h-[82px]">
+      <div className="text-text-dim text-xs uppercase tracking-wide mb-1">{label}</div>
+      <div className={`text-lg font-bold break-words ${tone === "red" ? "text-red" : "text-text"}`}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function formatUsageNumber(n: number) {
+  return new Intl.NumberFormat().format(n || 0);
+}
+
+function formatUsageUnit(unit: string, quantity: number) {
+  const u = unit || "request";
+  if (quantity === 1) return u;
+  if (u.endsWith("s")) return u;
+  return `${u}s`;
+}
+
+function shortUsageID(id: string) {
+  if (id.length <= 14) return id;
+  return `${id.slice(0, 8)}…${id.slice(-4)}`;
 }
 
 // ConnectionTestBadge — inline pill rendered next to a Test button

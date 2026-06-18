@@ -9,6 +9,7 @@ import {
   type TelemetryEvent,
 } from "../api";
 import { useProjects } from "../hooks/useProjects";
+import { usePageTitle } from "../hooks/usePageTitle";
 import {
   AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -39,6 +40,8 @@ const PERIOD_HOURS: Record<Period, number> = {
 };
 
 export function Analytics() {
+  usePageTitle("Usage");
+
   const { currentProject } = useProjects();
   const projectId = currentProject?.id;
 

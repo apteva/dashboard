@@ -236,8 +236,7 @@ export function ContextAgentChatWidget({
 
       {open && (
         <section
-          className="fixed bottom-4 right-4 z-50 flex w-[440px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-border bg-bg shadow-2xl shadow-black/30"
-          style={{ height: "min(700px, calc(100vh - 5rem))" }}
+          className="fixed inset-x-2 bottom-2 top-14 z-50 flex flex-col overflow-hidden rounded-lg border border-border bg-bg shadow-2xl shadow-black/30 sm:inset-auto sm:bottom-4 sm:right-4 sm:h-[min(700px,calc(100vh-5rem))] sm:w-[440px] sm:max-w-[calc(100vw-2rem)]"
           role="dialog"
           aria-label="Ask an agent"
         >
