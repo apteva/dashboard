@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import type { SubscribeFn } from "./AgentView";
+import { sleepLabel, sleepTitle, type SleepLike } from "../utils/sleepStatus";
 
 // LiveStatsBar aggregates llm.done telemetry events and displays running
 // totals + a simple per-day cost projection — the dashboard equivalent of
@@ -20,9 +21,11 @@ import type { SubscribeFn } from "./AgentView";
 export function LiveStatsBar({
   instanceId,
   subscribe,
+  sleep,
 }: {
   instanceId: number;
   subscribe: SubscribeFn;
+  sleep?: SleepLike | null;
 }) {
   const [stats, setStats] = useState({
     iters: 0,
@@ -199,6 +202,12 @@ export function LiveStatsBar({
                 WINDOW_MS / 60000,
               )}-min window.\nSession average: $${fmtCost(sessionPerDay)}/day`
         }
+      />
+      <StatCell
+        label="wake"
+        value={sleep ? sleepLabel(sleep, { compact: true, now }) : "—"}
+        title={sleep ? sleepTitle(sleep, now) : "Sleep state unknown"}
+        muted={sleep?.sleep_state !== "sleeping"}
       />
       {stats.lastModel && (
         <span

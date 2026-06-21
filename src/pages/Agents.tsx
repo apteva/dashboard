@@ -5,6 +5,8 @@ import { useProjects } from "../hooks/useProjects";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { Modal } from "../components/Modal";
+import { sleepClassName, sleepLabel, sleepTitle, type SleepLike } from "../utils/sleepStatus";
+import { structureDirectiveDraft } from "../utils/directiveMarkdown";
 
 // Per-instance live activity snapshot built from the all-instances SSE
 // stream. We keep just enough to render the row strip — the latest
@@ -28,6 +30,9 @@ interface LiveActivity {
   lastEventAt: number;
   threadCount: number;
 }
+
+type AgentLiveStatus = { threads: number; iter: number; rate: string } & SleepLike;
+type AgentSubThread = { id: string; rate: string; iter: number; mcpNames: string[] } & SleepLike;
 
 // Agents is the fleet-list view: all instances in the current project,
 // with status + quick lifecycle actions + a create form. Clicking a row
@@ -57,16 +62,22 @@ export function Agents() {
   // Per-instance live thread count, keyed by instance id. Updated every
   // poll from core.status so the list reflects how active each instance is
   // without needing full thread data.
-  const [liveStatus, setLiveStatus] = useState<Record<number, { threads: number; iter: number; rate: string } | null>>({});
+  const [liveStatus, setLiveStatus] = useState<Record<number, AgentLiveStatus | null>>({});
   // Per-instance list of sub-threads (excluding "main") so the card can
   // show what's actually running — id + pace + iter. Refreshed on the
   // same 5s cadence as status. Empty array = no sub-threads.
-  const [subThreads, setSubThreads] = useState<Record<number, Array<{ id: string; rate: string; iter: number; mcpNames: string[] }>>>({});
+  const [subThreads, setSubThreads] = useState<Record<number, AgentSubThread[]>>({});
   // Per-instance MCP names attached to main (native access, not
   // catalog-only). Sourced from core /threads where the "main" row
   // carries its own mcp_names. Catalog-only MCPs show up on
   // individual sub-thread rows instead, so we don't double-count.
   const [mainMCPs, setMainMCPs] = useState<Record<number, string[]>>({});
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Live activity strip — driven by the all-instances SSE stream below.
   // Single connection, server-side fan-out, so the page scales to many
@@ -200,6 +211,13 @@ export function Agents() {
                   rate: "stopped",
                   iter: 0,
                   mcpNames: t.mcp_names || [],
+                  sleep_state: t.sleep_state,
+                  sleep_thread_id: t.sleep_thread_id,
+                  sleep_started_at: t.sleep_started_at,
+                  next_wake_at: t.next_wake_at,
+                  sleep_total_ms: t.sleep_total_ms,
+                  sleep_remaining_ms: t.sleep_remaining_ms,
+                  sleep_iteration: t.sleep_iteration,
                 }));
               setSubThreads((prev) => ({ ...prev, [inst.id]: subs }));
               const main = (threads || []).find((t) => t.id === "main");
@@ -219,7 +237,18 @@ export function Agents() {
           .then((s: Status) => {
             setLiveStatus((prev) => ({
               ...prev,
-              [inst.id]: { threads: s.threads, iter: s.iteration, rate: s.rate },
+              [inst.id]: {
+                threads: s.threads,
+                iter: s.iteration,
+                rate: s.rate,
+                sleep_state: s.sleep_state,
+                sleep_thread_id: s.sleep_thread_id,
+                sleep_started_at: s.sleep_started_at,
+                next_wake_at: s.next_wake_at,
+                sleep_total_ms: s.sleep_total_ms,
+                sleep_remaining_ms: s.sleep_remaining_ms,
+                sleep_iteration: s.sleep_iteration,
+              },
             }));
           })
           .catch(() => {});
@@ -236,6 +265,13 @@ export function Agents() {
                 rate: t.rate,
                 iter: t.iteration,
                 mcpNames: t.mcp_names || [],
+                sleep_state: t.sleep_state,
+                sleep_thread_id: t.sleep_thread_id,
+                sleep_started_at: t.sleep_started_at,
+                next_wake_at: t.next_wake_at,
+                sleep_total_ms: t.sleep_total_ms,
+                sleep_remaining_ms: t.sleep_remaining_ms,
+                sleep_iteration: t.sleep_iteration,
               }));
             setSubThreads((prev) => ({ ...prev, [inst.id]: subs }));
             const main = (threads || []).find((t) => t.id === "main");
@@ -608,14 +644,12 @@ export function Agents() {
                           <>
                             <span>{live.threads} threads</span>
                             <span>#{live.iter}</span>
-                            <span className={`px-1.5 py-0.5 rounded text-[10px] ${
-                              live.rate === "reactive" ? "bg-green/15 text-green" :
-                              live.rate === "fast" ? "bg-accent/15 text-accent" :
-                              live.rate === "normal" ? "bg-blue/15 text-blue" :
-                              live.rate === "slow" ? "bg-border text-text-muted" :
-                              live.rate === "sleep" ? "bg-red/10 text-red/70" :
-                              "bg-border text-text-muted"
-                            }`}>{live.rate}</span>
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] ${sleepClassName(live)}`}
+                              title={sleepTitle(live, now)}
+                            >
+                              {sleepLabel(live, { compact: true, now })}
+                            </span>
                           </>
                         ) : isRunning ? (
                           <span className="opacity-50">…</span>
@@ -688,23 +722,17 @@ export function Agents() {
                             {shown.map((s) => {
                               const mcps = s.mcpNames || [];
                               const title = mcps.length
-                                ? `${s.id} · iter #${s.iter} · pace ${s.rate} · mcp: ${mcps.join(", ")}`
-                                : `${s.id} · iter #${s.iter} · pace ${s.rate}`;
+                                ? `${s.id} · iter #${s.iter} · ${sleepTitle(s, now)} · mcp: ${mcps.join(", ")}`
+                                : `${s.id} · iter #${s.iter} · ${sleepTitle(s, now)}`;
                               return (
                                 <span
                                   key={s.id}
-                                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${
-                                    s.rate === "reactive" ? "bg-green/15 text-green" :
-                                    s.rate === "fast" ? "bg-accent/15 text-accent" :
-                                    s.rate === "normal" ? "bg-blue/15 text-blue" :
-                                    s.rate === "slow" ? "bg-border text-text-muted" :
-                                    s.rate === "sleep" ? "bg-red/10 text-red/70" :
-                                    "bg-border text-text-muted"
-                                  }`}
+                                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${sleepClassName(s)}`}
                                   title={title}
                                 >
                                   <span className="font-mono">{s.id}</span>
                                   <span className="opacity-60">#{s.iter}</span>
+                                  <span className="opacity-70">{sleepLabel(s, { compact: true, now })}</span>
                                   {mcps.length > 0 && (
                                     <span className="opacity-70">· {mcps.join("+")}</span>
                                   )}
@@ -859,23 +887,31 @@ export function Agents() {
               />
             </div>
             <div>
-              <label className="block text-text-muted text-sm mb-2">
-                Directive
-                <span className="text-text-dim text-xs ml-2 font-normal">
-                  (the system prompt the agent reads at every think)
-                </span>
-              </label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-text-muted text-sm">
+                  Directive
+                  <span className="text-text-dim text-xs ml-2 font-normal">
+                    (the system prompt the agent reads at every think)
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setEditDirective((cur) => structureDirectiveDraft(cur, editName))}
+                  className="text-accent text-xs hover:underline"
+                >
+                  Structure
+                </button>
+              </div>
               <textarea
                 value={editDirective}
                 onChange={(e) => setEditDirective(e.target.value)}
                 rows={10}
                 className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text font-mono resize-y focus:outline-none focus:border-accent"
-                placeholder="What this agent should do, in plain prose."
+                placeholder={"# Role\nYou are...\n\n# Goals\n- ..."}
               />
               <p className="text-text-dim text-xs mt-1">
-                Saving updates the running core in place. Any open chat
-                thread inherits this directive plus its own persona suffix
-                on next spawn.
+                Saving updates the running core in place. Markdown sections
+                make future edits and eval lessons safer.
               </p>
             </div>
             {editError && (
@@ -922,13 +958,25 @@ export function Agents() {
             />
           </div>
           <div>
-            <label className="block text-text-muted text-sm mb-2">Directive (optional)</label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-text-muted text-sm">Directive (optional)</label>
+              <button
+                type="button"
+                onClick={() => setDirective((cur) => structureDirectiveDraft(cur, name))}
+                className="text-accent text-xs hover:underline"
+              >
+                Structure
+              </button>
+            </div>
             <textarea
               value={directive}
               onChange={(e) => setDirective(e.target.value)}
-              className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent resize-none h-24"
-              placeholder="What should this agent think about?"
+              className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text font-mono focus:outline-none focus:border-accent resize-y h-32"
+              placeholder={"# Role\nYou are...\n\n# Goals\n- ..."}
             />
+            <p className="text-text-dim text-xs mt-1">
+              Stable markdown sections make future updates safer.
+            </p>
           </div>
           <div>
             <label className="block text-text-muted text-sm mb-2">Safety mode</label>

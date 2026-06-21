@@ -1,16 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { marked } from "marked";
 import {
-  chat,
   instances,
+  platformHelper,
   type Agent,
   type ChatMessageContext,
-  type ChatMessageRow,
 } from "../api";
 import { useProjects } from "../hooks/useProjects";
-
-marked.setOptions({ breaks: true, gfm: true });
+import { ChatPanel } from "./ChatPanel";
+import type { EventListener, SubscribeFn } from "./AgentView";
 
 const STORAGE_OPEN = "context-agent-chat:open";
 const STORAGE_AGENT = "context-agent-chat:agent-id";
@@ -42,18 +40,19 @@ export function ContextAgentChatWidget({
       return null;
     }
   });
-  const [chatId, setChatId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatMessageRow[]>([]);
-  const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const [loadingChat, setLoadingChat] = useState(false);
-  const [streamingText, setStreamingText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const sinceRef = useRef(0);
-  const scrollRef = useRef<HTMLDivElement>(null);
 
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) || null;
+  const selectedIsHelper = selectedAgent?.kind === "platform_helper";
+
+  const subscribeSelectedAgent = useCallback<SubscribeFn>(
+    (listener: EventListener) => {
+      if (typeof window === "undefined" || !selectedAgentId) return () => {};
+      return window.__aptevaTelemetryBus?.subscribe(selectedAgentId, listener) ?? (() => {});
+    },
+    [selectedAgentId],
+  );
 
   useEffect(() => {
     try {
@@ -74,20 +73,24 @@ export function ContextAgentChatWidget({
     if (!open) return;
     let cancelled = false;
     setAgentsLoading(true);
-    instances
-      .list(currentProject?.id)
-      .then((rows) => {
+    Promise.allSettled([platformHelper.get(), instances.list(currentProject?.id)])
+      .then((results) => {
         if (cancelled) return;
+        const helper =
+          results[0].status === "fulfilled" ? results[0].value : null;
+        const rows =
+          results[1].status === "fulfilled" ? results[1].value : [];
         const sorted = [...rows].sort((a, b) => {
           if (a.status === "running" && b.status !== "running") return -1;
           if (a.status !== "running" && b.status === "running") return 1;
           return a.name.localeCompare(b.name);
         });
-        setAgents(sorted);
+        const next = helper ? [helper, ...sorted.filter((a) => a.id !== helper.id)] : sorted;
+        setAgents(next);
         const routeAgentId = context.agent_id;
-        if (routeAgentId && sorted.some((a) => a.id === routeAgentId)) {
+        if (routeAgentId && next.some((a) => a.id === routeAgentId)) {
           setSelectedAgentId((prev) => prev ?? routeAgentId);
-        } else if (selectedAgentId && !sorted.some((a) => a.id === selectedAgentId)) {
+        } else if (selectedAgentId && !next.some((a) => a.id === selectedAgentId)) {
           setSelectedAgentId(null);
         }
       })
@@ -105,114 +108,19 @@ export function ContextAgentChatWidget({
     } catch {}
   }, [selectedAgentId]);
 
-  useEffect(() => {
-    if (!open || !selectedAgentId) {
-      setChatId(null);
-      setMessages([]);
-      sinceRef.current = 0;
-      return;
-    }
-    let cancelled = false;
-    setLoadingChat(true);
-    setError(null);
-    setMessages([]);
-    setStreamingText(null);
-    sinceRef.current = 0;
-    chat
-      .listChats(selectedAgentId)
-      .then((rows) => {
-        if (cancelled) return null;
-        if (rows.length > 0) return rows[0];
-        return chat.createChat(selectedAgentId, "Dashboard");
-      })
-      .then((row) => {
-        if (cancelled || !row) return;
-        setChatId(row.id);
-      })
-      .catch((e) => !cancelled && setError(errorMessage(e)))
-      .finally(() => !cancelled && setLoadingChat(false));
-    return () => {
-      cancelled = true;
-    };
-  }, [open, selectedAgentId]);
-
-  useEffect(() => {
-    if (!open || !chatId) return;
-    let cancelled = false;
-    chat
-      .messages(chatId, 0, 200)
-      .then((rows) => {
-        if (cancelled) return;
-        setMessages((prev) => mergeMessages(rows, prev));
-        sinceRef.current = Math.max(
-          sinceRef.current,
-          rows.reduce((max, row) => Math.max(max, row.id), 0),
-        );
-      })
-      .catch((e) => !cancelled && setError(errorMessage(e)));
-    return () => {
-      cancelled = true;
-    };
-  }, [open, chatId]);
-
-  useEffect(() => {
-    if (!open || !chatId || !selectedAgentId) return;
-    void chat.presence(chatId, "connected").catch(() => {});
-    const es = chat.stream(chatId, sinceRef.current);
-    es.onmessage = (event) => {
-      const row = parseJSON<ChatMessageRow>(event.data);
-      if (!row || row.id <= sinceRef.current) return;
-      sinceRef.current = row.id;
-      setStreamingText(null);
-      setMessages((prev) => [...prev, row]);
-    };
-    es.addEventListener("stream", (event) => {
-      const frame = parseJSON<{ text?: string; done?: boolean }>((event as MessageEvent).data);
-      if (!frame || frame.done) {
-        setStreamingText(null);
-      } else {
-        setStreamingText(frame.text || "");
-      }
-    });
-    es.onerror = () => {
-      // EventSource auto-retries. Keep the panel usable; the next
-      // successful connection backfills from sinceRef.
-    };
-    return () => {
-      es.close();
-      void chat.presence(chatId, "disconnected").catch(() => {});
-    };
-  }, [open, chatId, selectedAgentId]);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [messages, streamingText, selectedAgentId]);
-
-  const send = useCallback(async () => {
-    const content = draft.trim();
-    if (!content || !chatId || !selectedAgent || selectedAgent.status !== "running" || sending) return;
-    setSending(true);
-    setError(null);
-    try {
-      await chat.post(chatId, content, context);
-      setDraft("");
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setSending(false);
-    }
-  }, [draft, chatId, selectedAgent, sending, context]);
-
   const startSelectedAgent = async () => {
     if (!selectedAgent) return;
     setStarting(true);
     setError(null);
     try {
       await instances.start(selectedAgent.id);
-      const rows = await instances.list(currentProject?.id);
-      setAgents(rows);
+      const [helperResult, rows] = await Promise.allSettled([
+        platformHelper.get(),
+        instances.list(currentProject?.id),
+      ]);
+      const helper = helperResult.status === "fulfilled" ? helperResult.value : null;
+      const normal = rows.status === "fulfilled" ? rows.value : [];
+      setAgents(helper ? [helper, ...normal.filter((a) => a.id !== helper.id)] : normal);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -246,13 +154,38 @@ export function ContextAgentChatWidget({
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-text">Ask an agent</h2>
+                <h2 className="truncate text-sm font-semibold text-text">
+                  {selectedAgent ? selectedAgent.name : "Ask an agent"}
+                </h2>
                 {selectedAgent && <StatusDot status={selectedAgent.status} />}
+                {selectedIsHelper && (
+                  <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">helper</span>
+                )}
               </div>
               <p className="mt-0.5 text-xs text-text-muted truncate">
-                {context.title} · {currentProject?.name || "Current project"}
+                {selectedAgent
+                  ? `#${selectedAgent.id} · ${selectedIsHelper ? "platform" : selectedAgent.mode} · ${selectedAgent.status}`
+                  : `${context.title} · ${currentProject?.name || "Current project"}`}
               </p>
             </div>
+            {selectedAgent && (
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedAgentId(null)}
+                  className="rounded border border-border px-2 py-1 text-xs text-text-muted hover:text-text hover:bg-bg-hover"
+                >
+                  Agents
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate(`/agents/${selectedAgent.id}`)}
+                  className="rounded border border-border px-2 py-1 text-xs text-text-muted hover:text-text hover:bg-bg-hover"
+                >
+                  Open
+                </button>
+              </div>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -265,59 +198,15 @@ export function ContextAgentChatWidget({
 
           {selectedAgent ? (
             <>
-              <div className="border-b border-border p-3 space-y-3">
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedAgentId(null)}
-                    className="rounded border border-border px-2 py-1 text-xs text-text-muted hover:text-text hover:bg-bg-hover"
-                  >
-                    Agents
-                  </button>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <StatusDot status={selectedAgent.status} />
-                      <span className="truncate text-sm font-medium text-text">{selectedAgent.name}</span>
-                    </div>
-                    <div className="truncate text-[11px] text-text-muted">
-                      #{selectedAgent.id} · {selectedAgent.mode} · {selectedAgent.status}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/agents/${selectedAgent.id}`)}
-                    className="rounded border border-border px-2 py-1 text-xs text-text-muted hover:text-text hover:bg-bg-hover"
-                  >
-                    Open
-                  </button>
-                </div>
-                <ContextStrip context={context} />
-              </div>
-
-              <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
-                {loadingChat && (
-                  <div className="text-center text-xs text-text-muted py-8">Loading chat…</div>
-                )}
-                {!loadingChat && messages.length === 0 && (
-                  <div className="text-center text-xs text-text-muted py-8">
-                    Ask about this page. The current route is sent as context with your message.
-                  </div>
-                )}
-                {messages.map((message) => (
-                  <WidgetMessage key={message.id} message={message} />
-                ))}
-                {streamingText !== null && <AgentBubble content={streamingText} streaming />}
-              </div>
-
               {error && (
-                <div className="border-t border-red/40 bg-red/10 px-3 py-2 text-xs text-red break-words">
+                <div className="border-b border-red/40 bg-red/10 px-3 py-2 text-xs text-red break-words">
                   {error}
                 </div>
               )}
 
-              <div className="border-t border-border p-3">
-                {selectedAgent.status !== "running" ? (
-                  <div className="flex items-center justify-between gap-3">
+              {selectedAgent.status !== "running" ? (
+                <div className="flex flex-1 items-center justify-center p-4">
+                  <div className="flex w-full items-center justify-between gap-3 rounded border border-border bg-bg-card p-3">
                     <span className="text-xs text-text-muted">Start this agent to chat from here.</span>
                     <button
                       type="button"
@@ -328,47 +217,26 @@ export function ContextAgentChatWidget({
                       {starting ? "Starting…" : "Start"}
                     </button>
                   </div>
-                ) : (
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void send();
-                    }}
-                    className="flex items-end gap-2"
-                  >
-                    <textarea
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          e.preventDefault();
-                          void send();
-                        }
-                      }}
-                      rows={2}
-                      placeholder={`Ask ${selectedAgent.name} about ${context.shortName.toLowerCase()}...`}
-                      className="min-h-[44px] max-h-28 flex-1 resize-none rounded border border-border bg-bg-input px-3 py-2 text-sm text-text placeholder:text-text-dim focus:outline-none focus:border-accent"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!draft.trim() || sending || !chatId}
-                      className="h-9 w-9 shrink-0 rounded-full bg-accent text-bg flex items-center justify-center hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed"
-                      title="Send"
-                    >
-                      ↑
-                    </button>
-                  </form>
-                )}
-              </div>
+                </div>
+              ) : (
+                <div className="min-h-0 flex-1">
+                  <ChatPanel
+                    key={selectedAgent.id}
+                    instanceId={selectedAgent.id}
+                    subscribe={subscribeSelectedAgent}
+                    autoConnect
+                    hideHeader
+                    messageContext={context}
+                  />
+                </div>
+              )}
             </>
           ) : (
-            <div className="flex-1 overflow-y-auto p-4">
-              <ContextStrip context={context} />
-              <div className="mt-4">
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="text-xs uppercase tracking-wide text-text-dim">Available agents</div>
-                  {agentsLoading && <div className="text-[10px] text-text-muted">loading…</div>}
-                </div>
+            <div className="flex-1 overflow-y-auto p-3">
+              {agentsLoading && (
+                <div className="mb-2 text-right text-[10px] text-text-muted">loading…</div>
+              )}
+              <div>
                 <div className="space-y-2">
                   {agents.map((agent) => (
                     <button
@@ -385,12 +253,15 @@ export function ContextAgentChatWidget({
                           <div className="flex items-center gap-2">
                             <StatusDot status={agent.status} />
                             <span className="truncate text-sm font-medium text-text">{agent.name}</span>
+                            {agent.kind === "platform_helper" && (
+                              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">helper</span>
+                            )}
                             {context.agent_id === agent.id && (
                               <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">this page</span>
                             )}
                           </div>
                           <div className="mt-0.5 truncate text-xs text-text-muted">
-                            #{agent.id} · {agent.mode} · {agent.status}
+                            #{agent.id} · {agent.kind === "platform_helper" ? "platform" : agent.mode} · {agent.status}
                           </div>
                           {agent.directive && (
                             <div className="mt-2 line-clamp-2 text-[11px] text-text-dim">
@@ -422,67 +293,6 @@ export function readContextAgentChatOpenDefault(): boolean {
   } catch {
     return false;
   }
-}
-
-function mergeMessages(a: ChatMessageRow[], b: ChatMessageRow[]): ChatMessageRow[] {
-  const byID = new Map<number, ChatMessageRow>();
-  for (const row of a) byID.set(row.id, row);
-  for (const row of b) byID.set(row.id, row);
-  return [...byID.values()].sort((x, y) => x.id - y.id);
-}
-
-function WidgetMessage({ message }: { message: ChatMessageRow }) {
-  if (message.role === "user") {
-    return (
-      <div className="flex justify-end min-w-0">
-        <div className="max-w-[82%] rounded-xl rounded-br-sm border border-accent/30 bg-accent/15 px-3 py-2 text-sm text-text whitespace-pre-wrap break-words">
-          {message.content}
-        </div>
-      </div>
-    );
-  }
-  if (message.role === "system") {
-    return <div className="text-center text-[10px] text-text-muted py-1">{message.content}</div>;
-  }
-  return <AgentBubble content={message.content} streaming={message.status === "streaming"} />;
-}
-
-function AgentBubble({ content, streaming = false }: { content: string; streaming?: boolean }) {
-  const html = useMemo(
-    () => marked.parse(streaming ? closeOpenMarkdown(content) : content, { async: false }) as string,
-    [content, streaming],
-  );
-  return (
-    <div className="min-w-0">
-      <div
-        className="chat-md text-sm text-text leading-relaxed break-words"
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-    </div>
-  );
-}
-
-function ContextStrip({ context }: { context: ContextDescription }) {
-  return (
-    <div className="rounded border border-border bg-bg-card p-3">
-      <div className="flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <div className="text-xs font-medium text-text truncate">{context.title}</div>
-          <div className="text-[11px] text-text-muted truncate">{context.detail}</div>
-        </div>
-        <span className="shrink-0 rounded bg-accent/10 px-2 py-1 text-[11px] text-accent">
-          context
-        </span>
-      </div>
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        {context.chips.map((chip) => (
-          <span key={chip} className="rounded border border-border bg-bg-input px-2 py-0.5 text-[11px] text-text-muted">
-            {chip}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
 }
 
 function StatusDot({ status }: { status: string }) {
@@ -591,28 +401,6 @@ function initials(name: string) {
     .slice(0, 2)
     .map((part) => part.charAt(0).toUpperCase())
     .join("");
-}
-
-function parseJSON<T>(raw: string): T | null {
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
-
-function closeOpenMarkdown(s: string): string {
-  const fence = (s.match(/```/g) || []).length;
-  let out = s;
-  if (fence % 2 === 1) out += "\n```";
-  if (fence % 2 === 1) return out;
-  const noFences = out.replace(/```[\s\S]*?```/g, "");
-  const ticks = (noFences.match(/`/g) || []).length;
-  if (ticks % 2 === 1) out += "`";
-  const bold = (out.match(/\*\*/g) || []).length;
-  if (bold % 2 === 1) out += "**";
-  if (/\[[^\]]*\]\([^)]*$/.test(out)) out += ")";
-  return out;
 }
 
 function errorMessage(e: unknown): string {

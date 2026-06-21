@@ -779,6 +779,9 @@ function ProvidersTab() {
   };
   const groups: Record<string, ProviderTypeInfo[]> = {};
   for (const t of types) {
+    if ((t.runtime_status || "available") === "unsupported" && !isActive(t.name)) {
+      continue;
+    }
     const key = groupKeyFor(t.type);
     if (!groups[key]) groups[key] = [];
     groups[key].push(t);
@@ -816,6 +819,7 @@ function ProvidersTab() {
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {items.map((pt) => {
               const active = isActive(pt.name);
+              const unsupported = (pt.runtime_status || "available") === "unsupported";
               return (
                 <div
                   key={pt.id}
@@ -857,6 +861,14 @@ function ProvidersTab() {
                             </span>
                           );
                         })()}
+                        {unsupported && (
+                          <span
+                            className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-dim"
+                            title="Legacy provider — use Apps or Integrations for new browser automation."
+                          >
+                            legacy
+                          </span>
+                        )}
                         <span className="inline-block w-2 h-2 rounded-full bg-green" />
                       </div>
                     )}

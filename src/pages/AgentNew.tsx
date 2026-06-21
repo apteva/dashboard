@@ -25,6 +25,10 @@ import {
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { ConnectIntegrationModal } from "../components/integrations/ConnectIntegrationModal";
+import {
+  appendDirectiveLearning,
+  structureDirectiveDraft,
+} from "../utils/directiveMarkdown";
 
 // AgentNew — guided "build your first agent" wizard. Four steps:
 //
@@ -490,7 +494,7 @@ export function AgentNew() {
       templateID: t.id,
       // Suggest the template's name but let the user override.
       name: s.name || (t.id === "empty" ? "" : t.name),
-      directive: t.directive,
+      directive: structureDirectiveDraft(t.directive, s.name || (t.id === "empty" ? "" : t.name)),
       mode: t.mode as Mode,
       unconscious: t.unconscious,
       recommendedApps: t.recommended_apps || [],
@@ -886,7 +890,21 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
       <div>
         <div className="flex items-center justify-between mb-1.5">
           <label className="block text-text-muted text-xs">Directive</label>
-          <SuggestFromGoalsButton state={state} setState={setState} />
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() =>
+                setState((s) => ({
+                  ...s,
+                  directive: structureDirectiveDraft(s.directive, s.name),
+                }))
+              }
+              className="text-accent text-xs hover:underline"
+            >
+              Structure
+            </button>
+            <SuggestFromGoalsButton state={state} setState={setState} />
+          </div>
         </div>
         <textarea
           value={state.directive}
@@ -898,11 +916,11 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
           }
           rows={9}
           className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text font-mono leading-relaxed focus:outline-none focus:border-accent resize-y"
-          placeholder="What should this agent do? What's its rhythm? When should it ask before acting?"
+          placeholder={"# Role\nYou are...\n\n# Goals\n- ..."}
           spellCheck={false}
         />
         <p className="text-text-muted text-xs mt-1.5">
-          Written in second person ("You are…"). The agent reads it at the top of context every iteration.
+          Markdown headings make later self-edits and eval lessons land in the right section.
         </p>
       </div>
 
@@ -1978,14 +1996,7 @@ type EvalMockTrigger = { type: string; payload?: Record<string, unknown> };
 //     ship on Create.
 //   - create() → so the persisted directive includes them.
 function composeDirective(base: string, edits: { id: string; add: string }[]): string {
-  let out = base;
-  for (const e of edits) {
-    const add = e.add.trim();
-    if (!add) continue;
-    if (!out.trim()) out = add;
-    else out = out + "\n\n" + add;
-  }
-  return out;
+  return appendDirectiveLearning(base, edits.map((e) => e.add));
 }
 
 // IterationPane renders the in-flight state between the runner's

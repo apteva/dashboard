@@ -13,12 +13,15 @@ import {
   type MCPServer,
   type MCPServerConfig,
   type ModelInfo,
+  type PromptComposition,
   type Provider,
   type ProviderDetail,
+  type Status,
   type TelemetryEvent,
   type Thread,
 } from "../api";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
+import { sleepClassName, sleepLabel, sleepProgress, sleepTitle } from "../utils/sleepStatus";
 
 export type EventListener = (event: TelemetryEvent) => void;
 export type SubscribeFn = (listener: EventListener) => () => void;
@@ -33,6 +36,7 @@ import { Modal } from "./Modal";
 import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
 import { EvalsPanel } from "./EvalsPanel";
+import { structureDirectiveDraft } from "../utils/directiveMarkdown";
 
 type RuntimeView = "stream" | "activity" | "memory" | "skills" | "apps" | "evals";
 
@@ -953,10 +957,12 @@ function AgentRuntimePanel({
     follow: "active",
     waiting: false,
   });
+  const [liveStatus, setLiveStatus] = useState<Status | null>(null);
   const [executionBusy, setExecutionBusy] = useState<"run" | "pause" | "step" | "back" | null>(null);
 
   useEffect(() => {
     setSelectedRuntimeThread("main");
+    setLiveStatus(null);
   }, [instance.id]);
 
   const selectRuntimeThread = (threadId: string) => {
@@ -977,7 +983,10 @@ function AgentRuntimePanel({
         .catch(() => {});
       core.status(instance.id)
         .then((s) => {
-          if (!cancelled && s.execution_control) setExecutionControl(s.execution_control);
+          if (!cancelled) {
+            setLiveStatus(s);
+            if (s.execution_control) setExecutionControl(s.execution_control);
+          }
         })
         .catch(() => {});
       appsAPI.list(instance.project_id)
@@ -1107,6 +1116,7 @@ function AgentRuntimePanel({
               <span className={`w-2 h-2 rounded-full shrink-0 ${instance.status === "running" ? "bg-green" : instance.status === "paused" ? "bg-yellow" : "bg-red"}`} />
               <h1 className="text-text text-sm font-bold truncate">{instance.name}</h1>
               <span className="text-[10px] text-text-muted uppercase tracking-wide">{instance.status}</span>
+              <SleepPill sleep={liveStatus || statusFallbackForInstance(instance.status)} />
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-muted">
               <span>{instance.mode}</span>
@@ -1128,7 +1138,7 @@ function AgentRuntimePanel({
             <button onClick={onDelete} className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-red">Delete</button>
           </div>
         </div>
-        <LiveStatsBar instanceId={instance.id} subscribe={subscribe} />
+        <LiveStatsBar instanceId={instance.id} subscribe={subscribe} sleep={liveStatus} />
         <ExecutionControlStrip
           status={executionControl}
           disabled={instance.status !== "running" || executionBusy !== null}
@@ -1149,6 +1159,8 @@ function AgentRuntimePanel({
 
       <div className="shrink-0 grid grid-cols-2 divide-x divide-border border-b border-border">
         <ThreadSummary
+          instanceId={instance.id}
+          running={instance.status === "running"}
           threads={threads}
           activeTools={activeTools}
           thinking={thinking}
@@ -1193,6 +1205,36 @@ function AgentRuntimePanel({
         <InjectPanel instanceId={instance.id} threads={threads} />
       )}
     </section>
+  );
+}
+
+function statusFallbackForInstance(status: string) {
+  if (status === "running") return { sleep_state: "unknown" };
+  if (status === "paused") return { sleep_state: "paused" };
+  return { sleep_state: "stopped" };
+}
+
+function SleepPill({ sleep }: { sleep: Status | { sleep_state?: string } | null }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => tick((n) => n + 1), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  const now = Date.now();
+  const progress = sleepProgress(sleep, now);
+  return (
+    <span
+      className={`relative inline-flex min-w-[92px] items-center justify-center overflow-hidden rounded border border-border px-2 py-0.5 text-[10px] font-mono ${sleepClassName(sleep)}`}
+      title={sleepTitle(sleep, now)}
+    >
+      {progress != null && sleep?.sleep_state === "sleeping" && (
+        <span
+          className="absolute inset-y-0 left-0 bg-current opacity-10"
+          style={{ width: `${Math.round(progress * 100)}%` }}
+        />
+      )}
+      <span className="relative truncate">{sleepLabel(sleep, { compact: true, now })}</span>
+    </span>
   );
 }
 
@@ -1684,7 +1726,7 @@ function CapabilitiesManager({
               key={`integration:${row.id}`}
               title={displayMCPName(row)}
               detail={row.name}
-              meta={`${row.tool_count || 0} tools · ${sourceLabel(row)}`}
+              meta={`${row.tool_count || 0} tools · ${mcpName(row)} · ${scopeLabel(row)}`}
               enabled={enabled}
               disabled={!configFromInventory(row)}
               busy={busyKey === `mcp:${name}`}
@@ -1858,6 +1900,10 @@ function sourceLabel(row: MCPServer): string {
   return row.source || "mcp";
 }
 
+function scopeLabel(row: MCPServer): string {
+  return row.project_id ? "project" : "global";
+}
+
 function configFromInventory(row: MCPServer): MCPServerConfig | null {
   if (row.proxy_config) {
     return {
@@ -2000,7 +2046,116 @@ function findAppInventoryRow(app: AppRow, inventoryByKey: Map<string, MCPServer>
   return undefined;
 }
 
+type ThreadContextUsage = {
+  bytes: number;
+  estimatedTokens: number;
+  maxTokens: number;
+  percent: number | null;
+  systemBytes: number;
+  nativeBytes: number;
+  extraBytes: number;
+  conversationBytes: number;
+};
+
+function contextUsageFromComposition(composition?: PromptComposition): ThreadContextUsage {
+  const bytes = Math.max(0, composition?.grand_total || 0);
+  const estimatedTokens = Math.ceil(bytes / 4);
+  const maxTokens = Math.max(0, composition?.model_max_tokens || 0);
+  const percent = maxTokens > 0 ? Math.round((estimatedTokens / maxTokens) * 100) : null;
+  return {
+    bytes,
+    estimatedTokens,
+    maxTokens,
+    percent,
+    systemBytes: composition?.system?.total || 0,
+    nativeBytes: composition?.native_bytes || 0,
+    extraBytes: composition?.extra_bytes || 0,
+    conversationBytes: composition?.conv_bytes || 0,
+  };
+}
+
+function aggregateContextUsage(threadIds: string[], byThread: Record<string, ThreadContextUsage>): ThreadContextUsage | undefined {
+  let best: ThreadContextUsage | undefined;
+  for (const threadId of threadIds) {
+    const usage = byThread[threadId];
+    if (!usage) continue;
+    if (!best) {
+      best = usage;
+      continue;
+    }
+    if (usage.percent != null && best.percent != null) {
+      if (usage.percent > best.percent) best = usage;
+    } else if (usage.estimatedTokens > best.estimatedTokens) {
+      best = usage;
+    }
+  }
+  return best;
+}
+
+function ContextUsageBar({ usage, label }: { usage?: ThreadContextUsage; label?: string }) {
+  if (!usage) {
+    return (
+      <span
+        className="hidden sm:inline-flex w-[86px] shrink-0 flex-col gap-0.5"
+        title="Context usage loading"
+      >
+        <span className="text-[9px] text-text-dim tabular-nums text-right">ctx --</span>
+        <span className="h-1 rounded-full bg-bg-input" />
+      </span>
+    );
+  }
+  const pct = usage.percent == null ? null : Math.max(0, Math.min(100, usage.percent));
+  const fill = pct == null
+    ? 0
+    : pct >= 80
+      ? pct
+      : pct >= 60
+        ? pct
+        : pct;
+  const color = pct == null
+    ? "bg-text-dim"
+    : pct >= 80
+      ? "bg-red"
+      : pct >= 60
+        ? "bg-yellow"
+        : "bg-green";
+  const value = pct == null ? `~${formatCompactNumber(usage.estimatedTokens)}` : `${pct}%`;
+  const title = [
+    `${label ? `${label} ` : ""}estimated context usage: ${value}`,
+    `${formatCompactNumber(usage.estimatedTokens)} estimated tokens from ${formatCompactNumber(usage.bytes)} chars`,
+    usage.maxTokens > 0 ? `model window: ${formatCompactNumber(usage.maxTokens)} tokens` : "model window: unknown",
+    `system ${formatCompactNumber(usage.systemBytes)} chars`,
+    `tools ${formatCompactNumber(usage.nativeBytes)} chars`,
+    `memories/system ${formatCompactNumber(usage.extraBytes)} chars`,
+    `conversation ${formatCompactNumber(usage.conversationBytes)} chars`,
+  ].join("\n");
+  return (
+    <span className="hidden sm:inline-flex w-[86px] shrink-0 flex-col gap-0.5" title={title} aria-label={title}>
+      <span className="text-[9px] text-text-dim tabular-nums text-right">
+        {label ? `${label} ` : "ctx "}{value}
+      </span>
+      <span className="h-1 rounded-full bg-bg-input overflow-hidden">
+        <span
+          className={`block h-full rounded-full ${color}`}
+          style={{ width: pct == null ? "18%" : `${fill}%` }}
+        />
+      </span>
+    </span>
+  );
+}
+
+function formatCompactNumber(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  const n = Math.max(0, Math.round(value));
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}m`;
+  if (n >= 10_000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
 function ThreadSummary({
+  instanceId,
+  running,
   threads,
   activeTools,
   thinking,
@@ -2008,6 +2163,8 @@ function ThreadSummary({
   onThreadSelect,
   onThreadOpen,
 }: {
+  instanceId: number;
+  running: boolean;
   threads: Thread[];
   activeTools: Record<string, string>;
   thinking: Record<string, boolean>;
@@ -2017,8 +2174,50 @@ function ThreadSummary({
 }) {
   const mainThread: Thread = { id: "main", directive: "", tools: [], iteration: 0, rate: "", model: "", age: "" };
   const rows = threads.some((t) => t.id === "main") ? threads : [mainThread, ...threads];
-  const sorted = [...rows].sort((a, b) => (a.depth || 0) - (b.depth || 0) || a.id.localeCompare(b.id)).slice(0, 8);
+  const sorted = useMemo(
+    () => [...rows].sort((a, b) => (a.depth || 0) - (b.depth || 0) || a.id.localeCompare(b.id)).slice(0, 8),
+    [rows],
+  );
+  const visibleThreadIds = useMemo(() => sorted.map((t) => t.id), [sorted]);
+  const [contextUsage, setContextUsage] = useState<Record<string, ThreadContextUsage>>({});
   const allSelected = selectedThreadId === "all";
+  const allUsage = useMemo(() => aggregateContextUsage(visibleThreadIds, contextUsage), [visibleThreadIds, contextUsage]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const ids = visibleThreadIds;
+    if (!running || ids.length === 0) {
+      setContextUsage({});
+      return;
+    }
+    const load = async () => {
+      const pairs = await Promise.all(
+        ids.map(async (threadId) => {
+          try {
+            const snapshot = await core.threadContext(instanceId, threadId);
+            return [threadId, contextUsageFromComposition(snapshot.composition)] as const;
+          } catch {
+            return [threadId, null] as const;
+          }
+        }),
+      );
+      if (cancelled) return;
+      setContextUsage((prev) => {
+        const next: Record<string, ThreadContextUsage> = {};
+        for (const [threadId, usage] of pairs) {
+          if (usage) next[threadId] = usage;
+          else if (prev[threadId]) next[threadId] = prev[threadId];
+        }
+        return next;
+      });
+    };
+    load();
+    const timer = window.setInterval(load, 7000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [instanceId, running, visibleThreadIds.join("|")]);
 
   return (
     <div className="p-3 min-w-0">
@@ -2037,12 +2236,14 @@ function ThreadSummary({
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${allSelected ? "bg-accent" : "bg-text-dim"}`} />
           <span className={`text-xs truncate ${allSelected ? "text-accent font-medium" : "text-text"}`}>All threads</span>
           <span className="text-[10px] text-text-muted truncate flex-1">mixed stream</span>
+          <ContextUsageBar usage={allUsage} label="peak" />
         </button>
         {sorted.map((t) => {
           const tool = activeTools[t.id];
           const isThinking = !!thinking[t.id];
           const depth = Math.min(t.depth || 0, 3);
-          const state = tool ? `tool: ${tool}` : isThinking ? "thinking" : t.rate || "waiting";
+          const now = Date.now();
+          const state = tool ? `tool: ${tool}` : isThinking ? "thinking" : t.sleep_state ? sleepLabel(t, { compact: true, now }) : t.rate || "waiting";
           const selected = selectedThreadId === t.id;
           return (
             <div
@@ -2060,7 +2261,8 @@ function ThreadSummary({
               >
                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${tool ? "bg-accent animate-pulse" : isThinking ? "bg-yellow animate-pulse" : selected ? "bg-accent" : "bg-text-dim"}`} />
                 <span className={`text-xs truncate ${selected ? "text-accent font-medium" : "text-text"}`}>{t.name || t.id}</span>
-                <span className="text-[10px] text-text-muted truncate flex-1">{state}</span>
+                <span className="text-[10px] text-text-muted truncate flex-1" title={t.sleep_state ? sleepTitle(t, now) : undefined}>{state}</span>
+                <ContextUsageBar usage={contextUsage[t.id]} />
                 {t.age && <span className="text-[10px] text-text-dim tabular-nums shrink-0">{t.age}</span>}
               </button>
               <button
@@ -2724,14 +2926,26 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
 
         {/* Directive */}
         <div>
-          <label className="text-text-muted text-xs font-bold uppercase tracking-wide block mb-1">Directive</label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-text-muted text-xs font-bold uppercase tracking-wide block">Directive</label>
+            <button
+              type="button"
+              onClick={() => setDirective((cur) => structureDirectiveDraft(cur, instance.name))}
+              className="text-accent text-xs hover:underline"
+            >
+              Structure
+            </button>
+          </div>
           <textarea
             value={directive}
             onChange={(e) => setDirective(e.target.value)}
-            rows={4}
+            rows={7}
             className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent resize-none font-mono"
-            placeholder="What should this agent do?"
+            placeholder={"# Role\nYou are...\n\n# Goals\n- ..."}
           />
+          <p className="text-text-dim text-xs mt-1">
+            Stable markdown sections help later edits target one part of the directive.
+          </p>
         </div>
 
         {error && <p className="text-red text-xs">{error}</p>}

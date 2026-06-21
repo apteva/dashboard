@@ -416,6 +416,9 @@ export interface Eval {
 export interface RunOptions {
   max_iterations?: number;
   strict_mocks?: boolean;
+  // Pin a run to one configured provider/model for benchmark comparisons.
+  provider_override?: string;
+  model_override?: string;
   // Run the agent inside an isolated Environment — a throwaway clone of its real
   // apps (real DB writes) with only the edge (third-party APIs) virtualised.
   use_environment?: boolean;
@@ -1092,8 +1095,13 @@ export interface Agent {
   pid: number;
   status: string;
   project_id?: string;
+  kind?: string;
   created_at: string;
 }
+
+export const platformHelper = {
+  get: () => request<Agent>("GET", "/platform/helper"),
+};
 
 export const instances = {
   list: (projectId?: string) => {
@@ -2059,7 +2067,16 @@ export interface Status {
   pending_approval: PendingApproval | null;
   execution_control?: ExecutionControlStatus;
   execution_checkpoints?: ExecutionCheckpointMeta[];
+  sleep_state?: SleepState;
+  sleep_thread_id?: string;
+  sleep_started_at?: string;
+  next_wake_at?: string;
+  sleep_total_ms?: number;
+  sleep_remaining_ms?: number;
+  sleep_iteration?: number;
 }
+
+export type SleepState = "active" | "sleeping" | "overdue" | "unknown" | "paused" | "stopped" | string;
 
 export interface ExecutionControlStatus {
   mode: "auto" | "paused" | "step";
@@ -2105,6 +2122,13 @@ export interface Thread {
   rate: string;
   model: string;
   age: string;
+  sleep_state?: SleepState;
+  sleep_thread_id?: string;
+  sleep_started_at?: string;
+  next_wake_at?: string;
+  sleep_total_ms?: number;
+  sleep_remaining_ms?: number;
+  sleep_iteration?: number;
 }
 
 // One message in a thread's live context window, as exposed by

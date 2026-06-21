@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
 import { marked } from "marked";
-import { chat, type ChatMessageRow } from "../api";
+import { chat, type ChatMessageContext, type ChatMessageRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import {
   ChatComponentList,
@@ -26,6 +26,9 @@ interface Props {
   // Telemetry subscribe — used ONLY for the status dot. Chat messages
   // come from the channel-chat app's SSE stream, not telemetry.
   subscribe: SubscribeFn;
+  autoConnect?: boolean;
+  hideHeader?: boolean;
+  messageContext?: ChatMessageContext;
 }
 
 // LiveTool — one tool call surfaced inline in the chat timeline.
@@ -107,7 +110,13 @@ function enforceCap(m: Map<string, LiveTool>): Map<string, LiveTool> {
 // `channel-chat` app's REST + SSE surface. Messages have monotonic DB
 // ids; reconnect fetches the exact gap via `since=<last_id>`. No
 // dedup logic, no tool-call correlation, no streaming-text extractor.
-export function ChatPanel({ instanceId, subscribe }: Props) {
+export function ChatPanel({
+  instanceId,
+  subscribe,
+  autoConnect = false,
+  hideHeader = false,
+  messageContext,
+}: Props) {
   // Project context — needed so chat-attached components can scope
   // their fetches and event subscriptions correctly. Falls back to
   // empty string when there's no current project (apps with chat
@@ -155,7 +164,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   // localStorage and resumed on boot, but stale entries (instances
   // deleted out-of-band) caused unbounded 404 retry loops that ate
   // the connection budget — see chatConnections.ts header.
-  const [connected, setConnected] = useState<boolean>(false);
+  const [connected, setConnected] = useState<boolean>(() => autoConnect);
 
   // SSE "is the stream actually open?" — distinct from `connected`,
   // which is the user's INTENT. readyState transitions on retry are
@@ -175,6 +184,12 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
   // reconnect and as the idempotency gate on SSE deliveries (reject
   // any row whose id we've already rendered).
   const sinceRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (autoConnect && chatId) {
+      setConnected(true);
+    }
+  }, [autoConnect, chatId, instanceId]);
 
   // --- 1. Resolve the chat for this instance -----------------------------
   useEffect(() => {
@@ -346,7 +361,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
 
   // Pin to bottom when the timeline grows OR the viewport shrinks
   // and the user is at bottom. Deps cover three things:
-  //   - messages / liveTools (timeline growth)
+  //   - messages / liveTools / streamingText (timeline growth)
   //   - atBottom (a user who scrolls back down auto-pins next render)
   //   - activity.phase (the "Thinking…" strip toggling on shrinks the
   //     scroll viewport by ~30px; without this dep the just-sent
@@ -357,7 +372,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, liveTools, atBottom, activity.phase]);
+  }, [messages, liveTools, streamingText, atBottom, activity.phase]);
 
   // --- 4b. Live tool activity (interleaved into the timeline) -----------
   //
@@ -507,11 +522,11 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
     setActivity({ phase: "idle" });
   }, [instanceId, chatId]);
 
-  // Only the MAIN thread drives the strip — sub-thread activity is
-  // interesting on the fleet view, but in chat the user cares about
-  // whether THEIR conversation partner is working.
+  // Only the active conversation thread drives the strip. Older chat
+  // routing used main; per-chat routing uses a core thread named
+  // `chat-${chatId}` so a busy main thread cannot block chat replies.
   useTelemetryEvents(instanceId, (ev) => {
-    if (ev.thread_id !== "main" && ev.thread_id !== "") return;
+    if (!isActiveConversationThread(ev.thread_id, chatId)) return;
     if (ev.type === "llm.start") {
       setActivity({
         phase: "thinking",
@@ -549,7 +564,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
     setSending(true);
     setError(null);
     try {
-      await chat.post(chatId, text);
+      await chat.post(chatId, text, messageContext);
       // Server echoes the inserted row back on the SSE stream — no
       // optimistic insert, no dedup needed. The row will show up
       // naturally in <200 ms once the SSE delivers.
@@ -569,7 +584,7 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
     } finally {
       setSending(false);
     }
-  }, [input, chatId, sending, connected, planMode]);
+  }, [input, chatId, sending, connected, planMode, messageContext]);
 
   // postCanned sends a fixed reply on behalf of the user — used by the
   // plan-mode Approve / Reject / Refine quick-action buttons. Same
@@ -582,14 +597,14 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
       setSending(true);
       setError(null);
       try {
-        await chat.post(chatId, text);
+        await chat.post(chatId, text, messageContext);
       } catch (e) {
         setError(errMsg(e));
       } finally {
         setSending(false);
       }
     },
-    [chatId, sending, connected],
+    [chatId, sending, connected, messageContext],
   );
 
   // --- 6. Clear history -------------------------------------------------
@@ -706,90 +721,94 @@ export function ChatPanel({ instanceId, subscribe }: Props) {
 
   return (
     <div className="flex flex-col h-full min-w-0">
-      {/* Header — presence dot, Connect/Disconnect toggle, agent
-          status, clear button. Presence is a first-class signal: the
-          agent is proactive and may greet / push status updates when
-          it sees the user as connected, so the user owns that signal
-          via this button instead of it being silently derived from
-          browser tab state. */}
-      <div className="border-b border-border px-4 py-2 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          {(() => {
-            // Three visible presence states:
-            //   connected + SSE open     → green, "Connected"
-            //   connected + SSE retrying → amber pulse, "Reconnecting"
-            //   disconnected             → gray, "Not connected"
-            const color = !connected
-              ? "bg-text-dim"
-              : sseOpen
-                ? "bg-green"
-                : "bg-yellow animate-pulse";
-            const label = !connected
-              ? "Not connected"
-              : sseOpen
-                ? "Connected"
-                : "Reconnecting";
-            const title = !connected
-              ? "Click Connect to rejoin chat. While disconnected, the agent does not advertise chat and won't respond there."
-              : sseOpen
-                ? "The agent sees you as present. Proactive responses and status pings enabled."
-                : "SSE stream is retrying — agent may briefly see you as offline.";
-            return (
-              <span
-                className="flex items-center gap-1.5 shrink-0"
-                title={title}
+      {!hideHeader && (
+        <>
+          {/* Header — presence dot, Connect/Disconnect toggle, agent
+              status, clear button. Presence is a first-class signal:
+              the agent is proactive and may greet / push status
+              updates when it sees the user as connected, so the user
+              owns that signal via this button instead of it being
+              silently derived from browser tab state. */}
+          <div className="border-b border-border px-4 py-2 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              {(() => {
+                // Three visible presence states:
+                //   connected + SSE open     → green, "Connected"
+                //   connected + SSE retrying → amber pulse, "Reconnecting"
+                //   disconnected             → gray, "Not connected"
+                const color = !connected
+                  ? "bg-text-dim"
+                  : sseOpen
+                    ? "bg-green"
+                    : "bg-yellow animate-pulse";
+                const label = !connected
+                  ? "Not connected"
+                  : sseOpen
+                    ? "Connected"
+                    : "Reconnecting";
+                const title = !connected
+                  ? "Click Connect to rejoin chat. While disconnected, the agent does not advertise chat and won't respond there."
+                  : sseOpen
+                    ? "The agent sees you as present. Proactive responses and status pings enabled."
+                    : "SSE stream is retrying — agent may briefly see you as offline.";
+                return (
+                  <span
+                    className="flex items-center gap-1.5 shrink-0"
+                    title={title}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${color}`} />
+                    <span className="text-text-muted text-[10px] uppercase tracking-wide">
+                      {label}
+                    </span>
+                  </span>
+                );
+              })()}
+              <ChatStatusDot subscribe={subscribe} />
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                onClick={() => setPlanMode((v) => !v)}
+                title={
+                  planMode
+                    ? "Plan mode ON — your next message asks the agent to plan first. Approve / Reject / Refine shortcuts appear above the input."
+                    : "Plan mode OFF — turn on to make the agent investigate and return a plan before executing writes."
+                }
+                className={`text-[10px] uppercase tracking-wide transition-colors ${
+                  planMode ? "text-accent font-bold" : "text-text-muted hover:text-text"
+                }`}
               >
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${color}`} />
-                <span className="text-text-muted text-[10px] uppercase tracking-wide">
-                  {label}
-                </span>
-              </span>
-            );
-          })()}
-          <ChatStatusDot subscribe={subscribe} />
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          <button
-            onClick={() => setPlanMode((v) => !v)}
-            title={
-              planMode
-                ? "Plan mode ON — your next message asks the agent to plan first. Approve / Reject / Refine shortcuts appear above the input."
-                : "Plan mode OFF — turn on to make the agent investigate and return a plan before executing writes."
-            }
-            className={`text-[10px] uppercase tracking-wide transition-colors ${
-              planMode ? "text-accent font-bold" : "text-text-muted hover:text-text"
-            }`}
-          >
-            {planMode ? "Plan ✓" : "Plan"}
-          </button>
-          {chatId && messages.length > 0 && (
-            <button
-              onClick={() => setShowClearModal(true)}
-              title="Delete all messages in this chat (agent memory kept)"
-              className="text-[10px] text-text-muted hover:text-red transition-colors"
-            >
-              Clear
-            </button>
-          )}
-          {connected ? (
-            <button
-              onClick={() => setConnected(false)}
-              className="text-[10px] text-text-muted hover:text-red transition-colors"
-              title="Go offline. The agent will stop advertising chat as a connected channel and won't respond on it until you reconnect."
-            >
-              Disconnect
-            </button>
-          ) : (
-            <button
-              onClick={() => setConnected(true)}
-              className="text-[10px] text-accent hover:text-accent-hover transition-colors font-bold"
-              title="Join chat. The agent will see you as present and may greet or push status updates."
-            >
-              Connect to chat
-            </button>
-          )}
-        </div>
-      </div>
+                {planMode ? "Plan ✓" : "Plan"}
+              </button>
+              {chatId && messages.length > 0 && (
+                <button
+                  onClick={() => setShowClearModal(true)}
+                  title="Delete all messages in this chat (agent memory kept)"
+                  className="text-[10px] text-text-muted hover:text-red transition-colors"
+                >
+                  Clear
+                </button>
+              )}
+              {connected ? (
+                <button
+                  onClick={() => setConnected(false)}
+                  className="text-[10px] text-text-muted hover:text-red transition-colors"
+                  title="Go offline. The agent will stop advertising chat as a connected channel and won't respond on it until you reconnect."
+                >
+                  Disconnect
+                </button>
+              ) : (
+                <button
+                  onClick={() => setConnected(true)}
+                  className="text-[10px] text-accent hover:text-accent-hover transition-colors font-bold"
+                  title="Join chat. The agent will see you as present and may greet or push status updates."
+                >
+                  Connect to chat
+                </button>
+              )}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Error banner — dismissible */}
       {error && (
@@ -1246,6 +1265,13 @@ function ToolRow({ t, compact = false }: { t: LiveTool; compact?: boolean }) {
 // timeline, so the strip stays focused on a single signal: "is the
 // model thinking right now?". Duration counter updates every 500ms.
 type ActivityForStrip = { phase: "thinking"; since: number; thread: string };
+
+function isActiveConversationThread(threadId: string, chatId: string | null): boolean {
+  const normalized = threadId || "main";
+  if (normalized === "main") return true;
+  if (!chatId) return false;
+  return normalized === chatId || normalized === `chat-${chatId}`;
+}
 
 function ActivityStrip({ activity }: { activity: ActivityForStrip }) {
   const [tick, setTick] = useState(0);
