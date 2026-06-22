@@ -9,14 +9,11 @@ import { useProjects } from "../hooks/useProjects";
 // preload; there's no per-attachment mode/access decision in the
 // new model.
 //
-// System MCPs (gateway, channels) are server-injected and identified
-// by name — rendered with a non-toggleable "system" badge to explain
-// why detaching one is consequential (it disables the feature it
-// provides). The no_spawn flag the server sets on those entries
-// controls sub-thread visibility at the core level; not exposed in
-// the UI because it's a host-managed property.
+// Server-managed channel/platform entries are filtered out here. This
+// picker is only for app, integration, and custom MCP servers the
+// operator deliberately attaches as tools.
 
-const SYSTEM_MCP_NAMES = new Set(["apteva-server", "channels", "apteva-channels"]);
+const HIDDEN_SYSTEM_MCP_NAMES = new Set(["apteva-server", "channels", "apteva-channels"]);
 
 interface Props {
   instanceId: number;
@@ -33,12 +30,6 @@ export function MCPPanel({ instanceId, running }: Props) {
   const [picker, setPicker] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // Sticky notice when a system MCP was just enabled on a running
-  // instance — the flag takes effect only on the next Start(), so we
-  // prompt the user to restart. Cleared when the modal is reopened or
-  // the user restarts.
-  const [restartNotice, setRestartNotice] = useState<string | null>(null);
-
   // MCP list comes from GET /config on the server. When the instance
   // is running this proxies to core; when stopped it falls back to
   // config.json via serveStoppedInstanceData. Either way we render
@@ -75,30 +66,9 @@ export function MCPPanel({ instanceId, running }: Props) {
   // For the picker we hide rows that are already attached, by name,
   // and rows that are clearly not wirable (no proxy_config).
   const attachedNames = new Set(attached.map((s) => s.name));
+  const visibleAttached = attached.filter((s) => !HIDDEN_SYSTEM_MCP_NAMES.has(s.name));
   const attachable = inventory.filter(
     (s) => !!s.proxy_config && !attachedNames.has(s.proxy_config.name),
-  );
-  // System MCPs are injected by the server at instance Start() based on
-  // the include_apteva_server / include_channels flags — they aren't in
-  // the project inventory. When one is missing from the attached list
-  // we surface it here so the user can re-enable it without having to
-  // recreate the instance. Name alias "apteva-channels" is kept in sync
-  // with the server-side detection (instances.go:1329).
-  const systemMCPMissing = [
-    {
-      name: "apteva-server" as const,
-      label: "Apteva server (gateway)",
-      hint: "Main gets the instance management tools (create instance, list threads, edit config).",
-    },
-    {
-      name: "channels" as const,
-      label: "Channels (chat bridge)",
-      hint: "Outbound user-facing chat / Slack / email. Without this, the agent can't reply to channel messages.",
-    },
-  ].filter(
-    (m) =>
-      !attachedNames.has(m.name) &&
-      !(m.name === "channels" && attachedNames.has("apteva-channels")),
   );
 
   const writeList = async (next: MCPServerConfig[]) => {
@@ -111,24 +81,6 @@ export function MCPPanel({ instanceId, running }: Props) {
       load();
     } catch (err: any) {
       setError(err?.message || "Failed to update MCP servers");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleEnableSystem = async (name: "apteva-server" | "channels", label: string) => {
-    setBusy(true);
-    setError("");
-    try {
-      const res = await core.toggleSystemMCP(instanceId, name, true);
-      if (res.restart_required) {
-        setRestartNotice(
-          `${label} will attach on the next restart. Stop and start the instance to apply.`,
-        );
-      }
-      load();
-    } catch (err: any) {
-      setError(err?.message || `Failed to enable ${name}`);
     } finally {
       setBusy(false);
     }
@@ -180,19 +132,13 @@ export function MCPPanel({ instanceId, running }: Props) {
         </div>
       )}
 
-      {attached.length === 0 ? (
+      {visibleAttached.length === 0 ? (
         <div className="text-text-dim text-[10px]">
           None attached. Click + add to wire one from this project's inventory.
         </div>
       ) : (
         <div className="space-y-1">
-          {attached.map((s) => {
-            // System MCPs (gateway, channels) are server-injected,
-            // identified by name. The badge is informational: it
-            // explains why detaching one is consequential (kills the
-            // feature it provides). User-attached MCPs are just
-            // attached — no per-row knobs in the new model.
-            const isSystem = SYSTEM_MCP_NAMES.has(s.name);
+          {visibleAttached.map((s) => {
             return (
               <div key={s.name} className="flex items-center gap-1.5">
                 <span
@@ -201,20 +147,12 @@ export function MCPPanel({ instanceId, running }: Props) {
                   }`}
                 />
                 <span className="text-text truncate flex-1">{s.name}</span>
-                {isSystem && (
-                  <span
-                    className="text-[9px] px-1.5 py-[1px] rounded bg-blue/15 text-blue"
-                    title="System MCP — injected at startup. Removing disables the feature it provides (e.g. channels controls the chat bridge)."
-                  >
-                    system
-                  </span>
-                )}
                 <span className="text-text-dim text-[10px]">{s.transport || "stdio"}</span>
                 <button
                   onClick={() => handleDetach(s.name)}
                   disabled={busy}
                   className="text-text-muted hover:text-red transition-colors disabled:opacity-50 text-[10px] px-1"
-                  title={isSystem ? `Remove ${s.name} from this agent` : "Detach from this agent"}
+                  title="Detach from this agent"
                 >
                   ×
                 </button>
@@ -237,42 +175,7 @@ export function MCPPanel({ instanceId, running }: Props) {
           </div>
 
           <div className="flex-1 overflow-y-auto space-y-2">
-            {/* System MCPs — apteva-server + channels. The server
-                injects these at Start() based on the include_* flags.
-                If they're not currently attached, expose an Enable
-                button here so a user who opted out at creation (or
-                detached later) can bring them back without recreating
-                the instance. */}
-            {systemMCPMissing.length > 0 && (
-              <div className="border border-blue/30 rounded-lg p-3 bg-blue/5">
-                <div className="text-[10px] text-blue uppercase tracking-wide font-bold mb-2">
-                  System MCPs
-                </div>
-                <div className="space-y-2">
-                  {systemMCPMissing.map((m) => (
-                    <button
-                      key={m.name}
-                      onClick={() => {
-                        handleEnableSystem(m.name, m.label);
-                      }}
-                      disabled={busy}
-                      className="w-full text-left border border-border bg-bg-card rounded-lg p-3 hover:border-blue transition-colors disabled:opacity-50"
-                    >
-                      <div className="flex items-center gap-2 text-sm font-bold">
-                        <span className="text-blue">+</span>
-                        <span className="text-text">{m.label}</span>
-                        <code className="text-[10px] px-1.5 py-0.5 rounded bg-bg-input text-text-muted font-mono">
-                          {m.name}
-                        </code>
-                        <span className="ml-auto text-[10px] text-text-dim">restart to apply</span>
-                      </div>
-                      <div className="text-[10px] text-text-muted mt-1">{m.hint}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-            {attachable.length === 0 && systemMCPMissing.length === 0 && (
+            {attachable.length === 0 && (
               <p className="text-text-muted text-sm">
                 No unattached servers in this project. Add one in Settings → MCP Servers,
                 or connect a Composio integration.

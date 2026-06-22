@@ -531,6 +531,79 @@ function Pill({ className, children }: { className?: string; children: React.Rea
   );
 }
 
+type UpgradePermissionPrompt = {
+  version?: string;
+  message?: string;
+  missingPermissions: string[];
+};
+
+function upgradePermissionPromptFromError(e: any): UpgradePermissionPrompt | null {
+  const body = e?.body;
+  const missing = body?.missing_permissions;
+  if (e?.status !== 409 || !Array.isArray(missing) || missing.length === 0) {
+    return null;
+  }
+  return {
+    version: typeof body.version === "string" ? body.version : undefined,
+    message: typeof body.message === "string" ? body.message : undefined,
+    missingPermissions: missing.filter((p: unknown) => typeof p === "string"),
+  };
+}
+
+function UpgradePermissionModal({
+  appName,
+  prompt,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  appName: string;
+  prompt: UpgradePermissionPrompt | null;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal open={!!prompt} onClose={busy ? () => {} : onCancel} width="max-w-lg">
+      <div className="p-4 border-b border-border">
+        <div className="text-text font-semibold">New permissions required</div>
+        <div className="text-text-muted text-xs mt-1">
+          Updating {appName}{prompt?.version ? ` to v${prompt.version}` : ""} will add these platform permissions.
+        </div>
+      </div>
+      <div className="p-4 space-y-3">
+        <ul className="space-y-1.5">
+          {(prompt?.missingPermissions || []).map((p) => (
+            <li key={p} className="flex items-center gap-2 text-xs text-text">
+              <span className="w-1.5 h-1.5 rounded-full bg-yellow shrink-0" />
+              <span className="font-mono break-all">{p}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="text-xs text-text-muted">
+          If you continue, Apteva will approve these permissions for this installed app and run the upgrade normally.
+        </p>
+      </div>
+      <div className="p-4 border-t border-border flex justify-end gap-2">
+        <button
+          onClick={onCancel}
+          disabled={busy}
+          className="px-3 py-1.5 border border-border rounded text-xs text-text-muted hover:text-text disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={onConfirm}
+          disabled={busy}
+          className="px-3 py-1.5 border border-yellow rounded text-xs text-yellow hover:bg-yellow/10 disabled:opacity-50"
+        >
+          {busy ? "Updating…" : "Approve and update"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 // AppListRow — compact horizontal row for the Installed tab.
 // Different mental model from MarketplaceCard: operators are doing
 // inventory + lifecycle management here, not browsing. So we lead
@@ -554,6 +627,7 @@ function AppListRow({
   const [showMount, setShowMount] = useState(false);
   const [mountUrl, setMountUrl] = useState("http://127.0.0.1:8080");
   const [mountError, setMountError] = useState("");
+  const [permissionPrompt, setPermissionPrompt] = useState<UpgradePermissionPrompt | null>(null);
 
   const remove = async () => {
     setBusy(true);
@@ -586,13 +660,19 @@ function AppListRow({
       setBusy(false);
     }
   };
-  const upgrade = async () => {
+  const upgrade = async (approveNewPermissions = false) => {
     setBusy(true);
     try {
-      await apps.upgrade(app.install_id);
+      await apps.upgrade(app.install_id, { approveNewPermissions });
+      setPermissionPrompt(null);
       onChange();
     } catch (e: any) {
-      alert(e.message || "upgrade failed");
+      const prompt = upgradePermissionPromptFromError(e);
+      if (prompt && !approveNewPermissions) {
+        setPermissionPrompt(prompt);
+      } else {
+        alert(e.message || "upgrade failed");
+      }
     } finally {
       setBusy(false);
     }
@@ -640,6 +720,7 @@ function AppListRow({
         : "text-text-muted";
 
   return (
+    <>
     <div
       className="px-4 py-3 flex items-center gap-3 hover:bg-bg-card transition-colors cursor-pointer"
       onClick={onOpenDetails}
@@ -762,7 +843,7 @@ function AppListRow({
             )}
             {updateAvailable && (
               <button
-                onClick={upgrade}
+                onClick={() => upgrade()}
                 disabled={busy}
                 className="px-2.5 py-1 border border-yellow rounded text-[11px] text-yellow hover:bg-yellow/10 transition-colors disabled:opacity-50"
                 title={`Upgrade to v${app.available_version}`}
@@ -800,6 +881,14 @@ function AppListRow({
         )}
       </div>
     </div>
+    <UpgradePermissionModal
+      appName={app.display_name}
+      prompt={permissionPrompt}
+      busy={busy}
+      onCancel={() => setPermissionPrompt(null)}
+      onConfirm={() => upgrade(true)}
+    />
+    </>
   );
 }
 
@@ -815,6 +904,7 @@ function AppCard({
   const [showMount, setShowMount] = useState(false);
   const [mountUrl, setMountUrl] = useState("http://127.0.0.1:8080");
   const [mountError, setMountError] = useState("");
+  const [permissionPrompt, setPermissionPrompt] = useState<UpgradePermissionPrompt | null>(null);
 
   const remove = async () => {
     setBusy(true);
@@ -850,13 +940,19 @@ function AppCard({
     }
   };
 
-  const upgrade = async () => {
+  const upgrade = async (approveNewPermissions = false) => {
     setBusy(true);
     try {
-      await apps.upgrade(app.install_id);
+      await apps.upgrade(app.install_id, { approveNewPermissions });
+      setPermissionPrompt(null);
       onChange();
     } catch (e: any) {
-      alert(e.message || "upgrade failed");
+      const prompt = upgradePermissionPromptFromError(e);
+      if (prompt && !approveNewPermissions) {
+        setPermissionPrompt(prompt);
+      } else {
+        alert(e.message || "upgrade failed");
+      }
     } finally {
       setBusy(false);
     }
@@ -893,6 +989,7 @@ function AppCard({
   const showOpen = app.status === "running" && (!!projectPagePanel || !!staticAppMount);
 
   return (
+    <>
     <div
       className="border border-border rounded-lg p-4 flex flex-col gap-2 cursor-pointer hover:border-accent/60 transition-colors min-h-[260px]"
       onClick={onOpenDetails}
@@ -995,7 +1092,7 @@ function AppCard({
             <div className="flex items-center gap-1.5">
               {updateAvailable && (
                 <button
-                  onClick={upgrade}
+                  onClick={() => upgrade()}
                   disabled={busy}
                   className="flex-1 px-2 py-1 border border-yellow rounded text-[11px] text-yellow hover:bg-bg-hover transition-colors disabled:opacity-50"
                   title={`Upgrade to v${app.available_version}`}
@@ -1034,6 +1131,14 @@ function AppCard({
         )}
       </div>
     </div>
+    <UpgradePermissionModal
+      appName={app.display_name}
+      prompt={permissionPrompt}
+      busy={busy}
+      onCancel={() => setPermissionPrompt(null)}
+      onConfirm={() => upgrade(true)}
+    />
+    </>
   );
 }
 

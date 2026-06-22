@@ -34,7 +34,7 @@ export function sleepLabel(sleep?: SleepLike | null, opts: { compact?: boolean; 
     const time = formatRemaining(remaining);
     return compact ? `sleep ${time}` : `Sleeping · ${time}`;
   }
-  if (state === "overdue") return compact ? "overdue" : "Overdue";
+  if (state === "overdue") return compact ? "active" : "Active";
   if (state === "active") return compact ? "active" : "Active";
   if (state === "paused") return compact ? "paused" : "Paused";
   if (state === "stopped") return compact ? "stopped" : "Stopped";
@@ -62,7 +62,7 @@ export function sleepClassName(sleep?: SleepLike | null): string {
   const state = String(sleep?.sleep_state || "unknown");
   if (state === "sleeping") return "bg-blue/15 text-blue";
   if (state === "active") return "bg-green/15 text-green";
-  if (state === "overdue") return "bg-yellow/15 text-yellow";
+  if (state === "overdue") return "bg-green/15 text-green";
   if (state === "paused") return "bg-yellow/15 text-yellow";
   if (state === "stopped") return "bg-border text-text-dim";
   return "bg-border text-text-muted";

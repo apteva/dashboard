@@ -1,14 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import {
   apps as appsAPI,
-  channels,
   core,
   instances,
   mcpServers as mcpServersAPI,
   providers as providersAPI,
   type Agent,
   type AppRow,
-  type ChannelInfo,
   type ExecutionControlStatus,
   type MCPServer,
   type MCPServerConfig,
@@ -948,7 +946,6 @@ function AgentRuntimePanel({
   const [mcpServers, setMCPServers] = useState<MCPServerConfig[]>([]);
   const [installedApps, setInstalledApps] = useState<AppRow[]>([]);
   const [mcpInventory, setMCPInventory] = useState<MCPServer[]>([]);
-  const [channelRows, setChannelRows] = useState<ChannelInfo[]>([]);
   const [showCapabilitiesManage, setShowCapabilitiesManage] = useState(false);
   const [selectedRuntimeThread, setSelectedRuntimeThread] = useState("main");
   const [executionControl, setExecutionControl] = useState<ExecutionControlStatus>({
@@ -997,11 +994,6 @@ function AgentRuntimePanel({
       mcpServersAPI.list(instance.project_id)
         .then((rows) => {
           if (!cancelled) setMCPInventory(rows || []);
-        })
-        .catch(() => {});
-      channels.list({ instanceId: instance.id })
-        .then((rows) => {
-          if (!cancelled) setChannelRows(rows || []);
         })
         .catch(() => {});
     };
@@ -1103,7 +1095,6 @@ function AgentRuntimePanel({
             attached={mcpServers}
             apps={installedApps}
             inventory={mcpInventory}
-            running={instance.status === "running"}
             onAttachedChange={setMCPServers}
             onInventoryChange={setMCPInventory}
           />
@@ -1173,7 +1164,6 @@ function AgentRuntimePanel({
           apps={installedApps}
           inventory={mcpInventory}
           instanceId={instance.id}
-          channels={channelRows}
           onAttachedChange={setMCPServers}
           onManage={() => setShowCapabilitiesManage(true)}
         />
@@ -1478,28 +1468,12 @@ function truncateUI(value: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
-const SYSTEM_CAPABILITIES = [
-  {
-    key: "channels" as const,
-    names: ["channels", "apteva-channels"],
-    title: "Channels",
-    detail: "Dashboard chat, email, Slack replies",
-  },
-  {
-    key: "apteva-server" as const,
-    names: ["apteva-server"],
-    title: "Apteva Server",
-    detail: "Agent control and platform gateway",
-  },
-];
-
 function CapabilitiesManager({
   instanceId,
   projectId,
   attached,
   apps,
   inventory: inventoryProp,
-  running,
   onAttachedChange,
   onInventoryChange,
 }: {
@@ -1508,14 +1482,12 @@ function CapabilitiesManager({
   attached: MCPServerConfig[];
   apps: AppRow[];
   inventory: MCPServer[];
-  running: boolean;
   onAttachedChange: (servers: MCPServerConfig[]) => void;
   onInventoryChange: (servers: MCPServer[]) => void;
 }) {
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
 
   const loadInventory = useCallback(() => {
     setLoading(true);
@@ -1541,17 +1513,11 @@ function CapabilitiesManager({
     onAttachedChange(next);
   };
 
-  const refreshAttached = async () => {
-    const cfg = await core.config(instanceId);
-    onAttachedChange(cfg.mcp_servers || []);
-  };
-
   const attachInventory = async (row: MCPServer, aliases?: string[]) => {
     const entry = configFromInventory(row);
     if (!entry) return;
     setBusyKey(`mcp:${mcpName(row)}`);
     setError(null);
-    setNotice(null);
     try {
       const next = [
         ...removeAttachedByAliases(attached, [...(aliases || mcpCapabilityAliases(row)), entry.name]),
@@ -1568,34 +1534,10 @@ function CapabilitiesManager({
   const detachName = async (name: string, aliases?: string[]) => {
     setBusyKey(`mcp:${name}`);
     setError(null);
-    setNotice(null);
     try {
       await writeAttached(removeAttachedByAliases(attached, aliases ? [...aliases, name] : [name]));
     } catch (err: any) {
       setError(err?.message || "Failed to disable capability");
-    } finally {
-      setBusyKey(null);
-    }
-  };
-
-  const toggleSystem = async (cap: typeof SYSTEM_CAPABILITIES[number], enabled: boolean) => {
-    setBusyKey(`system:${cap.key}`);
-    setError(null);
-    setNotice(null);
-    try {
-      if (enabled) {
-        const next = attached.filter((s) => !cap.names.includes(s.name));
-        await writeAttached(next);
-        await core.toggleSystemMCP(instanceId, cap.key, false);
-      } else {
-        const res = await core.toggleSystemMCP(instanceId, cap.key, true);
-        await refreshAttached().catch(() => {});
-        if (res.restart_required || running) {
-          setNotice(`${cap.title} will be available after the agent is restarted.`);
-        }
-      }
-    } catch (err: any) {
-      setError(err?.message || `Failed to update ${cap.title}`);
     } finally {
       setBusyKey(null);
     }
@@ -1642,32 +1584,6 @@ function CapabilitiesManager({
           {error}
         </div>
       )}
-      {notice && (
-        <div className="rounded border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
-          {notice}
-        </div>
-      )}
-
-      <CapabilitySection
-        title={`System — ${SYSTEM_CAPABILITIES.filter((cap) => cap.names.some((name) => attachedNames.has(name))).length}/${SYSTEM_CAPABILITIES.length} attached`}
-        hint="Platform-provided capabilities"
-      >
-        {SYSTEM_CAPABILITIES.map((cap) => {
-          const enabled = cap.names.some((name) => attachedNames.has(name));
-          return (
-            <CapabilityToggleRow
-              key={cap.key}
-              title={cap.title}
-              detail={cap.detail}
-              meta={enabled ? "attached" : "not attached"}
-              enabled={enabled}
-              busy={busyKey === `system:${cap.key}`}
-              onToggle={() => toggleSystem(cap, enabled)}
-            />
-          );
-        })}
-      </CapabilitySection>
-
       <CapabilitySection
         title={`Apps — ${appAttachedCount}/${appRows.length} attached`}
         hint="Installed apps exposing MCP tools"
@@ -2074,33 +1990,15 @@ function contextUsageFromComposition(composition?: PromptComposition): ThreadCon
   };
 }
 
-function aggregateContextUsage(threadIds: string[], byThread: Record<string, ThreadContextUsage>): ThreadContextUsage | undefined {
-  let best: ThreadContextUsage | undefined;
-  for (const threadId of threadIds) {
-    const usage = byThread[threadId];
-    if (!usage) continue;
-    if (!best) {
-      best = usage;
-      continue;
-    }
-    if (usage.percent != null && best.percent != null) {
-      if (usage.percent > best.percent) best = usage;
-    } else if (usage.estimatedTokens > best.estimatedTokens) {
-      best = usage;
-    }
-  }
-  return best;
-}
-
 function ContextUsageBar({ usage, label }: { usage?: ThreadContextUsage; label?: string }) {
   if (!usage) {
     return (
       <span
-        className="hidden sm:inline-flex w-[86px] shrink-0 flex-col gap-0.5"
+        className="hidden sm:inline-flex w-[128px] shrink-0 items-center gap-1.5"
         title="Context usage loading"
       >
-        <span className="text-[9px] text-text-dim tabular-nums text-right">ctx --</span>
-        <span className="h-1 rounded-full bg-bg-input" />
+        <span className="text-[10px] text-text-dim tabular-nums text-right shrink-0">ctx --</span>
+        <span className="h-1 flex-1 rounded-full bg-bg-input" />
       </span>
     );
   }
@@ -2130,11 +2028,11 @@ function ContextUsageBar({ usage, label }: { usage?: ThreadContextUsage; label?:
     `conversation ${formatCompactNumber(usage.conversationBytes)} chars`,
   ].join("\n");
   return (
-    <span className="hidden sm:inline-flex w-[86px] shrink-0 flex-col gap-0.5" title={title} aria-label={title}>
-      <span className="text-[9px] text-text-dim tabular-nums text-right">
+    <span className="hidden sm:inline-flex w-[128px] shrink-0 items-center gap-1.5" title={title} aria-label={title}>
+      <span className="text-[10px] text-text-dim tabular-nums text-right shrink-0">
         {label ? `${label} ` : "ctx "}{value}
       </span>
-      <span className="h-1 rounded-full bg-bg-input overflow-hidden">
+      <span className="h-1 flex-1 rounded-full bg-bg-input overflow-hidden">
         <span
           className={`block h-full rounded-full ${color}`}
           style={{ width: pct == null ? "18%" : `${fill}%` }}
@@ -2180,8 +2078,6 @@ function ThreadSummary({
   );
   const visibleThreadIds = useMemo(() => sorted.map((t) => t.id), [sorted]);
   const [contextUsage, setContextUsage] = useState<Record<string, ThreadContextUsage>>({});
-  const allSelected = selectedThreadId === "all";
-  const allUsage = useMemo(() => aggregateContextUsage(visibleThreadIds, contextUsage), [visibleThreadIds, contextUsage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2219,6 +2115,13 @@ function ThreadSummary({
     };
   }, [instanceId, running, visibleThreadIds.join("|")]);
 
+  useEffect(() => {
+    if (visibleThreadIds.length === 0) return;
+    if (!visibleThreadIds.includes(selectedThreadId)) {
+      onThreadSelect(visibleThreadIds[0]);
+    }
+  }, [visibleThreadIds.join("|"), selectedThreadId, onThreadSelect]);
+
   return (
     <div className="p-3 min-w-0">
       <div className="flex items-center justify-between mb-2">
@@ -2226,18 +2129,6 @@ function ThreadSummary({
         <span className="text-[10px] text-text-dim">{rows.length} threads</span>
       </div>
       <div className="space-y-1">
-        <button
-          type="button"
-          onClick={() => onThreadSelect("all")}
-          className={`w-full min-w-0 flex items-center gap-2 rounded px-2 py-1.5 text-left transition-colors ${
-            allSelected ? "bg-accent/10 ring-1 ring-accent/40" : "hover:bg-bg-hover"
-          }`}
-        >
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${allSelected ? "bg-accent" : "bg-text-dim"}`} />
-          <span className={`text-xs truncate ${allSelected ? "text-accent font-medium" : "text-text"}`}>All threads</span>
-          <span className="text-[10px] text-text-muted truncate flex-1">mixed stream</span>
-          <ContextUsageBar usage={allUsage} label="peak" />
-        </button>
         {sorted.map((t) => {
           const tool = activeTools[t.id];
           const isThinking = !!thinking[t.id];
@@ -2286,7 +2177,6 @@ function CapabilityShelf({
   apps,
   inventory,
   instanceId,
-  channels: channelRows,
   onAttachedChange,
   onManage,
 }: {
@@ -2294,17 +2184,11 @@ function CapabilityShelf({
   apps: AppRow[];
   inventory: MCPServer[];
   instanceId: number;
-  channels: ChannelInfo[];
   onAttachedChange: (servers: MCPServerConfig[]) => void;
   onManage: () => void;
 }) {
   const [busyName, setBusyName] = useState<string | null>(null);
-  const names = new Set(mcpServers.map((s) => s.name));
   const attachedKeys = attachedCapabilityKeys(mcpServers);
-  const system = [
-    { name: "channels", label: "Channels", tools: "chat / email / Slack" },
-    { name: "apteva-server", label: "Apteva Server", tools: "agent control" },
-  ];
   const appInventoryByKey = new Map<string, MCPServer>();
   for (const row of inventory) {
     if (row.source === "app") {
@@ -2352,25 +2236,6 @@ function CapabilityShelf({
     }
   };
 
-  const toggleSystemQuick = async (name: "channels" | "apteva-server", enabled: boolean) => {
-    setBusyName(name);
-    try {
-      if (enabled) {
-        const aliases = name === "channels" ? ["channels", "apteva-channels"] : [name];
-        const next = mcpServers.filter((server) => !aliases.includes(server.name));
-        await core.setMCPServers(instanceId, next);
-        await core.toggleSystemMCP(instanceId, name, false);
-        onAttachedChange(next);
-      } else {
-        await core.toggleSystemMCP(instanceId, name, true);
-        const cfg = await core.config(instanceId);
-        onAttachedChange(cfg.mcp_servers || []);
-      }
-    } finally {
-      setBusyName(null);
-    }
-  };
-
   return (
     <div className="p-3 min-w-0">
       <div className="flex items-center justify-between mb-2">
@@ -2380,29 +2245,6 @@ function CapabilityShelf({
         </button>
       </div>
       <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
-        <CapabilityGroup title="System">
-          {system.map((s) => {
-            const attached = names.has(s.name) || (s.name === "channels" && names.has("apteva-channels"));
-            return (
-              <CapabilityRow
-                key={s.name}
-                checked={attached}
-                name={s.label}
-                meta={attached ? "attached" : "missing"}
-                active={attached}
-                busy={busyName === s.name}
-                onClick={() => toggleSystemQuick(s.name as "channels" | "apteva-server", attached)}
-              />
-            );
-          })}
-        </CapabilityGroup>
-        {channelRows.length > 0 && (
-          <CapabilityGroup title="Channels">
-            {channelRows.slice(0, 4).map((c) => (
-              <CapabilityRow key={c.id} checked name={c.name || c.type} meta={c.type} active={c.status === "active"} />
-            ))}
-          </CapabilityGroup>
-        )}
         {appCaps.length > 0 && (
           <CapabilityGroup title="Apps">
             {appCaps.map((a) => {
@@ -2519,7 +2361,7 @@ function RuntimeStream({
   const [filter, setFilter] = useState<"all" | RuntimeEventItem["kind"]>("all");
   const [query, setQuery] = useState("");
   const visible = events
-    .filter((e) => selectedThreadId === "all" || (e.threadId || "main") === selectedThreadId)
+    .filter((e) => (e.threadId || "main") === selectedThreadId)
     .filter((e) => filter === "all" || e.kind === filter)
     .filter((e) => {
       const q = query.trim().toLowerCase();
@@ -2548,7 +2390,7 @@ function RuntimeStream({
           ))}
         </div>
         <span className="hidden sm:inline-flex shrink-0 rounded bg-bg-hover px-2 py-1 text-[10px] text-text-muted">
-          thread: <span className="ml-1 text-text">{selectedThreadId === "all" ? "all" : selectedThreadId}</span>
+          thread: <span className="ml-1 text-text">{selectedThreadId}</span>
         </span>
         <input
           value={query}
@@ -2560,9 +2402,7 @@ function RuntimeStream({
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
         {visible.length === 0 ? (
           <div className="h-full flex items-center justify-center text-text-dim text-sm">
-            {selectedThreadId === "all"
-              ? "Runtime events will appear here."
-              : `No runtime events for ${selectedThreadId}.`}
+            No runtime events for {selectedThreadId}.
           </div>
         ) : (
           <div className="space-y-1.5">

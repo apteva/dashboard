@@ -1096,6 +1096,11 @@ export interface Agent {
   status: string;
   project_id?: string;
   kind?: string;
+  core_version?: string;
+  core_build_time?: string;
+  core_started_at?: string;
+  target_core_version?: string;
+  core_update_available?: boolean;
   created_at: string;
 }
 
@@ -1116,7 +1121,6 @@ export const instances = {
     projectId?: string,
     start?: boolean,
     opts?: {
-      includeAptevaServer?: boolean;
       includeChannels?: boolean;
       unconscious?: boolean;
       templateID?: string;
@@ -1139,9 +1143,6 @@ export const instances = {
       project_id: projectId || "",
       // Server default is start=true; pass explicit false to create stopped.
       ...(start === false ? { start: false } : {}),
-      ...(opts?.includeAptevaServer !== undefined
-        ? { include_apteva_server: opts.includeAptevaServer }
-        : {}),
       ...(opts?.includeChannels !== undefined
         ? { include_channels: opts.includeChannels }
         : {}),
@@ -2338,14 +2339,13 @@ export const core = {
     request<{ status: string }>("PUT", `/agents/${instanceId}/config`, {
       mcp_servers: servers,
     }),
-  // Flip the include_apteva_server / include_channels flag on an
-  // instance. Use this to re-enable a system MCP that was opted out at
-  // creation (or previously detached). Takes effect on the next start
-  // of the instance — the response's restart_required field indicates
-  // whether the caller needs to prompt for a restart to apply it.
+  // Flip the include_channels flag on an instance. Use this to re-enable
+  // channels when they were previously detached. Takes effect on the
+  // next start of the instance — the response's restart_required field
+  // indicates whether the caller needs to prompt for a restart to apply it.
   toggleSystemMCP: (
     instanceId: number,
-    name: "apteva-server" | "channels",
+    name: "channels",
     enable: boolean,
   ) =>
     request<{
@@ -2649,8 +2649,12 @@ export const apps = {
   uninstall: (installId: number) =>
     request<{ status: string }>("DELETE", `/apps/installs/${installId}`),
 
-  upgrade: (installId: number) =>
-    request<{ status: string; version: string }>("POST", `/apps/installs/${installId}/upgrade`),
+  upgrade: (installId: number, opts?: { approveNewPermissions?: boolean }) =>
+    request<AppUpgradeResponse>(
+      "POST",
+      `/apps/installs/${installId}/upgrade`,
+      opts?.approveNewPermissions ? { approve_new_permissions: true } : undefined,
+    ),
 
   /** Move an install between project and global scope without
    *  destroying its data. project_id="" → global; any string id →
@@ -2767,6 +2771,11 @@ export interface AppPermissionCatalog {
   resources: AppResourceDecl[];
   permissions: AppProvidedPermission[];
   tools: AppPermissionTool[];
+}
+
+export interface AppUpgradeResponse {
+  status: string;
+  version: string;
 }
 
 export interface AppGrantRule {

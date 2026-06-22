@@ -55,10 +55,10 @@ interface LiveTool {
 // Tools we hide from the chat timeline. Pure agent housekeeping:
 //   pace — sleep-rate adjustments fire constantly
 //   done — thread terminator
-//   channels_respond — IS the response; surfacing it as a separate
-//     tool call is pure noise (the user already sees the message it
-//     produced as an assistant turn).
-const HIDDEN_TOOLS = new Set(["pace", "done", "channels_respond"]);
+//   channels_respond/channels_status — ARE visible chat messages;
+//     surfacing them as separate tool calls is pure noise (the user
+//     already sees the message they produced as assistant turns).
+const HIDDEN_TOOLS = new Set(["pace", "done", "channels_respond", "channels_status"]);
 
 // `send` is useful when it explains meaningful delegation, but noisy
 // when it is only an internal completion/report-back hop.
@@ -133,6 +133,31 @@ export function ChatPanel({
   const [showClearModal, setShowClearModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const suppressNextThinkingRef = useRef(false);
+  const suppressNextThinkingTimerRef = useRef<number | null>(null);
+
+  const armQuietFollowupTurn = useCallback(() => {
+    suppressNextThinkingRef.current = true;
+    if (suppressNextThinkingTimerRef.current !== null) {
+      window.clearTimeout(suppressNextThinkingTimerRef.current);
+    }
+    suppressNextThinkingTimerRef.current = window.setTimeout(() => {
+      suppressNextThinkingRef.current = false;
+      suppressNextThinkingTimerRef.current = null;
+    }, 15_000);
+  }, []);
+
+  const clearQuietFollowupTurn = useCallback(() => {
+    suppressNextThinkingRef.current = false;
+    if (suppressNextThinkingTimerRef.current !== null) {
+      window.clearTimeout(suppressNextThinkingTimerRef.current);
+      suppressNextThinkingTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => clearQuietFollowupTurn();
+  }, [clearQuietFollowupTurn]);
 
   // Ephemeral tool-activity strip. NEVER enters `messages` — that's
   // the previous implementation's mistake. The strip is pinned above
@@ -359,6 +384,12 @@ export function ChatPanel({
     | { phase: "thinking"; since: number; thread: string };
   const [activity, setActivity] = useState<AgentActivity>({ phase: "idle" });
 
+  useEffect(() => {
+    if (!chatId) return;
+    setActivity({ phase: "idle" });
+    armQuietFollowupTurn();
+  }, [connected, chatId, armQuietFollowupTurn]);
+
   // Pin to bottom when the timeline grows OR the viewport shrinks
   // and the user is at bottom. Deps cover three things:
   //   - messages / liveTools / streamingText (timeline growth)
@@ -404,6 +435,10 @@ export function ChatPanel({
     return subscribe((ev) => {
       if (ev.type === "llm.tool_chunk") {
         const name = String(ev.data?.tool || "");
+        if (name === "channels_respond" && isActiveConversationThread(ev.thread_id, chatId)) {
+          clearQuietFollowupTurn();
+          return;
+        }
         if (!name || shouldHideTool(name)) return;
         const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
         setLiveTools((prev) => {
@@ -426,6 +461,9 @@ export function ChatPanel({
         const name = String(ev.data?.name || "");
         const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
         const reason = String(ev.data?.reason || "");
+        if (name && !shouldHideTool(name, reason)) {
+          clearQuietFollowupTurn();
+        }
         if (!name || shouldHideTool(name, reason)) {
           setLiveTools((prev) => {
             if (!prev.has(id)) return prev;
@@ -454,6 +492,14 @@ export function ChatPanel({
       if (ev.type === "tool.result") {
         const name = String(ev.data?.name || ev.data?.tool || "");
         const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
+        if (
+          name === "channels_respond" &&
+          !ev.data?.is_error &&
+          isActiveConversationThread(ev.thread_id, chatId)
+        ) {
+          armQuietFollowupTurn();
+          return;
+        }
         if (!name || HIDDEN_TOOLS.has(name)) return;
         const isError = !!ev.data?.is_error;
         const durationMs =
@@ -478,7 +524,7 @@ export function ChatPanel({
         return;
       }
     });
-  }, [subscribe]);
+  }, [subscribe, chatId, armQuietFollowupTurn, clearQuietFollowupTurn]);
 
   // Reset tool list when switching chats / instances. Otherwise stale
   // entries from a previous instance briefly leak into the new view.
@@ -486,7 +532,8 @@ export function ChatPanel({
     setLiveTools(new Map());
     setExpandedToolGroups(new Set());
     setStreamingText(null);
-  }, [instanceId, chatId]);
+    clearQuietFollowupTurn();
+  }, [instanceId, chatId, clearQuietFollowupTurn]);
 
   // Subscribe to streaming-frame updates for this chat. Frames carry
   // monotonically growing text; setting state to the latest is enough,
@@ -495,9 +542,13 @@ export function ChatPanel({
   useEffect(() => {
     if (!chatId) return;
     return chatConnections.subscribeStream(chatId, (f) => {
+      if (f && !f.done) {
+        clearQuietFollowupTurn();
+        setActivity({ phase: "idle" });
+      }
       setStreamingText(f && !f.done ? f.text : null);
     });
-  }, [chatId]);
+  }, [chatId, clearQuietFollowupTurn]);
 
   // --- 4c. Agent activity strip (Claude/ChatGPT-style "Thinking…") -----
   //
@@ -520,7 +571,8 @@ export function ChatPanel({
   // "thinking" carried over from a previous instance's stream.
   useEffect(() => {
     setActivity({ phase: "idle" });
-  }, [instanceId, chatId]);
+    clearQuietFollowupTurn();
+  }, [instanceId, chatId, clearQuietFollowupTurn]);
 
   // Only the active conversation thread drives the strip. Older chat
   // routing used main; per-chat routing uses a core thread named
@@ -528,6 +580,7 @@ export function ChatPanel({
   useTelemetryEvents(instanceId, (ev) => {
     if (!isActiveConversationThread(ev.thread_id, chatId)) return;
     if (ev.type === "llm.start") {
+      if (suppressNextThinkingRef.current) return;
       setActivity({
         phase: "thinking",
         since: Date.parse(ev.time) || Date.now(),
@@ -545,6 +598,7 @@ export function ChatPanel({
       ev.type === "llm.error" ||
       ev.type === "thread.done"
     ) {
+      clearQuietFollowupTurn();
       setActivity({ phase: "idle" });
       return;
     }

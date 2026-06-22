@@ -110,7 +110,6 @@ interface WizardState {
   directive: string;
   mode: Mode;
   unconscious: boolean;
-  includeAptevaServer: boolean;
   includeChannels: boolean;
   recommendedApps: string[]; // surface-only, no install in this flow
   // Setup-step explicit selections. Operator picks which existing
@@ -143,13 +142,9 @@ const INITIAL: WizardState = {
   directive: "",
   mode: "learn",
   unconscious: true,
-  // Locked defaults — the wizard no longer exposes these toggles
-  // because in practice we always want channels (agent needs a way
-  // to reply) and never want the apteva-server self-introspection
-  // MCP attached to a wizard-built agent. Operators who need
-  // either can flip them from the agent detail page's System MCP
-  // panel post-create.
-  includeAptevaServer: false,
+  // Locked default — the wizard no longer exposes this toggle because
+  // agents need channels to reply. Operators can disable/re-enable
+  // channels from the agent detail page post-create.
   includeChannels: true,
   boundAppInstallIDs: new Set<number>(),
   boundConnectionIDs: new Set<number>(),
@@ -537,7 +532,6 @@ export function AgentNew() {
         currentProject?.id,
         startNow,
         {
-          includeAptevaServer: state.includeAptevaServer,
           includeChannels: state.includeChannels,
           unconscious: state.unconscious,
           templateID: state.templateID || undefined,

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { instances, core, subscriptions, type Agent, type RunMode, type Status, type SubscriptionInfo, type TelemetryEvent } from "../api";
+import { instances, core, subscriptions, type Agent, type MCPServerConfig, type RunMode, type Status, type SubscriptionInfo, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { usePageTitle } from "../hooks/usePageTitle";
@@ -33,6 +33,18 @@ interface LiveActivity {
 
 type AgentLiveStatus = { threads: number; iter: number; rate: string } & SleepLike;
 type AgentSubThread = { id: string; rate: string; iter: number; mcpNames: string[] } & SleepLike;
+
+function mcpNamesFromConfig(servers?: MCPServerConfig[]) {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const server of servers || []) {
+    const name = (server?.name || "").trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
 
 // Agents is the fleet-list view: all instances in the current project,
 // with status + quick lifecycle actions + a create form. Clicking a row
@@ -67,10 +79,9 @@ export function Agents() {
   // show what's actually running — id + pace + iter. Refreshed on the
   // same 5s cadence as status. Empty array = no sub-threads.
   const [subThreads, setSubThreads] = useState<Record<number, AgentSubThread[]>>({});
-  // Per-instance MCP names attached to main (native access, not
-  // catalog-only). Sourced from core /threads where the "main" row
-  // carries its own mcp_names. Catalog-only MCPs show up on
-  // individual sub-thread rows instead, so we don't double-count.
+  // Per-instance saved MCP attachments. Sourced from /config so the
+  // fleet row renders the same list while the agent is running or
+  // stopped.
   const [mainMCPs, setMainMCPs] = useState<Record<number, string[]>>({});
   const [now, setNow] = useState(Date.now());
 
@@ -178,6 +189,8 @@ export function Agents() {
     setAgentSubscriptions({});
     setLoaded(false);
     setLiveStatus({});
+    setSubThreads({});
+    setMainMCPs({});
     load();
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
@@ -193,12 +206,26 @@ export function Agents() {
     if (list.length === 0) return;
     const refresh = () => {
       list.forEach((inst) => {
+        // Saved MCP attachments live in the agent config. When the
+        // core is stopped, the server serves this from config.json.
+        core
+          .config(inst.id)
+          .then((cfg) => {
+            setMainMCPs((prev) => ({
+              ...prev,
+              [inst.id]: mcpNamesFromConfig(cfg.mcp_servers),
+            }));
+          })
+          .catch(() => {
+            setMainMCPs((prev) => ({ ...prev, [inst.id]: [] }));
+          });
+
         if (inst.status !== "running") {
           setLiveStatus((prev) => ({ ...prev, [inst.id]: null }));
-          // DO fetch threads + MCPs for stopped instances — the server
+          // DO fetch threads for stopped instances — the server
           // falls back to config.json on disk via serveStoppedInstanceData,
-          // so the card can still show persisted sub-threads, attached
-          // MCPs, and directive even without a live core. Only the
+          // so the card can still show persisted sub-threads and their
+          // per-thread MCP names without a live core. Only the
           // live /status (iter/rate) is absent; we handle that via the
           // null liveStatus above, which renders as "stopped".
           core
@@ -220,15 +247,9 @@ export function Agents() {
                   sleep_iteration: t.sleep_iteration,
                 }));
               setSubThreads((prev) => ({ ...prev, [inst.id]: subs }));
-              const main = (threads || []).find((t) => t.id === "main");
-              setMainMCPs((prev) => ({
-                ...prev,
-                [inst.id]: (main && main.mcp_names) || [],
-              }));
             })
             .catch(() => {
               setSubThreads((prev) => ({ ...prev, [inst.id]: [] }));
-              setMainMCPs((prev) => ({ ...prev, [inst.id]: [] }));
             });
           return;
         }
@@ -252,9 +273,8 @@ export function Agents() {
             }));
           })
           .catch(() => {});
-        // Thread list — only if status says there are sub-threads, else
-        // skip the extra request to keep the list scan cheap. Filter out
-        // "main" since it's already surfaced via liveStatus.
+        // Thread list: filter out "main" since it's already surfaced via
+        // liveStatus and the saved MCP row comes from /config above.
         core
           .threads(inst.id)
           .then((threads) => {
@@ -274,11 +294,6 @@ export function Agents() {
                 sleep_iteration: t.sleep_iteration,
               }));
             setSubThreads((prev) => ({ ...prev, [inst.id]: subs }));
-            const main = (threads || []).find((t) => t.id === "main");
-            setMainMCPs((prev) => ({
-              ...prev,
-              [inst.id]: (main && main.mcp_names) || [],
-            }));
           })
           .catch(() => {});
       });
@@ -405,7 +420,6 @@ export function Agents() {
       // a fresh instance consume tokens before the user has had a chance
       // to configure directive / MCPs / channels.
       await instances.create(name.trim(), directive.trim(), createMode, projectId, false, {
-        includeAptevaServer: false,
         includeChannels: true,
       });
       setName("");
