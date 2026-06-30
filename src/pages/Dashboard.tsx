@@ -25,12 +25,12 @@ import { CostCard } from "../components/dashboard/CostCard";
 import { usePageTitle } from "../hooks/usePageTitle";
 
 export function Dashboard() {
-  usePageTitle("Overview");
+  usePageTitle("Dashboard");
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <div className="border-b border-border px-6 py-4">
-        <h1 className="text-text text-lg font-bold">Overview</h1>
+        <h1 className="text-text text-lg font-bold">Dashboard</h1>
       </div>
 
       <div className="flex-1 overflow-auto p-4 space-y-4">

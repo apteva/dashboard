@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { core, instances, type Agent, type RunMode, type Status, type Thread } from "../api";
+import { core, instances, telemetry, type Agent, type RunMode, type Status, type TelemetryEvent, type Thread } from "../api";
 import type { SubscribeFn } from "./AgentView";
 import { Modal } from "./Modal";
 
@@ -48,6 +48,8 @@ interface IncomingEvent {
 // How long rows stay visible before fully fading out.
 const EVENT_FADE_MS = 30_000;
 const TOOL_FADE_MS = 60_000;
+const HISTORICAL_TELEMETRY_LIMIT = 300;
+const HISTORICAL_THOUGHT_LIMIT = 20;
 
 // formatToolTime renders a tool-call timestamp. Events from today show
 // HH:MM:SS; older events show "MMM DD HH:MM" so historical replay of a
@@ -73,6 +75,67 @@ function restoreCheckpointMs(event: { type: string; data?: Record<string, any> }
   if (event.type !== "execution.restored") return 0;
   const ms = Date.parse(String(event.data?.checkpoint_time || ""));
   return Number.isFinite(ms) ? ms : 0;
+}
+
+function eventTimeMs(event: Pick<TelemetryEvent, "time">): number {
+  const ms = Date.parse(String(event.time || ""));
+  return Number.isFinite(ms) ? ms : Date.now();
+}
+
+function appendHistoricalThought(
+  thoughts: ThoughtEntry[],
+  threadId: string,
+  iteration: number,
+  text: string,
+  reasoning: boolean,
+  time: number,
+): ThoughtEntry[] {
+  if (!text) return thoughts;
+  for (let i = thoughts.length - 1; i >= 0; i--) {
+    const t = thoughts[i];
+    if (t.threadId === threadId && t.iteration === iteration && t.reasoning === reasoning) {
+      const next = [...thoughts];
+      next[i] = { ...t, text: t.text + text, time, streaming: false };
+      return next;
+    }
+  }
+  return [...thoughts, { threadId, iteration, text, reasoning, time, streaming: false }];
+}
+
+function buildHistoricalThoughts(events: TelemetryEvent[]): ThoughtEntry[] {
+  const sorted = [...events].sort((a, b) => eventTimeMs(a) - eventTimeMs(b));
+  let out: ThoughtEntry[] = [];
+  for (const event of sorted) {
+    const data = event.data || {};
+    const threadId = event.thread_id || "main";
+    const iteration = Number(data.iteration) || 0;
+    const time = eventTimeMs(event);
+    if (event.type === "llm.thinking") {
+      out = appendHistoricalThought(out, threadId, iteration, String(data.text || ""), true, time);
+      continue;
+    }
+    if (event.type === "llm.chunk") {
+      out = appendHistoricalThought(out, threadId, iteration, String(data.text || data.chunk || ""), false, time);
+      continue;
+    }
+    if (event.type === "llm.done" && data.message) {
+      const hasExisting = out.some((t) => t.threadId === threadId && t.iteration === iteration);
+      if (!hasExisting) {
+        out = appendHistoricalThought(out, threadId, iteration, String(data.message || ""), false, time);
+      }
+    }
+  }
+  return out.slice(-HISTORICAL_THOUGHT_LIMIT);
+}
+
+function mergeHistoricalThoughts(current: ThoughtEntry[], historical: ThoughtEntry[]): ThoughtEntry[] {
+  const byKey = new Map<string, ThoughtEntry>();
+  for (const t of [...historical, ...current]) {
+    byKey.set(`${t.threadId}#${t.iteration}#${t.reasoning ? "r" : "o"}`, t);
+  }
+  return [...byKey.values()]
+    .sort((a, b) => a.time - b.time)
+    .slice(-HISTORICAL_THOUGHT_LIMIT);
 }
 
 // Noisy internal tools that clutter the Tool Calls list. `pace` fires on
@@ -231,6 +294,37 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
   // at 500 entries.
   const seenEventsRef = useRef<Set<string>>(new Set());
   const seenOrderRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    seenEventsRef.current = new Set();
+    seenOrderRef.current = [];
+  }, [instance.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    telemetry.query(instance.id, undefined, HISTORICAL_TELEMETRY_LIMIT)
+      .then((events) => {
+        if (cancelled) return;
+        for (const event of events) {
+          if (!event.id || seenEventsRef.current.has(event.id)) continue;
+          seenEventsRef.current.add(event.id);
+          seenOrderRef.current.push(event.id);
+        }
+        if (seenOrderRef.current.length > 500) {
+          const keep = seenOrderRef.current.slice(-500);
+          seenOrderRef.current = keep;
+          seenEventsRef.current = new Set(keep);
+        }
+        const historical = buildHistoricalThoughts(events);
+        if (historical.length > 0) {
+          setThoughts((prev) => mergeHistoricalThoughts(prev, historical));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [instance.id]);
 
   // Stable ref for onReload so the subscriber effect doesn't re-run
   // when the parent re-renders (which would cause an unsub/resub gap
@@ -1137,6 +1231,7 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
                       <span className="text-[9px] uppercase font-bold" style={{ color: "#a78bfa" }}>reasoning</span>
                     )}
                     <span className="text-text-muted">{t.threadId}</span>
+                    <span className="text-text-dim">{formatToolTime(t.time)}</span>
                     <span className="text-text-dim ml-auto">#{t.iteration}</span>
                   </div>
                   <p

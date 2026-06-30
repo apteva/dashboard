@@ -1396,7 +1396,7 @@ function buildProjectActivityModel(
         .filter((sub) => {
           if (sub.source !== "app_event") return false;
           const parsed = parseAppEventSlug(sub.slug);
-          return !!parsed && parsed.app === sourceName && topicMatches(parsed.topic, event.topic || "");
+          return !!parsed && parsed.app === sourceName && subscriptionTopicMatches(sub, parsed.topic, event.topic || "");
         })
         .forEach((sub) => {
           const targetThread = threadNodeID(sub.instance_id, sub.thread_id || "main");
@@ -1642,6 +1642,7 @@ function subscriptionEdgeID(sourceID: string, targetThreadID: string, sub: Subsc
 
 function subscriptionLabel(sub: SubscriptionInfo): string {
   if (sub.source === "app_event") {
+    if ((sub.events || []).length > 0) return (sub.events || []).join(", ");
     const parsed = parseAppEventSlug(sub.slug);
     return parsed?.topic || sub.name || "subscription";
   }
@@ -1667,7 +1668,7 @@ function subscriptionForDeliveredEvent(event: TelemetryEvent, subscriptions: Sub
     if (sub.instance_id !== event.instance_id || (sub.thread_id || "main") !== threadID) return false;
     if (!delivered) return sub.source !== "app_event";
     const parsed = parseAppEventSlug(sub.slug);
-    return !!parsed && parsed.app === delivered.app && topicMatches(parsed.topic, delivered.topic);
+    return !!parsed && parsed.app === delivered.app && subscriptionTopicMatches(sub, parsed.topic, delivered.topic);
   }) || null;
 }
 
@@ -1686,6 +1687,12 @@ function topicMatches(pattern: string, topic: string): boolean {
   if (pattern === topic || pattern === "*") return true;
   if (pattern.endsWith("*")) return topic.startsWith(pattern.slice(0, -1));
   return false;
+}
+
+function subscriptionTopicMatches(sub: SubscriptionInfo, legacyPattern: string, topic: string): boolean {
+  const events = (sub.events || []).map((event) => event.trim()).filter(Boolean);
+  if (events.length > 0) return events.some((event) => topicMatches(event, topic));
+  return topicMatches(legacyPattern, topic);
 }
 
 function appForTool(tool: string, appNames: string[]): string | null {

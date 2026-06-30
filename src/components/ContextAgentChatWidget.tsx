@@ -342,10 +342,10 @@ function describeContext(pathname: string, projectId?: string, projectName?: str
   if (clean === "/") {
     return {
       ...base,
-      title: "Overview",
-      shortName: "Overview",
+      title: "Dashboard",
+      shortName: "Dashboard",
       detail: "Project dashboard summary",
-      page_kind: "overview",
+      page_kind: "dashboard",
       chips: ["dashboard", "project"],
     };
   }

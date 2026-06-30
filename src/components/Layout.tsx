@@ -168,7 +168,8 @@ export function Layout() {
   //   manageNav  — platform-administration verbs (header: MANAGE).
   //                Things you do TO the platform, not WITH it.
   const primaryNav = [
-    { to: "/", label: "Overview" },
+    { to: "/", label: "Dashboard" },
+    { to: "/build", label: "Build" },
     { to: "/agents", label: "Agents" },
     { to: "/activity", label: "Activity" },
     { to: "/chat", label: "Chat" },

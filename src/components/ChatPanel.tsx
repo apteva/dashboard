@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
 import { marked } from "marked";
-import { chat, type ChatMessageContext, type ChatMessageRow } from "../api";
+import { chat, type ChatAttachment, type ChatMessageContext, type ChatMessageRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import {
   ChatComponentList,
@@ -21,6 +21,22 @@ function renderMarkdown(src: string): string {
   return marked.parse(src, { async: false }) as string;
 }
 
+function readFileAsDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatBytes(bytes?: number): string {
+  if (!bytes || bytes <= 0) return "image";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 interface Props {
   instanceId: number;
   // Telemetry subscribe — used ONLY for the status dot. Chat messages
@@ -29,6 +45,17 @@ interface Props {
   autoConnect?: boolean;
   hideHeader?: boolean;
   messageContext?: ChatMessageContext;
+}
+
+const MAX_IMAGE_ATTACHMENTS = 4;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+interface DraftAttachment extends ChatAttachment {
+  id: string;
+  data_url: string;
+  name: string;
+  mime_type: string;
+  size: number;
 }
 
 // LiveTool — one tool call surfaced inline in the chat timeline.
@@ -80,8 +107,8 @@ function shouldHideTool(name: string, reason = ""): boolean {
 // dropped — losing them mid-flight would leave the timeline with a
 // "started but never finished" state we couldn't reason about.
 const MAX_LIVE_TOOLS = 200;
-const TOOL_GROUP_MIN = 3;
-const TOOL_GROUP_GAP_MS = 2000;
+const TOOL_BURST_MIN = 2;
+const TOOL_BURST_IDLE_GAP_MS = 30_000;
 
 // enforceCap drops the oldest completed entries when the map exceeds
 // MAX_LIVE_TOOLS. Mutates and returns the same map for callsite
@@ -129,10 +156,12 @@ export function ChatPanel({
   const [chatId, setChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessageRow[]>([]);
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
   const [sending, setSending] = useState(false);
   const [showClearModal, setShowClearModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const suppressNextThinkingRef = useRef(false);
   const suppressNextThinkingTimerRef = useRef<number | null>(null);
 
@@ -604,10 +633,41 @@ export function ChatPanel({
     }
   });
 
+  const addImageFiles = useCallback(async (files: FileList | File[]) => {
+    const list = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (list.length === 0) return;
+    if (attachments.length + list.length > MAX_IMAGE_ATTACHMENTS) {
+      setError(`Attach up to ${MAX_IMAGE_ATTACHMENTS} images.`);
+      return;
+    }
+    const next: DraftAttachment[] = [];
+    for (const file of list) {
+      if (file.size > MAX_IMAGE_BYTES) {
+        setError(`${file.name || "Image"} is too large. Max size is 5 MB.`);
+        return;
+      }
+      const dataUrl = await readFileAsDataURL(file);
+      next.push({
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        type: "image",
+        data_url: dataUrl,
+        name: file.name || "image",
+        mime_type: file.type || "image/png",
+        size: file.size,
+      });
+    }
+    setAttachments((current) => [...current, ...next].slice(0, MAX_IMAGE_ATTACHMENTS));
+    setError(null);
+  }, [attachments.length]);
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((current) => current.filter((att) => att.id !== id));
+  }, []);
+
   // --- 5. Send handler ---------------------------------------------------
   const handleSend = useCallback(async () => {
     const raw = input.trim();
-    if (!raw || !chatId || sending || !connected) return;
+    if ((!raw && attachments.length === 0) || !chatId || sending || !connected) return;
     // Plan-mode prompt wrap. Pure prompt engineering — the agent reads
     // this as a regular user message and is expected to reply with a
     // plan (no writes) via channels_respond. The Approve button below
@@ -618,11 +678,12 @@ export function ChatPanel({
     setSending(true);
     setError(null);
     try {
-      await chat.post(chatId, text, messageContext);
+      await chat.post(chatId, text, messageContext, attachments);
       // Server echoes the inserted row back on the SSE stream — no
       // optimistic insert, no dedup needed. The row will show up
       // naturally in <200 ms once the SSE delivers.
       setInput("");
+      setAttachments([]);
       // Reset textarea height + restore focus. The textarea no longer
       // disables on `sending` so the browser shouldn't have blurred,
       // but we refocus explicitly here as a defensive measure for
@@ -638,7 +699,7 @@ export function ChatPanel({
     } finally {
       setSending(false);
     }
-  }, [input, chatId, sending, connected, planMode, messageContext]);
+  }, [input, attachments, chatId, sending, connected, planMode, messageContext]);
 
   // postCanned sends a fixed reply on behalf of the user — used by the
   // plan-mode Approve / Reject / Refine quick-action buttons. Same
@@ -687,7 +748,7 @@ export function ChatPanel({
     [messages],
   );
 
-  // Interleaved timeline of messages + tools.
+  // Interleaved timeline of messages + tool bursts.
   //
   // The merge happens at render time only — tools and messages keep
   // their own state shapes throughout. We never copy between them, so
@@ -700,6 +761,12 @@ export function ChatPanel({
   // win — the user's reply at the same moment as a tool call should
   // visually anchor before the tool, since the tool was triggered by
   // the message.
+  //
+  // Tool rendering rule: one tool remains one normal line. Two or
+  // more tools in the same work burst collapse to a single row with
+  // expandable details. Bursts are bounded by chat messages and by a
+  // long idle gap, so tight polling/render loops don't flood the
+  // transcript while genuinely separate tool phases still split.
   const timeline = useMemo(() => {
     type Item =
       | { kind: "msg"; ts: number; msg: ChatMessageRow }
@@ -729,12 +796,13 @@ export function ChatPanel({
 
     const flushTools = () => {
       if (pending.length === 0) return;
-      if (pending.length >= TOOL_GROUP_MIN) {
+      if (pending.length >= TOOL_BURST_MIN) {
         const first = pending[0]!;
+        const last = pending[pending.length - 1]!;
         grouped.push({
           kind: "toolGroup",
           ts: first.startedAt,
-          key: `${first.id}:${first.startedAt}`,
+          key: `${first.id}:${first.startedAt}:${last.id}:${last.startedAt}`,
           tools: pending,
         });
       } else {
@@ -752,7 +820,7 @@ export function ChatPanel({
         continue;
       }
       const last = pending[pending.length - 1];
-      if (last && item.tool.startedAt - last.startedAt > TOOL_GROUP_GAP_MS) {
+      if (last && item.tool.startedAt - last.startedAt > TOOL_BURST_IDLE_GAP_MS) {
         flushTools();
       }
       pending.push(item.tool);
@@ -971,14 +1039,86 @@ export function ChatPanel({
 
       {/* Input */}
       <div className="shrink-0 px-3 pb-3 pt-1">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files) {
+              void addImageFiles(e.target.files);
+            }
+            e.currentTarget.value = "";
+          }}
+        />
+        {attachments.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {attachments.map((att) => (
+              <div
+                key={att.id}
+                className="relative h-16 w-16 overflow-hidden rounded-lg border border-border bg-bg-subtle"
+                title={`${att.name} (${formatBytes(att.size)})`}
+              >
+                <img
+                  src={att.data_url}
+                  alt={att.name}
+                  className="h-full w-full object-cover"
+                />
+                <button
+                  type="button"
+                  onClick={() => removeAttachment(att.id)}
+                  className="absolute right-1 top-1 h-5 w-5 rounded-full bg-bg/90 text-[11px] text-text border border-border hover:border-text"
+                  aria-label={`Remove ${att.name}`}
+                  title="Remove image"
+                >
+                  x
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <form
           onSubmit={(e) => {
             e.preventDefault();
             handleSend();
           }}
+          onDragOver={(e) => {
+            if (Array.from(e.dataTransfer.items || []).some((item) => item.type.startsWith("image/"))) {
+              e.preventDefault();
+            }
+          }}
+          onDrop={(e) => {
+            if (Array.from(e.dataTransfer.files || []).some((file) => file.type.startsWith("image/"))) {
+              e.preventDefault();
+              void addImageFiles(e.dataTransfer.files);
+            }
+          }}
           className="flex items-center gap-2 rounded-2xl border border-border focus-within:border-accent/60 transition-colors px-3 py-1.5 shadow-lg bg-bg-card/90 backdrop-blur-sm"
         >
           <span className="font-bold text-sm text-accent shrink-0 self-center">&gt;</span>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!chatId || !connected || sending || attachments.length >= MAX_IMAGE_ATTACHMENTS}
+            className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-bg-subtle disabled:opacity-30 disabled:cursor-not-allowed"
+            aria-label="Attach image"
+            title="Attach image"
+          >
+            <svg
+              viewBox="0 0 20 20"
+              className="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M5 11.5l3-3 3 3 1.5-1.5L16 13.5" />
+              <rect x="3" y="4" width="14" height="12" rx="2" />
+              <circle cx="13.5" cy="7.5" r="1" />
+            </svg>
+          </button>
           <textarea
             id="chat-input"
             value={input}
@@ -996,6 +1136,13 @@ export function ChatPanel({
                 handleSend();
               }
             }}
+            onPaste={(e) => {
+              const files = Array.from(e.clipboardData.files || []).filter((file) => file.type.startsWith("image/"));
+              if (files.length > 0) {
+                e.preventDefault();
+                void addImageFiles(files);
+              }
+            }}
             rows={1}
             style={{ lineHeight: "20px", minHeight: "32px" }}
             className="flex-1 bg-transparent text-sm text-text focus:outline-none min-w-0 resize-none placeholder:text-text-dim font-mono py-1.5 block"
@@ -1011,7 +1158,7 @@ export function ChatPanel({
           />
           <button
             type="submit"
-            disabled={!chatId || !input.trim() || sending || !connected}
+            disabled={!chatId || (!input.trim() && attachments.length === 0) || sending || !connected}
             className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-all bg-accent text-bg disabled:opacity-20 disabled:cursor-not-allowed enabled:hover:bg-accent-hover enabled:active:scale-95"
             aria-label="Send"
             title="Send (Enter)"
@@ -1107,10 +1254,25 @@ const MessageRow = memo(function MessageRow({
   );
 
   if (msg.role === "user") {
+    const hasAttachments = !!msg.attachments && msg.attachments.length > 0;
+    if (!hasAttachments) {
+      return (
+        <div className="flex justify-end min-w-0">
+          <div className="bg-accent/15 border border-accent/30 rounded-xl rounded-br-sm px-3 py-1.5 max-w-[80%] min-w-0">
+            <p className="text-text text-xs whitespace-pre-wrap break-words">{msg.content}</p>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex justify-end min-w-0">
-        <div className="bg-accent/15 border border-accent/30 rounded-xl rounded-br-sm px-3 py-1.5 max-w-[80%] min-w-0">
-          <p className="text-text text-xs whitespace-pre-wrap break-words">{msg.content}</p>
+        <div className="max-w-[82%] min-w-0 flex flex-col items-end gap-2">
+          <UserAttachmentGrid attachments={msg.attachments || []} />
+          {msg.content && (
+            <div className="bg-accent/15 border border-accent/30 rounded-xl rounded-br-sm px-3 py-1.5 max-w-full min-w-0">
+              <p className="text-text text-xs whitespace-pre-wrap break-words">{msg.content}</p>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1139,6 +1301,50 @@ const MessageRow = memo(function MessageRow({
     </div>
   );
 });
+
+function UserAttachmentGrid({ attachments }: { attachments: ChatAttachment[] }) {
+  const visible = attachments.filter((att) => att.data_url || att.name);
+  if (visible.length === 0) return null;
+  const single = visible.length === 1;
+  return (
+    <div
+      className={
+        single
+          ? "w-full max-w-[460px]"
+          : "grid grid-cols-2 gap-2 w-full max-w-[460px]"
+      }
+    >
+      {visible.map((att, index) => {
+        const key = att.id || `${att.name || "image"}-${index}`;
+        const title = `${att.name || "Image"} (${formatBytes(att.size)})`;
+        if (!att.data_url) {
+          return (
+            <div
+              key={key}
+              className="rounded-xl border border-border bg-bg-card px-3 py-2 text-[11px] text-text-muted"
+              title={title}
+            >
+              {att.name || "Image"}
+            </div>
+          );
+        }
+        return (
+          <img
+            key={key}
+            src={att.data_url}
+            alt={att.name || "Attached image"}
+            title={title}
+            className={
+              single
+                ? "block max-h-[420px] w-full rounded-2xl border border-border/60 object-contain bg-black/20"
+                : "block aspect-square w-full rounded-xl border border-border/60 object-cover bg-black/20"
+            }
+          />
+        );
+      })}
+    </div>
+  );
+}
 
 // StreamingBubble — ephemeral agent-style bubble pinned to the bottom
 // of the timeline while the LLM is composing a respond() call. The
@@ -1221,6 +1427,44 @@ function compactLabels(tools: LiveTool[], limit: number): { text: string; more: 
   return { text: labels.join(", "), more: Math.max(0, tools.length - labels.length) };
 }
 
+interface ToolDetailSummary {
+  key: string;
+  label: string;
+  count: number;
+  state: LiveTool["state"];
+  success?: boolean;
+  durationMs: number;
+}
+
+function summarizeToolDetails(tools: LiveTool[]): ToolDetailSummary[] {
+  const summaries = new Map<string, ToolDetailSummary>();
+  for (const tool of tools) {
+    const label = toolLabel(tool) || tool.name;
+    const stateKey =
+      tool.state === "done"
+        ? tool.success === false
+          ? "failed"
+          : "done"
+        : tool.state;
+    const key = `${label}:${stateKey}`;
+    const existing = summaries.get(key);
+    if (existing) {
+      existing.count += 1;
+      existing.durationMs += tool.durationMs || 0;
+      continue;
+    }
+    summaries.set(key, {
+      key,
+      label,
+      count: 1,
+      state: tool.state,
+      success: tool.success,
+      durationMs: tool.durationMs || 0,
+    });
+  }
+  return [...summaries.values()];
+}
+
 function ToolGroupRow({
   tools,
   expanded,
@@ -1236,6 +1480,7 @@ function ToolGroupRow({
   const durationTotal = completed.reduce((sum, t) => sum + (t.durationMs || 0), 0);
   const labelSource = failed.length > 0 ? [...failed, ...tools.filter((t) => !failed.includes(t))] : active.length > 0 ? [...active, ...tools.filter((t) => !active.includes(t))] : tools;
   const labels = compactLabels(labelSource, 2);
+  const detailSummaries = summarizeToolDetails(tools);
   const icon =
     failed.length > 0
       ? <span className="text-red shrink-0">✗</span>
@@ -1274,10 +1519,33 @@ function ToolGroupRow({
       </button>
       {expanded && (
         <div className="mt-1 space-y-1 border-l border-border/70 pl-2">
-          {tools.map((tool) => (
-            <ToolRow key={tool.id} t={tool} compact />
+          {detailSummaries.map((summary) => (
+            <ToolSummaryRow key={summary.key} summary={summary} />
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+function ToolSummaryRow({ summary }: { summary: ToolDetailSummary }) {
+  const icon =
+    summary.state === "streaming"
+      ? <span className="text-yellow shrink-0 animate-pulse">◐</span>
+      : summary.state === "called"
+      ? <span className="text-accent shrink-0 animate-spin">⟳</span>
+      : <span className={`shrink-0 ${summary.success ? "text-green" : "text-red"}`}>{summary.success ? "✓" : "✗"}</span>;
+  const dur = summary.durationMs > 0 ? toolDurationLabel(summary.durationMs) : "";
+  return (
+    <div className="flex items-center gap-1.5 min-w-0 leading-tight text-[10px] text-text-dim">
+      {icon}
+      <span className={summary.state === "streaming" ? "truncate italic" : "truncate"} title={summary.label}>
+        {summary.label}
+      </span>
+      {summary.count > 1 && <span className="shrink-0">x{summary.count}</span>}
+      {dur && <span className="shrink-0">({dur})</span>}
+      {summary.state === "done" && summary.success === false && (
+        <span className="shrink-0 text-red">failed</span>
       )}
     </div>
   );

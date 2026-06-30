@@ -16,6 +16,7 @@ import { Login } from "./pages/Login";
 import { Connect } from "./pages/Connect";
 import { Onboarding } from "./pages/Onboarding";
 import { Dashboard } from "./pages/Dashboard";
+import { Build } from "./pages/Build";
 import { Chat } from "./pages/Chat";
 import { Activity } from "./pages/Activity";
 import { Agents } from "./pages/Agents";
@@ -86,6 +87,7 @@ export default function App() {
             }
           >
             <Route path="/" element={<Dashboard />} />
+            <Route path="/build" element={<Build />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/activity" element={<Activity />} />
             <Route path="/agents/new" element={<AgentNew />} />

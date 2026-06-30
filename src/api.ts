@@ -152,11 +152,38 @@ export const auth = {
   // Personal API keys for this user. Backed by /auth/keys — server scopes
   // each key to the calling user via the session cookie. The raw key is
   // only returned by createKey; subsequent listKeys only exposes the prefix.
-  createKey: (name: string) =>
-    request<{ id: number; key: string; prefix: string }>("POST", "/auth/keys", { name }),
+  createKey: (
+    name: string,
+    options?: {
+      kind?: "private" | "public_client";
+      project_id?: string;
+      scopes?: unknown;
+      allowed_origins?: string[];
+      rate_limit_per_minute?: number;
+      expires_at?: string;
+    },
+  ) =>
+    request<{ id: number; key: string; prefix: string; kind: string }>("POST", "/auth/keys", {
+      name,
+      ...(options || {}),
+    }),
 
   listKeys: () =>
-    request<Array<{ id: number; name: string; key_prefix: string; created_at: string }>>("GET", "/auth/keys"),
+    request<Array<{
+      id: number;
+      name: string;
+      key_prefix: string;
+      kind?: "private" | "public_client";
+      project_id?: string;
+      scopes?: string;
+      allowed_origins?: string;
+      rate_limit_per_minute?: number;
+      expires_at?: string;
+      revoked_at?: string;
+      last_used?: string;
+      last_used_ip?: string;
+      created_at: string;
+    }>>("GET", "/auth/keys"),
 
   deleteKey: (id: number) =>
     request<any>("DELETE", `/auth/keys/${id}`),
@@ -1996,8 +2023,8 @@ export const subscriptions = {
       threadId?: string;
       projectId?: string;
       // 'webhook' (default) or 'app_event'. For 'app_event', `slug`
-      // must be '<app>:<topic_pattern>' (e.g. 'tables:row.*') and
-      // connection / hmac / events fields are ignored server-side.
+      // must be '<app>:<topic_pattern>' (e.g. 'tables:*') and events
+      // can carry one or more app topics/patterns for the same row.
       source?: "webhook" | "app_event";
       // Composio-source only: which trigger template to instantiate
       // and its config fields (varies per trigger template).
@@ -3073,6 +3100,16 @@ export interface ChatComponent {
   props?: Record<string, unknown>;
 }
 
+export interface ChatAttachment {
+  id?: string;
+  type: "image";
+  data_url?: string;
+  name?: string;
+  mime_type?: string;
+  size?: number;
+  ephemeral?: boolean;
+}
+
 export interface ChatMessageRow {
   id: number;
   chat_id: string;
@@ -3083,10 +3120,11 @@ export interface ChatMessageRow {
   status: "streaming" | "final";
   created_at: string;
   components?: ChatComponent[];
+  attachments?: ChatAttachment[];
 }
 
 export interface ChatMessageContext {
-  source: "dashboard-floating";
+  source: "dashboard-floating" | "dashboard-build";
   project_id?: string;
   project_name?: string;
   route: string;
@@ -3114,11 +3152,15 @@ export const chat = {
       `/apps/channel-chat/messages?chat_id=${encodeURIComponent(chatId)}&since=${since}&limit=${limit}`,
     ),
 
-  post: (chatId: string, content: string, context?: ChatMessageContext) =>
+  post: (chatId: string, content: string, context?: ChatMessageContext, attachments?: ChatAttachment[]) =>
     request<ChatMessageRow>(
       "POST",
       `/apps/channel-chat/messages?chat_id=${encodeURIComponent(chatId)}`,
-      { content, ...(context ? { context } : {}) },
+      {
+        content,
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+        ...(context ? { context } : {}),
+      },
     ),
 
   clear: (chatId: string) =>
