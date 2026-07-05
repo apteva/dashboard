@@ -2836,6 +2836,9 @@ export interface MarketplaceEntry {
   category: string;
   installed: boolean;
   builtin: boolean;
+  deprecated?: boolean;
+  deprecation?: string;
+  replacement?: string;
   // Surfaces are server-resolved by fetching manifest_url with a 1h
   // cache. Empty / zero values are normal for offline runs or apps
   // whose manifests can't be fetched — the dashboard treats missing
@@ -2860,6 +2863,9 @@ export interface AppRow {
   upgrade_policy: "manual" | "auto-patch" | "auto-minor";
   permissions: string[];
   surfaces: AppSurfaces;
+  deprecated?: boolean;
+  deprecation?: string;
+  replacement?: string;
   ui_panels?: AppUIPanel[];
   ui_components?: AppUIComponent[];
   // Events the app's manifest declares it emits on the AppBus.

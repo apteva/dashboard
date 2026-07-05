@@ -44,6 +44,9 @@ interface View {
   installed: boolean;
   category?: string;
   tags?: string[];
+  deprecated?: boolean;
+  deprecation?: string;
+  replacement?: string;
   status?: string;
   installId?: number;
   components?: AppUIComponent[];
@@ -65,6 +68,9 @@ function viewFromProps(p: Props): View | null {
       installed: e.installed,
       category: e.category,
       tags: e.tags,
+      deprecated: e.deprecated,
+      deprecation: e.deprecation,
+      replacement: e.replacement,
     };
   }
   if (p.mode === "installed" && p.install) {
@@ -79,6 +85,9 @@ function viewFromProps(p: Props): View | null {
       surfaces: i.surfaces,
       installed: true,
       status: i.status,
+      deprecated: i.deprecated,
+      deprecation: i.deprecation,
+      replacement: i.replacement,
       installId: i.install_id,
       components: i.ui_components,
       imports: i.imports,
@@ -153,9 +162,11 @@ export function AppDetailPanel(props: Props) {
           {props.mode === "marketplace" && !view.installed && (
             <button
               onClick={props.onInstall}
-              className="flex-1 px-3 py-2 bg-accent text-bg rounded font-bold text-sm hover:opacity-80"
+              disabled={view.deprecated}
+              title={view.deprecated ? view.deprecation || "Deprecated" : ""}
+              className="flex-1 px-3 py-2 bg-accent text-bg rounded font-bold text-sm hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Install
+              {view.deprecated ? "Deprecated" : "Install"}
             </button>
           )}
           {props.mode === "marketplace" && view.installed && (
@@ -295,6 +306,7 @@ function FlatBody({ view }: { view: View }) {
     <>
       {view.description && (
         <section>
+          {view.deprecated && <DeprecationNotice view={view} />}
           <p className="text-text-dim text-sm leading-relaxed whitespace-pre-line">
             {view.description}
           </p>
@@ -585,6 +597,7 @@ function OverviewTab({ view }: { view: View }) {
     <>
       {view.description && (
         <section>
+          {view.deprecated && <DeprecationNotice view={view} />}
           <p className="text-text-dim text-sm leading-relaxed whitespace-pre-line">
             {view.description}
           </p>
@@ -607,6 +620,20 @@ function OverviewTab({ view }: { view: View }) {
         <LinksList repo={view.repo} manifestUrl={view.manifestUrl} />
       )}
     </>
+  );
+}
+
+function DeprecationNotice({ view }: { view: View }) {
+  return (
+    <div className="mb-3 rounded border border-red/40 bg-red/10 px-3 py-2 text-xs text-red leading-relaxed">
+      <div className="font-semibold">Deprecated</div>
+      <div>{view.deprecation || "This app is deprecated and can no longer be installed."}</div>
+      {view.replacement && (
+        <div className="mt-1 text-text-muted">
+          Replacement: <span className="text-text">{view.replacement}</span>
+        </div>
+      )}
+    </div>
   );
 }
 

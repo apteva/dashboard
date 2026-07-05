@@ -325,6 +325,7 @@ export function AgentNew() {
       slugs.map(async (slug) => {
         const m = marketplace.find((x) => x.name === slug);
         if (!m) throw new Error(`${slug}: not in marketplace`);
+        if (m.deprecated) throw new Error(`${slug}: deprecated and can no longer be installed`);
         setInstallProgress((p) => ({ ...p, [slug]: "Starting…" }));
         const res = await appsAPI.install({
           manifestUrl: m.manifest_url,

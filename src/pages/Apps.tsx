@@ -478,8 +478,14 @@ function MarketplaceCard({
         )}
         {entry.official && <Pill className="bg-blue/15 text-blue">official</Pill>}
         {entry.builtin && <Pill className="bg-blue/15 text-blue">built-in</Pill>}
+        {entry.deprecated && <Pill className="bg-red/15 text-red">deprecated</Pill>}
         {entry.installed && !entry.builtin && <Pill className="bg-green/15 text-green">installed</Pill>}
       </div>
+      {entry.deprecated && (
+        <p className="text-red text-[11px] leading-snug">
+          {entry.deprecation || "This app is deprecated and can no longer be installed."}
+        </p>
+      )}
       <p className="text-text-muted text-xs line-clamp-3 flex-1">{entry.description}</p>
       <AppSurfaceBadges surfaces={entry.surfaces} className="!gap-1" />
       {topTags.length > 0 && (
@@ -491,11 +497,17 @@ function MarketplaceCard({
       )}
       <button
         onClick={(e) => { e.stopPropagation(); onInstall(); }}
-        disabled={entry.installed}
-        title={entry.builtin ? "Bundled into apteva-server — always available" : ""}
+        disabled={entry.installed || entry.deprecated}
+        title={
+          entry.deprecated
+            ? entry.deprecation || "Deprecated"
+            : entry.builtin
+              ? "Bundled into apteva-server — always available"
+              : ""
+        }
         className="mt-auto w-full px-3 py-1.5 border border-accent rounded text-xs text-accent hover:bg-accent hover:text-bg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
-        {entry.builtin ? "Built-in" : entry.installed ? "Installed" : "Install"}
+        {entry.builtin ? "Built-in" : entry.installed ? "Installed" : entry.deprecated ? "Deprecated" : "Install"}
       </button>
     </div>
   );
@@ -679,7 +691,7 @@ function AppListRow({
   };
 
   const updateAvailable =
-    !!app.available_version && !!app.version && app.available_version !== app.version;
+    !app.deprecated && !!app.available_version && !!app.version && app.available_version !== app.version;
 
   // Status dot — green/amber/red/grey. The dot is the row's first
   // visual element so operators eye-scan a column of running/down
@@ -768,6 +780,7 @@ function AppListRow({
           <Pill className="bg-border text-text-muted">global</Pill>
         )}
         {app.source === "builtin" && <Pill className="bg-blue/15 text-blue">built-in</Pill>}
+        {app.deprecated && <Pill className="bg-red/15 text-red">deprecated</Pill>}
         {updateAvailable && <Pill className="bg-yellow/15 text-yellow">update</Pill>}
       </div>
 
@@ -959,7 +972,7 @@ function AppCard({
   };
 
   const updateAvailable =
-    !!app.available_version && !!app.version && app.available_version !== app.version;
+    !app.deprecated && !!app.available_version && !!app.version && app.available_version !== app.version;
 
   const statusColor =
     app.status === "running"
@@ -1022,6 +1035,7 @@ function AppCard({
           <Pill className="bg-border text-text-muted">global</Pill>
         )}
         {app.source === "builtin" && <Pill className="bg-blue/15 text-blue">built-in</Pill>}
+        {app.deprecated && <Pill className="bg-red/15 text-red">deprecated</Pill>}
         {updateAvailable && <Pill className="bg-yellow/15 text-yellow">update available</Pill>}
       </div>
       {app.status === "pending" ? (
@@ -1337,6 +1351,9 @@ function InstallModal({
         }
         const entry = registryCache.find((a) => a.name === intent.appName);
         if (!entry) throw new Error(`${intent.appName} not in registry`);
+        if (entry.deprecated) {
+          throw new Error(`${intent.appName} is deprecated and can no longer be installed`);
+        }
         const r = await apps.install({
           manifestUrl: entry.manifest_url,
           projectId: scope === "global" ? "" : projectId,
