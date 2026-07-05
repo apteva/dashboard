@@ -1,0 +1,42 @@
+{
+  "settings": {
+    "title": "Configuracion",
+    "tabs": {
+      "projects": "Proyectos",
+      "appearance": "Apariencia",
+      "channels": "Canales",
+      "providers": "Proveedores",
+      "mcp": "Servidores MCP",
+      "subscriptions": "Suscripciones",
+      "apiKeys": "Claves API",
+      "data": "Datos",
+      "server": "Servidor",
+      "account": "Cuenta",
+      "users": "Usuarios"
+    },
+    "appearance": {
+      "title": "Apariencia",
+      "description": "El tema y el modo se guardan localmente en este dispositivo. La vista previa se aplica al instante en todo el dashboard y en los paneles de las apps instaladas.",
+      "theme": "Tema",
+      "mode": "Modo",
+      "language": "Idioma",
+      "languageDescription": "El idioma se guarda en tu cuenta y te sigue entre navegadores.",
+      "languageSaved": "Idioma guardado.",
+      "languageSaveFailed": "No se pudo guardar el idioma.",
+      "autoModeHint": "Auto sigue la preferencia de tu sistema operativo y se actualiza cuando cambia.",
+      "currently": "actualmente",
+      "themeTerminal": "Terminal",
+      "themeTerminalDescription": "Monoespaciado, esquinas marcadas y aspecto de taller. El valor por defecto.",
+      "themeClean": "Clean",
+      "themeCleanDescription": "Inter, esquinas redondeadas y sombras sutiles. Listo para presentaciones.",
+      "modeAuto": "Auto",
+      "modeDark": "Oscuro",
+      "modeLight": "Claro"
+    }
+  },
+  "language": {
+    "en": "Ingles",
+    "fr": "Frances",
+    "es": "Espanol"
+  }
+}

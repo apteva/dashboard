@@ -133,7 +133,10 @@ export const auth = {
     }),
 
   me: () =>
-    request<{ user_id: number; email: string; role: PlatformRole; created_at: string; onboarded: boolean; onboarded_at?: string }>("GET", "/auth/me"),
+    request<{ user_id: number; email: string; role: PlatformRole; created_at: string; onboarded: boolean; onboarded_at?: string; language?: string }>("GET", "/auth/me"),
+
+  updatePreferences: (patch: { language?: string }) =>
+    request<{ language: string }>("PUT", "/auth/preferences", patch),
 
   completeOnboarding: () =>
     request<{ status: string }>("POST", "/auth/onboarding/complete"),

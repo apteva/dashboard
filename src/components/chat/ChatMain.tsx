@@ -1,11 +1,6 @@
 // Main pane for /chat — header above an embedded ChatPanel.
-//
-// We don't subscribe to telemetry here for the status dot — the
-// dashboard doesn't have a project-wide TelemetryEvent fan-out
-// component yet. The header status dot is computed from the
-// instance.status field instead, which refreshes on the page-level
-// 8s poll. That's plenty fresh for an at-a-glance indicator.
 
+import { useCallback } from "react";
 import { ChatPanel } from "../ChatPanel";
 import type { Agent } from "../../api";
 import type { SubscribeFn } from "../AgentView";
@@ -18,18 +13,21 @@ interface Props {
   rightPaneOpen: boolean;
 }
 
-// ChatPanel needs a SubscribeFn for ChatStatusDot. From the chat
-// page we don't pump telemetry; the dot will show its default state.
-// The real status indicator users care about is the green dot in the
-// header (driven by instance.status), so this is fine.
-const noopSubscribe: SubscribeFn = () => () => {};
-
 export function ChatMain({
   chatId,
   instance,
   onToggleRightPane,
   rightPaneOpen,
 }: Props) {
+  const instanceId = instance?.id;
+  const subscribe = useCallback<SubscribeFn>(
+    (listener) => {
+      if (typeof instanceId !== "number") return () => {};
+      return window.__aptevaTelemetryBus?.subscribe(instanceId, listener) ?? (() => {});
+    },
+    [instanceId],
+  );
+
   if (!chatId || !instance) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -82,7 +80,8 @@ export function ChatMain({
         <ChatPanel
           key={chatId /* reset state when switching chats */}
           instanceId={instance.id}
-          subscribe={noopSubscribe}
+          subscribe={subscribe}
+          autoConnect
         />
       </div>
     </div>

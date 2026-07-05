@@ -1,6 +1,6 @@
 {
   "name": "apteva-dashboard",
-  "version": "0.20.9",
+  "version": "0.20.10",
   "module": "src/main.tsx",
   "type": "module",
   "private": true,
@@ -26,9 +26,11 @@
   },
   "dependencies": {
     "@xyflow/react": "^12.10.2",
+    "i18next": "^26.3.4",
     "marked": "^18.0.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-i18next": "^17.0.8",
     "react-router-dom": "^7.13.2",
     "recharts": "^3.8.1"
   }

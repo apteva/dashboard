@@ -1,0 +1,42 @@
+{
+  "settings": {
+    "title": "Settings",
+    "tabs": {
+      "projects": "Projects",
+      "appearance": "Appearance",
+      "channels": "Channels",
+      "providers": "Providers",
+      "mcp": "MCP Servers",
+      "subscriptions": "Subscriptions",
+      "apiKeys": "API Keys",
+      "data": "Data",
+      "server": "Server",
+      "account": "Account",
+      "users": "Users"
+    },
+    "appearance": {
+      "title": "Appearance",
+      "description": "Theme + mode are stored locally on this device. The preview below applies instantly across the whole dashboard and every installed app's panel.",
+      "theme": "Theme",
+      "mode": "Mode",
+      "language": "Language",
+      "languageDescription": "Language is saved to your account and follows you across browsers.",
+      "languageSaved": "Language saved.",
+      "languageSaveFailed": "Failed to save language.",
+      "autoModeHint": "Auto follows your operating system's preference and updates live when it changes.",
+      "currently": "currently",
+      "themeTerminal": "Terminal",
+      "themeTerminalDescription": "Monospace, sharp corners, a workshop look. The default.",
+      "themeClean": "Clean",
+      "themeCleanDescription": "Inter, rounded corners, subtle shadows. Boardroom-ready.",
+      "modeAuto": "Auto",
+      "modeDark": "Dark",
+      "modeLight": "Light"
+    }
+  },
+  "language": {
+    "en": "English",
+    "fr": "French",
+    "es": "Spanish"
+  }
+}

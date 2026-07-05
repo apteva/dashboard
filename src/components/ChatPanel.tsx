@@ -1404,8 +1404,14 @@ function closeOpenMarkdown(s: string): string {
 // reads as background activity, not as a primary turn. Layout:
 //
 //   ⟳ agent's reason                                         (1.2s)
+function toolDisplayName(name: string): string {
+  const parts = name.split(/[_:.-]+/).filter(Boolean);
+  if (parts.length > 1 && parts[0] === parts[1]) parts.shift();
+  return parts.join(" ") || name;
+}
+
 function toolLabel(t: LiveTool): string {
-  return t.reason || (t.state === "streaming" ? "Starting..." : "Working...");
+  return t.reason || (t.state === "streaming" ? `Preparing ${toolDisplayName(t.name)}` : "Working...");
 }
 
 function toolDurationLabel(ms: number): string {

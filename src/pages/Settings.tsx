@@ -5,6 +5,8 @@ import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme, type ThemeName, type ThemeMode } from "../hooks/useTheme";
 import { usePageTitle } from "../hooks/usePageTitle";
+import { useTranslation } from "react-i18next";
+import { DASHBOARD_LANGUAGES, normalizeDashboardLanguage, setDashboardLanguage, type DashboardLanguage } from "../i18n";
 
 interface Key {
   id: number;
@@ -51,30 +53,31 @@ function GlobeIcon({ size = 11 }: { size?: number }) {
 export function Settings() {
   const [tab, setTab] = useState<Tab>("projects");
   const { user } = useAuth();
+  const { t } = useTranslation();
   // Multi-user: Users tab is admin-only. Non-admins still get every
   // other tab; just hides the platform-wide user management surface.
   const isAdmin = user && user !== false && user.role === "admin";
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: "projects", label: "Projects" },
-    { id: "appearance", label: "Appearance" },
-    { id: "channels", label: "Channels" },
-    { id: "providers", label: "Providers" },
-    { id: "mcp", label: "MCP Servers" },
-    { id: "subscriptions", label: "Subscriptions" },
-    { id: "api-keys", label: "API Keys" },
-    { id: "data", label: "Data" },
-    { id: "server", label: "Server" },
-    { id: "account", label: "Account" },
-    ...(isAdmin ? [{ id: "users" as Tab, label: "Users" }] : []),
+    { id: "projects", label: t("settings.tabs.projects") },
+    { id: "appearance", label: t("settings.tabs.appearance") },
+    { id: "channels", label: t("settings.tabs.channels") },
+    { id: "providers", label: t("settings.tabs.providers") },
+    { id: "mcp", label: t("settings.tabs.mcp") },
+    { id: "subscriptions", label: t("settings.tabs.subscriptions") },
+    { id: "api-keys", label: t("settings.tabs.apiKeys") },
+    { id: "data", label: t("settings.tabs.data") },
+    { id: "server", label: t("settings.tabs.server") },
+    { id: "account", label: t("settings.tabs.account") },
+    ...(isAdmin ? [{ id: "users" as Tab, label: t("settings.tabs.users") }] : []),
   ];
   const activeTab = tabs.find((t) => t.id === tab);
-  usePageTitle(["Settings", activeTab?.label || "Projects"]);
+  usePageTitle([t("settings.title"), activeTab?.label || t("settings.tabs.projects")]);
 
   return (
     <div className="flex flex-col h-full">
       <div className="border-b border-border px-6 py-4">
-        <h1 className="text-text text-lg font-bold">Settings</h1>
+        <h1 className="text-text text-lg font-bold">{t("settings.title")}</h1>
       </div>
 
       {/* Tab bar */}
@@ -122,29 +125,52 @@ export function Settings() {
 
 function AppearanceTab() {
   const { theme, mode, resolvedMode, setTheme, setMode } = useTheme();
+  const { user, refresh } = useAuth();
+  const { t, i18n } = useTranslation();
+  const [savingLanguage, setSavingLanguage] = useState(false);
+  const [languageMessage, setLanguageMessage] = useState<string | null>(null);
+  const currentLanguage = normalizeDashboardLanguage(i18n.resolvedLanguage || i18n.language);
+
+  async function chooseLanguage(language: DashboardLanguage) {
+    const previous = currentLanguage;
+    setSavingLanguage(true);
+    setLanguageMessage(null);
+    await setDashboardLanguage(language);
+    try {
+      await auth.updatePreferences({ language });
+      await refresh();
+      setLanguageMessage(i18n.t("settings.appearance.languageSaved"));
+    } catch {
+      await setDashboardLanguage(previous);
+      setLanguageMessage(i18n.t("settings.appearance.languageSaveFailed"));
+    } finally {
+      setSavingLanguage(false);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-8 max-w-3xl">
       <div>
-        <h2 className="text-text font-medium mb-1">Appearance</h2>
+        <h2 className="text-text font-medium mb-1">{t("settings.appearance.title")}</h2>
         <p className="text-text-muted text-sm">
-          Theme + mode are stored locally on this device. The preview below applies instantly across the whole dashboard and every installed app's panel.
+          {t("settings.appearance.description")}
         </p>
       </div>
 
       <section>
-        <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">Theme</h3>
+        <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">{t("settings.appearance.theme")}</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl">
           <ThemeCard
             value="terminal"
-            label="Terminal"
-            description="Monospace, sharp corners, a workshop look. The default."
+            label={t("settings.appearance.themeTerminal")}
+            description={t("settings.appearance.themeTerminalDescription")}
             selected={theme === "terminal"}
             onSelect={() => setTheme("terminal")}
           />
           <ThemeCard
             value="clean"
-            label="Clean"
-            description="Inter, rounded corners, subtle shadows. Boardroom-ready."
+            label={t("settings.appearance.themeClean")}
+            description={t("settings.appearance.themeCleanDescription")}
             selected={theme === "clean"}
             onSelect={() => setTheme("clean")}
           />
@@ -152,7 +178,7 @@ function AppearanceTab() {
       </section>
 
       <section>
-        <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">Mode</h3>
+        <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">{t("settings.appearance.mode")}</h3>
         <div className="flex flex-wrap gap-2">
           {(["auto", "dark", "light"] as ThemeMode[]).map((m) => (
             <button
@@ -164,18 +190,46 @@ function AppearanceTab() {
                   : "border-border text-text-muted hover:text-text hover:border-text-dim"
               }`}
             >
-              {m === "auto" ? "Auto" : m === "dark" ? "Dark" : "Light"}
+              {m === "auto"
+                ? t("settings.appearance.modeAuto")
+                : m === "dark"
+                  ? t("settings.appearance.modeDark")
+                  : t("settings.appearance.modeLight")}
               {m === "auto" && (
                 <span className="ml-2 text-text-dim text-xs">
-                  (currently {resolvedMode})
+                  ({t("settings.appearance.currently")} {resolvedMode})
                 </span>
               )}
             </button>
           ))}
         </div>
         <p className="text-text-dim text-xs mt-2">
-          Auto follows your operating system's preference and updates live when it changes.
+          {t("settings.appearance.autoModeHint")}
         </p>
+      </section>
+
+      <section>
+        <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">{t("settings.appearance.language")}</h3>
+        <div className="flex flex-wrap gap-2">
+          {DASHBOARD_LANGUAGES.map((language) => (
+            <button
+              key={language}
+              onClick={() => chooseLanguage(language)}
+              disabled={savingLanguage || user === false}
+              className={`px-4 py-2 text-sm rounded border transition-colors ${
+                currentLanguage === language
+                  ? "border-accent text-text bg-bg-card"
+                  : "border-border text-text-muted hover:text-text hover:border-text-dim"
+              } disabled:opacity-60`}
+            >
+              {t(`language.${language}`)}
+            </button>
+          ))}
+        </div>
+        <p className="text-text-dim text-xs mt-2">{t("settings.appearance.languageDescription")}</p>
+        {languageMessage && (
+          <p className="text-text-muted text-xs mt-2">{languageMessage}</p>
+        )}
       </section>
     </div>
   );

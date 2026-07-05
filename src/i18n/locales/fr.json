@@ -1,0 +1,42 @@
+{
+  "settings": {
+    "title": "Parametres",
+    "tabs": {
+      "projects": "Projets",
+      "appearance": "Apparence",
+      "channels": "Canaux",
+      "providers": "Fournisseurs",
+      "mcp": "Serveurs MCP",
+      "subscriptions": "Abonnements",
+      "apiKeys": "Cles API",
+      "data": "Donnees",
+      "server": "Serveur",
+      "account": "Compte",
+      "users": "Utilisateurs"
+    },
+    "appearance": {
+      "title": "Apparence",
+      "description": "Le theme et le mode sont stockes localement sur cet appareil. L'apercu ci-dessous s'applique instantanement a tout le tableau de bord et aux panneaux des apps installees.",
+      "theme": "Theme",
+      "mode": "Mode",
+      "language": "Langue",
+      "languageDescription": "La langue est enregistree dans votre compte et vous suit sur tous vos navigateurs.",
+      "languageSaved": "Langue enregistree.",
+      "languageSaveFailed": "Impossible d'enregistrer la langue.",
+      "autoModeHint": "Auto suit la preference de votre systeme d'exploitation et se met a jour quand elle change.",
+      "currently": "actuellement",
+      "themeTerminal": "Terminal",
+      "themeTerminalDescription": "Police monospace, angles nets, style atelier. Le choix par defaut.",
+      "themeClean": "Clean",
+      "themeCleanDescription": "Inter, coins arrondis, ombres discretes. Pret pour une presentation.",
+      "modeAuto": "Auto",
+      "modeDark": "Sombre",
+      "modeLight": "Clair"
+    }
+  },
+  "language": {
+    "en": "Anglais",
+    "fr": "Francais",
+    "es": "Espagnol"
+  }
+}

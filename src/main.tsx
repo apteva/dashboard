@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
+import "./i18n";
 // Side-effect imports: each module installs a window.__apteva*
 // bridge at load. Without these explicit imports, nothing in
 // production references the modules' named exports, and the bundler

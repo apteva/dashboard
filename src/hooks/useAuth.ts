@@ -1,5 +1,6 @@
 import { useState, useEffect, createContext, useContext, type ReactNode, createElement } from "react";
 import { auth, setAuthInvalidHandler, type PlatformRole } from "../api";
+import { normalizeDashboardLanguage, setDashboardLanguage, type DashboardLanguage } from "../i18n";
 
 // Auth state lives in a single React Context at the root of the app so
 // every consumer — ProtectedRoute, Login, Layout — reads the same
@@ -17,6 +18,7 @@ export interface AuthUser {
   // false for users who registered but haven't finished the welcome
   // flow. Drives <OnboardingGate> in App.tsx.
   onboarded: boolean;
+  language: DashboardLanguage;
 }
 
 interface AuthState {
@@ -46,7 +48,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         role: (r.role as PlatformRole) || "user",
         createdAt: r.created_at,
         onboarded: r.onboarded,
+        language: normalizeDashboardLanguage(r.language),
       });
+      void setDashboardLanguage(r.language);
     } catch {
       setUser(false);
     }
