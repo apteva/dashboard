@@ -5,6 +5,7 @@ import {
   instances,
   mcpServers as mcpServersAPI,
   providers as providersAPI,
+  telemetry,
   type Agent,
   type AppRow,
   type ExecutionControlStatus,
@@ -54,6 +55,7 @@ interface RuntimeEventItem {
 }
 
 const MAX_RUNTIME_EVENTS = 250;
+const HISTORICAL_RUNTIME_EVENT_LIMIT = 300;
 
 function compactText(value: unknown, fallback = ""): string {
   if (value == null) return fallback;
@@ -239,6 +241,32 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
     };
   }
 
+  if (ev.type === "llm.thinking") {
+    const text = String(data.text || data.chunk || "");
+    if (!text.trim()) return null;
+    return {
+      ...base,
+      key: thoughtEventKey(ev),
+      kind: "thought",
+      label: "Reasoning",
+      detail: text,
+      status: "running",
+    };
+  }
+
+  if (ev.type === "llm.chunk") {
+    const text = String(data.text || data.chunk || "");
+    if (!text.trim()) return null;
+    return {
+      ...base,
+      key: thoughtEventKey(ev),
+      kind: "thought",
+      label: "Response",
+      detail: text,
+      status: "running",
+    };
+  }
+
   if (ev.type === "llm.done") {
     return {
       ...base,
@@ -340,6 +368,10 @@ function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): Runtim
       ev.type === "llm.tool_chunk" && item.toolArgs
         ? `${prevItem.toolArgs || ""}${item.toolArgs}`
         : item.toolArgs || prevItem.toolArgs;
+    const detail =
+      (ev.type === "llm.thinking" || ev.type === "llm.chunk") && item.detail
+        ? `${prevItem.detail || ""}${item.detail}`
+        : item.detail || prevItem.detail;
     next[idx] = {
       ...prevItem,
       ...item,
@@ -347,7 +379,7 @@ function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): Runtim
         item.kind === "tool" && item.status !== "running" && item.label === item.detail
           ? prevItem.label
           : item.label || prevItem.label,
-      detail: item.detail || prevItem.detail,
+      detail,
       toolArgs: args,
       toolResult: item.toolResult || prevItem.toolResult,
     };
@@ -424,6 +456,16 @@ export function AgentView({
     listenersRef.current.add(cb);
     return () => { listenersRef.current.delete(cb); };
   }, []);
+  const rememberHandledEventID = useCallback((id: string) => {
+    if (seenHandledEventsRef.current.has(id)) return false;
+    seenHandledEventsRef.current.add(id);
+    seenHandledOrderRef.current.push(id);
+    if (seenHandledOrderRef.current.length > 500) {
+      const old = seenHandledOrderRef.current.shift();
+      if (old) seenHandledEventsRef.current.delete(old);
+    }
+    return true;
+  }, []);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -465,6 +507,33 @@ export function AgentView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instance.id]);
 
+  useEffect(() => {
+    let cancelled = false;
+    telemetry.query(instance.id, undefined, HISTORICAL_RUNTIME_EVENT_LIMIT)
+      .then((events) => {
+        if (cancelled) return;
+        const historical = [...events].reverse().filter((event) => {
+          if (!event.id) return true;
+          return rememberHandledEventID(event.id);
+        });
+        if (historical.length === 0) return;
+        setRuntimeEvents((prev) => historical.reduce(mergeRuntimeEvent, prev));
+        setThreadLiveEvents((prev) => {
+          const next: Record<string, TelemetryEvent[]> = { ...prev };
+          for (const event of historical) {
+            const threadId = event.thread_id || "main";
+            const arr = next[threadId] || [];
+            next[threadId] = [...arr, event].slice(-200);
+          }
+          return next;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [instance.id, rememberHandledEventID]);
+
   // Poll instance config for the channels MCP presence so the chat
   // panel can gray itself out when an operator detaches channels from
   // the MCP list. 5s cadence matches the MCP panel's own refresh so
@@ -504,13 +573,7 @@ export function AgentView({
   // produced visible duplicates.
   const handleEvent = (event: TelemetryEvent) => {
     if (event.id) {
-      if (seenHandledEventsRef.current.has(event.id)) return;
-      seenHandledEventsRef.current.add(event.id);
-      seenHandledOrderRef.current.push(event.id);
-      if (seenHandledOrderRef.current.length > 500) {
-        const old = seenHandledOrderRef.current.shift();
-        if (old) seenHandledEventsRef.current.delete(old);
-      }
+      if (!rememberHandledEventID(event.id)) return;
     } else {
       // Live event (no id). Build a best-effort dedup key. Collisions
       // would require two live events with identical type + thread +
