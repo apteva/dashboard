@@ -2725,7 +2725,7 @@ export const apps = {
   // unbind that role. Server bounces the sidecar so OnMount picks
   // up the new bindings; respawned=true confirms the new process is
   // healthy. Required roles can't be unbound (server 400s).
-  setBindings: (installId: number, bindings: Record<string, number | null>) =>
+  setBindings: (installId: number, bindings: Record<string, AppBindingValue>) =>
     request<{ ok: boolean; bindings: Record<string, any>; respawned: boolean; respawn_err: string }>(
       "PUT",
       `/apps/installs/${installId}/bindings`,
@@ -2876,6 +2876,7 @@ export interface AppRow {
   // present. Drives the subscription form's event dropdown.
   publishes?: EventDecl[];
   imports?: AppImports;
+  bindings?: Record<string, AppBindingValue>;
 }
 
 export interface AppImports {
@@ -3041,17 +3042,25 @@ export interface AppInstallOptions {
   projectId?: string;
   config?: Record<string, string>;
   upgradePolicy?: "manual" | "auto-patch" | "auto-minor";
-  // bindings: role → connection_id (kind=integration) or install_id
-  // (kind=app), or null when the user opted out of an optional dep.
-  // Required deps must have a non-null target; the server validates.
-  bindings?: Record<string, number | null>;
+  // bindings: role → connection_id/install_id, a multi-binding object,
+  // or null when the user opted out of an optional dep.
+  // Required deps must have a non-empty target; the server validates.
+  bindings?: Record<string, AppBindingValue>;
 }
+
+export type AppMultiBindingValue = {
+  ids: number[];
+  default_id?: number;
+};
+
+export type AppBindingValue = number | null | AppMultiBindingValue;
 
 // Preflight response — drives the install modal's role-picker step.
 // One entry per requires.integrations role in the manifest.
 export interface PreflightRole {
   role: string;
   kind: "integration" | "app";
+  mode?: "single" | "multiple";
   label?: string;
   required: boolean;
   hint?: string;
@@ -3132,6 +3141,16 @@ export interface ChatMessageRow {
   attachments?: ChatAttachment[];
 }
 
+export interface ApprovalMessageRow {
+  message: ChatMessageRow;
+  instance_id: number;
+  instance_name: string;
+  project_id: string;
+  title: string;
+  body: string;
+  status: string;
+}
+
 export interface ChatMessageContext {
   source: "dashboard-floating" | "dashboard-build";
   project_id?: string;
@@ -3198,6 +3217,25 @@ export const chat = {
   // badges show up before the SSE has a chance to fire its first event.
   unreadSummary: (): Promise<UnreadSummaryRow[]> =>
     request<UnreadSummaryRow[]>("GET", "/apps/channel-chat/unread-summary"),
+
+  approvalMessages: (projectId?: string, status: "pending" | "all" = "pending", limit: number = 20) => {
+    const qs = new URLSearchParams();
+    if (projectId) qs.set("project_id", projectId);
+    if (status) qs.set("status", status);
+    qs.set("limit", String(limit));
+    return request<ApprovalMessageRow[]>("GET", `/apps/channel-chat/approval-messages?${qs.toString()}`);
+  },
+
+  messageAction: (messageId: number, actionId: string, note?: string) =>
+    request<{ message: ChatMessageRow; status: string; forwarded: boolean; delivery_error?: string }>(
+      "POST",
+      "/apps/channel-chat/message-action",
+      {
+        message_id: messageId,
+        action_id: actionId,
+        ...(note ? { note } : {}),
+      },
+    ),
 
   // markSeen advances the persistent per-chat read watermark. Server
   // is monotonic, so it's safe to fire from many tabs at once. Returns

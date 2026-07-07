@@ -24,9 +24,10 @@ import {
   Suspense,
   lazy,
   useEffect,
+  useMemo,
   useState,
 } from "react";
-import type { ChatComponent } from "../../api";
+import { chat, type ChatComponent, type ChatMessageRow } from "../../api";
 
 // ─── manifest-side types ────────────────────────────────────────────
 
@@ -104,6 +105,9 @@ interface ChatComponentMountProps {
   comp: ChatComponent;
   apps: InstalledAppRow[];
   projectId: string;
+  messageId?: number;
+  onMessageUpdated?: (message: ChatMessageRow) => void;
+  onActionComplete?: () => void;
   /** Optional slot the component is being rendered in — checked
    *  against the manifest's slots allowlist. Defaults to
    *  chat.message_attachment which is the only slot today. */
@@ -120,8 +124,21 @@ export function ChatComponentMount({
   comp,
   apps,
   projectId,
+  messageId,
+  onMessageUpdated,
+  onActionComplete,
   slot = "chat.message_attachment",
 }: ChatComponentMountProps): ReactNode {
+  if (comp.app === "channel-chat" && comp.name === "approval-card") {
+    return (
+      <ApprovalCard
+        props={comp.props ?? {}}
+        messageId={messageId}
+        onMessageUpdated={onMessageUpdated}
+        onActionComplete={onActionComplete}
+      />
+    );
+  }
   const app = apps.find((a) => a.name === comp.app);
   if (!app) {
     return <ComponentMissing reason={`app "${comp.app}" not installed`} />;
@@ -157,10 +174,16 @@ export function ChatComponentList({
   components,
   apps,
   projectId,
+  messageId,
+  onMessageUpdated,
+  onActionComplete,
 }: {
   components: ChatComponent[];
   apps: InstalledAppRow[];
   projectId: string;
+  messageId?: number;
+  onMessageUpdated?: (message: ChatMessageRow) => void;
+  onActionComplete?: () => void;
 }): ReactNode {
   if (!components || components.length === 0) return null;
   return (
@@ -177,8 +200,132 @@ export function ChatComponentList({
           comp={c}
           apps={apps}
           projectId={projectId}
+          messageId={messageId}
+          onMessageUpdated={onMessageUpdated}
+          onActionComplete={onActionComplete}
         />
       ))}
+    </div>
+  );
+}
+
+interface ApprovalAction {
+  id: string;
+  label: string;
+  style?: string;
+}
+
+function ApprovalCard({
+  props,
+  messageId,
+  onMessageUpdated,
+  onActionComplete,
+}: {
+  props: Record<string, unknown>;
+  messageId?: number;
+  onMessageUpdated?: (message: ChatMessageRow) => void;
+  onActionComplete?: () => void;
+}) {
+  const [submitting, setSubmitting] = useState<string | null>(null);
+  const id = Number(props.message_id || messageId || 0);
+  const title = String(props.title || "Approval requested");
+  const body = String(props.body || "");
+  const status = String(props.status || "pending");
+  const decision = props.decision && typeof props.decision === "object"
+    ? props.decision as Record<string, unknown>
+    : null;
+  const actions = useMemo(() => {
+    const raw = Array.isArray(props.actions) ? props.actions : [];
+    const parsed = raw
+      .map((item): ApprovalAction | null => {
+        if (!item || typeof item !== "object") return null;
+        const obj = item as Record<string, unknown>;
+        const actionId = String(obj.id || "").trim();
+        const label = String(obj.label || "").trim();
+        const style = String(obj.style || "").trim();
+        if (!actionId || !label) return null;
+        return { id: actionId, label, style };
+      })
+      .filter(Boolean) as ApprovalAction[];
+    return parsed.length > 0
+      ? parsed
+      : [
+          { id: "approve", label: "Approve", style: "primary" },
+          { id: "deny", label: "Deny", style: "danger" },
+        ];
+  }, [props.actions]);
+
+  const sendAction = async (actionId: string) => {
+    if (!id || status !== "pending" || submitting) return;
+    setSubmitting(actionId);
+    try {
+      const res = await chat.messageAction(id, actionId);
+      onMessageUpdated?.(res.message);
+      onActionComplete?.();
+    } finally {
+      setSubmitting(null);
+    }
+  };
+
+  const statusLabel = status === "approved"
+    ? "Approved"
+    : status === "denied"
+      ? "Denied"
+      : status === "acted"
+        ? "Completed"
+        : "Pending";
+
+  return (
+    <div className="rounded-lg border border-accent/35 bg-bg-card/90 p-3 max-w-2xl">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-wide text-accent font-bold">
+            Approval
+          </div>
+          <h3 className="text-sm text-text font-bold mt-0.5 break-words">{title}</h3>
+        </div>
+        <span
+          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide border ${
+            status === "pending"
+              ? "border-yellow/40 text-yellow bg-yellow/10"
+              : status === "approved"
+                ? "border-green/40 text-green bg-green/10"
+                : "border-text-muted/40 text-text-muted bg-bg-subtle"
+          }`}
+        >
+          {statusLabel}
+        </span>
+      </div>
+      {body && (
+        <p className="mt-2 text-xs text-text-muted leading-relaxed whitespace-pre-wrap break-words">
+          {body}
+        </p>
+      )}
+      {status === "pending" ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {actions.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              disabled={!id || !!submitting}
+              onClick={() => void sendAction(action.id)}
+              className={`rounded-md border px-3 py-1.5 text-xs font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                action.style === "danger" || action.id === "deny"
+                  ? "border-red/40 text-red hover:bg-red/10"
+                  : action.style === "primary" || action.id === "approve"
+                    ? "border-accent/50 text-accent bg-accent/10 hover:bg-accent/20"
+                    : "border-border text-text-muted hover:border-text hover:text-text"
+              }`}
+            >
+              {submitting === action.id ? "Sending..." : action.label}
+            </button>
+          ))}
+        </div>
+      ) : decision && (
+        <div className="mt-3 text-[11px] text-text-dim">
+          Decision: {String(decision.action_id || status)}
+        </div>
+      )}
     </div>
   );
 }

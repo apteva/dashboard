@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
+import { useTranslation } from "react-i18next";
 import { marked } from "marked";
 import { chat, type ChatAttachment, type ChatMessageContext, type ChatMessageRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
@@ -45,6 +46,7 @@ interface Props {
   autoConnect?: boolean;
   hideHeader?: boolean;
   messageContext?: ChatMessageContext;
+  historyLimit?: number;
 }
 
 const MAX_IMAGE_ATTACHMENTS = 4;
@@ -85,7 +87,7 @@ interface LiveTool {
 //   channels_respond/channels_status — ARE visible chat messages;
 //     surfacing them as separate tool calls is pure noise (the user
 //     already sees the message they produced as assistant turns).
-const HIDDEN_TOOLS = new Set(["pace", "done", "channels_respond", "channels_status"]);
+const HIDDEN_TOOLS = new Set(["pace", "done", "channels_respond", "channels_status", "channels_request_approval"]);
 
 // `send` is useful when it explains meaningful delegation, but noisy
 // when it is only an internal completion/report-back hop.
@@ -143,7 +145,9 @@ export function ChatPanel({
   autoConnect = false,
   hideHeader = false,
   messageContext,
+  historyLimit,
 }: Props) {
+  const { t } = useTranslation();
   // Project context — needed so chat-attached components can scope
   // their fetches and event subscriptions correctly. Falls back to
   // empty string when there's no current project (apps with chat
@@ -275,7 +279,7 @@ export function ChatPanel({
   useEffect(() => {
     if (!chatId) return;
     let cancelled = false;
-    chat.messages(chatId)
+    chat.messages(chatId, 0, historyLimit)
       .then((rows) => {
         if (cancelled) return;
         setMessages(rows);
@@ -290,7 +294,7 @@ export function ChatPanel({
       })
       .catch((e) => !cancelled && setError(errMsg(e)));
     return () => { cancelled = true; };
-  }, [chatId]);
+  }, [chatId, historyLimit]);
 
   // --- 3. Hook into the global chat-connections manager ----------------
   //
@@ -637,13 +641,13 @@ export function ChatPanel({
     const list = Array.from(files).filter((file) => file.type.startsWith("image/"));
     if (list.length === 0) return;
     if (attachments.length + list.length > MAX_IMAGE_ATTACHMENTS) {
-      setError(`Attach up to ${MAX_IMAGE_ATTACHMENTS} images.`);
+      setError(t("chat.panel.attachMaxImages", { count: MAX_IMAGE_ATTACHMENTS }));
       return;
     }
     const next: DraftAttachment[] = [];
     for (const file of list) {
       if (file.size > MAX_IMAGE_BYTES) {
-        setError(`${file.name || "Image"} is too large. Max size is 5 MB.`);
+        setError(t("chat.panel.imageTooLarge", { name: file.name || t("chat.panel.image") }));
         return;
       }
       const dataUrl = await readFileAsDataURL(file);
@@ -658,7 +662,7 @@ export function ChatPanel({
     }
     setAttachments((current) => [...current, ...next].slice(0, MAX_IMAGE_ATTACHMENTS));
     setError(null);
-  }, [attachments.length]);
+  }, [attachments.length, t]);
 
   const removeAttachment = useCallback((id: string) => {
     setAttachments((current) => current.filter((att) => att.id !== id));
@@ -747,6 +751,10 @@ export function ChatPanel({
     () => [...messages].sort((a, b) => a.id - b.id),
     [messages],
   );
+
+  const handleMessageUpdated = useCallback((message: ChatMessageRow) => {
+    setMessages((prev) => prev.map((row) => (row.id === message.id ? message : row)));
+  }, []);
 
   // Interleaved timeline of messages + tool bursts.
   //
@@ -864,15 +872,15 @@ export function ChatPanel({
                     ? "bg-green"
                     : "bg-yellow animate-pulse";
                 const label = !connected
-                  ? "Not connected"
+                  ? t("chat.panel.notConnected")
                   : sseOpen
-                    ? "Connected"
-                    : "Reconnecting";
+                    ? t("chat.panel.connected")
+                    : t("chat.panel.reconnecting");
                 const title = !connected
-                  ? "Click Connect to rejoin chat. While disconnected, the agent does not advertise chat and won't respond there."
+                  ? t("chat.panel.notConnectedTitle")
                   : sseOpen
-                    ? "The agent sees you as present. Proactive responses and status pings enabled."
-                    : "SSE stream is retrying — agent may briefly see you as offline.";
+                    ? t("chat.panel.connectedTitle")
+                    : t("chat.panel.reconnectingTitle");
                 return (
                   <span
                     className="flex items-center gap-1.5 shrink-0"
@@ -892,39 +900,39 @@ export function ChatPanel({
                 onClick={() => setPlanMode((v) => !v)}
                 title={
                   planMode
-                    ? "Plan mode ON — your next message asks the agent to plan first. Approve / Reject / Refine shortcuts appear above the input."
-                    : "Plan mode OFF — turn on to make the agent investigate and return a plan before executing writes."
+                    ? t("chat.panel.planOnTitle")
+                    : t("chat.panel.planOffTitle")
                 }
                 className={`text-[10px] uppercase tracking-wide transition-colors ${
                   planMode ? "text-accent font-bold" : "text-text-muted hover:text-text"
                 }`}
               >
-                {planMode ? "Plan ✓" : "Plan"}
+                {planMode ? t("chat.panel.planOn") : t("chat.panel.plan")}
               </button>
               {chatId && messages.length > 0 && (
                 <button
                   onClick={() => setShowClearModal(true)}
-                  title="Delete all messages in this chat (agent memory kept)"
+                  title={t("chat.panel.clearTitle")}
                   className="text-[10px] text-text-muted hover:text-red transition-colors"
                 >
-                  Clear
+                  {t("chat.panel.clear")}
                 </button>
               )}
               {connected ? (
                 <button
                   onClick={() => setConnected(false)}
                   className="text-[10px] text-text-muted hover:text-red transition-colors"
-                  title="Go offline. The agent will stop advertising chat as a connected channel and won't respond on it until you reconnect."
+                  title={t("chat.panel.disconnectTitle")}
                 >
-                  Disconnect
+                  {t("chat.panel.disconnect")}
                 </button>
               ) : (
                 <button
                   onClick={() => setConnected(true)}
                   className="text-[10px] text-accent hover:text-accent-hover transition-colors font-bold"
-                  title="Join chat. The agent will see you as present and may greet or push status updates."
+                  title={t("chat.panel.connectTitle")}
                 >
-                  Connect to chat
+                  {t("chat.panel.connect")}
                 </button>
               )}
             </div>
@@ -935,14 +943,14 @@ export function ChatPanel({
       {/* Error banner — dismissible */}
       {error && (
         <div className="shrink-0 border-b border-red/40 bg-red/10 px-4 py-2 flex items-start gap-2">
-          <span className="text-red text-[11px] font-bold shrink-0 mt-0.5">Error</span>
+          <span className="text-red text-[11px] font-bold shrink-0 mt-0.5">{t("chat.panel.error")}</span>
           <pre className="flex-1 min-w-0 text-[10px] text-red leading-snug whitespace-pre-wrap break-words font-mono max-h-40 overflow-y-auto">
             {error}
           </pre>
           <button
             onClick={() => setError(null)}
             className="shrink-0 text-red/70 hover:text-red text-xs px-1"
-            title="Dismiss"
+            title={t("chat.panel.dismiss")}
           >
             ✕
           </button>
@@ -955,11 +963,11 @@ export function ChatPanel({
         className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-3 min-w-0 transition-opacity duration-300 ${connected ? "" : "opacity-40"}`}
       >
         {!chatId && (
-          <p className="text-text-muted text-xs text-center py-8">Loading chat…</p>
+          <p className="text-text-muted text-xs text-center py-8">{t("chat.panel.loading")}</p>
         )}
         {chatId && orderedMessages.length === 0 && (
           <p className="text-text-muted text-xs text-center py-8">
-            No messages yet. Say hi.
+            {t("chat.panel.empty")}
           </p>
         )}
         {timeline.map((item) =>
@@ -969,6 +977,7 @@ export function ChatPanel({
               msg={item.msg}
               projectId={projectId}
               apps={installedApps}
+              onMessageUpdated={handleMessageUpdated}
             />
           ) : item.kind === "toolGroup" ? (
             <ToolGroupRow
@@ -1007,9 +1016,9 @@ export function ChatPanel({
               onClick={() => postCanned("Approved. Execute the plan now.")}
               disabled={sending}
               className="text-[11px] px-2 py-1 rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-40 transition-colors"
-              title="Tell the agent to execute the plan."
+              title={t("chat.panel.approveTitle")}
             >
-              ✓ Approve
+              {t("chat.panel.approve")}
             </button>
             <button
               onClick={() =>
@@ -1017,9 +1026,9 @@ export function ChatPanel({
               }
               disabled={sending}
               className="text-[11px] px-2 py-1 rounded border border-border text-text-muted hover:border-red hover:text-red disabled:opacity-40 transition-colors"
-              title="Discard this plan and ask the agent to try a different approach."
+              title={t("chat.panel.rejectTitle")}
             >
-              ✗ Reject
+              {t("chat.panel.reject")}
             </button>
             <button
               onClick={() =>
@@ -1027,12 +1036,12 @@ export function ChatPanel({
               }
               disabled={sending}
               className="text-[11px] px-2 py-1 rounded border border-border text-text-muted hover:border-text hover:text-text disabled:opacity-40 transition-colors"
-              title="Tell the agent to revise the plan. Follow up with what to change."
+              title={t("chat.panel.refineTitle")}
             >
-              ↻ Refine
+              {t("chat.panel.refine")}
             </button>
             <span className="text-[10px] text-text-dim ml-1">
-              or just type a reply
+              {t("chat.panel.typeReply")}
             </span>
           </div>
         )}
@@ -1069,8 +1078,8 @@ export function ChatPanel({
                   type="button"
                   onClick={() => removeAttachment(att.id)}
                   className="absolute right-1 top-1 h-5 w-5 rounded-full bg-bg/90 text-[11px] text-text border border-border hover:border-text"
-                  aria-label={`Remove ${att.name}`}
-                  title="Remove image"
+                  aria-label={t("chat.panel.removeAttachment", { name: att.name })}
+                  title={t("chat.panel.removeImage")}
                 >
                   x
                 </button>
@@ -1102,8 +1111,8 @@ export function ChatPanel({
             onClick={() => fileInputRef.current?.click()}
             disabled={!chatId || !connected || sending || attachments.length >= MAX_IMAGE_ATTACHMENTS}
             className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-bg-subtle disabled:opacity-30 disabled:cursor-not-allowed"
-            aria-label="Attach image"
-            title="Attach image"
+            aria-label={t("chat.panel.attachImage")}
+            title={t("chat.panel.attachImage")}
           >
             <svg
               viewBox="0 0 20 20"
@@ -1148,10 +1157,10 @@ export function ChatPanel({
             className="flex-1 bg-transparent text-sm text-text focus:outline-none min-w-0 resize-none placeholder:text-text-dim font-mono py-1.5 block"
             placeholder={
               !chatId
-                ? "Loading…"
+                ? t("chat.panel.placeholderLoading")
                 : !connected
-                  ? "Connect to chat…"
-                  : "Message the agent…"
+                  ? t("chat.panel.placeholderDisconnected")
+                  : t("chat.panel.placeholderMessage")
             }
             disabled={!chatId || !connected}
             autoFocus={!!chatId}
@@ -1160,8 +1169,8 @@ export function ChatPanel({
             type="submit"
             disabled={!chatId || (!input.trim() && attachments.length === 0) || sending || !connected}
             className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-all bg-accent text-bg disabled:opacity-20 disabled:cursor-not-allowed enabled:hover:bg-accent-hover enabled:active:scale-95"
-            aria-label="Send"
-            title="Send (Enter)"
+            aria-label={t("chat.panel.send")}
+            title={t("chat.panel.sendTitle")}
           >
             <svg
               viewBox="0 0 20 20"
@@ -1185,23 +1194,22 @@ export function ChatPanel({
           <div className="absolute inset-0 bg-bg/80 backdrop-blur-sm" />
           <div className="relative bg-bg-card border border-border rounded-lg shadow-lg w-80 mx-4" onClick={(e) => e.stopPropagation()}>
             <div className="px-5 py-4 space-y-3">
-              <h3 className="text-text text-sm font-bold">Clear chat</h3>
+              <h3 className="text-text text-sm font-bold">{t("chat.panel.clearChat")}</h3>
               <p className="text-text-muted text-xs leading-relaxed">
-                All messages in this chat will be deleted from the database.
-                The agent's memory and sub-thread state are untouched.
+                {t("chat.panel.clearWarning")}
               </p>
               <div className="flex gap-2 justify-end pt-1">
                 <button
                   onClick={() => setShowClearModal(false)}
                   className="px-3 py-1.5 text-xs text-text-muted border border-border rounded-lg hover:border-text-muted transition-colors"
                 >
-                  Cancel
+                  {t("chat.panel.cancel")}
                 </button>
                 <button
                   onClick={handleClear}
                   className="px-3 py-1.5 text-xs text-bg bg-red hover:bg-red/80 rounded-lg font-bold transition-colors"
                 >
-                  Clear messages
+                  {t("chat.panel.clearMessages")}
                 </button>
               </div>
             </div>
@@ -1236,10 +1244,12 @@ const MessageRow = memo(function MessageRow({
   msg,
   projectId,
   apps,
+  onMessageUpdated,
 }: {
   msg: ChatMessageRow;
   projectId: string;
   apps: ReturnType<typeof useInstalledApps>;
+  onMessageUpdated?: (message: ChatMessageRow) => void;
 }) {
   // Memoize the parsed HTML against the message content so the
   // marked() call doesn't run on a re-render that survived the memo
@@ -1296,6 +1306,8 @@ const MessageRow = memo(function MessageRow({
           components={msg.components}
           apps={apps}
           projectId={projectId}
+          messageId={msg.id}
+          onMessageUpdated={onMessageUpdated}
         />
       )}
     </div>
@@ -1303,6 +1315,7 @@ const MessageRow = memo(function MessageRow({
 });
 
 function UserAttachmentGrid({ attachments }: { attachments: ChatAttachment[] }) {
+  const { t } = useTranslation();
   const visible = attachments.filter((att) => att.data_url || att.name);
   if (visible.length === 0) return null;
   const single = visible.length === 1;
@@ -1316,7 +1329,7 @@ function UserAttachmentGrid({ attachments }: { attachments: ChatAttachment[] }) 
     >
       {visible.map((att, index) => {
         const key = att.id || `${att.name || "image"}-${index}`;
-        const title = `${att.name || "Image"} (${formatBytes(att.size)})`;
+        const title = `${att.name || t("chat.panel.image")} (${formatBytes(att.size)})`;
         if (!att.data_url) {
           return (
             <div
@@ -1324,7 +1337,7 @@ function UserAttachmentGrid({ attachments }: { attachments: ChatAttachment[] }) 
               className="rounded-xl border border-border bg-bg-card px-3 py-2 text-[11px] text-text-muted"
               title={title}
             >
-              {att.name || "Image"}
+              {att.name || t("chat.panel.image")}
             </div>
           );
         }
@@ -1332,7 +1345,7 @@ function UserAttachmentGrid({ attachments }: { attachments: ChatAttachment[] }) 
           <img
             key={key}
             src={att.data_url}
-            alt={att.name || "Attached image"}
+            alt={att.name || t("chat.panel.attachedImage")}
             title={title}
             className={
               single
@@ -1410,8 +1423,8 @@ function toolDisplayName(name: string): string {
   return parts.join(" ") || name;
 }
 
-function toolLabel(t: LiveTool): string {
-  return t.reason || (t.state === "streaming" ? `Preparing ${toolDisplayName(t.name)}` : "Working...");
+function toolLabel(tool: LiveTool, t: (key: string, options?: Record<string, unknown>) => string): string {
+  return tool.reason || (tool.state === "streaming" ? t("chat.panel.preparingTool", { name: toolDisplayName(tool.name) }) : t("chat.panel.working"));
 }
 
 function toolDurationLabel(ms: number): string {
@@ -1422,10 +1435,10 @@ function plural(n: number, singular: string, pluralValue = `${singular}s`): stri
   return `${n} ${n === 1 ? singular : pluralValue}`;
 }
 
-function compactLabels(tools: LiveTool[], limit: number): { text: string; more: number } {
+function compactLabels(tools: LiveTool[], limit: number, t: (key: string, options?: Record<string, unknown>) => string): { text: string; more: number } {
   const labels: string[] = [];
-  for (const t of tools) {
-    const label = toolLabel(t);
+  for (const tool of tools) {
+    const label = toolLabel(tool, t);
     if (!label || labels.includes(label)) continue;
     labels.push(label);
     if (labels.length >= limit) break;
@@ -1442,10 +1455,10 @@ interface ToolDetailSummary {
   durationMs: number;
 }
 
-function summarizeToolDetails(tools: LiveTool[]): ToolDetailSummary[] {
+function summarizeToolDetails(tools: LiveTool[], t: (key: string, options?: Record<string, unknown>) => string): ToolDetailSummary[] {
   const summaries = new Map<string, ToolDetailSummary>();
   for (const tool of tools) {
-    const label = toolLabel(tool) || tool.name;
+    const label = toolLabel(tool, t) || tool.name;
     const stateKey =
       tool.state === "done"
         ? tool.success === false
@@ -1480,13 +1493,14 @@ function ToolGroupRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useTranslation();
   const active = tools.filter((t) => t.state !== "done");
   const failed = tools.filter((t) => t.state === "done" && t.success === false);
   const completed = tools.filter((t) => t.state === "done");
   const durationTotal = completed.reduce((sum, t) => sum + (t.durationMs || 0), 0);
   const labelSource = failed.length > 0 ? [...failed, ...tools.filter((t) => !failed.includes(t))] : active.length > 0 ? [...active, ...tools.filter((t) => !active.includes(t))] : tools;
-  const labels = compactLabels(labelSource, 2);
-  const detailSummaries = summarizeToolDetails(tools);
+  const labels = compactLabels(labelSource, 2, t);
+  const detailSummaries = summarizeToolDetails(tools, t);
   const icon =
     failed.length > 0
       ? <span className="text-red shrink-0">✗</span>
@@ -1495,10 +1509,10 @@ function ToolGroupRow({
       : <span className="text-green shrink-0">✓</span>;
   const status =
     failed.length > 0
-      ? `${plural(failed.length, "tool")} failed`
+      ? t(failed.length === 1 ? "chat.panel.toolFailedStatus" : "chat.panel.toolsFailedStatus", { count: failed.length })
       : active.length > 0
-      ? `${plural(active.length, "tool")} running`
-      : `${plural(tools.length, "tool")} completed`;
+      ? t(active.length === 1 ? "chat.panel.toolRunningStatus" : "chat.panel.toolsRunningStatus", { count: active.length })
+      : t(tools.length === 1 ? "chat.panel.toolCompletedStatus" : "chat.panel.toolsCompletedStatus", { count: tools.length });
   const detailParts = [
     durationTotal > 0 && active.length === 0 ? toolDurationLabel(durationTotal) : "",
     labels.text,
@@ -1511,7 +1525,7 @@ function ToolGroupRow({
         type="button"
         onClick={onToggle}
         className="flex max-w-full items-center gap-1.5 text-[10px] text-text-dim hover:text-text-muted leading-tight"
-        title={expanded ? "Hide tool calls" : "Show tool calls"}
+        title={expanded ? t("chat.panel.hideToolCalls") : t("chat.panel.showToolCalls")}
       >
         {icon}
         <span className={failed.length > 0 ? "text-red shrink-0" : "shrink-0"}>{status}</span>
@@ -1521,7 +1535,7 @@ function ToolGroupRow({
             {detailParts.join(" · ")}
           </span>
         )}
-        <span className="shrink-0 text-text-dim opacity-70">{expanded ? "Hide" : "Details"}</span>
+        <span className="shrink-0 text-text-dim opacity-70">{expanded ? t("chat.panel.hide") : t("chat.panel.details")}</span>
       </button>
       {expanded && (
         <div className="mt-1 space-y-1 border-l border-border/70 pl-2">
@@ -1535,6 +1549,7 @@ function ToolGroupRow({
 }
 
 function ToolSummaryRow({ summary }: { summary: ToolDetailSummary }) {
+  const { t } = useTranslation();
   const icon =
     summary.state === "streaming"
       ? <span className="text-yellow shrink-0 animate-pulse">◐</span>
@@ -1551,37 +1566,38 @@ function ToolSummaryRow({ summary }: { summary: ToolDetailSummary }) {
       {summary.count > 1 && <span className="shrink-0">x{summary.count}</span>}
       {dur && <span className="shrink-0">({dur})</span>}
       {summary.state === "done" && summary.success === false && (
-        <span className="shrink-0 text-red">failed</span>
+        <span className="shrink-0 text-red">{t("chat.panel.toolFailed")}</span>
       )}
     </div>
   );
 }
 
-function ToolRow({ t, compact = false }: { t: LiveTool; compact?: boolean }) {
+function ToolRow({ t: tool, compact = false }: { t: LiveTool; compact?: boolean }) {
+  const { t } = useTranslation();
   const icon =
-    t.state === "streaming"
+    tool.state === "streaming"
       ? <span className="text-yellow shrink-0 animate-pulse">◐</span>
-      : t.state === "called"
+      : tool.state === "called"
       ? <span className="text-accent shrink-0 animate-spin">⟳</span>
-      : <span className={`shrink-0 ${t.success ? "text-green" : "text-red"}`}>{t.success ? "✓" : "✗"}</span>;
-  const label = toolLabel(t);
+      : <span className={`shrink-0 ${tool.success ? "text-green" : "text-red"}`}>{tool.success ? "✓" : "✗"}</span>;
+  const label = toolLabel(tool, t);
   const dur =
-    t.state === "done" && t.durationMs != null
-      ? toolDurationLabel(t.durationMs)
+    tool.state === "done" && tool.durationMs != null
+      ? toolDurationLabel(tool.durationMs)
       : "";
 
   return (
     <div className={`flex items-center gap-1.5 min-w-0 leading-tight text-[10px] text-text-dim ${compact ? "" : "pl-3"}`}>
       {icon}
       <span
-        className={t.state === "streaming" ? "truncate italic" : "truncate"}
+        className={tool.state === "streaming" ? "truncate italic" : "truncate"}
         title={label}
       >
         {label}
       </span>
       {dur && <span className="shrink-0">({dur})</span>}
-      {t.state === "done" && t.success === false && (
-        <span className="shrink-0 text-red">failed</span>
+      {tool.state === "done" && tool.success === false && (
+        <span className="shrink-0 text-red">{t("chat.panel.toolFailed")}</span>
       )}
     </div>
   );
@@ -1602,6 +1618,7 @@ function isActiveConversationThread(threadId: string, chatId: string | null): bo
 }
 
 function ActivityStrip({ activity }: { activity: ActivityForStrip }) {
+  const { t } = useTranslation();
   const [tick, setTick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 500);
@@ -1620,7 +1637,7 @@ function ActivityStrip({ activity }: { activity: ActivityForStrip }) {
         <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
         <span className="w-1.5 h-1.5 rounded-full bg-accent/60 animate-pulse [animation-delay:200ms]" />
       </span>
-      <span className="text-text shrink-0">Thinking…</span>
+      <span className="text-text shrink-0">{t("chat.panel.thinking")}</span>
       <span className="flex-1" />
       <span className="shrink-0 text-text-dim tabular-nums">{elapsedLabel}</span>
     </div>

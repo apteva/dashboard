@@ -9,6 +9,7 @@
 // switcher over data the page already has loaded.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Agent, UnreadSummaryRow } from "../../api";
 
 interface Props {
@@ -26,6 +27,7 @@ export function ChatSwitcher({
   onSelect,
   onClose,
 }: Props) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -101,14 +103,14 @@ export function ChatSwitcher({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Switch chat…"
+            placeholder={t("chat.switcher.placeholder")}
             className="w-full bg-transparent text-text text-sm focus:outline-none placeholder:text-text-dim"
           />
         </div>
 
         <ul className="max-h-[50vh] overflow-y-auto">
           {filtered.length === 0 ? (
-            <li className="px-3 py-4 text-text-dim text-sm">No matches</li>
+            <li className="px-3 py-4 text-text-dim text-sm">{t("chat.switcher.noMatches")}</li>
           ) : (
             filtered.map((inst, i) => {
               const s = summaryByInstance.get(inst.id);
@@ -149,9 +151,9 @@ export function ChatSwitcher({
         </ul>
 
         <div className="border-t border-border px-3 py-1.5 flex items-center justify-between text-[10px] text-text-dim">
-          <span>↑↓ navigate</span>
-          <span>↵ select</span>
-          <span>esc close</span>
+          <span>{t("chat.switcher.navigate")}</span>
+          <span>{t("chat.switcher.select")}</span>
+          <span>{t("chat.switcher.close")}</span>
         </div>
       </div>
     </div>

@@ -1,6 +1,7 @@
 // Main pane for /chat — header above an embedded ChatPanel.
 
 import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { ChatPanel } from "../ChatPanel";
 import type { Agent } from "../../api";
 import type { SubscribeFn } from "../AgentView";
@@ -19,6 +20,7 @@ export function ChatMain({
   onToggleRightPane,
   rightPaneOpen,
 }: Props) {
+  const { t } = useTranslation();
   const instanceId = instance?.id;
   const subscribe = useCallback<SubscribeFn>(
     (listener) => {
@@ -32,9 +34,9 @@ export function ChatMain({
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
-          <div className="text-text-dim text-sm mb-1">No chat selected</div>
+          <div className="text-text-dim text-sm mb-1">{t("chat.main.noChatSelected")}</div>
           <div className="text-text-muted text-xs">
-            Pick an agent on the left, or press <kbd className="px-1 bg-bg-input rounded">⌘K</kbd>
+            {t("chat.main.pickAgent")} <kbd className="px-1 bg-bg-input rounded">⌘K</kbd>
           </div>
         </div>
       </div>
@@ -62,14 +64,14 @@ export function ChatMain({
           <Link
             to={`/agents/${instance.id}`}
             className="text-xs text-text-muted hover:text-text border border-border rounded px-2 py-1"
-            title="Open agent page"
+            title={t("chat.main.openAgentPage")}
           >
-            agent →
+            {t("chat.main.agentLink")}
           </Link>
           <button
             onClick={onToggleRightPane}
             className="hidden lg:inline-block text-xs text-text-muted hover:text-text border border-border rounded px-2 py-1"
-            title={rightPaneOpen ? "Hide context pane" : "Show context pane"}
+            title={rightPaneOpen ? t("chat.main.hideContextPane") : t("chat.main.showContextPane")}
           >
             {rightPaneOpen ? "›" : "‹"}
           </button>

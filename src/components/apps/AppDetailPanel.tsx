@@ -10,7 +10,7 @@
 // stays readable so the user keeps context.
 
 import { useEffect, useMemo, useState } from "react";
-import type { AppImports, AppRow, AppSurfaces, AppUIComponent, ConnectionInfo, MarketplaceEntry } from "../../api";
+import type { AppBindingValue, AppImports, AppRow, AppSurfaces, AppUIComponent, ConnectionInfo, MarketplaceEntry } from "../../api";
 import { apps, integrations } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
 import { AppSurfaceBadges } from "./AppSurfaceBadges";
@@ -792,10 +792,32 @@ function LinksList({ repo, manifestUrl }: { repo?: string; manifestUrl?: string 
 // Shows a one-line success/error banner after save. "Required" roles
 // can't be cleared (server 400s); the UI hides the "—" option for
 // those.
+function bindingIDs(value: AppBindingValue | undefined): number[] {
+  if (value == null) return [];
+  if (typeof value === "number") return value > 0 ? [value] : [];
+  return Array.isArray(value.ids) ? value.ids.filter((id) => id > 0) : [];
+}
+
+function bindingDefaultID(value: AppBindingValue | undefined): number | undefined {
+  const ids = bindingIDs(value);
+  if (ids.length === 0) return undefined;
+  if (value && typeof value === "object" && value.default_id && ids.includes(value.default_id)) {
+    return value.default_id;
+  }
+  return ids[0];
+}
+
+function multiBinding(ids: number[], defaultID?: number): AppBindingValue {
+  const unique = Array.from(new Set(ids.filter((id) => id > 0)));
+  if (unique.length === 0) return null;
+  const chosenDefault = defaultID && unique.includes(defaultID) ? defaultID : unique[0];
+  return { ids: unique, default_id: chosenDefault };
+}
+
 function BindingsEditor({ installId }: { installId: number }) {
   const [roles, setRoles] = useState<any[] | null>(null);
-  const [current, setCurrent] = useState<Record<string, any>>({});
-  const [edits, setEdits] = useState<Record<string, number | null>>({});
+  const [current, setCurrent] = useState<Record<string, AppBindingValue>>({});
+  const [edits, setEdits] = useState<Record<string, AppBindingValue>>({});
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
 
@@ -816,13 +838,16 @@ function BindingsEditor({ installId }: { installId: number }) {
   if (roles.length === 0) return null;
 
   // Selected value = pending edit (if any) || current binding || ""
-  const selectedFor = (role: string): string => {
+  const valueFor = (role: string): AppBindingValue => {
     if (role in edits) {
-      const v = edits[role];
-      return v === null ? "" : String(v);
+      return edits[role];
     }
-    const cur = current[role];
-    return cur == null ? "" : String(cur);
+    return current[role] ?? null;
+  };
+  const selectedFor = (role: string): string => {
+    const cur = valueFor(role);
+    if (typeof cur === "number") return String(cur);
+    return bindingDefaultID(cur) ? String(bindingDefaultID(cur)) : "";
   };
   const dirty = Object.keys(edits).length > 0;
 
@@ -861,6 +886,8 @@ function BindingsEditor({ installId }: { installId: number }) {
       <div className="divide-y divide-border border border-border rounded-md">
         {roles.map((r: any) => {
           const cands = r.kind === "integration" ? r.integration_candidates || [] : r.app_candidates || [];
+          const multiple = r.mode === "multiple";
+          const roleValue = valueFor(r.role);
           return (
             <div key={r.role} className="px-4 py-4 space-y-2.5">
               <div className="flex items-center gap-2 flex-wrap">
@@ -883,32 +910,88 @@ function BindingsEditor({ installId }: { installId: number }) {
               {r.hint && (
                 <p className="text-text-dim text-xs leading-relaxed">{r.hint}</p>
               )}
-              <select
-                className="w-full bg-bg-input border border-border rounded px-3 py-2 text-sm"
-                value={selectedFor(r.role)}
-                onChange={(ev) => {
-                  const v = ev.target.value;
-                  setEdits({ ...edits, [r.role]: v === "" ? null : Number(v) });
-                }}
-              >
-                {!r.required && <option value="">— unbound —</option>}
-                {cands.length === 0 && (
-                  <option value="" disabled>
-                    No compatible {r.kind === "integration" ? "connections" : "apps"} in this project
-                  </option>
-                )}
-                {cands.map((c: any) =>
-                  r.kind === "integration" ? (
-                    <option key={c.connection_id} value={String(c.connection_id)}>
-                      {c.name} ({c.app_slug})
+              {!multiple ? (
+                <select
+                  className="w-full bg-bg-input border border-border rounded px-3 py-2 text-sm"
+                  value={selectedFor(r.role)}
+                  onChange={(ev) => {
+                    const v = ev.target.value;
+                    setEdits({ ...edits, [r.role]: v === "" ? null : Number(v) });
+                  }}
+                >
+                  {!r.required && <option value="">— unbound —</option>}
+                  {cands.length === 0 && (
+                    <option value="" disabled>
+                      No compatible {r.kind === "integration" ? "connections" : "apps"} in this project
                     </option>
-                  ) : (
-                    <option key={c.install_id} value={String(c.install_id)}>
-                      {c.display_name || c.app_name}
-                    </option>
-                  ),
-                )}
-              </select>
+                  )}
+                  {cands.map((c: any) =>
+                    r.kind === "integration" ? (
+                      <option key={c.connection_id} value={String(c.connection_id)}>
+                        {c.name} ({c.app_slug})
+                      </option>
+                    ) : (
+                      <option key={c.install_id} value={String(c.install_id)}>
+                        {c.display_name || c.app_name}
+                      </option>
+                    ),
+                  )}
+                </select>
+              ) : (
+                <div className="space-y-2">
+                  {cands.length === 0 && (
+                    <div className="text-xs text-text-muted">
+                      No compatible {r.kind === "integration" ? "connections" : "apps"} in this project
+                    </div>
+                  )}
+                  <div className="grid gap-1.5">
+                    {cands.map((c: any) => {
+                      const id = r.kind === "integration" ? c.connection_id : c.install_id;
+                      const selected = bindingIDs(roleValue).includes(id);
+                      return (
+                        <label
+                          key={id}
+                          className="flex items-center gap-2 text-sm text-text border border-border rounded px-3 py-2 bg-bg-input"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={(ev) => {
+                              const ids = bindingIDs(roleValue);
+                              const next = ev.target.checked ? [...ids, id] : ids.filter((x) => x !== id);
+                              setEdits({ ...edits, [r.role]: multiBinding(next, bindingDefaultID(roleValue)) });
+                            }}
+                          />
+                          <span className="truncate">
+                            {r.kind === "integration" ? `${c.name} (${c.app_slug})` : c.display_name || c.app_name}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {bindingIDs(roleValue).length > 1 && (
+                    <label className="grid gap-1 text-xs text-text-muted">
+                      Default
+                      <select
+                        className="w-full bg-bg-input border border-border rounded px-3 py-2 text-sm text-text"
+                        value={bindingDefaultID(roleValue) || bindingIDs(roleValue)[0] || 0}
+                        onChange={(ev) => setEdits({ ...edits, [r.role]: multiBinding(bindingIDs(roleValue), Number(ev.target.value)) })}
+                      >
+                        {cands
+                          .filter((c: any) => bindingIDs(roleValue).includes(r.kind === "integration" ? c.connection_id : c.install_id))
+                          .map((c: any) => {
+                            const id = r.kind === "integration" ? c.connection_id : c.install_id;
+                            return (
+                              <option key={id} value={id}>
+                                {r.kind === "integration" ? `${c.name} (${c.app_slug})` : c.display_name || c.app_name}
+                              </option>
+                            );
+                          })}
+                      </select>
+                    </label>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

@@ -15,6 +15,7 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { instances, chat, type Agent, type UnreadSummaryRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
@@ -27,6 +28,7 @@ import { notifications } from "../state/notifications";
 const REFRESH_MS = 8000;
 
 export function Chat() {
+  const { t } = useTranslation();
   const { currentProject } = useProjects();
   const projectId = currentProject?.id;
   const navigate = useNavigate();
@@ -117,7 +119,7 @@ export function Chat() {
     [list, focusedInstanceId],
   );
 
-  usePageTitle(focusedInstance ? ["Chat", focusedInstance.name] : "Chat");
+  usePageTitle(focusedInstance ? [t("chat.title"), focusedInstance.name] : t("chat.title"));
 
   // Cmd-K / Ctrl-K opens the switch palette.
   useEffect(() => {
@@ -147,16 +149,16 @@ export function Chat() {
           <button
             onClick={() => setShowMobileList(true)}
             className="md:hidden text-xs text-text-muted hover:text-text border border-border rounded px-2 py-1"
-            title="Show agents"
+            title={t("chat.showAgents")}
           >
-            agents
+            {t("chat.agentsButton")}
           </button>
-          <h1 className="text-text text-lg font-bold truncate">Chat</h1>
+          <h1 className="text-text text-lg font-bold truncate">{t("chat.title")}</h1>
         </div>
         <button
           onClick={() => setShowSwitcher(true)}
           className="shrink-0 text-xs text-text-muted hover:text-text border border-border rounded px-2 py-1 font-mono"
-          title="Switch chat (⌘K)"
+          title={t("chat.switchChatTitle")}
         >
           ⌘K
         </button>
@@ -168,7 +170,7 @@ export function Chat() {
             type="button"
             className="absolute inset-0 z-20 bg-black/40 md:hidden"
             onClick={() => setShowMobileList(false)}
-            aria-label="Close agents"
+            aria-label={t("chat.closeAgents")}
           />
         )}
         <div
@@ -198,7 +200,7 @@ export function Chat() {
               <AgentContextCard instance={focusedInstance} chatId={focusedChatId} />
             ) : (
               <div className="p-4 text-text-dim text-sm">
-                Select an agent to see context
+                {t("chat.selectAgentForContext")}
               </div>
             )}
           </div>

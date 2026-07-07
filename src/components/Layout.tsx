@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
 import { AccountMenu } from "./AccountMenu";
@@ -18,6 +19,7 @@ import { ContextAgentChatWidget, readContextAgentChatOpenDefault } from "./Conte
 const SIDEBAR_APPS_VISIBLE = 5;
 
 export function Layout() {
+  const { t } = useTranslation();
   const [version, setVersion] = useState("");
   const [versionTip, setVersionTip] = useState("");
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus | null>(null);
@@ -168,19 +170,19 @@ export function Layout() {
   //   manageNav  — platform-administration verbs (header: MANAGE).
   //                Things you do TO the platform, not WITH it.
   const primaryNav = [
-    { to: "/", label: "Dashboard" },
-    { to: "/build", label: "Build" },
-    { to: "/agents", label: "Agents" },
-    { to: "/activity", label: "Activity" },
-    { to: "/chat", label: "Chat" },
+    { to: "/", label: t("nav.dashboard") },
+    { to: "/build", label: t("nav.build") },
+    { to: "/agents", label: t("nav.agents") },
+    { to: "/activity", label: t("nav.activity") },
+    { to: "/chat", label: t("nav.chat") },
   ];
   const manageNav = [
-    { to: "/integrations", label: "Integrations" },
-    { to: "/apps", label: "Apps" },
-    { to: "/skills", label: "Skills" },
-    { to: "/environments", label: "Environments" },
-    { to: "/analytics", label: "Usage" },
-    { to: "/settings", label: "Settings" },
+    { to: "/integrations", label: t("nav.integrations") },
+    { to: "/apps", label: t("nav.apps") },
+    { to: "/skills", label: t("nav.skills") },
+    { to: "/environments", label: t("nav.environments") },
+    { to: "/analytics", label: t("nav.usage") },
+    { to: "/settings", label: t("nav.settings") },
   ];
   // App-contributed entries from any installed app declaring a
   // `provides.ui_panels` entry with slot=project.page. Each one
@@ -316,13 +318,13 @@ export function Layout() {
             if (mobile) setMobileNavOpen(false);
           }}
           className="w-full flex items-center justify-center gap-2 bg-accent text-bg rounded-lg px-3 py-2 text-sm font-bold hover:bg-accent-hover transition-colors"
-          title="Build a new agent"
+          title={t("nav.newAgentTitle")}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 5v14" />
             <path d="M5 12h14" />
           </svg>
-          New agent
+          {t("nav.newAgent")}
         </button>
       </div>
 
@@ -353,7 +355,7 @@ export function Layout() {
           const overflow = appNav.length - visibleApps.length;
           return (
             <>
-              <SidebarSectionHeader label="APPS" />
+              <SidebarSectionHeader label={t("nav.appsSection")} />
               {visibleApps.map((item) => (
                 <SidebarLink
                   key={item.to}
@@ -369,8 +371,8 @@ export function Layout() {
                   className="w-full px-5 py-2 text-xs text-text-muted hover:text-text text-left transition-colors"
                 >
                   {showAllApps
-                    ? "Show less"
-                    : `+ More apps (${overflow})`}
+                    ? t("nav.showLess")
+                    : t("nav.moreApps", { count: overflow })}
                 </button>
               )}
             </>
@@ -379,7 +381,7 @@ export function Layout() {
 
         {/* Manage group — platform-administration verbs. Things you
             do TO the platform, not WITH the platform's daily surfaces. */}
-        <SidebarSectionHeader label="MANAGE" />
+        <SidebarSectionHeader label={t("nav.manageSection")} />
         {manageNav.map((item) => (
           <SidebarLink
             key={item.to}

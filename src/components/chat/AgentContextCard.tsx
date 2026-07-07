@@ -18,6 +18,7 @@
 
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { instances, core, type Agent, type Thread, type MCPServerConfig } from "../../api";
 
 const REFRESH_MS = 8000;
@@ -34,6 +35,7 @@ interface Props {
 }
 
 export function AgentContextCard({ instance, chatId }: Props) {
+  const { t } = useTranslation();
   const expectedChatThreadId = chatId ? `chat-${chatId}` : "";
   const [threads, setThreads] = useState<Thread[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServerConfig[]>([]);
@@ -111,23 +113,23 @@ export function AgentContextCard({ instance, chatId }: Props) {
           {instance.status}
         </Pill>
         <Pill tone="default">{instance.mode}</Pill>
-        {paused === true && <Pill tone="warn">paused</Pill>}
+        {paused === true && <Pill tone="warn">{t("chat.context.paused")}</Pill>}
       </div>
 
       {/* Directive */}
       <div>
         <div className="text-[10px] uppercase tracking-wide text-text-dim mb-1">
-          Directive
+          {t("chat.context.directive")}
         </div>
         <div className="text-xs text-text-muted whitespace-pre-wrap break-words">
-          {directivePreview || <span className="italic text-text-dim">none</span>}
+          {directivePreview || <span className="italic text-text-dim">{t("chat.context.none")}</span>}
         </div>
         {directiveTrim.length > 200 && (
           <button
             onClick={() => setShowFullDirective((v) => !v)}
             className="text-[10px] text-accent hover:underline mt-1"
           >
-            {showFullDirective ? "less" : "more"}
+            {showFullDirective ? t("chat.context.less") : t("chat.context.more")}
           </button>
         )}
       </div>
@@ -136,24 +138,24 @@ export function AgentContextCard({ instance, chatId }: Props) {
       {instance.status === "running" && (
         <div>
           <div className="text-[10px] uppercase tracking-wide text-text-dim mb-1">
-            Threads · {threads.length}
+            {t("chat.context.threads", { count: threads.length })}
           </div>
           {threads.length === 0 ? (
-            <div className="text-xs text-text-dim italic">none</div>
+            <div className="text-xs text-text-dim italic">{t("chat.context.none")}</div>
           ) : (
             <ul className="space-y-1">
-              {threads.slice(0, 8).map((t) => (
-                <li key={t.id} className="text-xs flex items-center gap-2">
+              {threads.slice(0, 8).map((thread) => (
+                <li key={thread.id} className="text-xs flex items-center gap-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
-                  <span className="text-text-muted truncate">{t.id}</span>
-                  {expectedChatThreadId && t.id === expectedChatThreadId && (
-                    <span className="text-[10px] uppercase tracking-wide text-accent shrink-0">this chat</span>
+                  <span className="text-text-muted truncate">{thread.id}</span>
+                  {expectedChatThreadId && thread.id === expectedChatThreadId && (
+                    <span className="text-[10px] uppercase tracking-wide text-accent shrink-0">{t("chat.context.thisChat")}</span>
                   )}
                 </li>
               ))}
               {threads.length > 8 && (
                 <li className="text-[11px] text-text-dim">
-                  + {threads.length - 8} more
+                  {t("chat.context.moreItems", { count: threads.length - 8 })}
                 </li>
               )}
             </ul>
@@ -165,24 +167,24 @@ export function AgentContextCard({ instance, chatId }: Props) {
       {instance.status === "running" && (
         <div>
           <div className="text-[10px] uppercase tracking-wide text-text-dim mb-1">
-            MCPs · {mcpServers.length}
+            {t("chat.context.mcps", { count: mcpServers.length })}
           </div>
           {mcpServers.length === 0 ? (
-            <div className="text-xs text-text-dim italic">none</div>
+            <div className="text-xs text-text-dim italic">{t("chat.context.none")}</div>
           ) : (
             <ul className="space-y-1">
               {mcpServers.slice(0, 8).map((m) => (
                 <li key={m.name} className="text-xs flex items-center gap-2">
                   <span
                     className={`w-1.5 h-1.5 rounded-full shrink-0 ${m.connected ? "bg-green" : "bg-text-dim"}`}
-                    title={m.connected ? "connected" : "disconnected"}
+                    title={m.connected ? t("chat.context.connected") : t("chat.context.disconnected")}
                   />
                   <span className="text-text-muted truncate">{m.name}</span>
                 </li>
               ))}
               {mcpServers.length > 8 && (
                 <li className="text-[11px] text-text-dim">
-                  + {mcpServers.length - 8} more
+                  {t("chat.context.moreItems", { count: mcpServers.length - 8 })}
                 </li>
               )}
             </ul>
@@ -196,7 +198,7 @@ export function AgentContextCard({ instance, chatId }: Props) {
           to={`/agents/${instance.id}`}
           className="block w-full text-center text-xs text-text border border-border rounded px-2 py-1.5 hover:bg-bg-hover"
         >
-          Open agent →
+          {t("chat.context.openAgent")}
         </Link>
         {instance.status === "running" && (
           <>
@@ -205,14 +207,14 @@ export function AgentContextCard({ instance, chatId }: Props) {
               disabled={busy !== ""}
               className="block w-full text-center text-xs text-text-muted border border-border rounded px-2 py-1.5 hover:bg-bg-hover disabled:opacity-50"
             >
-              {busy === "pause" ? "pausing…" : paused ? "resume" : "pause"}
+              {busy === "pause" ? t("chat.context.pausing") : paused ? t("chat.context.resume") : t("chat.context.pause")}
             </button>
             <button
               onClick={handleRestart}
               disabled={busy !== ""}
               className="block w-full text-center text-xs text-text-muted border border-border rounded px-2 py-1.5 hover:bg-bg-hover disabled:opacity-50"
             >
-              {busy === "restart" ? "restarting…" : "restart"}
+              {busy === "restart" ? t("chat.context.restarting") : t("chat.context.restart")}
             </button>
           </>
         )}

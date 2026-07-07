@@ -13,6 +13,7 @@ import {
   type PreflightRole,
   type PreflightConnectionCandidate,
   type PreflightAppCandidate,
+  type AppBindingValue,
 } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
@@ -1196,7 +1197,7 @@ function InstallModal({
   }, [preview, scope]);
   // bindings: role → connection_id | install_id | null. Built by the
   // role pickers; sent verbatim to apps.install on submit.
-  const [bindings, setBindings] = useState<Record<string, number | null>>({});
+  const [bindings, setBindings] = useState<Record<string, AppBindingValue>>({});
   // intents: role → pending sub-action. Executed in sequence on
   // Install click, BEFORE the parent install POST. Lets the operator
   // express "use these creds" / "yes install storage" without per-row
@@ -1337,7 +1338,7 @@ function InstallModal({
       // can click Install). Apps deps install here in sequence,
       // their result_id written back to bindings before the parent
       // install fires.
-      const finalBindings: Record<string, number | null> = { ...bindings };
+      const finalBindings: Record<string, AppBindingValue> = { ...bindings };
       let registryCache: MarketplaceEntry[] | null = null;
       for (const role of preflight?.roles || []) {
         const intent = intents[role.role];
@@ -1467,6 +1468,37 @@ type RoleIntent =
   // controlled `checked={optedIn}` snaps it right back to false.
   | { kind: "connect_integration" };
 
+function bindingIDs(value: AppBindingValue | undefined): number[] {
+  if (value == null) return [];
+  if (typeof value === "number") return value > 0 ? [value] : [];
+  return Array.isArray(value.ids) ? value.ids.filter((id) => id > 0) : [];
+}
+
+function bindingDefaultID(value: AppBindingValue | undefined): number | undefined {
+  const ids = bindingIDs(value);
+  if (ids.length === 0) return undefined;
+  if (value && typeof value === "object" && value.default_id && ids.includes(value.default_id)) {
+    return value.default_id;
+  }
+  return ids[0];
+}
+
+function hasBindingSelection(value: AppBindingValue | undefined): boolean {
+  return bindingIDs(value).length > 0;
+}
+
+function multiBinding(ids: number[], defaultID?: number): AppBindingValue {
+  const unique = Array.from(new Set(ids.filter((id) => id > 0)));
+  if (unique.length === 0) return null;
+  const chosenDefault = defaultID && unique.includes(defaultID) ? defaultID : unique[0];
+  return { ids: unique, default_id: chosenDefault };
+}
+
+function addBindingSelection(value: AppBindingValue | undefined, id: number, multiple: boolean): AppBindingValue {
+  if (!multiple) return id;
+  return multiBinding([...bindingIDs(value), id], bindingDefaultID(value) || id);
+}
+
 // RolePicker — one row per requires.integrations entry. Three states:
 //
 //   1. has candidates → select (auto-picked first one)
@@ -1489,8 +1521,8 @@ function RolePicker({
   onConnected,
 }: {
   role: PreflightRole;
-  value: number | null;
-  onChange: (v: number | null) => void;
+  value: AppBindingValue;
+  onChange: (v: AppBindingValue) => void;
   intent: RoleIntent | null;
   setIntent: (i: RoleIntent | null) => void;
   projectId?: string;
@@ -1498,8 +1530,9 @@ function RolePicker({
 }) {
   const cands =
     role.kind === "integration" ? role.integration_candidates || [] : role.app_candidates || [];
+  const multiple = role.mode === "multiple";
   const hasCands = cands.length > 0;
-  const optedIn = !role.required && (value != null || intent != null);
+  const optedIn = !role.required && (hasBindingSelection(value) || intent != null);
   // kind=integration: synchronous Connect button before parent install
   // kind=app: stores an intent, parent install handler resolves it
   const showCredentialForm =
@@ -1520,7 +1553,8 @@ function RolePicker({
               if (e.target.checked) {
                 if (hasCands) {
                   const c = cands[0] as PreflightConnectionCandidate | PreflightAppCandidate;
-                  onChange("connection_id" in c ? c.connection_id : c.install_id);
+                  const id = "connection_id" in c ? c.connection_id : c.install_id;
+                  onChange(multiple ? multiBinding([id], id) : id);
                 } else if (role.kind === "app") {
                   // Set install_app intent; the parent's Install
                   // handler runs the install before the parent.
@@ -1561,9 +1595,9 @@ function RolePicker({
         <div className="text-text-muted text-[11px]">{role.hint}</div>
       )}
 
-      {hasCands && (role.required || optedIn) && (
+      {hasCands && (role.required || optedIn) && !multiple && (
         <select
-          value={value ?? 0}
+          value={typeof value === "number" ? value : 0}
           onChange={(e) => onChange(Number(e.target.value) || null)}
           className="w-full bg-bg-input border border-border rounded px-2 py-1 text-xs text-text"
         >
@@ -1580,6 +1614,59 @@ function RolePicker({
                 </option>
               ))}
         </select>
+      )}
+
+      {hasCands && (role.required || optedIn) && multiple && (
+        <div className="space-y-2">
+          <div className="grid gap-1.5">
+            {cands.map((c) => {
+              const id = "connection_id" in c ? c.connection_id : c.install_id;
+              const selected = bindingIDs(value).includes(id);
+              return (
+                <label
+                  key={id}
+                  className="flex items-center gap-2 text-xs text-text border border-border rounded px-2 py-1.5 bg-bg-input"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={(e) => {
+                      const ids = bindingIDs(value);
+                      const next = e.target.checked ? [...ids, id] : ids.filter((x) => x !== id);
+                      onChange(multiBinding(next, bindingDefaultID(value)));
+                    }}
+                  />
+                  <span className="truncate">
+                    {"connection_id" in c
+                      ? `${c.name} (${c.app_slug}${c.scope === "global" ? " · global" : ""})`
+                      : c.display_name}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          {bindingIDs(value).length > 1 && (
+            <label className="grid gap-1 text-[11px] text-text-muted">
+              Default
+              <select
+                value={bindingDefaultID(value) || bindingIDs(value)[0] || 0}
+                onChange={(e) => onChange(multiBinding(bindingIDs(value), Number(e.target.value)))}
+                className="w-full bg-bg-input border border-border rounded px-2 py-1 text-xs text-text"
+              >
+                {cands
+                  .filter((c) => bindingIDs(value).includes("connection_id" in c ? c.connection_id : c.install_id))
+                  .map((c) => {
+                    const id = "connection_id" in c ? c.connection_id : c.install_id;
+                    return (
+                      <option key={id} value={id}>
+                        {"connection_id" in c ? `${c.name} (${c.app_slug})` : c.display_name}
+                      </option>
+                    );
+                  })}
+              </select>
+            </label>
+          )}
+        </div>
       )}
 
       {/* No candidates, kind=integration → embedded form with a Connect
@@ -1742,8 +1829,8 @@ function InlineConnectIntegration({
 // opt-in explicit is the safer default. The operator ticks the
 // role's checkbox when they want it; otherwise the dep is skipped
 // and the install proceeds with the role unbound.
-function seedBindings(pf: AppPreflight | null): Record<string, number | null> {
-  const out: Record<string, number | null> = {};
+function seedBindings(pf: AppPreflight | null): Record<string, AppBindingValue> {
+  const out: Record<string, AppBindingValue> = {};
   if (!pf) return out;
   for (const r of pf.roles) {
     if (!r.required) {
@@ -1753,7 +1840,8 @@ function seedBindings(pf: AppPreflight | null): Record<string, number | null> {
     const cands = r.kind === "integration" ? r.integration_candidates : r.app_candidates;
     if (cands && cands.length > 0) {
       const c = cands[0] as PreflightConnectionCandidate | PreflightAppCandidate;
-      out[r.role] = "connection_id" in c ? c.connection_id : c.install_id;
+      const id = "connection_id" in c ? c.connection_id : c.install_id;
+      out[r.role] = r.mode === "multiple" ? multiBinding([id], id) : id;
     } else {
       // Required role with no candidate — operator must satisfy it
       // (Connect button for kind=integration, install_app intent for
@@ -1786,8 +1874,8 @@ function PreviewAndConfigure({
 }: {
   preview: AppPreview;
   preflight: AppPreflight | null;
-  bindings: Record<string, number | null>;
-  setBindings: (b: Record<string, number | null>) => void;
+  bindings: Record<string, AppBindingValue>;
+  setBindings: (b: Record<string, AppBindingValue>) => void;
   intents: Record<string, RoleIntent | null>;
   setIntents: (i: Record<string, RoleIntent | null>) => void;
   canInstall: boolean;
@@ -1902,7 +1990,10 @@ function PreviewAndConfigure({
                 // bind it explicitly so the operator sees the new
                 // option pre-selected.
                 await refetchPreflight();
-                setBindings({ ...bindings, [r.role]: connId });
+                setBindings({
+                  ...bindings,
+                  [r.role]: addBindingSelection(bindings[r.role], connId, r.mode === "multiple"),
+                });
               }}
             />
           ))}
@@ -1952,7 +2043,7 @@ function PreviewAndConfigure({
 // Pure function so InstallModal can reuse it for canInstall gating.
 function requiredConfigFields(
   manifest: AppManifestV2,
-  bindings: Record<string, number | null>,
+  bindings: Record<string, AppBindingValue>,
 ): AppConfigField[] {
   const out: AppConfigField[] = [];
   for (const f of manifest.config_schema || []) {
@@ -1962,7 +2053,7 @@ function requiredConfigFields(
     }
     if (f.required_if_role_bound) {
       const v = bindings[f.required_if_role_bound];
-      if (v != null && v !== 0) out.push(f);
+      if (hasBindingSelection(v)) out.push(f);
     }
   }
   return out;
@@ -1975,7 +2066,7 @@ function RequiredConfigFields({
   setConfig,
 }: {
   manifest: AppManifestV2;
-  bindings: Record<string, number | null>;
+  bindings: Record<string, AppBindingValue>;
   config: Record<string, string>;
   setConfig: (c: Record<string, string>) => void;
 }) {
@@ -2025,7 +2116,7 @@ function ConfigFieldInput({
   field: AppConfigField;
   value: string;
   onChange: (v: string) => void;
-  bindings: Record<string, number | null>;
+  bindings: Record<string, AppBindingValue>;
 }) {
   switch (field.type) {
     case "password":
@@ -2059,7 +2150,7 @@ function ConfigFieldInput({
           value={value}
           onChange={onChange}
           connectionId={
-            field.integration_role ? bindings[field.integration_role] : null
+            field.integration_role ? bindingDefaultID(bindings[field.integration_role]) ?? null : null
           }
         />
       );

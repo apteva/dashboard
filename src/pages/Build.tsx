@@ -135,6 +135,7 @@ export function Build() {
               subscribe={subscribeHelper}
               autoConnect
               messageContext={messageContext}
+              historyLimit={100}
             />
           </div>
         ) : (

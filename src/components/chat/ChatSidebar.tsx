@@ -3,6 +3,7 @@
 // you'd care about most surface first); ties broken by name.
 
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Agent, UnreadSummaryRow } from "../../api";
 
 interface Props {
@@ -20,6 +21,7 @@ export function ChatSidebar({
   focusedChatId,
   onSelect,
 }: Props) {
+  const { t } = useTranslation();
   const [filter, setFilter] = useState("");
 
   // Index summary rows by instance id for O(1) join.
@@ -57,18 +59,18 @@ export function ChatSidebar({
           type="text"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter agents…"
+          placeholder={t("chat.sidebar.filterAgents")}
           className="w-full bg-bg-input border border-border rounded px-2 py-1 text-sm text-text focus:outline-none focus:border-accent placeholder:text-text-dim"
         />
       </div>
 
       <div className="px-3 py-2 text-[10px] text-text-dim uppercase tracking-wide">
-        Direct messages
+        {t("chat.sidebar.directMessages")}
       </div>
 
       <ul className="flex-1 overflow-y-auto">
         {filtered.length === 0 ? (
-          <li className="px-3 py-4 text-text-dim text-sm">No agents</li>
+          <li className="px-3 py-4 text-text-dim text-sm">{t("chat.sidebar.noAgents")}</li>
         ) : (
           filtered.map((inst) => {
             const s = summaryByInstance.get(inst.id);
@@ -95,13 +97,13 @@ export function ChatSidebar({
                       </span>
                       {s?.latest_at && (
                         <span className="text-[10px] text-text-dim shrink-0">
-                          {fmtRelative(s.latest_at)}
+                          {fmtRelative(s.latest_at, t)}
                         </span>
                       )}
                     </span>
                     {s?.latest_preview && (
                       <span className="block text-[11px] text-text-muted truncate mt-0.5">
-                        {previewLabel(s)}
+                        {previewLabel(s, t)}
                       </span>
                     )}
                   </span>
@@ -120,22 +122,22 @@ export function ChatSidebar({
   );
 }
 
-function previewLabel(s: UnreadSummaryRow): string {
+function previewLabel(s: UnreadSummaryRow, t: (key: string) => string): string {
   const prefix =
-    s.latest_role === "user" ? "you: " :
+    s.latest_role === "user" ? t("chat.sidebar.youPrefix") :
     s.latest_role === "system" ? "" :
     "";
   return prefix + s.latest_preview;
 }
 
-function fmtRelative(iso: string): string {
-  const t = Date.parse(iso);
-  if (!t) return "";
-  const ms = Date.now() - t;
-  if (ms < 60_000) return "now";
+function fmtRelative(iso: string, t: (key: string) => string): string {
+  const timestamp = Date.parse(iso);
+  if (!timestamp) return "";
+  const ms = Date.now() - timestamp;
+  if (ms < 60_000) return t("chat.sidebar.now");
   if (ms < 60 * 60_000) return `${Math.floor(ms / 60_000)}m`;
   if (ms < 24 * 60 * 60_000) return `${Math.floor(ms / (60 * 60_000))}h`;
   if (ms < 7 * 24 * 60 * 60_000) return `${Math.floor(ms / (24 * 60 * 60_000))}d`;
-  const d = new Date(t);
+  const d = new Date(timestamp);
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }

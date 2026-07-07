@@ -56,6 +56,7 @@ interface RuntimeEventItem {
 
 const MAX_RUNTIME_EVENTS = 250;
 const HISTORICAL_RUNTIME_EVENT_LIMIT = 300;
+const RUNTIME_THOUGHT_MERGE_WINDOW_MS = 5 * 60 * 1000;
 
 function compactText(value: unknown, fallback = ""): string {
   if (value == null) return fallback;
@@ -76,6 +77,9 @@ function toolEventKey(ev: TelemetryEvent, name: string): string {
 function thoughtEventKey(ev: TelemetryEvent): string {
   const data = ev.data || {};
   const iteration = data.iteration != null ? String(data.iteration) : "";
+  if (ev.type === "llm.done" || ev.type === "llm.error") {
+    return `thought:${ev.thread_id || "main"}:${ev.id || ev.time || iteration}`;
+  }
   return `thought:${ev.thread_id || "main"}:${iteration || ev.id || ev.time}`;
 }
 
@@ -361,6 +365,9 @@ function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): Runtim
   if (idx < 0 && item.kind === "tool" && item.toolName) {
     idx = findRecentRuntimeTool(prev, item);
   }
+  if (idx < 0 && item.kind === "thought" && (ev.type === "llm.done" || ev.type === "llm.error")) {
+    idx = findRecentRuntimeThought(prev, item);
+  }
   if (idx >= 0) {
     const next = [...prev];
     const prevItem = next[idx];
@@ -368,10 +375,10 @@ function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): Runtim
       ev.type === "llm.tool_chunk" && item.toolArgs
         ? `${prevItem.toolArgs || ""}${item.toolArgs}`
         : item.toolArgs || prevItem.toolArgs;
-    const detail =
-      (ev.type === "llm.thinking" || ev.type === "llm.chunk") && item.detail
-        ? `${prevItem.detail || ""}${item.detail}`
-        : item.detail || prevItem.detail;
+    let detail = item.detail || prevItem.detail;
+    if ((ev.type === "llm.thinking" || ev.type === "llm.chunk") && item.detail) {
+      detail = prevItem.raw?.type === "llm.start" ? item.detail : `${prevItem.detail || ""}${item.detail}`;
+    }
     next[idx] = {
       ...prevItem,
       ...item,
@@ -386,6 +393,28 @@ function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): Runtim
     return next;
   }
   return [...prev, item].slice(-MAX_RUNTIME_EVENTS);
+}
+
+function runtimeEventIteration(ev?: TelemetryEvent): string {
+  const value = ev?.data?.iteration;
+  return value == null ? "" : String(value);
+}
+
+function findRecentRuntimeThought(prev: RuntimeEventItem[], item: RuntimeEventItem): number {
+  const itemIteration = runtimeEventIteration(item.raw);
+  if (!itemIteration) return -1;
+  const itemMs = telemetryTimeMs(item.raw);
+  for (let i = prev.length - 1; i >= 0; i--) {
+    const candidate = prev[i];
+    if (candidate.kind !== "thought") continue;
+    if (candidate.threadId !== item.threadId) continue;
+    if (candidate.status !== "running") continue;
+    if (runtimeEventIteration(candidate.raw) !== itemIteration) continue;
+    const candidateMs = telemetryTimeMs(candidate.raw);
+    if (itemMs && candidateMs && Math.abs(itemMs - candidateMs) > RUNTIME_THOUGHT_MERGE_WINDOW_MS) continue;
+    return i;
+  }
+  return -1;
 }
 
 function findRecentRuntimeTool(prev: RuntimeEventItem[], item: RuntimeEventItem): number {
@@ -485,6 +514,7 @@ export function AgentView({
   const [graphActiveTools, setGraphActiveTools] = useState<Record<string, string>>({});
   const [graphThinking, setGraphThinking] = useState<Record<string, boolean>>({});
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeEventItem[]>([]);
+  const [runtimeLoading, setRuntimeLoading] = useState(true);
 
   // Thread detail modal
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -499,6 +529,7 @@ export function AgentView({
     setGraphActiveTools({});
     setGraphThinking({});
     setRuntimeEvents([]);
+    setRuntimeLoading(true);
     setThreadLiveEvents({});
     seenHandledEventsRef.current = new Set();
     seenHandledOrderRef.current = [];
@@ -509,13 +540,11 @@ export function AgentView({
 
   useEffect(() => {
     let cancelled = false;
+    setRuntimeLoading(true);
     telemetry.query(instance.id, undefined, HISTORICAL_RUNTIME_EVENT_LIMIT)
       .then((events) => {
         if (cancelled) return;
-        const historical = [...events].reverse().filter((event) => {
-          if (!event.id) return true;
-          return rememberHandledEventID(event.id);
-        });
+        const historical = [...events].reverse();
         if (historical.length === 0) return;
         setRuntimeEvents((prev) => historical.reduce(mergeRuntimeEvent, prev));
         setThreadLiveEvents((prev) => {
@@ -527,8 +556,14 @@ export function AgentView({
           }
           return next;
         });
+        for (const event of historical) {
+          if (event.id) rememberHandledEventID(event.id);
+        }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setRuntimeLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -939,6 +974,7 @@ export function AgentView({
             activeTools={graphActiveTools}
             thinking={graphThinking}
             events={runtimeEvents}
+            runtimeLoading={runtimeLoading}
             view={view}
             onViewChange={setView}
             onThreadOpen={setSelectedThreadId}
@@ -977,6 +1013,7 @@ function AgentRuntimePanel({
   activeTools,
   thinking,
   events,
+  runtimeLoading,
   view,
   onViewChange,
   onThreadOpen,
@@ -994,6 +1031,7 @@ function AgentRuntimePanel({
   activeTools: Record<string, string>;
   thinking: Record<string, boolean>;
   events: RuntimeEventItem[];
+  runtimeLoading: boolean;
   view: RuntimeView;
   onViewChange: (v: RuntimeView) => void;
   onThreadOpen: (id: string) => void;
@@ -1251,7 +1289,7 @@ function AgentRuntimePanel({
 
       <div className="flex-1 min-h-0">
         {view === "stream" ? (
-          <RuntimeStream events={events} selectedThreadId={selectedRuntimeThread} />
+          <RuntimeStream events={events} selectedThreadId={selectedRuntimeThread} loading={runtimeLoading} />
         ) : advancedContent}
       </div>
       {instance.status === "running" && (
@@ -2136,7 +2174,14 @@ function ThreadSummary({
   const mainThread: Thread = { id: "main", directive: "", tools: [], iteration: 0, rate: "", model: "", age: "" };
   const rows = threads.some((t) => t.id === "main") ? threads : [mainThread, ...threads];
   const sorted = useMemo(
-    () => [...rows].sort((a, b) => (a.depth || 0) - (b.depth || 0) || a.id.localeCompare(b.id)).slice(0, 8),
+    () =>
+      [...rows]
+        .sort((a, b) => {
+          if (a.id === "main") return -1;
+          if (b.id === "main") return 1;
+          return (a.depth || 0) - (b.depth || 0) || a.id.localeCompare(b.id);
+        })
+        .slice(0, 8),
     [rows],
   );
   const visibleThreadIds = useMemo(() => sorted.map((t) => t.id), [sorted]);
@@ -2417,9 +2462,11 @@ function CapabilityRow({
 function RuntimeStream({
   events,
   selectedThreadId,
+  loading,
 }: {
   events: RuntimeEventItem[];
   selectedThreadId: string;
+  loading: boolean;
 }) {
   const [filter, setFilter] = useState<"all" | RuntimeEventItem["kind"]>("all");
   const [query, setQuery] = useState("");
@@ -2465,7 +2512,7 @@ function RuntimeStream({
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
         {visible.length === 0 ? (
           <div className="h-full flex items-center justify-center text-text-dim text-sm">
-            No runtime events for {selectedThreadId}.
+            {loading ? "Loading runtime events..." : `No runtime events for ${selectedThreadId}.`}
           </div>
         ) : (
           <div className="space-y-1.5">

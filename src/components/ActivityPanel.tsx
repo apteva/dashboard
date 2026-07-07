@@ -50,6 +50,7 @@ const EVENT_FADE_MS = 30_000;
 const TOOL_FADE_MS = 60_000;
 const HISTORICAL_TELEMETRY_LIMIT = 300;
 const HISTORICAL_THOUGHT_LIMIT = 20;
+const HISTORICAL_THOUGHT_MERGE_WINDOW_MS = 5 * 60 * 1000;
 
 // formatToolTime renders a tool-call timestamp. Events from today show
 // HH:MM:SS; older events show "MMM DD HH:MM" so historical replay of a
@@ -93,7 +94,12 @@ function appendHistoricalThought(
   if (!text) return thoughts;
   for (let i = thoughts.length - 1; i >= 0; i--) {
     const t = thoughts[i];
-    if (t.threadId === threadId && t.iteration === iteration && t.reasoning === reasoning) {
+    if (
+      t.threadId === threadId &&
+      t.iteration === iteration &&
+      t.reasoning === reasoning &&
+      Math.abs(time - t.time) <= HISTORICAL_THOUGHT_MERGE_WINDOW_MS
+    ) {
       const next = [...thoughts];
       next[i] = { ...t, text: t.text + text, time, streaming: false };
       return next;
@@ -119,7 +125,11 @@ function buildHistoricalThoughts(events: TelemetryEvent[]): ThoughtEntry[] {
       continue;
     }
     if (event.type === "llm.done" && data.message) {
-      const hasExisting = out.some((t) => t.threadId === threadId && t.iteration === iteration);
+      const hasExisting = out.some((t) =>
+        t.threadId === threadId &&
+        t.iteration === iteration &&
+        Math.abs(time - t.time) <= HISTORICAL_THOUGHT_MERGE_WINDOW_MS
+      );
       if (!hasExisting) {
         out = appendHistoricalThought(out, threadId, iteration, String(data.message || ""), false, time);
       }
@@ -131,7 +141,7 @@ function buildHistoricalThoughts(events: TelemetryEvent[]): ThoughtEntry[] {
 function mergeHistoricalThoughts(current: ThoughtEntry[], historical: ThoughtEntry[]): ThoughtEntry[] {
   const byKey = new Map<string, ThoughtEntry>();
   for (const t of [...historical, ...current]) {
-    byKey.set(`${t.threadId}#${t.iteration}#${t.reasoning ? "r" : "o"}`, t);
+    byKey.set(`${t.threadId}#${t.iteration}#${t.reasoning ? "r" : "o"}#${t.time}`, t);
   }
   return [...byKey.values()]
     .sort((a, b) => a.time - b.time)
