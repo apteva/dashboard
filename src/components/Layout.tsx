@@ -174,6 +174,7 @@ export function Layout() {
     { to: "/build", label: t("nav.build") },
     { to: "/agents", label: t("nav.agents") },
     { to: "/activity", label: t("nav.activity") },
+    { to: "/monitor", label: t("nav.monitor") },
     { to: "/chat", label: t("nav.chat") },
   ];
   const manageNav = [

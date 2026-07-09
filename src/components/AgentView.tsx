@@ -185,7 +185,7 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
   if (ev.type === "llm.tool_chunk") {
     const name = compactText(data.tool || data.name);
     if (!name) return null;
-    if (["pace", "done", "channels_respond", "channels_status"].includes(name)) return null;
+    if (["pace", "done", "channels_respond", "channels_send", "channels_status"].includes(name)) return null;
     return {
       ...base,
       key: toolEventKey(ev, name),
@@ -201,7 +201,7 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
   if (ev.type === "tool.call") {
     const name = compactText(data.name);
     if (!name) return null;
-    if (["pace", "done", "channels_respond", "channels_status"].includes(name)) return null;
+    if (["pace", "done", "channels_respond", "channels_send", "channels_status"].includes(name)) return null;
     const reason = compactText(data.reason, `Running ${name}`);
     const args = formatToolPayload(toolArgsValue(data));
     return {
@@ -219,7 +219,7 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
   if (ev.type === "tool.result") {
     const name = compactText(data.name || data.tool);
     if (!name) return null;
-    if (["pace", "done", "channels_respond", "channels_status"].includes(name)) return null;
+    if (["pace", "done", "channels_respond", "channels_send", "channels_status"].includes(name)) return null;
     const failed = !!data.is_error;
     return {
       ...base,
@@ -719,7 +719,7 @@ export function AgentView({
 
     // Track active tools — keep visible for 3s after completion
     // Skip noisy inline tools (send, pace, done, evolve, remember) and channels from display
-    const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_status"]);
+    const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_send", "channels_status"]);
     const toolName = String(data.name || "");
     const showTool = event.thread_id && toolName && !hiddenTools.has(toolName) && !toolName.startsWith("channels_");
 

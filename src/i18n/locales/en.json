@@ -4,6 +4,7 @@
     "build": "Build",
     "agents": "Agents",
     "activity": "Activity",
+    "monitor": "Monitor",
     "chat": "Chat",
     "apps": "Apps",
     "integrations": "Integrations",

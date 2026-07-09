@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { instances, core, subscriptions, type Agent, type MCPServerConfig, type RunMode, type Status, type SubscriptionInfo, type TelemetryEvent } from "../api";
+import { instances, core, subscriptions, instanceSkills, type Agent, type InstanceSkill, type MCPServerConfig, type RunMode, type Status, type SubscriptionInfo, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { usePageTitle } from "../hooks/usePageTitle";
@@ -33,6 +33,7 @@ interface LiveActivity {
 
 type AgentLiveStatus = { threads: number; iter: number; rate: string } & SleepLike;
 type AgentSubThread = { id: string; rate: string; iter: number; mcpNames: string[] } & SleepLike;
+type AgentsViewMode = "cards" | "list";
 
 function mcpNamesFromConfig(servers?: MCPServerConfig[]) {
   const names: string[] = [];
@@ -58,6 +59,7 @@ export function Agents() {
 
   const [list, setList] = useState<Agent[]>([]);
   const [agentSubscriptions, setAgentSubscriptions] = useState<Record<number, SubscriptionInfo[]>>({});
+  const [agentSkills, setAgentSkills] = useState<Record<number, InstanceSkill[]>>({});
   const [loaded, setLoaded] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
@@ -83,12 +85,28 @@ export function Agents() {
   // fleet row renders the same list while the agent is running or
   // stopped.
   const [mainMCPs, setMainMCPs] = useState<Record<number, string[]>>({});
+  const [viewMode, setViewMode] = useState<AgentsViewMode>(() => {
+    try {
+      return localStorage.getItem("apteva.agents.view") === "list" ? "list" : "cards";
+    } catch {
+      return "cards";
+    }
+  });
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  const setAgentsViewMode = (mode: AgentsViewMode) => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem("apteva.agents.view", mode);
+    } catch {
+      // localStorage may be unavailable; the in-memory state is enough.
+    }
+  };
 
   // Live activity strip — driven by the all-instances SSE stream below.
   // Single connection, server-side fan-out, so the page scales to many
@@ -172,6 +190,7 @@ export function Agents() {
         if (myGen !== loadGen.current) return;
         setList(items || []);
         setAgentSubscriptions(groupSubscriptionsByAgent(subs || []));
+        loadAgentSkills(items || [], myGen);
         setLoaded(true);
       })
       .catch(() => {
@@ -187,6 +206,7 @@ export function Agents() {
     loadGen.current += 1;
     setList([]);
     setAgentSubscriptions({});
+    setAgentSkills({});
     setLoaded(false);
     setLiveStatus({});
     setSubThreads({});
@@ -196,6 +216,28 @@ export function Agents() {
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  const loadAgentSkills = (agents: Agent[], gen: number) => {
+    if (agents.length === 0) {
+      setAgentSkills({});
+      return;
+    }
+    Promise.all(
+      agents.map((inst) =>
+        instanceSkills
+          .list(inst.id)
+          .then((rows) => [inst.id, rows.filter((row) => row.status !== "missing")] as const)
+          .catch(() => [inst.id, [] as InstanceSkill[]] as const),
+      ),
+    ).then((pairs) => {
+      if (gen !== loadGen.current) return;
+      const next: Record<number, InstanceSkill[]> = {};
+      for (const [id, rows] of pairs) {
+        next[id] = rows;
+      }
+      setAgentSkills(next);
+    });
+  };
 
   // Poll core status for running instances so the list shows live activity.
   // The status endpoint gives us thread count + iter + pace, which the SSE
@@ -373,7 +415,7 @@ export function Agents() {
         // care about real work, not pace/done/evolve/remember.
         const hidden = new Set([
           "pace", "done", "evolve", "remember", "send",
-          "channels_respond", "channels_status",
+          "channels_respond", "channels_send", "channels_status",
         ]);
         if (!hidden.has(name)) {
           next.activeTool = name;
@@ -493,6 +535,22 @@ export function Agents() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <div className="flex items-center border border-border rounded-lg overflow-hidden">
+            {(["cards", "list"] as AgentsViewMode[]).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setAgentsViewMode(mode)}
+                className={`px-3 py-2 text-xs capitalize transition-colors ${
+                  viewMode === mode
+                    ? "bg-accent/15 text-accent"
+                    : "text-text-muted hover:text-text hover:bg-bg-hover"
+                }`}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
           <button
             onClick={() => setShowCreate(true)}
             className="px-3 py-2 border border-border rounded-lg text-text-muted text-xs hover:text-text hover:border-text-dim transition-colors"
@@ -522,11 +580,210 @@ export function Agents() {
           </div>
         )}
 
+        {viewMode === "cards" ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+            {list.map((inst) => {
+              const live = liveStatus[inst.id];
+              const isRunning = inst.status === "running";
+              const pointingSubscriptions = agentSubscriptions[inst.id] || [];
+              const assignedSkills = agentSkills[inst.id] || [];
+              const mcpNames = mainMCPs[inst.id] || [];
+              const act = liveActivity[inst.id];
+              const actAgeMs = act ? Date.now() - act.lastEventAt : Number.POSITIVE_INFINITY;
+              const liveLabel = live
+                ? `${live.threads} threads · #${live.iter}`
+                : isRunning
+                  ? "running"
+                  : "stopped";
+              return (
+                <article
+                  key={inst.id}
+                  className="border border-border rounded-lg bg-bg-card hover:border-accent transition-colors min-h-[216px] flex flex-col overflow-hidden"
+                >
+                  <Link
+                    to={`/agents/${inst.id}`}
+                    className="block p-4 flex-1 min-w-0"
+                    onClick={(e) => {
+                      if (renamingId === inst.id) e.preventDefault();
+                    }}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
+                              isRunning ? "bg-green" : "bg-red"
+                            }`}
+                          />
+                          <span className="text-text text-sm font-bold truncate">{inst.name}</span>
+                        </div>
+                        <div className="mt-1 flex items-center gap-2 text-[10px] text-text-dim">
+                          <span>#{inst.id}</span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded uppercase tracking-wide ${
+                              inst.mode === "learn"
+                                ? "bg-green/20 text-green"
+                                : inst.mode === "cautious"
+                                  ? "bg-blue/20 text-blue"
+                                  : "bg-accent/20 text-accent"
+                            }`}
+                          >
+                            {inst.mode}
+                          </span>
+                        </div>
+                      </div>
+                      <span className="text-text-dim text-xs">→</span>
+                    </div>
+
+                    <p className="mt-3 text-xs text-text-muted line-clamp-3 min-h-[3rem]">
+                      {inst.directive || <span className="text-text-dim">No directive</span>}
+                    </p>
+
+                    <div className="mt-3 flex items-center gap-2 text-[10px] text-text-dim min-h-[18px]">
+                      <span>{liveLabel}</span>
+                      {live && (
+                        <span
+                          className={`px-1.5 py-0.5 rounded ${sleepClassName(live)}`}
+                          title={sleepTitle(live, now)}
+                        >
+                          {sleepLabel(live, { compact: true, now })}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-1 overflow-hidden min-h-5 max-h-5">
+                      {assignedSkills.length > 0 && (
+                        <>
+                          {assignedSkills.slice(0, 2).map((skill) => (
+                            <span
+                              key={`card-skill-${skill.skill_id}-${skill.slug}`}
+                              className={`inline-flex items-center h-5 max-w-[7.5rem] px-1.5 rounded text-[10px] leading-none ${
+                                skill.status === "stale"
+                                  ? "bg-yellow/10 text-yellow"
+                                  : skill.status === "orphaned"
+                                    ? "bg-red/10 text-red"
+                                    : "bg-blue/10 text-blue"
+                              }`}
+                              title={skillTitle(skill)}
+                            >
+                              <span className="truncate">{skill.name || skill.slug}</span>
+                            </span>
+                          ))}
+                          {assignedSkills.length > 2 && (
+                            <span
+                              className="inline-flex items-center h-5 px-1.5 rounded text-[10px] leading-none bg-blue/10 text-blue"
+                              title={assignedSkills.slice(2).map(skillTitle).join("\n")}
+                            >
+                              +{assignedSkills.length - 2} skills
+                            </span>
+                          )}
+                        </>
+                      )}
+                      {mcpNames.length > 0 && (
+                        <>
+                          {mcpNames.slice(0, 2).map((m) => (
+                            <span
+                              key={`card-mcp-${m}`}
+                              className="inline-flex items-center h-5 max-w-[7.5rem] px-1.5 rounded text-[10px] leading-none bg-accent/10 text-accent font-mono"
+                              title={`mcp: ${m}`}
+                            >
+                              <span className="truncate">{m}</span>
+                            </span>
+                          ))}
+                          {mcpNames.length > 2 && (
+                            <span
+                              className="inline-flex items-center h-5 px-1.5 rounded text-[10px] leading-none bg-accent/10 text-accent"
+                              title={mcpNames.slice(2).join(", ")}
+                            >
+                              +{mcpNames.length - 2} mcp
+                            </span>
+                          )}
+                        </>
+                      )}
+                      {pointingSubscriptions.length > 0 && (
+                        <>
+                          {pointingSubscriptions.slice(0, 1).map((sub) => (
+                            <span
+                              key={`card-sub-${sub.id}`}
+                              className={`inline-flex items-center h-5 max-w-[7.5rem] px-1.5 rounded text-[10px] leading-none ${
+                                sub.enabled ? "bg-green/10 text-green" : "bg-border text-text-muted"
+                              }`}
+                              title={subscriptionTitle(sub)}
+                            >
+                              <span className="truncate">{subscriptionLabel(sub)}</span>
+                            </span>
+                          ))}
+                          {pointingSubscriptions.length > 1 && (
+                            <span
+                              className="inline-flex items-center h-5 px-1.5 rounded text-[10px] leading-none bg-green/10 text-green"
+                              title={pointingSubscriptions.slice(1).map(subscriptionTitle).join("\n")}
+                            >
+                              +{pointingSubscriptions.length - 1} subs
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
+
+                    <div className="mt-3 flex items-center gap-2 text-[10px] min-h-[16px]">
+                      {isRunning && act && actAgeMs <= 120000 && (
+                        <>
+                          <span className={act.toolDone ? "text-green" : "text-accent"}>
+                            {act.activeTool ? (act.toolDone ? "✓" : "⟳") : "›"}
+                          </span>
+                          <span className="text-text-muted truncate">
+                            {act.activeToolReason || act.activeTool || act.lastThought}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </Link>
+                  <div className="border-t border-border/70 px-3 py-2 flex items-center justify-between gap-2">
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openEditModal(inst);
+                      }}
+                      className="px-2.5 py-1 border border-border rounded text-xs text-text-muted hover:text-text hover:border-text transition-colors"
+                    >
+                      Edit
+                    </button>
+                    {isRunning ? (
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleStop(inst.id);
+                        }}
+                        className="px-2.5 py-1 border border-border rounded text-xs text-text-muted hover:text-red hover:border-red transition-colors"
+                      >
+                        Stop
+                      </button>
+                    ) : (
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleStart(inst.id);
+                        }}
+                        className="px-2.5 py-1 border border-accent rounded text-xs text-accent hover:bg-accent hover:text-bg transition-colors"
+                      >
+                        Start
+                      </button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
         <div className="space-y-2">
           {list.map((inst) => {
             const live = liveStatus[inst.id];
             const isRunning = inst.status === "running";
             const pointingSubscriptions = agentSubscriptions[inst.id] || [];
+            const assignedSkills = agentSkills[inst.id] || [];
             return (
               <div
                 key={inst.id}
@@ -696,6 +953,37 @@ export function Agents() {
                               title={pointingSubscriptions.slice(3).map(subscriptionTitle).join("\n")}
                             >
                               +{pointingSubscriptions.length - 3} more
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {assignedSkills.length > 0 && (
+                        <div className="flex items-center flex-wrap gap-1 mt-1.5">
+                          <span className="text-[10px] text-text-dim">skills:</span>
+                          {assignedSkills.slice(0, 3).map((skill) => (
+                            <span
+                              key={`${skill.skill_id}-${skill.slug}`}
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] max-w-[13rem] ${
+                                skill.status === "stale"
+                                  ? "bg-yellow/10 text-yellow"
+                                  : skill.status === "orphaned"
+                                    ? "bg-red/10 text-red"
+                                    : "bg-blue/10 text-blue"
+                              }`}
+                              title={skillTitle(skill)}
+                            >
+                              <span className="truncate">{skill.name || skill.slug}</span>
+                              {skill.status !== "synced" && (
+                                <span className="opacity-75">{skill.status}</span>
+                              )}
+                            </span>
+                          ))}
+                          {assignedSkills.length > 3 && (
+                            <span
+                              className="text-[10px] text-text-dim px-1.5 py-0.5"
+                              title={assignedSkills.slice(3).map(skillTitle).join("\n")}
+                            >
+                              +{assignedSkills.length - 3} more
                             </span>
                           )}
                         </div>
@@ -871,6 +1159,7 @@ export function Agents() {
             );
           })}
         </div>
+        )}
       </div>
 
       {/* Quick-edit modal — name + directive only. Lives at page root
@@ -1074,6 +1363,20 @@ function subscriptionTitle(sub: SubscriptionInfo): string {
     sub.thread_id ? `thread: ${sub.thread_id}` : "thread: main",
     (sub.events || []).length > 0 ? `events: ${(sub.events || []).join(", ")}` : "",
     sub.slug ? `slug: ${sub.slug}` : "",
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+
+function skillTitle(skill: InstanceSkill): string {
+  const parts = [
+    skill.name || skill.slug,
+    `status: ${skill.status}`,
+    skill.source ? `source: ${skill.source}` : "",
+    skill.app_name ? `app: ${skill.app_name}` : "",
+    skill.memory_id ? `memory: ${skill.memory_id}` : "",
+    skill.pushed_at ? `pushed: ${new Date(skill.pushed_at).toLocaleString()}` : "",
+    skill.description || "",
+    skill.slug ? `slug: ${skill.slug}` : "",
   ].filter(Boolean);
   return parts.join("\n");
 }

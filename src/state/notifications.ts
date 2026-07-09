@@ -24,7 +24,9 @@ export interface Notification {
    * exactly this value (not MAX, not infinity). */
   latestId: number;
   /** Optional click target. Layout-agnostic — consumers route on it. */
-  ref?: { kind: "instance-chat"; instanceId: number };
+  ref?:
+    | { kind: "instance-chat"; instanceId: number }
+    | { kind: "inbox"; messageId: number; inboxKind: "approval" | "report" | "alert" };
 }
 
 type Listener = () => void;

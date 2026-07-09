@@ -158,7 +158,7 @@ function mergeHistoricalThoughts(current: ThoughtEntry[], historical: ThoughtEnt
 // Tools we suppress from the Tool Calls list. `pace` and `done` are
 // pure agent housekeeping (sleep tuning, thread terminator) that
 // would otherwise dominate the rail without telling the operator
-// anything. `channels_respond` and `channels_status` are how the
+// anything. `channels_respond`, `channels_send`, and `channels_status` are how the
 // agent puts text into chat — the messages already render in the
 // chat panel, so showing the tool call too is redundant noise.
 //
@@ -170,7 +170,7 @@ function mergeHistoricalThoughts(current: ThoughtEntry[], historical: ThoughtEnt
 // can't tell who initiated the conversation.
 const hiddenTools = new Set([
   "pace", "done",
-  "channels_respond", "channels_status",
+  "channels_respond", "channels_send", "channels_status",
 ]);
 
 // fmtK compacts token counts for the context gauge. Mirrors the helper

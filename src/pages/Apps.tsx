@@ -23,6 +23,7 @@ import { AppDetailPanel } from "../components/apps/AppDetailPanel";
 import { AppDiscoverySelect } from "../components/apps/AppDiscoverySelect";
 
 type Tab = "installed" | "marketplace";
+const MARKETPLACE_PAGE_SIZE = 24;
 
 // AppIcon — renders the manifest icon, falls back to a single-letter
 // avatar when the URL is missing or 404s. Both the marketplace card
@@ -59,6 +60,12 @@ export function Apps() {
   usePageTitle(["Apps", tab === "marketplace" ? "Marketplace" : "Installed"]);
   const [rows, setRows] = useState<AppRow[]>([]);
   const [marketplace, setMarketplace] = useState<MarketplaceEntry[]>([]);
+  const [marketplaceTotal, setMarketplaceTotal] = useState(0);
+  const [marketplaceCategories, setMarketplaceCategories] = useState<Record<string, number>>({});
+  const [marketplaceSearch, setMarketplaceSearch] = useState("");
+  const [marketplaceQuery, setMarketplaceQuery] = useState("");
+  const [marketplaceCategory, setMarketplaceCategory] = useState<string>("all");
+  const [marketplacePage, setMarketplacePage] = useState(1);
   const [registryURL, setRegistryURL] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -94,14 +101,29 @@ export function Apps() {
   const refreshMarketplace = () => {
     setLoading(true);
     apps
-      .marketplace(currentProject?.id)
+      .marketplace(currentProject?.id, undefined, {
+        query: marketplaceQuery,
+        category: marketplaceCategory,
+        page: marketplacePage,
+        pageSize: MARKETPLACE_PAGE_SIZE,
+      })
       .then((r) => {
         setMarketplace(r.apps);
+        setMarketplaceTotal(r.total ?? r.apps.length);
+        setMarketplaceCategories(r.categories || {});
         setRegistryURL(r.registry_url);
       })
       .catch((e) => setError(e.message || "failed"))
       .finally(() => setLoading(false));
   };
+
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setMarketplaceQuery(marketplaceSearch.trim());
+      setMarketplacePage(1);
+    }, 250);
+    return () => window.clearTimeout(id);
+  }, [marketplaceSearch]);
 
   // Initial load + reload when tab or project changes. The cancelled
   // flag prevents the older fetch's response from overwriting state
@@ -123,9 +145,16 @@ export function Apps() {
             return next;
           });
         } else {
-          const r = await apps.marketplace(currentProject?.id);
+          const r = await apps.marketplace(currentProject?.id, undefined, {
+            query: marketplaceQuery,
+            category: marketplaceCategory,
+            page: marketplacePage,
+            pageSize: MARKETPLACE_PAGE_SIZE,
+          });
           if (cancelled) return;
           setMarketplace(r.apps);
+          setMarketplaceTotal(r.total ?? r.apps.length);
+          setMarketplaceCategories(r.categories || {});
           setRegistryURL(r.registry_url);
         }
       } catch (e: any) {
@@ -137,7 +166,7 @@ export function Apps() {
     };
     run();
     return () => { cancelled = true; };
-  }, [tab, currentProject?.id]);
+  }, [tab, currentProject?.id, marketplaceQuery, marketplaceCategory, marketplacePage]);
 
   // While any install is mid-build, poll every second so the dashboard
   // shows the live phase string ("Cloning…", "Building…", "Starting…")
@@ -247,8 +276,20 @@ export function Apps() {
       ) : (
         <MarketplaceView
           entries={marketplace}
+          total={marketplaceTotal}
+          page={marketplacePage}
+          pageSize={MARKETPLACE_PAGE_SIZE}
+          query={marketplaceSearch}
+          category={marketplaceCategory}
+          categories={marketplaceCategories}
           registryURL={registryURL}
           loading={loading}
+          onQueryChange={setMarketplaceSearch}
+          onCategoryChange={(next) => {
+            setMarketplaceCategory(next);
+            setMarketplacePage(1);
+          }}
+          onPageChange={setMarketplacePage}
           onInstall={(e) => setInstallModal({ manifestUrl: e.manifest_url })}
           onOpenDetails={(e) => setDetailEntry(e)}
         />
@@ -315,19 +356,43 @@ export function Apps() {
 }
 
 function MarketplaceView({
-  entries, registryURL, loading, onInstall, onOpenDetails,
+  entries,
+  total,
+  page,
+  pageSize,
+  query,
+  category,
+  categories: categoryCounts,
+  registryURL,
+  loading,
+  onQueryChange,
+  onCategoryChange,
+  onPageChange,
+  onInstall,
+  onOpenDetails,
 }: {
   entries: MarketplaceEntry[];
+  total: number;
+  page: number;
+  pageSize: number;
+  query: string;
+  category: string;
+  categories: Record<string, number>;
   registryURL: string;
   loading: boolean;
+  onQueryChange: (query: string) => void;
+  onCategoryChange: (category: string) => void;
+  onPageChange: (page: number) => void;
   onInstall: (e: MarketplaceEntry) => void;
   onOpenDetails: (e: MarketplaceEntry) => void;
 }) {
-  const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<string>("all");
+  const hasFilters = query.trim() !== "" || category !== "all";
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const pageStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const pageEnd = Math.min(total, (page - 1) * pageSize + entries.length);
 
-  if (loading) return <div className="text-text-dim text-sm">Loading marketplace…</div>;
-  if (entries.length === 0) {
+  if (loading && entries.length === 0) return <div className="text-text-dim text-sm">Loading marketplace…</div>;
+  if (!loading && total === 0 && !hasFilters) {
     return (
       <div className="border border-border rounded-lg p-8 text-center max-w-2xl mx-auto">
         <p className="text-text-muted text-sm">Marketplace is empty.</p>
@@ -336,29 +401,9 @@ function MarketplaceView({
     );
   }
 
-  // Distinct categories for the chip row, ordered by population.
-  const categoryCounts: Record<string, number> = {};
-  for (const e of entries) {
-    const k = e.category || "other";
-    categoryCounts[k] = (categoryCounts[k] || 0) + 1;
-  }
   const categories = Object.keys(categoryCounts).sort(
     (a, b) => categoryCounts[b] - categoryCounts[a],
   );
-
-  // Apply text + category filter. Search hits name, display_name,
-  // description, and tags so "video" finds Media even though that
-  // word isn't in the name.
-  const q = query.trim().toLowerCase();
-  const filtered = entries.filter((e) => {
-    if (category !== "all" && (e.category || "other") !== category) return false;
-    if (!q) return true;
-    const hay = [
-      e.name, e.display_name, e.description,
-      ...(e.tags || []),
-    ].join(" ").toLowerCase();
-    return hay.includes(q);
-  });
 
   return (
     <div className="space-y-5">
@@ -367,16 +412,16 @@ function MarketplaceView({
         <input
           type="search"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => onQueryChange(e.target.value)}
           placeholder="Search apps…"
           className="bg-bg-input border border-border rounded px-3 py-1.5 text-sm flex-1 min-w-[200px] max-w-md"
         />
         <div className="flex flex-wrap gap-1.5">
           <CategoryChip
             label="all"
-            count={entries.length}
+            count={Object.values(categoryCounts).reduce((sum, n) => sum + n, 0)}
             active={category === "all"}
-            onClick={() => setCategory("all")}
+            onClick={() => onCategoryChange("all")}
           />
           {categories.map((c) => (
             <CategoryChip
@@ -384,20 +429,20 @@ function MarketplaceView({
               label={c}
               count={categoryCounts[c]}
               active={category === c}
-              onClick={() => setCategory(c)}
+              onClick={() => onCategoryChange(c)}
             />
           ))}
         </div>
       </div>
 
       {/* Result grid */}
-      {filtered.length === 0 ? (
+      {entries.length === 0 ? (
         <div className="text-text-muted text-sm text-center py-12">
           No apps match. Try a different search or category.
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
-          {filtered.map((e) => (
+          {entries.map((e) => (
             <MarketplaceCard
               key={e.name}
               entry={e}
@@ -408,11 +453,37 @@ function MarketplaceView({
         </div>
       )}
 
-      <p className="text-text-dim text-[10px]">
-        Registry: <span className="font-mono">{registryURL}</span>
-        {" · "}
-        {filtered.length} of {entries.length} apps
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-text-dim text-[10px]">
+          Registry: <span className="font-mono">{registryURL}</span>
+          {" · "}
+          {pageStart}-{pageEnd} of {total} apps
+          {loading ? " · refreshing…" : ""}
+        </p>
+        {totalPages > 1 && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onPageChange(Math.max(1, page - 1))}
+              disabled={page <= 1 || loading}
+              className="px-2.5 py-1 text-xs border border-border rounded text-text-muted hover:text-text disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Previous
+            </button>
+            <span className="text-text-dim text-xs">
+              Page {page} / {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+              disabled={page >= totalPages || loading}
+              className="px-2.5 py-1 text-xs border border-border rounded text-text-muted hover:text-text disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Next
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

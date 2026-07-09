@@ -28,6 +28,7 @@ import {
   useState,
 } from "react";
 import { chat, type ChatComponent, type ChatMessageRow } from "../../api";
+import { Modal } from "../Modal";
 
 // ─── manifest-side types ────────────────────────────────────────────
 
@@ -138,6 +139,12 @@ export function ChatComponentMount({
         onActionComplete={onActionComplete}
       />
     );
+  }
+  if (comp.app === "channel-chat" && comp.name === "report-card") {
+    return <ReportCard props={comp.props ?? {}} />;
+  }
+  if (comp.app === "channel-chat" && comp.name === "alert-card") {
+    return <AlertCard props={comp.props ?? {}} />;
   }
   const app = apps.find((a) => a.name === comp.app);
   if (!app) {
@@ -325,6 +332,140 @@ function ApprovalCard({
         <div className="mt-3 text-[11px] text-text-dim">
           Decision: {String(decision.action_id || status)}
         </div>
+      )}
+    </div>
+  );
+}
+
+function ReportCard({ props }: { props: Record<string, unknown> }) {
+  const [open, setOpen] = useState(false);
+  const title = String(props.title || "Report");
+  const summary = String(props.summary || "");
+  const period = String(props.period || "");
+  const rawSections = Array.isArray(props.sections) ? props.sections : [];
+  const sections = rawSections
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const obj = item as Record<string, unknown>;
+      const sectionTitle = String(obj.title || "").trim();
+      const body = String(obj.body || "").trim();
+      if (!sectionTitle && !body) return null;
+      return { title: sectionTitle, body };
+    })
+    .filter(Boolean) as Array<{ title: string; body: string }>;
+  const tags = (Array.isArray(props.tags) ? props.tags : [])
+    .map((tag) => String(tag || "").trim())
+    .filter(Boolean);
+
+  return (
+    <>
+      <div className="rounded-lg border border-accent/25 bg-bg-card/90 p-3 max-w-2xl">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-wide text-accent font-bold">Report</div>
+            <h3 className="text-sm text-text font-bold mt-0.5 break-words">{title}</h3>
+            {period && <div className="mt-1 text-[11px] text-text-dim">{period}</div>}
+          </div>
+        </div>
+        {summary && (
+          <p className="mt-2 text-xs text-text-muted leading-relaxed whitespace-pre-wrap break-words">
+            {summary}
+          </p>
+        )}
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="mt-3 text-[11px] text-accent hover:text-accent-hover font-bold"
+        >
+          Open report
+        </button>
+      </div>
+
+      <Modal open={open} onClose={() => setOpen(false)} width="max-w-3xl">
+        <div className="px-5 py-4 border-b border-border flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-wide text-accent font-bold">Report</div>
+            <h2 className="mt-1 text-lg font-bold text-text break-words">{title}</h2>
+            {period && <div className="mt-1 text-xs text-text-dim">{period}</div>}
+          </div>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="shrink-0 text-text-muted hover:text-text border border-border rounded px-2 py-1 text-xs"
+          >
+            Close
+          </button>
+        </div>
+        <div className="overflow-auto px-5 py-4 space-y-4">
+          {summary && (
+            <section>
+              <h3 className="text-[11px] uppercase tracking-wide text-text-dim mb-1">Summary</h3>
+              <p className="text-sm text-text-muted leading-relaxed whitespace-pre-wrap break-words">
+                {summary}
+              </p>
+            </section>
+          )}
+          {sections.length > 0 && (
+            <div className="space-y-4">
+              {sections.map((section, index) => (
+                <section key={`${section.title || "section"}-${index}`}>
+                  {section.title && (
+                    <h3 className="text-[11px] uppercase tracking-wide text-text-dim mb-1">
+                      {section.title}
+                    </h3>
+                  )}
+                  {section.body && (
+                    <p className="text-sm text-text-muted leading-relaxed whitespace-pre-wrap break-words">
+                      {section.body}
+                    </p>
+                  )}
+                </section>
+              ))}
+            </div>
+          )}
+          {tags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {tags.map((tag) => (
+                <span key={tag} className="rounded border border-border px-1.5 py-0.5 text-[10px] text-text-dim">
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </Modal>
+    </>
+  );
+}
+
+function AlertCard({ props }: { props: Record<string, unknown> }) {
+  const title = String(props.title || "Alert");
+  const body = String(props.body || "");
+  const severity = String(props.severity || "info").toLowerCase();
+  const tone =
+    severity === "critical" || severity === "error"
+      ? "border-red/35 bg-red/10 text-red"
+      : severity === "warning" || severity === "warn"
+        ? "border-yellow/35 bg-yellow/10 text-yellow"
+        : "border-accent/25 bg-bg-card/90 text-accent";
+
+  return (
+    <div className={`rounded-lg border p-3 max-w-2xl ${tone}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-wide font-bold">
+            Alert
+          </div>
+          <h3 className="text-sm text-text font-bold mt-0.5 break-words">{title}</h3>
+        </div>
+        <span className="shrink-0 rounded-full border border-current/30 px-2 py-0.5 text-[10px] uppercase tracking-wide">
+          {severity}
+        </span>
+      </div>
+      {body && (
+        <p className="mt-2 text-xs text-text-muted leading-relaxed whitespace-pre-wrap break-words">
+          {body}
+        </p>
       )}
     </div>
   );

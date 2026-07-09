@@ -8,7 +8,14 @@
 // Single instance per tab, started by Layout once the user is logged
 // in. Returns a cleanup function so a logout can tear it down.
 
-import { chat, type ChatMessageRow, type UnreadSummaryRow } from "../api";
+import {
+  chat,
+  type AlertMessageRow,
+  type ApprovalMessageRow,
+  type ChatMessageRow,
+  type ReportMessageRow,
+  type UnreadSummaryRow,
+} from "../api";
 import { notifications, type Notification } from "./notifications";
 
 const WATERMARK_KEY = (chatId: string) => `apteva.chat.lastSeen.${chatId}`;
@@ -98,6 +105,84 @@ function titleFor(instanceName: string): string {
   return instanceName || "Agent";
 }
 
+function hasInboxComponent(msg: ChatMessageRow): boolean {
+  return (msg.components || []).some(
+    (c) =>
+      c.app === "channel-chat" &&
+      (c.name === "approval-card" || c.name === "report-card" || c.name === "alert-card"),
+  );
+}
+
+function dispatchInboxMessage(msg: ChatMessageRow): void {
+  window.dispatchEvent(new CustomEvent("apteva.inboxMessage", { detail: msg }));
+}
+
+function inboxComponent(msg: ChatMessageRow): { kind: "approval" | "report" | "alert"; props: Record<string, unknown> } | null {
+  for (const c of msg.components || []) {
+    if (c.app !== "channel-chat") continue;
+    if (c.name === "approval-card") return { kind: "approval", props: c.props || {} };
+    if (c.name === "report-card") return { kind: "report", props: c.props || {} };
+    if (c.name === "alert-card") return { kind: "alert", props: c.props || {} };
+  }
+  return null;
+}
+
+function componentDismissed(props: Record<string, unknown>): boolean {
+  return props.dismissed === true || (typeof props.dismissed_at === "string" && props.dismissed_at.trim() !== "");
+}
+
+function upsertInboxNotificationFromMessage(msg: ChatMessageRow): void {
+  const comp = inboxComponent(msg);
+  if (!comp) return;
+  const id = `inbox:${msg.id}`;
+  if (componentDismissed(comp.props)) {
+    notifications.remove(id);
+    return;
+  }
+  const title = String(comp.props.title || titleForInboxKind(comp.kind));
+  const preview = String(comp.props.summary || comp.props.body || msg.content || "");
+  notifications.upsert({
+    id,
+    source: "inbox",
+    title,
+    preview,
+    ts: msg.created_at,
+    count: 1,
+    unread: true,
+    latestId: msg.id,
+    ref: { kind: "inbox", messageId: msg.id, inboxKind: comp.kind },
+  });
+}
+
+function titleForInboxKind(kind: "approval" | "report" | "alert"): string {
+  if (kind === "approval") return "Approval request";
+  if (kind === "report") return "Report";
+  return "Alert";
+}
+
+function inboxNotificationFromRow(
+  kind: "approval" | "report" | "alert",
+  row: ApprovalMessageRow | ReportMessageRow | AlertMessageRow,
+): Notification {
+  const preview =
+    kind === "report"
+      ? (row as ReportMessageRow).summary
+      : kind === "approval"
+        ? (row as ApprovalMessageRow).body
+        : (row as AlertMessageRow).body;
+  return {
+    id: `inbox:${row.message.id}`,
+    source: "inbox",
+    title: row.title || titleForInboxKind(kind),
+    preview,
+    ts: row.message.created_at,
+    count: 1,
+    unread: true,
+    latestId: row.message.id,
+    ref: { kind: "inbox", messageId: row.message.id, inboxKind: kind },
+  };
+}
+
 /** Build a Notification from one chat row + its unread count. */
 function buildNotification(
   chatId: string,
@@ -136,14 +221,11 @@ function maybeDesktopNotify(n: Notification): void {
     });
     native.onclick = () => {
       window.focus();
-      const ref = n.ref;
-      if (ref?.kind === "instance-chat") {
-        // Layout's NotificationsTray owns routing; here we just hint
-        // via a custom event the tray can listen to.
-        window.dispatchEvent(
-          new CustomEvent("apteva.openNotification", { detail: n }),
-        );
-      }
+      // Layout's NotificationsTray owns routing; here we just hint
+      // via a custom event the tray can listen to.
+      window.dispatchEvent(
+        new CustomEvent("apteva.openNotification", { detail: n }),
+      );
       native.close();
     };
   } catch {
@@ -206,6 +288,27 @@ async function seed(): Promise<void> {
   }
 }
 
+async function seedInbox(): Promise<void> {
+  try {
+    const [approvals, reports, alerts] = await Promise.all([
+      chat.approvalMessages(undefined, "pending", 20),
+      chat.reportMessages(undefined, 20),
+      chat.alertMessages(undefined, 20),
+    ]);
+    for (const row of approvals) {
+      notifications.upsert(inboxNotificationFromRow("approval", row));
+    }
+    for (const row of reports) {
+      notifications.upsert(inboxNotificationFromRow("report", row));
+    }
+    for (const row of alerts) {
+      notifications.upsert(inboxNotificationFromRow("alert", row));
+    }
+  } catch {
+    // Inbox endpoints are best-effort for the global tray.
+  }
+}
+
 /** Mark every chat-source notification read at once. Used by the tray's
  * "mark all read" button. Advances each chat's watermark to its current
  * known latest message id and clears the entries. */
@@ -221,6 +324,13 @@ export function markAllChatsSeen(): void {
 
 function ingest(msg: ChatMessageRow): void {
   if (msg.role === "system") return;
+  if (hasInboxComponent(msg)) {
+    dispatchInboxMessage(msg);
+    upsertInboxNotificationFromMessage(msg);
+    const notif = notifications.getSnapshot().find((n) => n.id === `inbox:${msg.id}`);
+    if (notif) maybeDesktopNotify(notif);
+    return;
+  }
   const meta = state.chatToInstance.get(msg.chat_id);
   if (!meta) {
     // Chat we don't know yet (e.g. created mid-session) — refresh
@@ -306,6 +416,7 @@ function startStorageSync(): () => void {
 /** Boot the chat-notifications source. Returns cleanup. */
 export function startChatNotifications(): () => void {
   void seed();
+  void seedInbox();
   const stopSSE = startSSE();
   const stopStorage = startStorageSync();
   return () => {

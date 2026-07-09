@@ -64,7 +64,7 @@ export function FleetCards({ threads, subscribe, activeTools, thoughts }: FleetC
     return subscribe((event) => {
       const data = event.data || {};
 
-    const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_status"]);
+    const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_send", "channels_status"]);
     const toolName = String(data.name || "");
     const showTool = event.thread_id && toolName && !hiddenTools.has(toolName) && !toolName.startsWith("channels_");
 

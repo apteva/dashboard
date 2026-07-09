@@ -2914,7 +2914,7 @@ function appForTool(tool: string, appNames: string[]): string | null {
   return appNames.find((name) => tool === name || tool.startsWith(`${name}_`) || tool.startsWith(`${name}.`)) || null;
 }
 
-const hiddenSystemTools = new Set(["pace", "done", "channels_respond", "channels_status"]);
+const hiddenSystemTools = new Set(["pace", "done", "channels_respond", "channels_send", "channels_status"]);
 
 function isHiddenSystemTool(tool: string): boolean {
   const normalized = String(tool || "").trim().toLowerCase();

@@ -22,7 +22,7 @@ import { ActivityFeed } from "../components/dashboard/ActivityFeed";
 import { ProjectChat } from "../components/dashboard/ProjectChat";
 import { ToolsUsageCard } from "../components/dashboard/ToolsUsageCard";
 import { CostCard } from "../components/dashboard/CostCard";
-import { ApprovalsInbox } from "../components/dashboard/ApprovalsInbox";
+import { AptevaInbox } from "../components/dashboard/AptevaInbox";
 import { usePageTitle } from "../hooks/usePageTitle";
 
 export function Dashboard() {
@@ -44,7 +44,7 @@ export function Dashboard() {
 
         <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,2.5fr)_minmax(320px,1.4fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4">
           <ProjectChat />
-          <ApprovalsInbox />
+          <AptevaInbox />
           <ToolsUsageCard />
           <CostCard />
         </div>

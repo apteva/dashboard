@@ -61,7 +61,7 @@ type AgentConfigSnapshot = {
   threads?: Thread[];
 };
 
-const hiddenSystemTools = new Set(["pace", "done", "channels_respond", "channels_status"]);
+const hiddenSystemTools = new Set(["pace", "done", "channels_respond", "channels_send", "channels_status"]);
 
 export function Activity() {
   usePageTitle("Activity");
@@ -615,17 +615,17 @@ function buildAgentActions(events: TelemetryEvent[], appBusEvents: AppBusEvent[]
 
     if (event.type === "llm.tool_chunk") {
       const tool = String(data.tool || data.name || "");
-      if (isHiddenActionTool(tool) && tool !== "channels_respond") return;
+      if (isHiddenActionTool(tool) && tool !== "channels_respond" && tool !== "channels_send") return;
       const callID = actionCallID(data, event);
       const key = `tool:${agentId}:${threadId}:${callID}`;
       const chunk = String(data.chunk || data.delta || data.text || "");
-      if (tool === "channels_respond") {
+      if (tool === "channels_respond" || tool === "channels_send") {
         const replyText = extractTextFieldFromJSONish(chunk);
         put(key, {
           agentId, agentName, threadId, time,
           kind: "reply", status: "running",
           title: "Drafting chat reply",
-          detail: replyText ? shortText(replyText, 240) : "channels_respond",
+          detail: replyText ? shortText(replyText, 240) : tool,
           args: chunk ? formatActionPayload(chunk, 4000) : undefined,
         });
         return;
@@ -642,13 +642,13 @@ function buildAgentActions(events: TelemetryEvent[], appBusEvents: AppBusEvent[]
 
     if (event.type === "tool.call") {
       const tool = String(data.name || data.tool || "");
-      if (isHiddenActionTool(tool) && tool !== "channels_respond") return;
+      if (isHiddenActionTool(tool) && tool !== "channels_respond" && tool !== "channels_send") return;
       const callID = actionCallID(data, event);
       const key = `tool:${agentId}:${threadId}:${callID}`;
       const argsValue = actionArgsValue(data);
       const args = formatActionPayload(argsValue, 5000);
       const reason = compactActionText(data.reason || "");
-      if (tool === "channels_respond") {
+      if (tool === "channels_respond" || tool === "channels_send") {
         const replyText = respondText(argsValue);
         put(key, {
           agentId, agentName, threadId, time,
@@ -673,16 +673,16 @@ function buildAgentActions(events: TelemetryEvent[], appBusEvents: AppBusEvent[]
 
     if (event.type === "tool.result") {
       const tool = String(data.name || data.tool || "");
-      if (isHiddenActionTool(tool) && tool !== "channels_respond") return;
+      if (isHiddenActionTool(tool) && tool !== "channels_respond" && tool !== "channels_send") return;
       const callID = actionCallID(data, event);
       const key = `tool:${agentId}:${threadId}:${callID}`;
       const failed = !!data.is_error || data.success === false;
       const result = formatActionPayload(actionResultValue(data), 5000);
       put(key, {
         agentId, agentName, threadId, time,
-        kind: tool === "channels_respond" ? "reply" : "tool",
+        kind: tool === "channels_respond" || tool === "channels_send" ? "reply" : "tool",
         status: failed ? "error" : "success",
-        title: tool === "channels_respond" ? "Chat reply delivered" : `${shortToolName(tool || "tool")} ${failed ? "failed" : "completed"}`,
+        title: tool === "channels_respond" || tool === "channels_send" ? "Chat reply delivered" : `${shortToolName(tool || "tool")} ${failed ? "failed" : "completed"}`,
         detail: failed ? compactActionText(data.error || data.message || "failed") : tool || "completed",
         result,
         durationMs: typeof data.duration_ms === "number" ? data.duration_ms : undefined,

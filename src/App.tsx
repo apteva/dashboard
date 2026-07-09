@@ -19,6 +19,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { Build } from "./pages/Build";
 import { Chat } from "./pages/Chat";
 import { Activity } from "./pages/Activity";
+import { Monitor } from "./pages/Monitor";
 import { Agents } from "./pages/Agents";
 import { Agent } from "./pages/Agent";
 import { AgentNew } from "./pages/AgentNew";
@@ -90,6 +91,7 @@ export default function App() {
             <Route path="/build" element={<Build />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/activity" element={<Activity />} />
+            <Route path="/monitor" element={<Monitor />} />
             <Route path="/agents/new" element={<AgentNew />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/chat/:chatId" element={<Chat />} />

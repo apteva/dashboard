@@ -84,10 +84,10 @@ interface LiveTool {
 // Tools we hide from the chat timeline. Pure agent housekeeping:
 //   pace — sleep-rate adjustments fire constantly
 //   done — thread terminator
-//   channels_respond/channels_status — ARE visible chat messages;
+//   channels_respond/channels_send/channels_status — ARE visible chat messages;
 //     surfacing them as separate tool calls is pure noise (the user
 //     already sees the message they produced as assistant turns).
-const HIDDEN_TOOLS = new Set(["pace", "done", "channels_respond", "channels_status", "channels_request_approval"]);
+const HIDDEN_TOOLS = new Set(["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_request_approval"]);
 
 // `send` is useful when it explains meaningful delegation, but noisy
 // when it is only an internal completion/report-back hop.
@@ -468,7 +468,7 @@ export function ChatPanel({
     return subscribe((ev) => {
       if (ev.type === "llm.tool_chunk") {
         const name = String(ev.data?.tool || "");
-        if (name === "channels_respond" && isActiveConversationThread(ev.thread_id, chatId)) {
+        if ((name === "channels_respond" || name === "channels_send") && isActiveConversationThread(ev.thread_id, chatId)) {
           clearQuietFollowupTurn();
           return;
         }
@@ -526,7 +526,7 @@ export function ChatPanel({
         const name = String(ev.data?.name || ev.data?.tool || "");
         const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
         if (
-          name === "channels_respond" &&
+          (name === "channels_respond" || name === "channels_send") &&
           !ev.data?.is_error &&
           isActiveConversationThread(ev.thread_id, chatId)
         ) {

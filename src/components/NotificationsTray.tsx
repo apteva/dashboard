@@ -9,8 +9,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { chat } from "../api";
 import { useNotifications, type Notification } from "../state/notifications";
-import { markChatSeen, markAllChatsSeen, setDesktopNotificationsEnabled, desktopNotificationsEnabled } from "../state/chatNotifications";
+import { markChatSeen, setDesktopNotificationsEnabled, desktopNotificationsEnabled } from "../state/chatNotifications";
 import { setUnreadTitleCount } from "../state/documentTitle";
 
 function formatRelative(iso: string): string {
@@ -29,11 +30,14 @@ function formatRelative(iso: string): string {
 
 function sourceLabel(n: Notification): string {
   if (n.source === "chat") return "Chat";
+  if (n.source === "inbox") return "Inbox";
   return n.source;
 }
 
 export function NotificationsTray() {
-  const { items, unreadCount, remove } = useNotifications();
+  const { items, remove } = useNotifications();
+  const inboxItems = items.filter((n) => n.source === "inbox");
+  const inboxUnreadCount = inboxItems.reduce((n, it) => n + (it.unread ? 1 : 0), 0);
   const [open, setOpen] = useState(false);
   const [desktopOn, setDesktopOn] = useState(desktopNotificationsEnabled());
   const ref = useRef<HTMLDivElement>(null);
@@ -42,9 +46,9 @@ export function NotificationsTray() {
   // Reflect unread count into the browser tab title so it composes with
   // the current route title, e.g. "(3) Chat: Computer - Apteva".
   useEffect(() => {
-    setUnreadTitleCount(unreadCount);
+    setUnreadTitleCount(inboxUnreadCount);
     return () => setUnreadTitleCount(0);
-  }, [unreadCount]);
+  }, [inboxUnreadCount]);
 
   // Click-outside to close the dropdown.
   useEffect(() => {
@@ -73,8 +77,28 @@ export function NotificationsTray() {
       navigate(`/agents/${n.ref.instanceId}`);
       const chatId = n.id.startsWith("chat:") ? n.id.slice(5) : "";
       if (chatId && n.latestId) markChatSeen(chatId, n.latestId);
+    } else if (n.ref?.kind === "inbox") {
+      navigate("/");
     }
     setOpen(false);
+  }
+
+  function dismissNotification(n: Notification): void {
+    remove(n.id);
+    if (n.ref?.kind === "inbox") {
+      void chat.messageDismiss(n.ref.messageId).catch(() => {});
+      window.dispatchEvent(new CustomEvent("apteva.inboxMessage"));
+      return;
+    }
+    if (n.id.startsWith("chat:") && n.latestId) {
+      markChatSeen(n.id.slice(5), n.latestId);
+    }
+  }
+
+  function dismissAllInbox(): void {
+    for (const n of inboxItems) {
+      dismissNotification(n);
+    }
   }
 
   async function toggleDesktop() {
@@ -88,13 +112,13 @@ export function NotificationsTray() {
       <button
         onClick={() => setOpen((v) => !v)}
         className="relative p-2 rounded hover:bg-bg-hover text-text-muted hover:text-text transition-colors"
-        title={unreadCount ? `${unreadCount} unread` : "Notifications"}
+        title={inboxUnreadCount ? `${inboxUnreadCount} inbox items` : "Notifications"}
         aria-label="Notifications"
       >
         <BellIcon />
-        {unreadCount > 0 && (
+        {inboxUnreadCount > 0 && (
           <span className="absolute top-1 right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-red text-white text-[10px] font-bold flex items-center justify-center">
-            {unreadCount > 99 ? "99+" : unreadCount}
+            {inboxUnreadCount > 99 ? "99+" : inboxUnreadCount}
           </span>
         )}
       </button>
@@ -103,23 +127,23 @@ export function NotificationsTray() {
         <div className="absolute right-0 mt-2 w-[min(360px,calc(100vw-1rem))] max-h-[480px] overflow-hidden rounded-lg border border-border bg-bg-card shadow-xl z-50 flex flex-col">
           <div className="px-4 py-3 border-b border-border flex items-center justify-between">
             <span className="text-text font-medium text-sm">Notifications</span>
-            {items.length > 0 && (
+            {inboxItems.length > 0 && (
               <button
-                onClick={() => markAllChatsSeen()}
+                onClick={dismissAllInbox}
                 className="text-text-muted hover:text-text text-xs"
               >
-                mark all read
+                dismiss all
               </button>
             )}
           </div>
 
           <div className="flex-1 overflow-y-auto">
-            {items.length === 0 ? (
+            {inboxItems.length === 0 ? (
               <div className="px-4 py-8 text-text-dim text-xs text-center">
                 Nothing new.
               </div>
             ) : (
-              items.map((n) => (
+              inboxItems.map((n) => (
                 <button
                   key={n.id}
                   onClick={() => routeTo(n)}
@@ -146,10 +170,7 @@ export function NotificationsTray() {
                       role="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        remove(n.id);
-                        if (n.id.startsWith("chat:") && n.latestId) {
-                          markChatSeen(n.id.slice(5), n.latestId);
-                        }
+                        dismissNotification(n);
                       }}
                       className="text-text-dim hover:text-text text-xs px-1"
                       title="Dismiss"

@@ -2759,7 +2759,11 @@ export const apps = {
       },
     ),
 
-  marketplace: (projectId?: string, registryUrl?: string) => {
+  marketplace: (
+    projectId?: string,
+    registryUrl?: string,
+    opts?: { query?: string; category?: string; page?: number; pageSize?: number },
+  ) => {
     // Pass project_id so the server filters the "is installed" check
     // to project-visible installs (own + globals). Without this an
     // install in another project marks the marketplace entry as
@@ -2767,8 +2771,19 @@ export const apps = {
     const params = new URLSearchParams();
     if (projectId) params.set("project_id", projectId);
     if (registryUrl) params.set("registry_url", registryUrl);
+    if (opts?.query) params.set("q", opts.query);
+    if (opts?.category && opts.category !== "all") params.set("category", opts.category);
+    if (opts?.page) params.set("page", String(opts.page));
+    if (opts?.pageSize) params.set("page_size", String(opts.pageSize));
     const q = params.toString();
-    return request<{ registry_url: string; apps: MarketplaceEntry[] }>(
+    return request<{
+      registry_url: string;
+      apps: MarketplaceEntry[];
+      total?: number;
+      page?: number;
+      page_size?: number;
+      categories?: Record<string, number>;
+    }>(
       "GET",
       `/apps/marketplace${q ? `?${q}` : ""}`,
     );
@@ -3149,6 +3164,29 @@ export interface ApprovalMessageRow {
   title: string;
   body: string;
   status: string;
+  dismissed?: boolean;
+}
+
+export interface ReportMessageRow {
+  message: ChatMessageRow;
+  instance_id: number;
+  instance_name: string;
+  project_id: string;
+  title: string;
+  summary: string;
+  period?: string;
+  dismissed?: boolean;
+}
+
+export interface AlertMessageRow {
+  message: ChatMessageRow;
+  instance_id: number;
+  instance_name: string;
+  project_id: string;
+  title: string;
+  body: string;
+  severity: string;
+  dismissed?: boolean;
 }
 
 export interface ChatMessageContext {
@@ -3226,6 +3264,20 @@ export const chat = {
     return request<ApprovalMessageRow[]>("GET", `/apps/channel-chat/approval-messages?${qs.toString()}`);
   },
 
+  reportMessages: (projectId?: string, limit: number = 20) => {
+    const qs = new URLSearchParams();
+    if (projectId) qs.set("project_id", projectId);
+    qs.set("limit", String(limit));
+    return request<ReportMessageRow[]>("GET", `/apps/channel-chat/report-messages?${qs.toString()}`);
+  },
+
+  alertMessages: (projectId?: string, limit: number = 20) => {
+    const qs = new URLSearchParams();
+    if (projectId) qs.set("project_id", projectId);
+    qs.set("limit", String(limit));
+    return request<AlertMessageRow[]>("GET", `/apps/channel-chat/alert-messages?${qs.toString()}`);
+  },
+
   messageAction: (messageId: number, actionId: string, note?: string) =>
     request<{ message: ChatMessageRow; status: string; forwarded: boolean; delivery_error?: string }>(
       "POST",
@@ -3235,6 +3287,13 @@ export const chat = {
         action_id: actionId,
         ...(note ? { note } : {}),
       },
+    ),
+
+  messageDismiss: (messageId: number) =>
+    request<{ message: ChatMessageRow; dismissed: boolean }>(
+      "POST",
+      "/apps/channel-chat/message-dismiss",
+      { message_id: messageId },
     ),
 
   // markSeen advances the persistent per-chat read watermark. Server
