@@ -1228,7 +1228,7 @@ export function ChatPanel({
         )}
 
       {/* Input */}
-      <div className="chat-composer-safe shrink-0 px-2 pt-1 sm:px-3">
+      <div className="chat-composer-safe shrink-0 px-2 pt-2 sm:px-5">
         <input
           ref={fileInputRef}
           type="file"
@@ -1284,14 +1284,14 @@ export function ChatPanel({
               void addImageFiles(e.dataTransfer.files);
             }
           }}
-          className="flex items-center gap-1 sm:gap-2 rounded-2xl border border-border focus-within:border-accent/60 transition-colors px-2 sm:px-3 py-1 shadow-lg bg-bg-card/95 backdrop-blur-sm"
+          className="flex min-h-[54px] items-center gap-1.5 rounded-2xl border border-border bg-bg-card/95 px-2 py-1.5 shadow-lg backdrop-blur-sm transition-colors focus-within:border-accent/60 sm:min-h-[58px] sm:gap-3 sm:px-4 sm:py-2"
         >
           <span className="hidden sm:inline font-bold text-sm text-accent shrink-0 self-center">&gt;</span>
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={!chatId || !connected || sending || attachments.length >= MAX_IMAGE_ATTACHMENTS}
-            className="touch-target shrink-0 w-11 h-11 sm:w-7 sm:h-7 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-bg-subtle disabled:opacity-30 disabled:cursor-not-allowed"
+            className="touch-target flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-text-muted hover:bg-bg-subtle hover:text-text disabled:cursor-not-allowed disabled:opacity-30 sm:h-8 sm:w-8"
             aria-label={t("chat.panel.attachImage")}
             title={t("chat.panel.attachImage")}
           >
@@ -1334,8 +1334,8 @@ export function ChatPanel({
               }
             }}
             rows={1}
-            style={{ lineHeight: "20px", minHeight: "32px" }}
-            className="flex-1 bg-transparent text-base sm:text-sm text-text focus:outline-none min-w-0 resize-none placeholder:text-text-dim font-mono py-1.5 block"
+            style={{ lineHeight: "20px", minHeight: "36px" }}
+            className="block min-w-0 flex-1 resize-none bg-transparent py-2 font-mono text-base text-text placeholder:text-text-dim focus:outline-none sm:text-sm"
             placeholder={
               !chatId
                 ? t("chat.panel.placeholderLoading")
@@ -1349,7 +1349,7 @@ export function ChatPanel({
           <button
             type="submit"
             disabled={!chatId || (!input.trim() && attachments.length === 0) || sending || !connected}
-            className="touch-target shrink-0 w-11 h-11 sm:w-8 sm:h-8 rounded-full flex items-center justify-center transition-all bg-accent text-bg disabled:opacity-20 disabled:cursor-not-allowed enabled:hover:bg-accent-hover enabled:active:scale-95"
+            className="touch-target flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-accent text-bg transition-all disabled:cursor-not-allowed disabled:opacity-20 enabled:hover:bg-accent-hover enabled:active:scale-95 sm:h-9 sm:w-9"
             aria-label={t("chat.panel.send")}
             title={t("chat.panel.sendTitle")}
           >
