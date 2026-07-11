@@ -113,7 +113,13 @@ function openConnection(app: string, projectId: string, ch: Channel): void {
   };
   es.onerror = () => {
     dbg("EventSource error", { app, projectId, readyState: es.readyState });
-    if (es.readyState !== EventSource.CLOSED || ch.closing) return;
+    if (ch.es !== es) return;
+    // Disable EventSource's unbounded native reconnect loop before applying
+    // our own retry budget. Most browsers report CONNECTING, not CLOSED, from
+    // onerror even for a persistent 404.
+    es.close();
+    ch.es = null;
+    if (ch.closing) return;
     ch.reconnectAttempts += 1;
     if (ch.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       dbg("EventSource giving up after max reconnect attempts", { app, projectId });

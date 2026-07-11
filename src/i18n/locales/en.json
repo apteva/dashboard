@@ -160,6 +160,21 @@
       "modeAuto": "Auto",
       "modeDark": "Dark",
       "modeLight": "Light"
+    },
+    "providers": {
+      "subscriptionUsage": "Subscription usage",
+      "stale": "stale",
+      "refreshUsage": "Refresh usage",
+      "loadingUsage": "Loading usage…",
+      "usageUnavailable": "Usage temporarily unavailable",
+      "noUsageData": "No quota data returned",
+      "usagePercent": "{{percent}}% used",
+      "resetsIn": "resets in {{time}}",
+      "additionalLimits_one": "+{{count}} additional limit",
+      "additionalLimits_other": "+{{count}} additional limits",
+      "usageDetails": "Subscription usage",
+      "limitReached": "limit reached",
+      "close": "Close"
     }
   },
   "language": {

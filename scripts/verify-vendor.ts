@@ -133,9 +133,9 @@ async function checkMainBundleHasOneReact(): Promise<void> {
   const distDir = join(HERE, "..", "dist");
   const fs = await import("fs/promises");
   const entries = await fs.readdir(distDir);
-  const mainJs = entries.find((f) => /^main-.*\.js$/.test(f));
+  const mainJs = entries.find((f) => /^entry-main-.*\.js$/.test(f));
   if (!mainJs) {
-    console.error("✗ no main-*.js in dist — build didn't run?");
+    console.error("✗ no entry-main-*.js in dist — build didn't run?");
     process.exit(1);
   }
   const main = await readFile(join(distDir, mainJs), "utf8");

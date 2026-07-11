@@ -48,6 +48,7 @@ export function Layout() {
   const { projects, currentProject, setCurrentProject } = useProjects();
   const navigate = useNavigate();
   const location = useLocation();
+  const isMobileChatConversation = /^\/chat\/[^/]+/.test(location.pathname);
   const { user, logout } = useAuth();
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(readContextAgentChatOpenDefault);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -72,7 +73,7 @@ export function Layout() {
   // — its cleanup is just an SSE close + localStorage listener removal,
   // no agent-visible side effects.
   useEffect(() => {
-    if (!user || user === false) return;
+    if (!user) return;
     purgeLegacyChatConnectedKeys();
     const stopNotifs = startChatNotifications();
     return () => {
@@ -106,7 +107,7 @@ export function Layout() {
   // which used to be the dominant contributor to the connection
   // budget on the dashboard.
   useEffect(() => {
-    if (!user || user === false) return;
+    if (!user) return;
     if (typeof window === "undefined") return;
     window.__aptevaTelemetryBus?.setProjectId(currentProject?.id ?? null);
   }, [user, currentProject?.id]);
@@ -116,7 +117,7 @@ export function Layout() {
   // server polls upstream every few hours; we re-read on dashboard
   // load so a refresh after an update lands shows the new state.
   useEffect(() => {
-    if (!user || user === false) return;
+    if (!user) return;
     platform.status().then(setPlatformStatus).catch(() => {});
   }, [user]);
 
@@ -296,7 +297,7 @@ export function Layout() {
             className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
           >
             {projects.map((p) => {
-              const mine = user && user !== false && p.user_id === user.id;
+              const mine = !!user && p.user_id === user.id;
               return (
                 <option key={p.id} value={p.id}>
                   {p.name}{mine ? "" : " (shared)"}
@@ -394,7 +395,7 @@ export function Layout() {
       </div>
       {/* Logged-in user + account menu (change password, logout). Rendered
           above the version line so it sits in the same footer area. */}
-      {user && user !== false && (
+      {user && (
         <AccountMenu user={user} onLogout={logout} />
       )}
 
@@ -436,7 +437,7 @@ export function Layout() {
             onClick={() => setMobileNavOpen(false)}
             aria-label="Close navigation"
           />
-          <nav className="relative h-full w-[min(20rem,86vw)] bg-bg border-r border-border flex flex-col shadow-xl">
+          <nav className="relative h-full w-[min(20rem,86vw)] bg-bg border-r border-border flex flex-col shadow-xl safe-area-y safe-area-left">
             {renderSidebar(true)}
           </nav>
         </div>
@@ -456,11 +457,11 @@ export function Layout() {
         {/* Slim top bar — global controls. Currently just the
             notifications tray; placeholder for future search,
             user-shortcut, or quick-create surfaces. */}
-        <div className="h-12 md:h-10 border-b border-border flex items-center justify-between md:justify-end gap-3 px-3 flex-shrink-0">
+        <div className={`${isMobileChatConversation ? "hidden md:flex" : "flex"} app-topbar-safe border-b border-border items-center justify-between md:justify-end gap-3 px-3 flex-shrink-0 safe-area-x`}>
           <button
             type="button"
             onClick={() => setMobileNavOpen(true)}
-            className="md:hidden h-9 w-9 inline-flex items-center justify-center rounded border border-border text-text-muted hover:text-text hover:bg-bg-hover"
+            className="md:hidden touch-target h-9 w-9 inline-flex items-center justify-center rounded border border-border text-text-muted hover:text-text hover:bg-bg-hover"
             aria-label="Open navigation"
           >
             <span className="sr-only">Open navigation</span>

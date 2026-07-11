@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
 import { useTranslation } from "react-i18next";
-import { marked } from "marked";
 import { chat, type ChatAttachment, type ChatMessageContext, type ChatMessageRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import {
@@ -12,14 +11,19 @@ import { markChatSeen, focusChat } from "../state/chatNotifications";
 import { chatConnections } from "../state/chatConnections";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 import type { SubscribeFn } from "./AgentView";
+import { renderSafeMarkdown } from "../utils/safeMarkdown";
+import { mergeChatMessages } from "../utils/chatMessages";
+import { Modal } from "./Modal";
 
-// Markdown setup — marked.parse is synchronous with async: false. Chat
-// content comes from the agent and is already sanitized at the message
-// level (no external HTML allowed to reach it); we trust the rendered
-// output the same way every other agent surface in the dashboard does.
-marked.setOptions({ breaks: true, gfm: true });
-function renderMarkdown(src: string): string {
-  return marked.parse(src, { async: false }) as string;
+export interface ChatPanelHeader {
+  title: string;
+  subtitle?: string;
+  running?: boolean;
+  onBack?: () => void;
+  onOpenAgent?: () => void;
+  onOpenContext?: () => void;
+  onToggleDesktopContext?: () => void;
+  desktopContextOpen?: boolean;
 }
 
 function readFileAsDataURL(file: File): Promise<string> {
@@ -45,6 +49,7 @@ interface Props {
   subscribe: SubscribeFn;
   autoConnect?: boolean;
   hideHeader?: boolean;
+  header?: ChatPanelHeader;
   messageContext?: ChatMessageContext;
   historyLimit?: number;
 }
@@ -144,6 +149,7 @@ export function ChatPanel({
   subscribe,
   autoConnect = false,
   hideHeader = false,
+  header,
   messageContext,
   historyLimit,
 }: Props) {
@@ -159,9 +165,11 @@ export function ChatPanel({
 
   const [chatId, setChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessageRow[]>([]);
+  const [historyReady, setHistoryReady] = useState(false);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
   const [sending, setSending] = useState(false);
+  const [showMobileActions, setShowMobileActions] = useState(false);
   const [showClearModal, setShowClearModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -243,6 +251,23 @@ export function ChatPanel({
   // any row whose id we've already rendered).
   const sinceRef = useRef<number>(0);
 
+  // All durable delivery paths converge here. In particular, do not reject a
+  // row merely because its id is below the cursor: a fast SSE agent reply can
+  // beat the preceding user POST response back to the browser.
+  const mergeDurableMessages = useCallback((rows: ChatMessageRow[]) => {
+    if (rows.length === 0) return;
+    const maxId = rows.reduce((highest, row) => Math.max(highest, row.id), sinceRef.current);
+    sinceRef.current = maxId;
+    setMessages((current) => mergeChatMessages(current, rows));
+    if (
+      maxId > 0 &&
+      chatId &&
+      (typeof document === "undefined" || document.visibilityState === "visible")
+    ) {
+      markChatSeen(chatId, maxId);
+    }
+  }, [chatId]);
+
   useEffect(() => {
     if (autoConnect && chatId) {
       setConnected(true);
@@ -253,6 +278,7 @@ export function ChatPanel({
   useEffect(() => {
     setChatId(null);
     setMessages([]);
+    setHistoryReady(false);
     setError(null);
     sinceRef.current = 0;
 
@@ -282,17 +308,28 @@ export function ChatPanel({
     chat.messages(chatId, 0, historyLimit)
       .then((rows) => {
         if (cancelled) return;
-        setMessages(rows);
+        // SSE starts as soon as chatId resolves. Merge history into any live
+        // rows that arrived while this request was in flight; never replace
+        // the real-time timeline with an older REST snapshot.
+        setMessages((current) => mergeChatMessages(current, rows));
         const maxId = rows.reduce((m, r) => (r.id > m ? r.id : m), 0);
-        sinceRef.current = maxId;
+        sinceRef.current = Math.max(sinceRef.current, maxId);
         // Reading the chat clears its tray entry — but ONLY if the
         // tab is actually visible. A backgrounded tab that finishes
         // its history fetch shouldn't silently mark messages read
         // before the user has had a chance to see them.
         const visible = typeof document === "undefined" || document.visibilityState === "visible";
         if (maxId > 0 && visible) markChatSeen(chatId, maxId);
+        setHistoryReady(true);
       })
-      .catch((e) => !cancelled && setError(errMsg(e)));
+      .catch((e) => {
+        if (cancelled) return;
+        setError(errMsg(e));
+        // Do not open a stream from cursor zero after a history failure: that
+        // can replay a huge chat and still leave a gap. A retry/remount will
+        // resolve a trustworthy cursor first.
+        setHistoryReady(false);
+      });
     return () => { cancelled = true; };
   }, [chatId, historyLimit]);
 
@@ -316,6 +353,9 @@ export function ChatPanel({
   useEffect(() => {
     if (!chatId) return;
     if (connected) {
+      // Open SSE immediately. History and live delivery are independent;
+      // delaying the EventSource behind REST broke the previously reliable
+      // stream-frame path and made token streaming disappear.
       chatConnections.connect(chatId, instanceId);
     } else {
       chatConnections.disconnect(chatId, instanceId);
@@ -333,27 +373,69 @@ export function ChatPanel({
   useEffect(() => {
     if (!chatId) return;
     return chatConnections.subscribeMessages(chatId, sinceRef.current, (row) => {
-      if (row.id <= sinceRef.current) return;
-      sinceRef.current = row.id;
-      setMessages((prev) => [...prev, row]);
-      // Live messages while the panel is open + tab is visible count
-      // as "seen" — this keeps the global tray quiet for the chat the
-      // user is actively reading. A backgrounded tab still gets the
-      // tray badge + (if enabled) a desktop notification.
-      if (typeof document === "undefined" || document.visibilityState === "visible") {
-        markChatSeen(chatId, row.id);
-      }
+      mergeDurableMessages([row]);
     });
-  }, [chatId]);
+  }, [chatId, mergeDurableMessages]);
+
+  // SSE is the low-latency path, but it must never be the sole display path
+  // for rows that are already durable in SQLite. Reconcile from the cursor as
+  // a cheap backstop so an exhausted/stale EventSource cannot leave the panel
+  // frozen while user messages and channels_send replies keep persisting.
+  useEffect(() => {
+    if (!chatId || !historyReady || !connected) return;
+    let cancelled = false;
+    let inFlight = false;
+
+    const reconcile = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        let cursor = sinceRef.current;
+        for (let page = 0; page < 10 && !cancelled; page += 1) {
+          const rows = await chat.messages(chatId, cursor, 200);
+          if (cancelled) return;
+          mergeDurableMessages(rows);
+          if (rows.length < 200) break;
+          cursor = rows.reduce((highest, row) => Math.max(highest, row.id), cursor);
+        }
+      } catch {
+        // SSE may still be healthy; the next interval/visibility event retries.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const recover = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (chatConnections.hasFailed(chatId)) {
+        // A new online/visibility transition is a bounded, external recovery
+        // signal. It resets the exhausted stream without a permanent 404 loop.
+        chatConnections.connect(chatId, instanceId);
+      }
+      void reconcile();
+    };
+
+    void reconcile();
+    const timer = window.setInterval(() => void reconcile(), 5_000);
+    window.addEventListener("online", recover);
+    document.addEventListener("visibilitychange", recover);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("online", recover);
+      document.removeEventListener("visibilitychange", recover);
+    };
+  }, [chatId, connected, historyReady, instanceId, mergeDurableMessages]);
 
   // Claim "focused chat" on the notifications driver whenever the
-  // panel is mounted AND the tab is visible. The wildcard SSE that
+  // panel has a live delivery stream AND the tab is visible. The wildcard SSE that
   // feeds the tray skips messages for the focused chat (and silently
   // advances the watermark), so a user staring at the chat panel never
-  // sees a tray badge for messages that are already on screen — even
-  // when the per-chat SSE isn't connected (Connect toggle off).
+  // sees a tray badge for messages that are already on screen. A disconnected
+  // panel must not claim focus: it cannot render new messages, so suppressing
+  // the wildcard notification there would silently mark unseen messages read.
   useEffect(() => {
-    if (!chatId || typeof document === "undefined") return;
+    if (!chatId || !historyReady || !connected || !sseOpen || typeof document === "undefined") return;
     let release: (() => void) | null = null;
     const apply = () => {
       const visible = document.visibilityState === "visible";
@@ -370,7 +452,7 @@ export function ChatPanel({
       document.removeEventListener("visibilitychange", apply);
       if (release) release();
     };
-  }, [chatId]);
+  }, [chatId, historyReady, connected, sseOpen]);
 
   // --- 4. Stick-to-bottom auto-scroll (ChatGPT/Claude-style) -----------
   //
@@ -682,10 +764,10 @@ export function ChatPanel({
     setSending(true);
     setError(null);
     try {
-      await chat.post(chatId, text, messageContext, attachments);
-      // Server echoes the inserted row back on the SSE stream — no
-      // optimistic insert, no dedup needed. The row will show up
-      // naturally in <200 ms once the SSE delivers.
+      const posted = await chat.post(chatId, text, messageContext, attachments);
+      // Render the server-confirmed row immediately. SSE and REST may deliver
+      // it again; the id-based merge above makes those echoes harmless.
+      mergeDurableMessages([posted]);
       setInput("");
       setAttachments([]);
       // Reset textarea height + restore focus. The textarea no longer
@@ -703,7 +785,7 @@ export function ChatPanel({
     } finally {
       setSending(false);
     }
-  }, [input, attachments, chatId, sending, connected, planMode, messageContext]);
+  }, [input, attachments, chatId, sending, connected, planMode, messageContext, mergeDurableMessages]);
 
   // postCanned sends a fixed reply on behalf of the user — used by the
   // plan-mode Approve / Reject / Refine quick-action buttons. Same
@@ -716,14 +798,15 @@ export function ChatPanel({
       setSending(true);
       setError(null);
       try {
-        await chat.post(chatId, text, messageContext);
+        const posted = await chat.post(chatId, text, messageContext);
+        mergeDurableMessages([posted]);
       } catch (e) {
         setError(errMsg(e));
       } finally {
         setSending(false);
       }
     },
-    [chatId, sending, connected, messageContext],
+    [chatId, sending, connected, messageContext, mergeDurableMessages],
   );
 
   // --- 6. Clear history -------------------------------------------------
@@ -849,50 +932,114 @@ export function ChatPanel({
     });
   }, []);
 
+  const presenceColor = !connected
+    ? "bg-text-dim"
+    : sseOpen
+      ? "bg-green"
+      : "bg-yellow animate-pulse";
+  const presenceLabel = !connected
+    ? t("chat.panel.notConnected")
+    : sseOpen
+      ? t("chat.panel.connected")
+      : t("chat.panel.reconnecting");
+  const presenceTitle = !connected
+    ? t("chat.panel.notConnectedTitle")
+    : sseOpen
+      ? t("chat.panel.connectedTitle")
+      : t("chat.panel.reconnectingTitle");
+  const presenceBadge = (
+    <span className="flex items-center gap-1.5 shrink-0" title={presenceTitle}>
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${presenceColor}`} />
+      <span className="text-text-muted text-[10px] uppercase tracking-wide">
+        {presenceLabel}
+      </span>
+    </span>
+  );
+
   return (
     <div className="flex flex-col h-full min-w-0">
       {!hideHeader && (
         <>
-          {/* Header — presence dot, Connect/Disconnect toggle, agent
-              status, clear button. Presence is a first-class signal:
-              the agent is proactive and may greet / push status
-              updates when it sees the user as connected, so the user
-              owns that signal via this button instead of it being
-              silently derived from browser tab state. */}
+          {header ? (
+            <>
+              <div className="chat-mobile-header-safe md:hidden border-b border-border px-2 flex items-center gap-2 bg-bg/95 backdrop-blur-sm">
+                <button
+                  type="button"
+                  onClick={header.onBack}
+                  className="touch-target inline-flex h-11 w-11 shrink-0 items-center justify-center rounded text-text-muted hover:bg-bg-hover hover:text-text"
+                  aria-label="Back to conversations"
+                >
+                  <BackIcon />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${header.running ? "bg-green" : "bg-text-dim"}`} />
+                    <div className="truncate text-[15px] font-semibold text-text">{header.title}</div>
+                  </div>
+                  <div className="mt-0.5 truncate text-[11px] text-text-muted">{header.subtitle || presenceLabel}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowMobileActions(true)}
+                  className="touch-target inline-flex h-11 w-11 shrink-0 items-center justify-center rounded text-text-muted hover:bg-bg-hover hover:text-text"
+                  aria-label="Conversation actions"
+                >
+                  <MoreIcon />
+                </button>
+              </div>
+
+              <div className="hidden md:flex min-h-14 border-b border-border px-4 py-2 items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${header.running ? "bg-green" : "bg-text-dim"}`} />
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-text">{header.title}</div>
+                    <div className="truncate text-[11px] text-text-muted">{header.subtitle}</div>
+                  </div>
+                  {presenceBadge}
+                  <ChatStatusDot subscribe={subscribe} />
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPlanMode((v) => !v)}
+                    className={`rounded px-2 py-1 text-[10px] uppercase tracking-wide transition-colors ${planMode ? "bg-accent/10 text-accent font-bold" : "text-text-muted hover:bg-bg-hover hover:text-text"}`}
+                  >
+                    {planMode ? t("chat.panel.planOn") : t("chat.panel.plan")}
+                  </button>
+                  {chatId && messages.length > 0 && (
+                    <button type="button" onClick={() => setShowClearModal(true)} className="rounded px-2 py-1 text-[10px] text-text-muted hover:bg-bg-hover hover:text-red">
+                      {t("chat.panel.clear")}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setConnected((value) => !value)}
+                    className={`rounded px-2 py-1 text-[10px] font-bold ${connected ? "text-text-muted hover:bg-bg-hover hover:text-red" : "text-accent hover:bg-accent/10"}`}
+                  >
+                    {connected ? t("chat.panel.disconnect") : t("chat.panel.connect")}
+                  </button>
+                  {header.onOpenAgent && (
+                    <button type="button" onClick={header.onOpenAgent} className="rounded border border-border px-2 py-1 text-xs text-text-muted hover:bg-bg-hover hover:text-text">
+                      Agent
+                    </button>
+                  )}
+                  {header.onToggleDesktopContext && (
+                    <button
+                      type="button"
+                      onClick={header.onToggleDesktopContext}
+                      className="hidden lg:inline-flex rounded border border-border px-2 py-1 text-xs text-text-muted hover:bg-bg-hover hover:text-text"
+                      aria-label={header.desktopContextOpen ? "Hide context" : "Show context"}
+                    >
+                      {header.desktopContextOpen ? "›" : "‹"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </>
+          ) : (
           <div className="border-b border-border px-4 py-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
-              {(() => {
-                // Three visible presence states:
-                //   connected + SSE open     → green, "Connected"
-                //   connected + SSE retrying → amber pulse, "Reconnecting"
-                //   disconnected             → gray, "Not connected"
-                const color = !connected
-                  ? "bg-text-dim"
-                  : sseOpen
-                    ? "bg-green"
-                    : "bg-yellow animate-pulse";
-                const label = !connected
-                  ? t("chat.panel.notConnected")
-                  : sseOpen
-                    ? t("chat.panel.connected")
-                    : t("chat.panel.reconnecting");
-                const title = !connected
-                  ? t("chat.panel.notConnectedTitle")
-                  : sseOpen
-                    ? t("chat.panel.connectedTitle")
-                    : t("chat.panel.reconnectingTitle");
-                return (
-                  <span
-                    className="flex items-center gap-1.5 shrink-0"
-                    title={title}
-                  >
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${color}`} />
-                    <span className="text-text-muted text-[10px] uppercase tracking-wide">
-                      {label}
-                    </span>
-                  </span>
-                );
-              })()}
+              {presenceBadge}
               <ChatStatusDot subscribe={subscribe} />
             </div>
             <div className="flex items-center gap-3 shrink-0">
@@ -937,7 +1084,41 @@ export function ChatPanel({
               )}
             </div>
           </div>
+          )}
         </>
+      )}
+
+      {header && (
+        <Modal open={showMobileActions} onClose={() => setShowMobileActions(false)} width="max-w-md" ariaLabel="Conversation actions">
+          <div className="border-b border-border px-4 py-3">
+            <div className="text-[10px] font-bold uppercase tracking-wide text-accent">Conversation</div>
+            <div className="mt-1 truncate text-base font-semibold text-text">{header.title}</div>
+            <div className="mt-1 flex items-center gap-2">{presenceBadge}</div>
+          </div>
+          <div className="page-safe-bottom grid gap-2 p-3">
+            {header.onOpenContext && (
+              <button type="button" onClick={() => { setShowMobileActions(false); header.onOpenContext?.(); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text hover:bg-bg-hover">
+                Agent context
+              </button>
+            )}
+            {header.onOpenAgent && (
+              <button type="button" onClick={() => { setShowMobileActions(false); header.onOpenAgent?.(); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text hover:bg-bg-hover">
+                Open agent details
+              </button>
+            )}
+            <button type="button" onClick={() => { setPlanMode((value) => !value); setShowMobileActions(false); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text hover:bg-bg-hover">
+              {planMode ? "Turn off plan mode" : "Turn on plan mode"}
+            </button>
+            <button type="button" onClick={() => { setConnected((value) => !value); setShowMobileActions(false); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text hover:bg-bg-hover">
+              {connected ? t("chat.panel.disconnect") : t("chat.panel.connect")}
+            </button>
+            {chatId && messages.length > 0 && (
+              <button type="button" onClick={() => { setShowMobileActions(false); setShowClearModal(true); }} className="touch-target rounded-lg border border-red/40 px-4 text-left text-sm text-red hover:bg-red/10">
+                {t("chat.panel.clearChat")}
+              </button>
+            )}
+          </div>
+        </Modal>
       )}
 
       {/* Error banner — dismissible */}
@@ -960,7 +1141,7 @@ export function ChatPanel({
       {/* Messages */}
       <div
         ref={scrollRef}
-        className={`flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-3 min-w-0 transition-opacity duration-300 ${connected ? "" : "opacity-40"}`}
+        className={`scroll-safe-bottom flex-1 overflow-y-auto overflow-x-hidden px-3 py-3 sm:px-4 sm:py-4 space-y-4 min-w-0 transition-opacity duration-300 ${connected ? "" : "opacity-40"}`}
       >
         {!chatId && (
           <p className="text-text-muted text-xs text-center py-8">{t("chat.panel.loading")}</p>
@@ -1008,14 +1189,14 @@ export function ChatPanel({
           type a reply in the input below. */}
       {planMode && connected && orderedMessages.length > 0 &&
         orderedMessages[orderedMessages.length - 1]!.role === "agent" && (
-          <div className="shrink-0 px-3 pt-2 flex items-center gap-2 flex-wrap">
-            <span className="text-[10px] uppercase tracking-wide text-text-muted">
+          <div className="shrink-0 px-3 pt-2 grid grid-cols-3 gap-2 sm:flex sm:items-center sm:flex-wrap">
+            <span className="col-span-3 text-[10px] uppercase tracking-wide text-text-muted sm:col-auto">
               Plan
             </span>
             <button
               onClick={() => postCanned("Approved. Execute the plan now.")}
               disabled={sending}
-              className="text-[11px] px-2 py-1 rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-40 transition-colors"
+              className="touch-target text-[11px] px-2 py-1 rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-40 transition-colors"
               title={t("chat.panel.approveTitle")}
             >
               {t("chat.panel.approve")}
@@ -1025,7 +1206,7 @@ export function ChatPanel({
                 postCanned("Rejected. Don't execute that plan — try a different approach.")
               }
               disabled={sending}
-              className="text-[11px] px-2 py-1 rounded border border-border text-text-muted hover:border-red hover:text-red disabled:opacity-40 transition-colors"
+              className="touch-target text-[11px] px-2 py-1 rounded border border-border text-text-muted hover:border-red hover:text-red disabled:opacity-40 transition-colors"
               title={t("chat.panel.rejectTitle")}
             >
               {t("chat.panel.reject")}
@@ -1035,19 +1216,19 @@ export function ChatPanel({
                 postCanned("Refine the plan. Keep the overall approach but address the points I'll list next.")
               }
               disabled={sending}
-              className="text-[11px] px-2 py-1 rounded border border-border text-text-muted hover:border-text hover:text-text disabled:opacity-40 transition-colors"
+              className="touch-target text-[11px] px-2 py-1 rounded border border-border text-text-muted hover:border-text hover:text-text disabled:opacity-40 transition-colors"
               title={t("chat.panel.refineTitle")}
             >
               {t("chat.panel.refine")}
             </button>
-            <span className="text-[10px] text-text-dim ml-1">
+            <span className="hidden text-[10px] text-text-dim ml-1 sm:inline">
               {t("chat.panel.typeReply")}
             </span>
           </div>
         )}
 
       {/* Input */}
-      <div className="shrink-0 px-3 pb-3 pt-1">
+      <div className="chat-composer-safe shrink-0 px-2 pt-1 sm:px-3">
         <input
           ref={fileInputRef}
           type="file"
@@ -1103,14 +1284,14 @@ export function ChatPanel({
               void addImageFiles(e.dataTransfer.files);
             }
           }}
-          className="flex items-center gap-2 rounded-2xl border border-border focus-within:border-accent/60 transition-colors px-3 py-1.5 shadow-lg bg-bg-card/90 backdrop-blur-sm"
+          className="flex items-center gap-1 sm:gap-2 rounded-2xl border border-border focus-within:border-accent/60 transition-colors px-2 sm:px-3 py-1 shadow-lg bg-bg-card/95 backdrop-blur-sm"
         >
-          <span className="font-bold text-sm text-accent shrink-0 self-center">&gt;</span>
+          <span className="hidden sm:inline font-bold text-sm text-accent shrink-0 self-center">&gt;</span>
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={!chatId || !connected || sending || attachments.length >= MAX_IMAGE_ATTACHMENTS}
-            className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-bg-subtle disabled:opacity-30 disabled:cursor-not-allowed"
+            className="touch-target shrink-0 w-11 h-11 sm:w-7 sm:h-7 rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-bg-subtle disabled:opacity-30 disabled:cursor-not-allowed"
             aria-label={t("chat.panel.attachImage")}
             title={t("chat.panel.attachImage")}
           >
@@ -1154,7 +1335,7 @@ export function ChatPanel({
             }}
             rows={1}
             style={{ lineHeight: "20px", minHeight: "32px" }}
-            className="flex-1 bg-transparent text-sm text-text focus:outline-none min-w-0 resize-none placeholder:text-text-dim font-mono py-1.5 block"
+            className="flex-1 bg-transparent text-base sm:text-sm text-text focus:outline-none min-w-0 resize-none placeholder:text-text-dim font-mono py-1.5 block"
             placeholder={
               !chatId
                 ? t("chat.panel.placeholderLoading")
@@ -1163,12 +1344,12 @@ export function ChatPanel({
                   : t("chat.panel.placeholderMessage")
             }
             disabled={!chatId || !connected}
-            autoFocus={!!chatId}
+            autoFocus={!!chatId && typeof window !== "undefined" && window.matchMedia("(hover: hover) and (pointer: fine)").matches}
           />
           <button
             type="submit"
             disabled={!chatId || (!input.trim() && attachments.length === 0) || sending || !connected}
-            className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-all bg-accent text-bg disabled:opacity-20 disabled:cursor-not-allowed enabled:hover:bg-accent-hover enabled:active:scale-95"
+            className="touch-target shrink-0 w-11 h-11 sm:w-8 sm:h-8 rounded-full flex items-center justify-center transition-all bg-accent text-bg disabled:opacity-20 disabled:cursor-not-allowed enabled:hover:bg-accent-hover enabled:active:scale-95"
             aria-label={t("chat.panel.send")}
             title={t("chat.panel.sendTitle")}
           >
@@ -1189,34 +1370,47 @@ export function ChatPanel({
       </div>
 
       {/* Clear confirmation modal */}
-      {showClearModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowClearModal(false)}>
-          <div className="absolute inset-0 bg-bg/80 backdrop-blur-sm" />
-          <div className="relative bg-bg-card border border-border rounded-lg shadow-lg w-80 mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="px-5 py-4 space-y-3">
+      <Modal open={showClearModal} onClose={() => setShowClearModal(false)} width="max-w-sm" ariaLabel={t("chat.panel.clearChat")}>
+            <div className="page-safe-bottom px-4 py-4 sm:px-5 space-y-3">
               <h3 className="text-text text-sm font-bold">{t("chat.panel.clearChat")}</h3>
               <p className="text-text-muted text-xs leading-relaxed">
                 {t("chat.panel.clearWarning")}
               </p>
-              <div className="flex gap-2 justify-end pt-1">
+              <div className="grid grid-cols-2 gap-2 pt-1">
                 <button
                   onClick={() => setShowClearModal(false)}
-                  className="px-3 py-1.5 text-xs text-text-muted border border-border rounded-lg hover:border-text-muted transition-colors"
+                  className="touch-target px-3 py-1.5 text-xs text-text-muted border border-border rounded-lg hover:border-text-muted transition-colors"
                 >
                   {t("chat.panel.cancel")}
                 </button>
                 <button
                   onClick={handleClear}
-                  className="px-3 py-1.5 text-xs text-bg bg-red hover:bg-red/80 rounded-lg font-bold transition-colors"
+                  className="touch-target px-3 py-1.5 text-xs text-bg bg-red hover:bg-red/80 rounded-lg font-bold transition-colors"
                 >
                   {t("chat.panel.clearMessages")}
                 </button>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+      </Modal>
     </div>
+  );
+}
+
+function BackIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 18l-6-6 6-6" />
+    </svg>
+  );
+}
+
+function MoreIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <circle cx="5" cy="12" r="1.7" />
+      <circle cx="12" cy="12" r="1.7" />
+      <circle cx="19" cy="12" r="1.7" />
+    </svg>
   );
 }
 
@@ -1259,7 +1453,7 @@ const MessageRow = memo(function MessageRow({
   // role) renders as markdown.
   const isMarkdown = msg.role !== "user" && msg.role !== "system";
   const html = useMemo(
-    () => (isMarkdown ? renderMarkdown(msg.content) : ""),
+    () => (isMarkdown ? renderSafeMarkdown(msg.content) : ""),
     [msg.content, isMarkdown],
   );
 
@@ -1268,19 +1462,19 @@ const MessageRow = memo(function MessageRow({
     if (!hasAttachments) {
       return (
         <div className="flex justify-end min-w-0">
-          <div className="bg-accent/15 border border-accent/30 rounded-xl rounded-br-sm px-3 py-1.5 max-w-[80%] min-w-0">
-            <p className="text-text text-xs whitespace-pre-wrap break-words">{msg.content}</p>
+          <div className="bg-accent/15 border border-accent/30 rounded-xl rounded-br-sm px-3 py-2 max-w-[92%] sm:max-w-[80%] min-w-0">
+            <p className="text-text text-[15px] sm:text-sm leading-relaxed whitespace-pre-wrap break-words">{msg.content}</p>
           </div>
         </div>
       );
     }
     return (
       <div className="flex justify-end min-w-0">
-        <div className="max-w-[82%] min-w-0 flex flex-col items-end gap-2">
+        <div className="max-w-[92%] sm:max-w-[82%] min-w-0 flex flex-col items-end gap-2">
           <UserAttachmentGrid attachments={msg.attachments || []} />
           {msg.content && (
             <div className="bg-accent/15 border border-accent/30 rounded-xl rounded-br-sm px-3 py-1.5 max-w-full min-w-0">
-              <p className="text-text text-xs whitespace-pre-wrap break-words">{msg.content}</p>
+              <p className="text-text text-[15px] sm:text-sm leading-relaxed whitespace-pre-wrap break-words">{msg.content}</p>
             </div>
           )}
         </div>
@@ -1298,7 +1492,7 @@ const MessageRow = memo(function MessageRow({
   return (
     <div className="min-w-0">
       <div
-        className="chat-md text-text text-xs break-words leading-relaxed"
+        className="chat-md text-text text-[15px] sm:text-sm break-words leading-relaxed"
         dangerouslySetInnerHTML={{ __html: html }}
       />
       {msg.components && msg.components.length > 0 && (
@@ -1366,7 +1560,7 @@ function UserAttachmentGrid({ attachments }: { attachments: ChatAttachment[] }) 
 // fires a null stream payload at that moment, which clears the bubble
 // in the same React commit as MessageRow renders the final row.
 //
-// Markdown: we parse on every chunk via the same renderMarkdown used
+// Markdown: we parse and sanitize every chunk via the same helper used
 // by final messages, so lists/code/bold render live. Unterminated
 // tokens (a `**bold` mid-stream) get auto-closed by closeOpenMarkdown
 // before parse — keeps marked from emitting literal asterisks one
@@ -1374,13 +1568,13 @@ function UserAttachmentGrid({ attachments }: { attachments: ChatAttachment[] }) 
 // re-renders (e.g. other state changes in ChatPanel) don't re-parse.
 function StreamingBubble({ text }: { text: string }) {
   const html = useMemo(
-    () => renderMarkdown(closeOpenMarkdown(text)),
+    () => renderSafeMarkdown(closeOpenMarkdown(text)),
     [text],
   );
   return (
     <div className="min-w-0">
       <div
-        className="chat-md text-text text-xs break-words leading-relaxed"
+        className="chat-md text-text text-[15px] sm:text-sm break-words leading-relaxed"
         dangerouslySetInnerHTML={{ __html: html }}
       />
     </div>

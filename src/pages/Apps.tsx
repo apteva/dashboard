@@ -215,7 +215,7 @@ export function Apps() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b border-border px-6 py-4 flex items-start justify-between">
+      <div className="border-b border-border px-4 py-3 sm:px-6 sm:py-4 flex items-start justify-between gap-3">
         <div>
           <h2 className="text-text text-base font-bold">Apps</h2>
           <p className="text-text-muted text-sm mt-1">
@@ -225,18 +225,18 @@ export function Apps() {
         </div>
         <button
           onClick={() => setInstallModal({})}
-          className="px-3 py-1.5 text-sm bg-accent text-bg rounded-lg font-bold hover:opacity-80 flex-shrink-0"
+          className="touch-target px-3 py-1.5 text-xs sm:text-sm bg-accent text-bg rounded-lg font-bold hover:opacity-80 flex-shrink-0"
         >
-          + Install from URL
+          <span className="sm:hidden">+ Install</span><span className="hidden sm:inline">+ Install from URL</span>
         </button>
       </div>
 
-      <div className="border-b border-border px-6 flex gap-0">
+      <div className="border-b border-border flex max-w-full gap-0 overflow-x-auto px-4 sm:px-6">
         {(["installed", "marketplace"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`px-3 py-2 text-xs capitalize transition-colors ${
+            className={`touch-target shrink-0 whitespace-nowrap px-3 py-2 text-xs capitalize transition-colors ${
               tab === t ? "text-accent border-b border-accent -mb-px" : "text-text-muted hover:text-text"
             }`}
           >
@@ -245,7 +245,7 @@ export function Apps() {
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+      <div className="page-safe-bottom flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
       {error && <div className="text-red text-sm">{error}</div>}
 
       {tab === "installed" ? (
@@ -262,7 +262,7 @@ export function Apps() {
           // Installed apps are inventory, not pitch decks — render
           // as compact rows (status-led, actionable) rather than the
           // marketing cards we use on the Marketplace tab.
-          <div className="border border-border rounded-lg divide-y divide-border overflow-hidden">
+          <div className="space-y-2 md:space-y-0 md:border md:border-border md:rounded-lg md:divide-y md:divide-border md:overflow-hidden">
             {rows.map((r) => (
               <AppListRow
                 key={r.install_id}
@@ -806,7 +806,7 @@ function AppListRow({
   return (
     <>
     <div
-      className="px-4 py-3 flex items-center gap-3 hover:bg-bg-card transition-colors cursor-pointer"
+      className="rounded-lg border border-border bg-bg-card px-3 py-3 flex items-center gap-3 hover:bg-bg-hover transition-colors cursor-pointer md:rounded-none md:border-0 md:bg-transparent md:px-4"
       onClick={onOpenDetails}
       role="button"
       tabIndex={0}
@@ -857,7 +857,7 @@ function AppListRow({
       </div>
 
       {/* Actions — anchored right, click doesn't propagate to row */}
-      <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+      <div className="hidden items-center gap-1 shrink-0 md:flex" onClick={(e) => e.stopPropagation()}>
         {showMount ? (
           <div className="bg-accent/10 border border-accent/40 rounded p-1.5 flex items-center gap-1.5">
             <input
@@ -965,6 +965,7 @@ function AppListRow({
           </>
         )}
       </div>
+      <span className="shrink-0 text-lg text-text-dim md:hidden">›</span>
     </div>
     <UpgradePermissionModal
       appName={app.display_name}

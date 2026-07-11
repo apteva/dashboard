@@ -14,6 +14,7 @@ import {
   AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 
 // Analytics is project-wide by default: which instances are burning
 // the most tokens, how spend moves over time, and where unusual
@@ -52,6 +53,8 @@ export function Analytics() {
   const [allInstances, setAllInstances] = useState<Agent[]>([]);
 
   const [drillId, setDrillId] = useState<number | null>(null);
+  const [showCharts, setShowCharts] = useState(false);
+  const isDesktop = useMediaQuery("(min-width: 768px)");
 
   // Color map keyed by stringified instance id so every chart agrees
   // on which color means which instance.
@@ -150,19 +153,19 @@ export function Analytics() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b border-border px-6 py-4 flex items-center justify-between">
+      <div className="border-b border-border px-4 py-3 sm:px-6 sm:py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-text text-lg font-bold">Usage</h1>
           <p className="text-text-dim text-xs mt-0.5">
             Project-wide spend, per-agent breakdown, and anomaly signals.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex max-w-full gap-2 overflow-x-auto">
           {(["1h", "24h", "7d", "30d"] as Period[]).map((p) => (
             <button
               key={p}
               onClick={() => setPeriod(p)}
-              className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+              className={`touch-target shrink-0 px-3 py-1.5 rounded-lg text-sm transition-colors ${
                 period === p ? "bg-accent text-bg font-bold" : "text-text-muted hover:text-text border border-border"
               }`}
             >
@@ -172,7 +175,7 @@ export function Analytics() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+      <div className="page-safe-bottom flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
         {loading && projectStats.length === 0 && (
           <p className="text-text-muted text-sm">Loading…</p>
         )}
@@ -249,7 +252,7 @@ export function Analytics() {
                           style={{ width: `${pct}%`, backgroundColor: color }}
                         />
                       </div>
-                      <div className="mt-1 flex gap-3 text-[10px] text-text-dim tabular-nums">
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-text-dim tabular-nums">
                         <span>{pct.toFixed(1)}% of total</span>
                         <span>{formatNumber(s.llm_calls)} calls</span>
                         <span>{formatNumber(s.tokens_in)}→{formatNumber(s.tokens_out)} tok</span>
@@ -262,6 +265,13 @@ export function Analytics() {
               </div>
             </section>
 
+            {!isDesktop && (
+              <button type="button" onClick={() => setShowCharts((value) => !value)} className="touch-target w-full rounded-lg border border-border bg-bg-card px-4 text-sm font-semibold text-accent">
+                {showCharts ? "Hide charts" : "View charts"}
+              </button>
+            )}
+
+            {(isDesktop || showCharts) && <>
             {/* Usage over time — stacked by instance */}
             {stackedTimeline.length > 1 && (
               <section>
@@ -274,7 +284,7 @@ export function Analytics() {
                       <YAxis {...axisStyle} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v.toFixed(3)}`} />
                       <Tooltip
                         {...chartTooltip}
-                        formatter={(v: number, n: string) => [`$${v.toFixed(4)}`, nameByInstance[n] || n]}
+                        formatter={(v, n) => [`$${Number(v || 0).toFixed(4)}`, nameByInstance[String(n)] || String(n)]}
                       />
                       <Legend
                         wrapperStyle={{ fontSize: 10, fontFamily: "'JetBrains Mono', monospace", color: "#666" }}
@@ -315,7 +325,7 @@ export function Analytics() {
                     <CartesianGrid {...gridStyle} />
                     <XAxis dataKey="name" {...axisStyle} tickLine={false} axisLine={false} interval={0} angle={-20} textAnchor="end" height={60} />
                     <YAxis {...axisStyle} tickLine={false} axisLine={false} tickFormatter={formatNumber} />
-                    <Tooltip {...chartTooltip} formatter={(v: number) => formatNumber(v)} />
+                    <Tooltip {...chartTooltip} formatter={(v) => formatNumber(Number(v || 0))} />
                     <Legend wrapperStyle={{ fontSize: 10, fontFamily: "'JetBrains Mono', monospace", color: "#666" }} />
                     <Bar dataKey="input" stackId="t" name="Input" fill="#3b82f6" opacity={0.85} />
                     <Bar dataKey="cached" stackId="t" name="Cached" fill="#06b6d4" opacity={0.85} />
@@ -324,6 +334,7 @@ export function Analytics() {
                 </ResponsiveContainer>
               </div>
             </section>
+            </>}
 
             {/* Drill-down modal */}
             {drillId != null && (
@@ -453,7 +464,7 @@ function InstanceDrillDown({ instanceId, period, name, color, projectCost, onClo
                     <CartesianGrid {...gridStyle} />
                     <XAxis dataKey="time" {...axisStyle} tickLine={false} axisLine={false} />
                     <YAxis {...axisStyle} tickLine={false} axisLine={false} tickFormatter={formatNumber} />
-                    <Tooltip {...chartTooltip} formatter={(v: number) => formatNumber(v)} />
+                    <Tooltip {...chartTooltip} formatter={(v) => formatNumber(Number(v || 0))} />
                     <Bar dataKey="tokens_in" name="Input" fill="#3b82f6" opacity={0.8} radius={[2, 2, 0, 0]} />
                     <Bar dataKey="tokens_out" name="Output" fill="#f97316" opacity={0.8} radius={[2, 2, 0, 0]} />
                   </BarChart>
@@ -472,7 +483,7 @@ function InstanceDrillDown({ instanceId, period, name, color, projectCost, onClo
                       <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" />
                       <XAxis type="number" {...axisStyle} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v.toFixed(3)}`} />
                       <YAxis type="category" dataKey="name" {...axisStyle} tickLine={false} axisLine={false} width={80} />
-                      <Tooltip {...chartTooltip} formatter={(v: number) => `$${v.toFixed(5)}`} />
+                      <Tooltip {...chartTooltip} formatter={(v) => `$${Number(v || 0).toFixed(5)}`} />
                       <Bar dataKey="value" fill={color} opacity={0.85} radius={[0, 4, 4, 0]} />
                     </BarChart>
                   </ResponsiveContainer>

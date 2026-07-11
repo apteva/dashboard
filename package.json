@@ -1,14 +1,15 @@
 {
   "name": "apteva-dashboard",
-  "version": "0.20.12",
+  "version": "0.20.13",
   "module": "src/main.tsx",
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "bun run build.ts",
+    "build": "bun run typecheck && bun run build.ts",
     "start": "bun run serve.ts",
     "dev": "bun run --watch build.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.9.0",
@@ -26,6 +27,7 @@
   },
   "dependencies": {
     "@xyflow/react": "^12.10.2",
+    "dompurify": "^3.4.11",
     "i18next": "^26.3.4",
     "marked": "^18.0.0",
     "react": "^19.2.4",

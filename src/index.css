@@ -58,6 +58,10 @@
 /* Always-mono token, for code / inline IDs / log lines. Never themed. */
 :root {
   --font-mono-fixed: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
 }
 
 /* ─── Palettes (4 = theme × mode) ─────────────────────────────────
@@ -210,16 +214,120 @@
 
 /* ─── Body + chrome ───────────────────────────────────────────── */
 
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: var(--bg);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   font-family: var(--font-base);
   font-size: 15px;
   background: var(--bg);
   color: var(--text);
   margin: 0;
+  min-width: 320px;
+  min-height: 100%;
+  overflow-x: hidden;
   /* Help built-in form controls + scrollbars adopt the right scheme.
    * `light dark` lets the browser pick based on data-mode via the
    * media query equivalence the cascade enforces. */
   color-scheme: dark;
+}
+
+#root {
+  min-height: 100%;
+}
+
+/* Shared mobile geometry. These classes keep fixed chrome and sheets clear
+ * of display cutouts and the home indicator without hard-coding a device. */
+.safe-area-top { padding-top: var(--safe-area-top); }
+.safe-area-right { padding-right: var(--safe-area-right); }
+.safe-area-bottom { padding-bottom: var(--safe-area-bottom); }
+.safe-area-left { padding-left: var(--safe-area-left); }
+.safe-area-x {
+  padding-right: var(--safe-area-right);
+  padding-left: var(--safe-area-left);
+}
+.safe-area-y {
+  padding-top: var(--safe-area-top);
+  padding-bottom: var(--safe-area-bottom);
+}
+.app-topbar-safe {
+  min-height: calc(3rem + var(--safe-area-top));
+  padding-top: var(--safe-area-top);
+}
+.modal-safe-frame {
+  padding-top: max(0.75rem, var(--safe-area-top));
+  padding-right: max(0.75rem, var(--safe-area-right));
+  padding-bottom: max(0.75rem, var(--safe-area-bottom));
+  padding-left: max(0.75rem, var(--safe-area-left));
+}
+.modal-safe-panel {
+  max-height: calc(100dvh - max(0.75rem, var(--safe-area-top)) - max(0.75rem, var(--safe-area-bottom)));
+}
+.page-safe-bottom {
+  padding-bottom: max(1rem, var(--safe-area-bottom));
+}
+.scroll-safe-bottom {
+  scroll-padding-bottom: calc(1rem + var(--safe-area-bottom));
+}
+.chat-composer-safe {
+  padding-bottom: max(0.75rem, var(--safe-area-bottom));
+}
+.chat-mobile-header-safe {
+  min-height: calc(3.5rem + var(--safe-area-top));
+  padding-top: var(--safe-area-top);
+}
+.floating-chat-launcher-safe {
+  right: max(1.25rem, calc(var(--safe-area-right) + 0.75rem));
+  bottom: max(1.25rem, calc(var(--safe-area-bottom) + 0.75rem));
+}
+.chat-component-frame {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+.chat-md {
+  min-width: 0;
+  max-width: 100%;
+}
+.chat-md pre,
+.chat-md table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+@media (min-width: 768px) {
+  .app-topbar-safe {
+    min-height: 2.5rem;
+    padding-top: 0;
+  }
+  .chat-composer-safe {
+    padding-bottom: 0.75rem;
+  }
+  .chat-mobile-header-safe {
+    min-height: 3.5rem;
+    padding-top: 0;
+  }
+}
+
+/* iOS Safari zooms the whole page when a focused form control is smaller
+ * than 16px. Keep mobile controls readable and preserve normal pinch zoom. */
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
+  .touch-target {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 
 /* ─── System Map Motion ──────────────────────────────────────────

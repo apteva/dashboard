@@ -587,18 +587,18 @@ export function AgentNew() {
   };
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="w-full px-8 py-10">
-        <header className="mb-8">
-          <h1 className="text-text text-3xl font-bold">Build your agent</h1>
-          <p className="text-text-muted text-base mt-2">
+    <div className="h-full overflow-y-auto scroll-safe-bottom">
+      <div className="mx-auto w-full max-w-6xl px-4 py-4 sm:px-8 sm:py-10">
+        <header className="mb-5 sm:mb-8">
+          <h1 className="text-text text-2xl font-bold sm:text-3xl">Build your agent</h1>
+          <p className="text-text-muted text-sm mt-1.5 sm:mt-2 sm:text-base">
             A short guided setup. You can change everything later from the agent's detail page.
           </p>
         </header>
 
         <Progress current={stepIdx} steps={STEPS} />
 
-        <div className="border border-border rounded-lg p-8 bg-bg-card mt-6">
+        <div className="border border-border rounded-lg p-4 bg-bg-card mt-4 sm:mt-6 sm:p-8">
           {step.id === "template" && (
             <TemplateStep
               templates={templates}
@@ -653,18 +653,18 @@ export function AgentNew() {
             </div>
           )}
 
-          <div className="flex justify-between items-center mt-8 pt-6 border-t border-border">
+          <div className="page-safe-bottom sticky bottom-0 z-20 -mx-4 -mb-4 mt-8 flex items-center justify-between gap-3 border-t border-border bg-bg-card/95 px-4 py-3 backdrop-blur sm:static sm:mx-0 sm:mb-0 sm:bg-transparent sm:px-0 sm:pt-6 sm:pb-0">
             <button
               onClick={back}
               disabled={stepIdx === 0 || creating}
-              className="text-text-muted text-sm hover:text-text transition-colors disabled:opacity-30"
+              className="touch-target rounded-lg px-3 text-text-muted text-sm hover:bg-bg-hover hover:text-text transition-colors disabled:opacity-30"
             >
               ← Back
             </button>
             <button
               onClick={advance}
               disabled={creating}
-              className="px-5 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
+              className="touch-target min-w-[132px] px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50 sm:px-5"
             >
               {creating
                 ? Object.keys(installProgress).length > 0
@@ -685,7 +685,20 @@ export function AgentNew() {
 
 function Progress({ current, steps }: { current: number; steps: typeof STEPS }) {
   return (
-    <ol className="flex items-center justify-center gap-2 text-xs">
+    <>
+    <div className="sm:hidden rounded-lg border border-border bg-bg-card px-3 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-wide text-accent">Step {current + 1} of {steps.length}</div>
+          <div className="mt-0.5 text-sm font-semibold text-text">{steps[current]?.label}</div>
+        </div>
+        <div className="text-xs text-text-muted">{Math.round(((current + 1) / steps.length) * 100)}%</div>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
+        <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${((current + 1) / steps.length) * 100}%` }} />
+      </div>
+    </div>
+    <ol className="hidden items-center justify-center gap-2 text-xs sm:flex">
       {steps.map((s, i) => (
         <li key={s.id} className="flex items-center gap-2">
           <span
@@ -704,6 +717,7 @@ function Progress({ current, steps }: { current: number; steps: typeof STEPS }) 
         </li>
       ))}
     </ol>
+    </>
   );
 }
 

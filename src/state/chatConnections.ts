@@ -35,17 +35,18 @@
 //     close any live SSE for that instance (otherwise a successful
 //     delete leaves the SSE 404-retrying for the rest of the session).
 //
-// Reconnection: bounded. A connection that errors out is retried up
-// to MAX_RETRIES with a 1.5s gap. After that we give up — usually
-// the instance is gone, the user logged out, or the network is
-// genuinely down. Stops the previous "404 retry loop forever" class
-// of bugs cold.
+// Reconnection: three fast retries, then a low-frequency 30s backoff.
+// A transient server restart must not permanently downgrade chat to REST
+// polling, while the slow backoff still prevents a missing/deleted chat from
+// burning connection slots in a tight loop. Explicit disconnect/delete stops
+// every pending attempt.
 
 import { chat, type ChatMessageRow } from "../api";
 
 const BUFFER_MAX = 100;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1500;
+const DEGRADED_RETRY_DELAY_MS = 30_000;
 
 type MsgListener = (m: ChatMessageRow) => void;
 type StateListener = () => void;
@@ -91,7 +92,7 @@ interface Conn {
   closed: boolean;
 }
 
-class ChatConnectionsManager {
+export class ChatConnectionsManager {
   private byChat = new Map<string, Conn>();
   private allListeners = new Set<StateListener>();
 
@@ -335,22 +336,21 @@ class ChatConnectionsManager {
         c.es = null;
       }
       if (c.closed) return;
-      // Bounded retry. The previous unbounded loop kept connections
-      // 404-retrying forever and was the load-bearing piece in our
-      // "media card mount hangs the dashboard" bug — those retries
-      // ate connection-budget slots that other fetches needed.
+      // Retry quickly for ordinary transport blips, then remain recoverable
+      // at a low cadence. Permanently giving up here left a connected chat
+      // frozen until remount and silently forced the REST backstop to do all
+      // delivery after a brief server restart.
       c.retries += 1;
-      if (c.retries >= MAX_RETRIES) {
+      const degraded = c.retries >= MAX_RETRIES;
+      if (degraded) {
         c.failed = true;
-        c.closed = true;
         this.notify(c);
-        return;
       }
       if (c.retryTimer !== null) clearTimeout(c.retryTimer);
       c.retryTimer = window.setTimeout(() => {
         c.retryTimer = null;
         this.openConnection(chatId, instanceId);
-      }, RETRY_DELAY_MS);
+      }, degraded ? DEGRADED_RETRY_DELAY_MS : RETRY_DELAY_MS);
     };
   }
 

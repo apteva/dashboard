@@ -45,6 +45,8 @@ const result = await Bun.build({
   entrypoints: ["./src/main.tsx"],
   outdir: "./dist",
   target: "browser",
+  format: "esm",
+  splitting: true,
   minify: true,
   sourcemap: "linked",
   external: [
@@ -64,7 +66,10 @@ const result = await Bun.build({
     "process.env.NODE_ENV": '"production"',
   },
   naming: {
-    entry: "[name]-[hash].[ext]",
+    // Keep the application entry distinguishable from lazy route chunks.
+    // Several route files are also named main.tsx, so matching `main-*`
+    // after a split build can otherwise select the wrong output for HTML.
+    entry: "entry-[name]-[hash].[ext]",
     chunk: "[name]-[hash].[ext]",
     asset: "[name]-[hash].[ext]",
   },
@@ -208,14 +213,61 @@ for (const [from, to] of renames) {
 }
 
 // Step 3: Generate index.html with hashed paths
-const jsOutput = result.outputs.find((o) => o.path.endsWith(".js"));
-const jsFile = jsOutput ? jsOutput.path.split("/").pop() : "main.js";
+const jsOutput = result.outputs.find(
+  (o) => o.path.endsWith(".js") && /\/entry-main-[^/]+\.js$/.test(o.path),
+);
+if (!jsOutput) {
+  console.error("Build succeeded but the dashboard entry bundle was not emitted");
+  process.exit(1);
+}
+const jsFile = jsOutput.path.split("/").pop();
+
+const themeBootstrap = `(function() {
+      try {
+        var saved = JSON.parse(localStorage.getItem('apteva.appearance') || '{}');
+        var theme = (saved.theme === 'clean' || saved.theme === 'terminal') ? saved.theme : 'terminal';
+        var mode  = (saved.mode === 'light' || saved.mode === 'dark') ? saved.mode :
+                    (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.setAttribute('data-mode', mode);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'terminal');
+        document.documentElement.setAttribute('data-mode', 'dark');
+      }
+    })();`;
+const importMap = `{
+        "imports": {
+          "react": "/vendor/react.mjs",
+          "react/jsx-runtime": "/vendor/react-jsx-runtime.mjs",
+          "react/jsx-dev-runtime": "/vendor/react-jsx-runtime.mjs",
+          "react-dom": "/vendor/react-dom.mjs",
+          "react-dom/client": "/vendor/react-dom-client.mjs",
+          "@apteva/ui-kit": "/vendor/ui-kit.mjs"
+        }
+      }`;
+const scriptHash = (source: string) =>
+  new Bun.CryptoHasher("sha256").update(source).digest("base64");
+const contentSecurityPolicy = [
+  "default-src 'self'",
+  `script-src 'self' 'sha256-${scriptHash(themeBootstrap)}' 'sha256-${scriptHash(importMap)}'`,
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com",
+  "img-src 'self' data: blob: https:",
+  "media-src 'self' data: blob: https:",
+  "connect-src 'self' ws: wss:",
+  "frame-src 'self' https:",
+  "worker-src 'self' blob:",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join("; ");
 
 const html = `<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta http-equiv="Content-Security-Policy" content="${contentSecurityPolicy}" />
     <title>Apteva</title>
 
     <!-- Favicons. Opaque orange tile with a white mark; avoids Safari's
@@ -230,21 +282,7 @@ const html = `<!DOCTYPE html>
          first paint already has the right data-theme/data-mode set.
          Without this, every cold load flashes the default theme for
          one frame before the React tree picks up localStorage. -->
-    <script>
-    (function() {
-      try {
-        var saved = JSON.parse(localStorage.getItem('apteva.appearance') || '{}');
-        var theme = (saved.theme === 'clean' || saved.theme === 'terminal') ? saved.theme : 'terminal';
-        var mode  = (saved.mode === 'light' || saved.mode === 'dark') ? saved.mode :
-                    (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-        document.documentElement.setAttribute('data-theme', theme);
-        document.documentElement.setAttribute('data-mode', mode);
-      } catch (e) {
-        document.documentElement.setAttribute('data-theme', 'terminal');
-        document.documentElement.setAttribute('data-mode', 'dark');
-      }
-    })();
-    </script>
+    <script>${themeBootstrap}</script>
 
     <!-- Webfonts — JetBrains Mono drives the Terminal theme, Inter
          drives Clean. Both come from the same Google Fonts request;
@@ -256,18 +294,7 @@ const html = `<!DOCTYPE html>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css" />
     <!-- Importmap so dynamically-loaded panel modules import React from the host -->
-    <script type="importmap">
-      {
-        "imports": {
-          "react": "/vendor/react.mjs",
-          "react/jsx-runtime": "/vendor/react-jsx-runtime.mjs",
-          "react/jsx-dev-runtime": "/vendor/react-jsx-runtime.mjs",
-          "react-dom": "/vendor/react-dom.mjs",
-          "react-dom/client": "/vendor/react-dom-client.mjs",
-          "@apteva/ui-kit": "/vendor/ui-kit.mjs"
-        }
-      }
-    </script>
+    <script type="importmap">${importMap}</script>
   </head>
   <body>
     <div id="root"></div>

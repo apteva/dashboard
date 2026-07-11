@@ -19,7 +19,10 @@ export function setAuthInvalidHandler(fn: (() => void) | null) {
   onAuthInvalid = fn;
 }
 
-async function request<T>(
+const inFlightGETs = new Map<string, Promise<unknown>>();
+const API_DEBUG = process.env.NODE_ENV !== "production";
+
+function request<T>(
   method: string,
   path: string,
   body?: any,
@@ -29,65 +32,87 @@ async function request<T>(
   if (body) headers["Content-Type"] = "application/json";
 
   const url = `${BASE}${path}`;
-  console.log(`[api] → ${method} ${url}`);
-  const res = await fetch(url, {
-    method,
-    headers,
-    credentials: "same-origin",
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  console.log(`[api] ← ${res.status} ${method} ${url}`);
-  if (res.status === 401) {
-    // Soft signal only — no hard window.location.href redirect. Let
-    // AuthProvider flip its state so React Router handles navigation
-    // through the normal component tree. Skip the signal for /auth/
-    // paths themselves (so auth.me() returning 401 during initial
-    // load doesn't double-fire through the provider).
-    if (!path.startsWith("/auth/") && onAuthInvalid) {
-      console.log(`[api] 401 on ${path} → notifying AuthProvider`);
-      onAuthInvalid();
-    }
-    throw new Error("unauthorized");
-  }
-  if (!res.ok) {
-    const text = await res.text();
-    // Surface a structured error field when the server returned JSON
-    // on the 4xx/5xx. Two shapes the server actually emits:
-    //
-    //   { error: "..." }                                  (most handlers)
-    //   { ok:false, status_code, error, latency_ms, ... } (ProviderTestResult,
-    //                                                      ConnectionTestResult)
-    //
-    // Falling through to the raw text means a non-JSON 4xx (a 5xx
-    // body that's "internal error") still renders cleanly. The parsed
-    // object is attached on the thrown Error so callers that want
-    // richer detail (an inline test-result component) read it
-    // without re-parsing.
-    let msg = text || `${res.status}`;
-    let parsed: any = undefined;
-    if (text) {
-      try {
-        const obj = JSON.parse(text);
-        parsed = obj;
-        if (obj && typeof obj === "object") {
-          if (obj.health_check && typeof obj.detail === "string" && obj.detail.trim() !== "") {
-            msg = `${obj.error || "Credential check failed"} — ${obj.detail}`;
-          } else if (typeof obj.error === "string" && obj.error.trim() !== "") {
-            msg = obj.error;
-          } else if (typeof obj.message === "string" && obj.message.trim() !== "") {
-            msg = obj.message;
-          }
-        }
-      } catch {
-        // not JSON — leave msg as the raw text.
+  const execute = async (): Promise<T> => {
+    if (API_DEBUG) console.debug(`[api] → ${method} ${url}`);
+    const res = await fetch(url, {
+      method,
+      headers,
+      credentials: "same-origin",
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (API_DEBUG) console.debug(`[api] ← ${res.status} ${method} ${url}`);
+    if (res.status === 401) {
+      // Soft signal only — no hard window.location.href redirect. Let
+      // AuthProvider flip its state so React Router handles navigation
+      // through the normal component tree. Skip the signal for /auth/
+      // paths themselves (so auth.me() returning 401 during initial
+      // load doesn't double-fire through the provider).
+      if (!path.startsWith("/auth/") && onAuthInvalid) {
+        if (API_DEBUG) console.debug(`[api] 401 on ${path} → notifying AuthProvider`);
+        onAuthInvalid();
       }
+      throw new Error("unauthorized");
     }
-    const err: any = new Error(msg);
-    if (parsed !== undefined) err.body = parsed;
-    err.status = res.status;
-    throw err;
+    if (!res.ok) {
+      const text = await res.text();
+      // Surface a structured error field when the server returned JSON
+      // on the 4xx/5xx. Two shapes the server actually emits:
+      //
+      //   { error: "..." }                                  (most handlers)
+      //   { ok:false, status_code, error, latency_ms, ... } (ProviderTestResult,
+      //                                                      ConnectionTestResult)
+      //
+      // Falling through to the raw text means a non-JSON 4xx (a 5xx
+      // body that's "internal error") still renders cleanly. The parsed
+      // object is attached on the thrown Error so callers that want
+      // richer detail (an inline test-result component) read it
+      // without re-parsing.
+      let msg = text || `${res.status}`;
+      let parsed: any = undefined;
+      if (text) {
+        try {
+          const obj = JSON.parse(text);
+          parsed = obj;
+          if (obj && typeof obj === "object") {
+            if (obj.health_check && typeof obj.detail === "string" && obj.detail.trim() !== "") {
+              msg = `${obj.error || "Credential check failed"} — ${obj.detail}`;
+            } else if (typeof obj.error === "string" && obj.error.trim() !== "") {
+              msg = obj.error;
+            } else if (typeof obj.message === "string" && obj.message.trim() !== "") {
+              msg = obj.message;
+            }
+          }
+        } catch {
+          // not JSON — leave msg as the raw text.
+        }
+      }
+      const err: any = new Error(msg);
+      if (parsed !== undefined) err.body = parsed;
+      err.status = res.status;
+      throw err;
+    }
+    if (res.status === 204) return undefined as T;
+    return await res.json() as T;
+  };
+
+  // Dashboard panels often request the same read model in the same render
+  // pass (the root page previously fired five identical /agents calls).
+  // Share only truly concurrent GETs; there is no stale cache after settle,
+  // so mutation-driven refreshes still see fresh data immediately.
+  if (method === "GET" && body === undefined) {
+    const headerKey = JSON.stringify(Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)));
+    const key = `${url}|${headerKey}`;
+    const existing = inFlightGETs.get(key);
+    if (existing) return existing as Promise<T>;
+    const pending = execute();
+    inFlightGETs.set(key, pending);
+    const cleanup = () => {
+      if (inFlightGETs.get(key) === pending) inFlightGETs.delete(key);
+    };
+    void pending.then(cleanup, cleanup);
+    return pending;
   }
-  return res.json();
+  return execute();
 }
 
 // Server-wide settings (admin-editable, lives in server_settings table).
@@ -99,12 +124,59 @@ export interface ServerSettings {
     source: "db" | "env" | "unset";
     oauth_callback: string; // computed: <effective>/oauth/local/callback
   };
+  agent_lifecycle: {
+    update_policy: "restart" | "rolling" | "preserve";
+    boot_resume: "auto" | "staggered" | "manual";
+    boot_resume_delay: string;
+    rollout_delay: string;
+    legacy_detach_active: boolean;
+  };
 }
 
 export const serverSettings = {
   get: () => request<ServerSettings>("GET", "/settings/server"),
-  update: (patch: { public_url?: string }) =>
+  update: (patch: {
+    public_url?: string;
+    agent_update_policy?: "restart" | "rolling" | "preserve";
+    agent_boot_resume?: "auto" | "staggered" | "manual";
+    agent_boot_resume_delay?: string;
+    agent_rollout_delay?: string;
+  }) =>
     request<ServerSettings>("PUT", "/settings/server", patch),
+};
+
+export interface AgentCoreRollout {
+  id?: string;
+  state: "idle" | "running" | "completed" | "cancelled";
+  scope?: string;
+  project_id?: string;
+  total: number;
+  completed: number;
+  failed: number;
+  current_agent_id?: number;
+  current_agent_name?: string;
+  delay_seconds: number;
+  errors?: Record<string, string>;
+  started_at?: string;
+  finished_at?: string;
+  target_core_version?: string;
+}
+
+export const agentCoreRollouts = {
+  get: () => request<AgentCoreRollout>("GET", "/agents/core-rollout"),
+  startAgent: (agentId: number) =>
+    request<AgentCoreRollout>("POST", `/agents/${agentId}/core-update`),
+  startProject: (projectId: string, delaySeconds?: number) =>
+    request<AgentCoreRollout>("POST", "/agents/core-rollout", {
+      project_id: projectId,
+      ...(delaySeconds !== undefined ? { delay_seconds: delaySeconds } : {}),
+    }),
+  startAll: (delaySeconds?: number) =>
+    request<AgentCoreRollout>("POST", "/agents/core-rollout", {
+      all: true,
+      ...(delaySeconds !== undefined ? { delay_seconds: delaySeconds } : {}),
+    }),
+  cancel: () => request<{ cancel_requested: boolean }>("DELETE", "/agents/core-rollout"),
 };
 
 // Auth
@@ -1134,13 +1206,22 @@ export interface Agent {
   created_at: string;
 }
 
+export interface BackgroundMemoryState {
+  enabled: boolean;
+  previous?: boolean;
+  running: boolean;
+  restarted?: boolean;
+  restart_required: boolean;
+  memory_preserved?: boolean;
+}
+
 export const platformHelper = {
   get: () => request<Agent>("GET", "/platform/helper"),
 };
 
 export const instances = {
   list: (projectId?: string) => {
-    const params = projectId ? `?project_id=${projectId}` : "";
+    const params = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
     return request<Agent[]>("GET", `/agents${params}`);
   },
 
@@ -1210,6 +1291,16 @@ export const instances = {
 
   pause: (id: number) => request<{ paused: boolean }>("POST", `/agents/${id}/pause`),
 
+  backgroundMemory: {
+    get: (id: number) =>
+      request<BackgroundMemoryState>("GET", `/agents/${id}/background-memory`),
+    set: (id: number, enabled: boolean, restart = false) =>
+      request<BackgroundMemoryState>("PUT", `/agents/${id}/background-memory`, {
+        enabled,
+        restart,
+      }),
+  },
+
   sendEvent: (id: number, message: string | Array<{ type: string; text?: string; image_url?: { url: string }; audio_url?: { url: string; mime_type?: string } }>, threadId?: string) =>
     request<any>("POST", `/agents/${id}/event`, { message, ...(threadId ? { thread_id: threadId } : {}) }),
 
@@ -1252,10 +1343,55 @@ export interface ProviderDetail extends Provider {
   data: Record<string, string>;
 }
 
+export interface ProviderUsageWindow {
+  id: string;
+  used_percent: number;
+  duration_minutes?: number;
+  resets_at?: string;
+}
+
+export interface ProviderUsageLimit {
+  id: string;
+  label: string;
+  reached?: boolean;
+  windows?: ProviderUsageWindow[];
+}
+
+export interface ProviderUsageSnapshot {
+  supported: boolean;
+  provider_id: number;
+  kind?: "subscription_quota" | string;
+  plan?: string;
+  fetched_at?: string;
+  stale?: boolean;
+  limits?: ProviderUsageLimit[];
+  credits?: {
+    has_credits: boolean;
+    unlimited: boolean;
+    balance?: string;
+  };
+  rate_limit_reached_type?: string;
+}
+
 export interface ModelInfo {
   id: string;
   name: string;
+  description?: string;
   context_size?: number;
+  priority?: number;
+  supported_in_api?: boolean;
+  capabilities?: {
+    context_window?: number;
+    max_context_window?: number;
+    effective_context_window_percent?: number;
+    default_reasoning_level?: string;
+    supported_reasoning_levels?: Array<{ effort: string; description?: string }>;
+    input_modalities?: string[];
+    supports_parallel_tool_calls?: boolean;
+    supports_reasoning_summaries?: boolean;
+    supports_image_detail_original?: boolean;
+    supports_search_tool?: boolean;
+  };
   input_cost?: number;
   output_cost?: number;
 }
@@ -1325,7 +1461,18 @@ export const providers = {
 
   get: (id: number) => request<ProviderDetail>("GET", `/providers/${id}`),
 
-  models: (id: number) => request<ModelInfo[]>("GET", `/providers/${id}/models`),
+  models: (id: number, refresh = false) =>
+    request<ModelInfo[]>("GET", `/providers/${id}/models${refresh ? "?refresh=1" : ""}`),
+
+  usage: (id: number, refresh = false) =>
+    request<ProviderUsageSnapshot>("GET", `/providers/${id}/usage${refresh ? "?refresh=1" : ""}`),
+
+  updateModels: (id: number, models: { large: string; medium: string; small: string }) =>
+    request<{ status: string; large: string; medium: string; small: string }>(
+      "PUT",
+      `/providers/${id}/models`,
+      models,
+    ),
 
   create: (type: string, name: string, data: Record<string, string>, providerTypeId?: number, projectId?: string) =>
     request<Provider>("POST", "/providers", {
@@ -3186,7 +3333,19 @@ export interface AlertMessageRow {
   title: string;
   body: string;
   severity: string;
-  dismissed?: boolean;
+	dismissed?: boolean;
+}
+
+export interface CurrentStatusMessageRow {
+	message: ChatMessageRow;
+	instance_id: number;
+	instance_name: string;
+	project_id: string;
+	title: string;
+	detail?: string;
+	state: "working" | "waiting" | "blocked" | "completed";
+	progress?: number;
+	stale: boolean;
 }
 
 export interface ChatMessageContext {
@@ -3271,12 +3430,19 @@ export const chat = {
     return request<ReportMessageRow[]>("GET", `/apps/channel-chat/report-messages?${qs.toString()}`);
   },
 
-  alertMessages: (projectId?: string, limit: number = 20) => {
+	alertMessages: (projectId?: string, limit: number = 20) => {
     const qs = new URLSearchParams();
     if (projectId) qs.set("project_id", projectId);
     qs.set("limit", String(limit));
-    return request<AlertMessageRow[]>("GET", `/apps/channel-chat/alert-messages?${qs.toString()}`);
-  },
+		return request<AlertMessageRow[]>("GET", `/apps/channel-chat/alert-messages?${qs.toString()}`);
+	},
+
+	currentStatuses: (projectId?: string) => {
+		const qs = new URLSearchParams();
+		if (projectId) qs.set("project_id", projectId);
+		const suffix = qs.toString() ? `?${qs.toString()}` : "";
+		return request<CurrentStatusMessageRow[]>("GET", `/apps/channel-chat/current-statuses${suffix}`);
+	},
 
   messageAction: (messageId: number, actionId: string, note?: string) =>
     request<{ message: ChatMessageRow; status: string; forwarded: boolean; delivery_error?: string }>(

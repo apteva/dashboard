@@ -29,8 +29,10 @@ export function ContextAgentChatWidget({
     () => describeContext(location.pathname, currentProject?.id, currentProject?.name),
     [location.pathname, currentProject?.id, currentProject?.name],
   );
+  const isChatRoute = location.pathname === "/chat" || location.pathname.startsWith("/chat/");
 
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<number | null>(() => {
     try {
@@ -43,7 +45,9 @@ export function ContextAgentChatWidget({
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
 
-  const selectedAgent = agents.find((a) => a.id === selectedAgentId) || null;
+  const projectId = currentProject?.id ?? null;
+  const activeAgents = loadedProjectId === projectId ? agents : [];
+  const selectedAgent = activeAgents.find((a) => a.id === selectedAgentId) || null;
   const selectedIsHelper = selectedAgent?.kind === "platform_helper";
 
   const subscribeSelectedAgent = useCallback<SubscribeFn>(
@@ -61,6 +65,10 @@ export function ContextAgentChatWidget({
   }, [open]);
 
   useEffect(() => {
+    if (isChatRoute && open) onClose();
+  }, [isChatRoute, onClose, open]);
+
+  useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -72,6 +80,8 @@ export function ContextAgentChatWidget({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    setAgents([]);
+    setLoadedProjectId(null);
     setAgentsLoading(true);
     Promise.allSettled([platformHelper.get(), instances.list(currentProject?.id)])
       .then((results) => {
@@ -87,19 +97,20 @@ export function ContextAgentChatWidget({
         });
         const next = helper ? [helper, ...sorted.filter((a) => a.id !== helper.id)] : sorted;
         setAgents(next);
+        setLoadedProjectId(projectId);
         const routeAgentId = context.agent_id;
-        if (routeAgentId && next.some((a) => a.id === routeAgentId)) {
-          setSelectedAgentId((prev) => prev ?? routeAgentId);
-        } else if (selectedAgentId && !next.some((a) => a.id === selectedAgentId)) {
-          setSelectedAgentId(null);
-        }
+        setSelectedAgentId((prev) => {
+          if (routeAgentId && next.some((a) => a.id === routeAgentId)) return prev ?? routeAgentId;
+          if (prev && !next.some((a) => a.id === prev)) return null;
+          return prev;
+        });
       })
       .catch((e) => !cancelled && setError(errorMessage(e)))
       .finally(() => !cancelled && setAgentsLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [open, currentProject?.id, context.agent_id, selectedAgentId]);
+  }, [open, projectId, context.agent_id]);
 
   useEffect(() => {
     try {
@@ -121,6 +132,7 @@ export function ContextAgentChatWidget({
       const helper = helperResult.status === "fulfilled" ? helperResult.value : null;
       const normal = rows.status === "fulfilled" ? rows.value : [];
       setAgents(helper ? [helper, ...normal.filter((a) => a.id !== helper.id)] : normal);
+      setLoadedProjectId(projectId);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -128,13 +140,15 @@ export function ContextAgentChatWidget({
     }
   };
 
+  if (isChatRoute) return null;
+
   return (
     <>
       {!open && (
         <button
           type="button"
           onClick={onOpen}
-          className="fixed bottom-5 right-5 z-40 flex h-12 w-12 items-center justify-center rounded-full border border-accent/50 bg-accent text-bg shadow-xl shadow-black/25 hover:bg-accent-hover transition-colors"
+          className="floating-chat-launcher-safe touch-target fixed z-40 flex h-12 w-12 items-center justify-center rounded-full border border-accent/50 bg-accent text-bg shadow-xl shadow-black/25 hover:bg-accent-hover transition-colors"
           title="Ask an agent about this page"
           aria-label="Ask an agent about this page"
         >
@@ -143,13 +157,16 @@ export function ContextAgentChatWidget({
       )}
 
       {open && (
+        <>
+        <button type="button" className="fixed inset-0 z-40 bg-black/45 sm:hidden" onClick={onClose} aria-label="Close agent chat" />
         <section
-          className="fixed inset-x-2 bottom-2 top-14 z-50 flex flex-col overflow-hidden rounded-lg border border-border bg-bg shadow-2xl shadow-black/30 sm:inset-auto sm:bottom-4 sm:right-4 sm:h-[min(700px,calc(100vh-5rem))] sm:w-[440px] sm:max-w-[calc(100vw-2rem)]"
+          className="fixed inset-x-0 bottom-0 z-50 flex h-[calc(100dvh-var(--safe-area-top))] flex-col overflow-hidden rounded-t-xl border border-border bg-bg shadow-2xl shadow-black/30 sm:inset-auto sm:bottom-4 sm:right-4 sm:h-[min(700px,calc(100dvh-5rem))] sm:w-[440px] sm:max-w-[calc(100vw-2rem)] sm:rounded-lg"
           role="dialog"
+          aria-modal="true"
           aria-label="Ask an agent"
         >
-          <div className="border-b border-border px-4 py-3 flex items-start gap-3">
-            <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded bg-accent text-bg">
+          <div className="min-h-14 border-b border-border px-2 py-2 sm:px-4 sm:py-3 flex items-center gap-2 sm:gap-3">
+            <div className="hidden sm:flex mt-0.5 h-9 w-9 shrink-0 items-center justify-center rounded bg-accent text-bg">
               <BotIcon />
             </div>
             <div className="min-w-0 flex-1">
@@ -169,27 +186,29 @@ export function ContextAgentChatWidget({
               </p>
             </div>
             {selectedAgent && (
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex shrink-0 items-center gap-1 sm:gap-2">
                 <button
                   type="button"
                   onClick={() => setSelectedAgentId(null)}
-                  className="rounded border border-border px-2 py-1 text-xs text-text-muted hover:text-text hover:bg-bg-hover"
+                  className="touch-target rounded border border-border px-2 text-xs text-text-muted hover:text-text hover:bg-bg-hover"
+                  aria-label="Back to agents"
                 >
-                  Agents
+                  <span className="sm:hidden">‹</span><span className="hidden sm:inline">Agents</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => navigate(`/agents/${selectedAgent.id}`)}
-                  className="rounded border border-border px-2 py-1 text-xs text-text-muted hover:text-text hover:bg-bg-hover"
+                  className="touch-target inline-flex h-11 w-11 items-center justify-center rounded text-text-muted hover:text-text hover:bg-bg-hover sm:h-auto sm:w-auto sm:border sm:border-border sm:px-2 sm:py-1 sm:text-xs"
+                  aria-label="Open agent details"
                 >
-                  Open
+                  <span className="sm:hidden">↗</span><span className="hidden sm:inline">Open</span>
                 </button>
               </div>
             )}
             <button
               type="button"
               onClick={onClose}
-              className="rounded border border-border px-2 py-1 text-xs text-text-muted hover:text-text hover:bg-bg-hover"
+              className="touch-target inline-flex h-11 w-11 items-center justify-center rounded text-xl text-text-muted hover:text-text hover:bg-bg-hover sm:h-auto sm:w-auto sm:border sm:border-border sm:px-2 sm:py-1 sm:text-xs"
               title="Close"
             >
               ×
@@ -212,7 +231,7 @@ export function ContextAgentChatWidget({
                       type="button"
                       onClick={startSelectedAgent}
                       disabled={starting}
-                      className="rounded border border-accent px-3 py-1.5 text-xs font-semibold text-accent hover:bg-accent hover:text-bg disabled:opacity-50"
+                      className="touch-target rounded border border-accent px-4 text-xs font-semibold text-accent hover:bg-accent hover:text-bg disabled:opacity-50"
                     >
                       {starting ? "Starting…" : "Start"}
                     </button>
@@ -232,18 +251,18 @@ export function ContextAgentChatWidget({
               )}
             </>
           ) : (
-            <div className="flex-1 overflow-y-auto p-3">
+            <div className="page-safe-bottom flex-1 overflow-y-auto p-3">
               {agentsLoading && (
                 <div className="mb-2 text-right text-[10px] text-text-muted">loading…</div>
               )}
               <div>
                 <div className="space-y-2">
-                  {agents.map((agent) => (
+                  {activeAgents.map((agent) => (
                     <button
                       key={agent.id}
                       type="button"
                       onClick={() => setSelectedAgentId(agent.id)}
-                      className="w-full rounded border border-border bg-bg-card p-3 text-left hover:border-accent/60 hover:bg-bg-hover transition-colors"
+                      className="w-full min-h-16 rounded-lg border border-border bg-bg-card p-3 text-left hover:border-accent/60 hover:bg-bg-hover transition-colors"
                     >
                       <div className="flex items-start gap-3">
                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded bg-bg-input text-xs font-semibold text-text">
@@ -272,7 +291,7 @@ export function ContextAgentChatWidget({
                       </div>
                     </button>
                   ))}
-                  {!agentsLoading && agents.length === 0 && (
+                  {!agentsLoading && activeAgents.length === 0 && (
                     <div className="rounded border border-border bg-bg-card p-4 text-sm text-text-muted">
                       No agents in this project yet.
                     </div>
@@ -282,6 +301,7 @@ export function ContextAgentChatWidget({
             </div>
           )}
         </section>
+        </>
       )}
     </>
   );

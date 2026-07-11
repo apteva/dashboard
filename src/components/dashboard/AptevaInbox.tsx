@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   chat,
   type AlertMessageRow,
@@ -25,9 +25,13 @@ export function AptevaInbox({
   const [approvals, setApprovals] = useState<ApprovalMessageRow[]>([]);
   const [reports, setReports] = useState<ReportMessageRow[]>([]);
   const [alerts, setAlerts] = useState<AlertMessageRow[]>([]);
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const loadEpoch = useRef(0);
+  const scope = allProjects ? "*" : currentProject?.id ?? null;
+  const scopeIsCurrent = loadedScope === scope;
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -35,11 +39,15 @@ export function AptevaInbox({
   }, []);
 
   const load = useCallback(() => {
+    const epoch = ++loadEpoch.current;
     const projectId = allProjects ? undefined : currentProject?.id;
     if (!allProjects && !projectId) {
       setApprovals([]);
       setReports([]);
       setAlerts([]);
+      setLoading(false);
+      setError(null);
+      setLoadedScope(scope);
       return;
     }
     setLoading(true);
@@ -50,13 +58,19 @@ export function AptevaInbox({
       chat.alertMessages(projectId, limit),
     ])
       .then(([approvalRows, reportRows, alertRows]) => {
+        if (epoch !== loadEpoch.current) return;
         setApprovals(approvalRows);
         setReports(reportRows);
         setAlerts(alertRows);
+        setLoadedScope(scope);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
-  }, [allProjects, currentProject?.id, limit]);
+      .catch((e) => {
+        if (epoch === loadEpoch.current) setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (epoch === loadEpoch.current) setLoading(false);
+      });
+  }, [allProjects, currentProject?.id, limit, scope]);
 
   useEffect(() => {
     let timer: number | null = null;
@@ -98,14 +112,14 @@ export function AptevaInbox({
 
   const items = useMemo(() => {
     const merged: InboxItem[] = [
-      ...approvals.map((row): InboxItem => ({ kind: "approval", row })),
-      ...reports.map((row): InboxItem => ({ kind: "report", row })),
-      ...alerts.map((row): InboxItem => ({ kind: "alert", row })),
+      ...(scopeIsCurrent ? approvals : []).map((row): InboxItem => ({ kind: "approval", row })),
+      ...(scopeIsCurrent ? reports : []).map((row): InboxItem => ({ kind: "report", row })),
+      ...(scopeIsCurrent ? alerts : []).map((row): InboxItem => ({ kind: "alert", row })),
     ];
     return merged
       .sort((a, b) => b.row.message.id - a.row.message.id)
       .slice(0, limit);
-  }, [alerts, approvals, reports, limit]);
+  }, [alerts, approvals, reports, limit, scopeIsCurrent]);
 
   return (
     <section className="border border-border bg-bg-card rounded-lg min-h-[300px] flex flex-col overflow-hidden">

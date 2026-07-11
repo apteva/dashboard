@@ -32,11 +32,12 @@ import {
 import { Modal } from "../components/Modal";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 
 const NETWORK_MODES = ["passthrough", "block", "record", "replay"] as const;
 const INTEGRATION_MODES = ["mock", "real"] as const;
 const inputClass = "px-2 py-1.5 rounded border border-border bg-bg text-text";
-const buttonClass = "text-xs px-2 py-1 rounded border border-border hover:bg-bg-subtle disabled:opacity-50";
+const buttonClass = "touch-target text-xs px-2 py-1 rounded border border-border hover:bg-bg-subtle disabled:opacity-50";
 
 type SeedDraft = {
   id: number;
@@ -376,7 +377,7 @@ export function Environments() {
   };
 
   return (
-    <div className="h-full flex flex-col p-6 gap-4 overflow-auto">
+    <div className="page-safe-bottom h-full flex flex-col p-4 sm:p-6 gap-4 overflow-auto">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
@@ -392,7 +393,7 @@ export function Environments() {
           </p>
         </div>
         <button
-          className="px-3 py-1.5 rounded border border-border text-sm hover:bg-bg-subtle disabled:opacity-50"
+          className="touch-target px-3 py-1.5 rounded border border-border text-sm hover:bg-bg-subtle disabled:opacity-50"
           onClick={() => setShowCreate((v) => !v)}
           disabled={!projectId}
         >
@@ -718,9 +719,9 @@ function EnvironmentCard({
   const networkMode = environmentNetworkMode(environment);
   const integrationMode = environmentIntegrationMode(environment);
   return (
-    <div className="rounded border border-border bg-bg-card p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 min-w-0">
+    <div className="rounded-lg border border-border bg-bg-card p-3 sm:p-4">
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
           <span className="font-medium text-text truncate">{environment.id}</span>
           <span className="text-xs px-1.5 py-0.5 rounded bg-bg-subtle text-text-muted">network: {networkMode}</span>
           <span className="text-xs px-1.5 py-0.5 rounded bg-bg-subtle text-text-muted">integrations: {integrationMode}</span>
@@ -732,7 +733,7 @@ function EnvironmentCard({
           <span className="text-xs text-text-muted">{appNames.length} apps</span>
           <span className="text-xs text-text-muted">{environment.connections?.length || 0} connections</span>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
           <button className="text-xs px-2 py-1 rounded border border-accent/50 text-accent hover:bg-accent/10" onClick={onOpen}>
             Open
           </button>
@@ -790,32 +791,7 @@ function EnvironmentCard({
 
       {callsOpen && running && (
         <div className="mt-3 border-t border-border pt-3">
-          {calls.length === 0 ? (
-            <p className="text-xs text-text-muted">No edge calls recorded yet.</p>
-          ) : (
-            <table className="w-full text-xs">
-              <thead className="text-text-muted text-left">
-                <tr>
-                  <th className="py-1">Method</th>
-                  <th>Host</th>
-                  <th>Path</th>
-                  <th>Status</th>
-                  <th>Disposition</th>
-                </tr>
-              </thead>
-              <tbody>
-                {calls.map((c, i) => (
-                  <tr key={i} className="border-t border-border/60">
-                    <td className="py-1 text-text">{c.method}</td>
-                    <td className="text-text-muted">{c.host}</td>
-                    <td className="text-text-muted truncate max-w-[28rem]">{c.path}</td>
-                    <td className="text-text-muted">{c.status || "-"}</td>
-                    <td className="text-text-muted">{c.mocked ? "mocked" : c.allowed ? "allowed" : c.recorded ? "recorded" : c.blocked ? "blocked" : "seen"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          <EnvironmentCallsContent calls={calls} />
         </div>
       )}
     </div>
@@ -833,6 +809,8 @@ export function EnvironmentDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [showMap, setShowMap] = useState(false);
+  const isDesktop = useMediaQuery("(min-width: 768px)");
   const [destroyTarget, setDestroyTarget] = useState<EnvironmentSummary | null>(null);
   const [destroying, setDestroying] = useState(false);
   usePageTitle(["Environment", environment?.id || id || "loading"]);
@@ -999,7 +977,26 @@ export function EnvironmentDetail() {
         </div>
       )}
 
-      <EnvironmentSystemMap environment={environment} refreshKey={refreshKey} wide />
+      {isDesktop ? (
+        <EnvironmentSystemMap environment={environment} refreshKey={refreshKey} wide />
+      ) : (
+        <section className="rounded-lg border border-border bg-bg-card p-4">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-accent">System map</div>
+          <h2 className="mt-1 text-sm font-semibold text-text">Topology and live traffic</h2>
+          <p className="mt-1 text-xs leading-relaxed text-text-muted">Open the map only when you need the full topology. The summary and controls remain lightweight on mobile.</p>
+          <button type="button" onClick={() => setShowMap(true)} className="touch-target mt-3 w-full rounded-lg border border-accent/40 px-4 text-sm font-semibold text-accent">Open full-screen map</button>
+        </section>
+      )}
+
+      <Modal open={showMap} onClose={() => setShowMap(false)} width="max-w-none" ariaLabel="Environment system map">
+        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="min-w-0"><div className="text-[10px] font-bold uppercase tracking-wide text-accent">System map</div><h2 className="truncate text-base font-semibold text-text">{environment.id}</h2></div>
+          <button type="button" onClick={() => setShowMap(false)} className="touch-target inline-flex h-11 w-11 items-center justify-center rounded text-xl text-text-muted" aria-label="Close map">×</button>
+        </div>
+        <div className="page-safe-bottom min-h-[70dvh] overflow-auto">
+          <EnvironmentSystemMap environment={environment} refreshKey={refreshKey} wide />
+        </div>
+      </Modal>
 
       <EnvironmentSubscriptionsPanel
         environment={environment}
@@ -1047,10 +1044,16 @@ export function EnvironmentDetail() {
 function EnvironmentCallsTable({ calls }: { calls: InterceptedCall[] }) {
   return (
     <div className="rounded border border-border bg-bg-card p-3">
-      {calls.length === 0 ? (
-        <p className="text-xs text-text-muted">No edge calls recorded yet.</p>
-      ) : (
-        <table className="w-full text-xs">
+      <EnvironmentCallsContent calls={calls} />
+    </div>
+  );
+}
+
+function EnvironmentCallsContent({ calls }: { calls: InterceptedCall[] }) {
+  if (calls.length === 0) return <p className="text-xs text-text-muted">No edge calls recorded yet.</p>;
+  return (
+    <>
+        <table className="hidden w-full text-xs md:table">
           <thead className="text-text-muted text-left">
             <tr>
               <th className="py-1">Method</th>
@@ -1072,8 +1075,16 @@ function EnvironmentCallsTable({ calls }: { calls: InterceptedCall[] }) {
             ))}
           </tbody>
         </table>
-      )}
-    </div>
+        <div className="space-y-2 md:hidden">
+          {calls.map((call, index) => (
+            <article key={`${call.ts}-${index}`} className="rounded-lg border border-border bg-bg p-3">
+              <div className="flex items-start justify-between gap-3"><div className="font-mono text-xs font-semibold text-text">{call.method} {call.host}</div><span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-text-muted">{call.status || "-"}</span></div>
+              <div className="mt-2 break-all font-mono text-[11px] text-text-muted">{call.path}</div>
+              <div className="mt-2 text-[10px] uppercase tracking-wide text-text-dim">{call.mocked ? "mocked" : call.allowed ? "allowed" : call.recorded ? "recorded" : call.blocked ? "blocked" : "seen"}</div>
+            </article>
+          ))}
+        </div>
+    </>
   );
 }
 

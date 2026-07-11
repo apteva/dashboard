@@ -577,14 +577,15 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
           return prev;
         }
         // First chunk for this (thread, tool, id) — open a new entry.
-        return [...updated, {
+        const next: ToolEntry = {
           id: "", name: chunkTool, reason: "",
           threadId, done: false, time: now,
           state: "streaming",
           streamingArgs: chunk,
           streamKey: key,
           iteration: iter,
-        }].slice(-20);
+        };
+        return [...updated, next].slice(-20);
       });
       return;
     }
@@ -640,13 +641,14 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
             return updated;
           }
         }
-        return [...updated, {
+        const next: ToolEntry = {
           id: callId, name: toolName, reason,
           threadId, done: false, time: eventTime,
           state: "called",
           iteration: iter,
           streamKey,
-        }].slice(-20);
+        };
+        return [...updated, next].slice(-20);
       });
     }
 

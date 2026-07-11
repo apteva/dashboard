@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { core, instances as instancesAPI, telemetry, type Thread, type TelemetryEvent } from "../api";
+import { core, instances as instancesAPI, telemetry, type BackgroundMemoryState, type Thread, type TelemetryEvent } from "../api";
 
 // UnconsciousPanel — operator-visible window into the agent's
 // background memory-consolidation thread (see core/thinker.go
 // unconsciousDirectiveV2). Derives everything from generic API
-// endpoints rather than a dedicated unconscious surface:
+// endpoints plus the narrow background-memory setting surface:
 //
 //   * GET /agents/:id/threads — find the row whose id === "unconscious".
 //     The thread row already carries iteration, rate (the unconscious's
@@ -19,13 +19,13 @@ import { core, instances as instancesAPI, telemetry, type Thread, type Telemetry
 //       c) 24h totals — pace calls (= cycles), writes, force-wakes
 //          (an `event.received` whose data.text starts with "[wake]").
 //
-// Polls every 5s. The cost is a single GET on each loop tick; the
-// telemetry table is indexed on (agent_id, thread_id) so this stays
-// cheap even on long-lived agents.
+// Polls every 5s. Threads, telemetry, and the narrow persisted setting are
+// fetched together; telemetry is indexed on (agent_id, thread_id).
 
 interface Props {
   instanceId: number;
   compact?: boolean;
+  onAgentReload?: () => void;
 }
 
 interface CycleStats {
@@ -176,11 +176,15 @@ function toolColor(name: string): string {
   }
 }
 
-export function UnconsciousPanel({ instanceId, compact = false }: Props) {
+export function UnconsciousPanel({ instanceId, compact = false, onAgentReload }: Props) {
   const [thread, setThread] = useState<Thread | null>(null);
   const [events, setEvents] = useState<TelemetryEvent[]>([]);
+  const [setting, setSetting] = useState<BackgroundMemoryState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [settingBusy, setSettingBusy] = useState(false);
+  const [settingError, setSettingError] = useState<string | null>(null);
+  const [pendingEnabled, setPendingEnabled] = useState<boolean | null>(null);
   // Manual-wake UI. wakeReason holds the optional free-text reason
   // the operator typed; when waking is true the button is disabled +
   // shows a loading label. wakeError surfaces the upstream failure
@@ -200,12 +204,14 @@ export function UnconsciousPanel({ instanceId, compact = false }: Props) {
       return;
     }
     try {
-      const [threads, telem] = await Promise.all([
-        core.threads(instanceId),
-        telemetry.query(instanceId, undefined, 200, "unconscious"),
+      const [threads, telem, backgroundMemory] = await Promise.all([
+        core.threads(instanceId).catch(() => [] as Thread[]),
+        telemetry.query(instanceId, undefined, 200, "unconscious").catch(() => [] as TelemetryEvent[]),
+        instancesAPI.backgroundMemory.get(instanceId),
       ]);
       setThread(threads.find((t) => t.id === "unconscious") || null);
       setEvents(telem);
+      setSetting(backgroundMemory);
       setError(null);
     } catch (e: any) {
       setError(e?.message || "failed to load");
@@ -245,6 +251,32 @@ export function UnconsciousPanel({ instanceId, compact = false }: Props) {
   }, [instanceId]);
 
   const state = useMemo(() => derive(thread, events), [thread, events]);
+  const configured = setting?.enabled ?? state.enabled;
+
+  const applySetting = async (enabled: boolean, restart: boolean) => {
+    setSettingBusy(true);
+    setSettingError(null);
+    try {
+      const next = await instancesAPI.backgroundMemory.set(instanceId, enabled, restart);
+      setSetting(next);
+      setPendingEnabled(null);
+      await reload();
+      onAgentReload?.();
+    } catch (e: any) {
+      setSettingError(e?.message || "background memory update failed");
+    } finally {
+      setSettingBusy(false);
+    }
+  };
+
+  const requestSetting = (enabled: boolean) => {
+    setSettingError(null);
+    if (setting?.running) {
+      setPendingEnabled(enabled);
+      return;
+    }
+    void applySetting(enabled, false);
+  };
 
   if (loading) {
     return <div className={compact ? "border-b border-border px-4 py-3 text-xs text-text-muted" : "p-4 text-xs text-text-muted"}>Loading…</div>;
@@ -252,13 +284,70 @@ export function UnconsciousPanel({ instanceId, compact = false }: Props) {
   if (error) {
     return <div className={compact ? "border-b border-border px-4 py-3 text-xs text-red" : "p-4 text-xs text-red"}>Error: {error}</div>;
   }
+  const settingControl = (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={configured}
+      onClick={() => requestSetting(!configured)}
+      disabled={settingBusy}
+      className={`inline-flex h-7 items-center gap-2 rounded-full border px-2 text-[10px] font-semibold transition-colors disabled:opacity-50 ${
+        configured ? "border-green/40 bg-green/10 text-green" : "border-border bg-bg-hover text-text-muted"
+      }`}
+      title={configured ? "Disable background memory" : "Enable background memory"}
+    >
+      <span className={`h-2 w-2 rounded-full ${configured ? "bg-green" : "bg-text-dim"}`} />
+      {settingBusy ? "Saving…" : configured ? "On" : "Off"}
+    </button>
+  );
+
+  const restartPrompt = pendingEnabled != null && (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-yellow/40 bg-yellow/5 px-3 py-2 text-xs">
+      <span className="text-text-muted">Restart this agent to {pendingEnabled ? "enable" : "disable"} background memory.</span>
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={() => setPendingEnabled(null)} disabled={settingBusy} className="text-text-muted hover:text-text">Cancel</button>
+        <button
+          type="button"
+          onClick={() => void applySetting(pendingEnabled, true)}
+          disabled={settingBusy}
+          className="rounded bg-accent px-2.5 py-1 font-semibold text-bg disabled:opacity-50"
+        >
+          {settingBusy ? "Restarting…" : `${pendingEnabled ? "Enable" : "Disable"} & restart`}
+        </button>
+      </div>
+    </div>
+  );
+
+  if (!configured) {
+    return (
+      <div className={`${compact ? "border-b border-border px-4 py-3" : "p-4"} space-y-3 text-xs text-text-muted leading-relaxed`}>
+        <header className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-[10px] font-bold uppercase tracking-wide text-text-muted">Background Memory</h2>
+            <p className="mt-0.5">Off · this agent is currently stateless.</p>
+          </div>
+          {settingControl}
+        </header>
+        {restartPrompt}
+        {settingError && <div className="text-red">{settingError}</div>}
+      </div>
+    );
+  }
+
   if (!state.enabled) {
     return (
-      <div className={`${compact ? "border-b border-border px-4 py-3" : "p-4"} text-xs text-text-muted leading-relaxed`}>
-        <p className="mb-1">Background memory is not running for this agent.</p>
-        {!compact && (
-          <p>Enable it by setting <code className="text-accent">unconscious: true</code> in the agent config, then restart.</p>
-        )}
+      <div className={`${compact ? "border-b border-border px-4 py-3" : "p-4"} space-y-3 text-xs text-text-muted leading-relaxed`}>
+        <header className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-[10px] font-bold uppercase tracking-wide text-text-muted">Background Memory</h2>
+            <p className="mt-0.5">
+              {setting?.running ? "Enabled · consolidation thread is starting." : "Enabled · start the agent to run consolidation."}
+            </p>
+          </div>
+          {settingControl}
+        </header>
+        {restartPrompt}
+        {settingError && <div className="text-red">{settingError}</div>}
       </div>
     );
   }
@@ -327,14 +416,10 @@ export function UnconsciousPanel({ instanceId, compact = false }: Props) {
               consolidation thread · last activity {relTime(state.lastEventAt)}
             </div>
           </div>
-          {wakeControl}
+          <div className="flex items-center gap-2">{settingControl}{wakeControl}</div>
         </header>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-          <Stat label="Pace" value={state.thread?.rate || "—"} hint="self-set sleep interval" />
-          <Stat label="Cycles" value={String(state.totals24h.cycles)} hint="24h consolidation cycles" />
-          <Stat label="Writes" value={String(state.totals24h.writes)} hint="24h remember + supersede + drop" />
-          <Stat label="Wakes" value={String(state.totals24h.forceWakes)} hint="24h manual or automatic wakes" />
-        </div>
+        {restartPrompt}
+        {settingError && <div className="text-red text-xs">{settingError}</div>}
       </div>
     );
   }
@@ -346,8 +431,10 @@ export function UnconsciousPanel({ instanceId, compact = false }: Props) {
           <h2 className="text-text text-sm font-bold">// UNCONSCIOUS</h2>
           <span className="text-text-muted text-xs">memory-consolidation thread</span>
         </div>
-        {wakeControl}
+        <div className="flex items-center gap-2">{settingControl}{wakeControl}</div>
       </header>
+      {restartPrompt}
+      {settingError && <div className="text-red text-xs">{settingError}</div>}
 
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Pace" value={state.thread?.rate || "—"} hint="self-set sleep interval" />

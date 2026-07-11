@@ -1,15 +1,19 @@
-// Main pane for /chat — header above an embedded ChatPanel.
+// Conversation pane for /chat. ChatPanel owns the single integrated header so
+// connection state and conversation actions never create a second mobile bar.
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { ChatPanel } from "../ChatPanel";
+import { Modal } from "../Modal";
+import { AgentContextCard } from "./AgentContextCard";
 import type { Agent } from "../../api";
 import type { SubscribeFn } from "../AgentView";
-import { Link } from "react-router-dom";
 
 interface Props {
   chatId: string | null;
   instance: Agent | null;
+  onBack: () => void;
   onToggleRightPane: () => void;
   rightPaneOpen: boolean;
 }
@@ -17,10 +21,13 @@ interface Props {
 export function ChatMain({
   chatId,
   instance,
+  onBack,
   onToggleRightPane,
   rightPaneOpen,
 }: Props) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [contextOpen, setContextOpen] = useState(false);
   const instanceId = instance?.id;
   const subscribe = useCallback<SubscribeFn>(
     (listener) => {
@@ -32,60 +39,53 @@ export function ChatMain({
 
   if (!chatId || !instance) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div className="flex h-full items-center justify-center p-6">
         <div className="text-center">
-          <div className="text-text-dim text-sm mb-1">{t("chat.main.noChatSelected")}</div>
-          <div className="text-text-muted text-xs">
-            {t("chat.main.pickAgent")} <kbd className="px-1 bg-bg-input rounded">⌘K</kbd>
-          </div>
+          <button type="button" onClick={onBack} className="touch-target mb-4 rounded-lg border border-border px-4 text-sm text-text md:hidden">
+            Back to conversations
+          </button>
+          <div className="mb-1 text-sm text-text-dim">{t("chat.main.noChatSelected")}</div>
+          <div className="text-xs text-text-muted">{t("chat.main.pickAgent")}</div>
         </div>
       </div>
     );
   }
 
-  const running = instance.status === "running";
-
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
-        <span
-          className={`w-2 h-2 rounded-full shrink-0 ${
-            running ? "bg-green" : "bg-text-dim"
-          }`}
-          title={instance.status}
-        />
-        <div className="flex-1 min-w-0">
-          <div className="text-sm text-text font-medium truncate">{instance.name}</div>
-          <div className="text-[11px] text-text-muted">
-            #{instance.id} · {instance.mode} · {instance.status}
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
-          <Link
-            to={`/agents/${instance.id}`}
-            className="text-xs text-text-muted hover:text-text border border-border rounded px-2 py-1"
-            title={t("chat.main.openAgentPage")}
-          >
-            {t("chat.main.agentLink")}
-          </Link>
-          <button
-            onClick={onToggleRightPane}
-            className="hidden lg:inline-block text-xs text-text-muted hover:text-text border border-border rounded px-2 py-1"
-            title={rightPaneOpen ? t("chat.main.hideContextPane") : t("chat.main.showContextPane")}
-          >
-            {rightPaneOpen ? "›" : "‹"}
-          </button>
-        </div>
-      </div>
-
-      <div className="flex-1 min-h-0">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1">
         <ChatPanel
-          key={chatId /* reset state when switching chats */}
+          key={chatId}
           instanceId={instance.id}
           subscribe={subscribe}
           autoConnect
+          header={{
+            title: instance.name,
+            subtitle: `#${instance.id} · ${instance.mode} · ${instance.status}`,
+            running: instance.status === "running",
+            onBack,
+            onOpenAgent: () => navigate(`/agents/${instance.id}`),
+            onOpenContext: () => setContextOpen(true),
+            onToggleDesktopContext: onToggleRightPane,
+            desktopContextOpen: rightPaneOpen,
+          }}
         />
       </div>
+
+      <Modal open={contextOpen} onClose={() => setContextOpen(false)} width="max-w-md" ariaLabel={`${instance.name} context`}>
+        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-[10px] font-bold uppercase tracking-wide text-accent">Agent context</div>
+            <h2 className="mt-0.5 truncate text-base font-semibold text-text">{instance.name}</h2>
+          </div>
+          <button type="button" onClick={() => setContextOpen(false)} className="touch-target inline-flex h-11 w-11 items-center justify-center rounded text-xl text-text-muted hover:bg-bg-hover hover:text-text" aria-label="Close context">
+            ×
+          </button>
+        </div>
+        <div className="page-safe-bottom min-h-0 overflow-y-auto">
+          <AgentContextCard instance={instance} chatId={chatId} />
+        </div>
+      </Modal>
     </div>
   );
 }

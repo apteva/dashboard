@@ -24,6 +24,7 @@ import { ChatMain } from "../components/chat/ChatMain";
 import { AgentContextCard } from "../components/chat/AgentContextCard";
 import { ChatSwitcher } from "../components/chat/ChatSwitcher";
 import { notifications } from "../state/notifications";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 
 const REFRESH_MS = 8000;
 
@@ -33,12 +34,19 @@ export function Chat() {
   const projectId = currentProject?.id;
   const navigate = useNavigate();
   const { chatId: chatIdFromUrl } = useParams<{ chatId?: string }>();
+  const isDesktop = useMediaQuery("(min-width: 768px)");
+  const hasContextColumn = useMediaQuery("(min-width: 1024px)");
 
   const [list, setList] = useState<Agent[]>([]);
   const [summary, setSummary] = useState<UnreadSummaryRow[]>([]);
+  const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
   const [showRightPane, setShowRightPane] = useState(true);
   const [showSwitcher, setShowSwitcher] = useState(false);
-  const [showMobileList, setShowMobileList] = useState(false);
+  const projectList = useMemo(
+    () => loadedProjectId === projectId ? list : [],
+    [list, loadedProjectId, projectId],
+  );
+  const projectChatSummary = loadedProjectId === projectId ? summary : [];
 
   // Notifications drive unread badges.
   const allNotifs = useSyncExternalStore(
@@ -65,6 +73,10 @@ export function Chat() {
   // current; this is just for the metadata that doesn't change often.
   useEffect(() => {
     let cancelled = false;
+    setList([]);
+    setSummary([]);
+    setLoadedProjectId(null);
+    if (!projectId) return () => { cancelled = true; };
     const load = () => {
       Promise.all([
         instances.list(projectId).catch(() => [] as Agent[]),
@@ -73,6 +85,7 @@ export function Chat() {
         if (cancelled) return;
         setList(l);
         setSummary(s);
+        setLoadedProjectId(projectId);
       });
     };
     load();
@@ -85,24 +98,24 @@ export function Chat() {
   // first running → first.
   const focusedChatId = useMemo(() => {
     if (chatIdFromUrl) return chatIdFromUrl;
-    if (list.length === 0) return null;
-    const withUnread = list.find((i) => (unreadByInstance.get(i.id) || 0) > 0);
+    if (projectList.length === 0) return null;
+    const withUnread = projectList.find((i) => (unreadByInstance.get(i.id) || 0) > 0);
     if (withUnread) return `default-${withUnread.id}`;
-    const running = list.find((i) => i.status === "running");
+    const running = projectList.find((i) => i.status === "running");
     if (running) return `default-${running.id}`;
-    return list[0] ? `default-${list[0].id}` : null;
+    return projectList[0] ? `default-${projectList[0].id}` : null;
     // Intentionally only react to URL + list — switching default on
     // every unread arrival would steal focus from the user.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatIdFromUrl, list]);
+  }, [chatIdFromUrl, projectList]);
 
   // Scope summary rows to the current project's instances. The
   // unreadSummary endpoint returns every chat the user owns across
   // projects, so we filter client-side.
-  const projectInstanceIds = useMemo(() => new Set(list.map((i) => i.id)), [list]);
+  const projectInstanceIds = useMemo(() => new Set(projectList.map((i) => i.id)), [projectList]);
   const projectSummary = useMemo(
-    () => summary.filter((s) => projectInstanceIds.has(s.instance_id)),
-    [summary, projectInstanceIds],
+    () => projectChatSummary.filter((s) => projectInstanceIds.has(s.instance_id)),
+    [projectChatSummary, projectInstanceIds],
   );
 
   // Resolve focused instance from focused chat id.
@@ -115,8 +128,8 @@ export function Chat() {
   }, [focusedChatId]);
 
   const focusedInstance = useMemo(
-    () => list.find((i) => i.id === focusedInstanceId) || null,
-    [list, focusedInstanceId],
+    () => projectList.find((i) => i.id === focusedInstanceId) || null,
+    [projectList, focusedInstanceId],
   );
 
   usePageTitle(focusedInstance ? [t("chat.title"), focusedInstance.name] : t("chat.title"));
@@ -139,63 +152,48 @@ export function Chat() {
   const selectChat = (chatId: string) => {
     navigate(`/chat/${chatId}`);
     setShowSwitcher(false);
-    setShowMobileList(false);
   };
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <div className="border-b border-border px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <button
-            onClick={() => setShowMobileList(true)}
-            className="md:hidden text-xs text-text-muted hover:text-text border border-border rounded px-2 py-1"
-            title={t("chat.showAgents")}
-          >
-            {t("chat.agentsButton")}
-          </button>
-          <h1 className="text-text text-lg font-bold truncate">{t("chat.title")}</h1>
+      <div className={`${chatIdFromUrl ? "hidden md:flex" : "flex"} min-h-14 border-b border-border px-4 sm:px-6 py-2 items-center justify-between gap-3`}>
+        <div className="min-w-0">
+          <h1 className="truncate text-lg font-bold text-text">{t("chat.title")}</h1>
+          <div className="text-[11px] text-text-muted md:hidden">Choose a conversation</div>
         </div>
         <button
           onClick={() => setShowSwitcher(true)}
-          className="shrink-0 text-xs text-text-muted hover:text-text border border-border rounded px-2 py-1 font-mono"
+          className="touch-target shrink-0 rounded border border-border px-3 text-xs text-text-muted hover:bg-bg-hover hover:text-text"
           title={t("chat.switchChatTitle")}
         >
-          ⌘K
+          <span className="md:hidden">Search</span>
+          <span className="hidden font-mono md:inline">⌘K</span>
         </button>
       </div>
 
       <div className="flex-1 min-h-0 relative md:grid md:grid-cols-[240px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)_280px] md:divide-x md:divide-border overflow-hidden">
-        {showMobileList && (
-          <button
-            type="button"
-            className="absolute inset-0 z-20 bg-black/40 md:hidden"
-            onClick={() => setShowMobileList(false)}
-            aria-label={t("chat.closeAgents")}
-          />
-        )}
-        <div
-          className={`absolute inset-y-0 left-0 z-30 w-[min(20rem,86vw)] bg-bg border-r border-border shadow-xl md:static md:block md:w-auto md:shadow-none ${
-            showMobileList ? "block" : "hidden"
-          }`}
-        >
+        {(!chatIdFromUrl || isDesktop) && <div className="h-full bg-bg md:w-auto">
           <ChatSidebar
-            instances={list}
+            instances={projectList}
             summary={projectSummary}
             unreadByInstance={unreadByInstance}
             focusedChatId={focusedChatId}
             onSelect={selectChat}
           />
-        </div>
+        </div>}
 
-        <ChatMain
-          chatId={focusedChatId}
-          instance={focusedInstance}
-          onToggleRightPane={() => setShowRightPane((v) => !v)}
-          rightPaneOpen={showRightPane}
-        />
+        {(chatIdFromUrl || isDesktop) && <div className="h-full min-h-0">
+          <ChatMain
+            chatId={focusedChatId}
+            instance={focusedInstance}
+            onBack={() => navigate("/chat")}
+            onToggleRightPane={() => setShowRightPane((v) => !v)}
+            rightPaneOpen={showRightPane}
+          />
+        </div>}
 
-        {showRightPane && (
-          <div className="hidden lg:block overflow-y-auto">
+        {showRightPane && hasContextColumn && (
+          <div className="overflow-y-auto">
             {focusedInstance ? (
               <AgentContextCard instance={focusedInstance} chatId={focusedChatId} />
             ) : (
@@ -209,7 +207,7 @@ export function Chat() {
 
       {showSwitcher && (
         <ChatSwitcher
-          instances={list}
+          instances={projectList}
           summary={projectSummary}
           unreadByInstance={unreadByInstance}
           onSelect={selectChat}

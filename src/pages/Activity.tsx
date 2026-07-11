@@ -29,6 +29,8 @@ import {
 import { useProjects } from "../hooks/useProjects";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { usePageTitle } from "../hooks/usePageTitle";
+import { useMediaQuery } from "../hooks/useMediaQuery";
+import { Modal } from "../components/Modal";
 
 type ThreadContextSnapshot = {
   id: string;
@@ -80,6 +82,8 @@ export function Activity() {
   const [appBusEvents, setAppBusEvents] = useState<AppBusEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showTimeline, setShowTimeline] = useState(false);
+  const isDesktop = useMediaQuery("(min-width: 768px)");
 
   useEffect(() => {
     setAgents([]);
@@ -119,56 +123,9 @@ export function Activity() {
         setError(null);
         setLoading(false);
 
-        const configPairs = await Promise.all(
-          (nextAgents || []).map(async (agent) => {
-            const config = await withTimeout(core.config(agent.id), 2200, null);
-            return [agent.id, normalizeAgentConfig(config) || normalizeAgentConfigFromRow(agent.config)] as const;
-          }),
-        );
-        if (cancelled || seq !== loadSeq) return;
-        const nextConfigs: Record<number, AgentConfigSnapshot> = {};
-        configPairs.forEach(([agentID, config]) => {
-          if (config) nextConfigs[agentID] = config;
-        });
-        setAgentConfigs(nextConfigs);
-
-        const threadPairs = await Promise.all(
-          (nextAgents || []).map(async (agent) => {
-            if (agent.status !== "running") return [agent.id, [] as Thread[]] as const;
-            const threads = await withTimeout(core.threads(agent.id), 2500, [] as Thread[]);
-            return [agent.id, threads || []] as const;
-          }),
-        );
-        if (cancelled || seq !== loadSeq) return;
-        const nextThreads: Record<number, Thread[]> = {};
-        threadPairs.forEach(([agentID, threads]) => {
-          nextThreads[agentID] = threads;
-        });
-        setThreadsByAgent(nextThreads);
-
-        const contextEntries = await Promise.all(
-          threadPairs.flatMap(([agentID, threads]) =>
-            threads.slice(0, 8).map(async (thread) => {
-              const context = await withTimeout(core.threadContext(agentID, thread.id || "main"), 2500, null);
-              return context ? [`${agentID}:${thread.id || "main"}`, context] as const : null;
-            }),
-          ),
-        );
-        if (cancelled || seq !== loadSeq) return;
-        const nextContexts: Record<string, ThreadContextSnapshot> = {};
-        contextEntries.forEach((entry) => {
-          if (!entry) return;
-          nextContexts[entry[0]] = {
-            id: entry[1].id,
-            iteration: entry[1].iteration,
-            model: entry[1].model,
-            count: entry[1].count,
-            total_chars: entry[1].total_chars,
-            messages: entry[1].messages || [],
-          };
-        });
-        setContexts(nextContexts);
-
+        // The Activity page renders a telemetry action timeline, not the
+        // topology map. Avoid the old N-per-agent config/thread/context
+        // fan-out here; it added dozens of requests without affecting the UI.
         const history = await Promise.all(
           (nextAgents || []).map((agent) =>
             withTimeout(telemetry.query(agent.id, undefined, 40), 2500, [] as TelemetryEvent[]),
@@ -213,7 +170,7 @@ export function Activity() {
   }
 
   return (
-    <div className="h-full overflow-auto p-4 space-y-3">
+    <div className="page-safe-bottom h-full overflow-auto p-3 sm:p-4 space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -240,14 +197,35 @@ export function Activity() {
         </div>
       )}
 
-      <AgentActionTimeline
-        agents={agents}
-        events={events}
-        appBusEvents={appBusEvents}
-        loading={loading}
-      />
+      {isDesktop ? (
+        <AgentActionTimeline agents={agents} events={events} appBusEvents={appBusEvents} loading={loading} />
+      ) : (
+        <section className="rounded-lg border border-border bg-bg-card p-4">
+          <div className="grid grid-cols-3 gap-3">
+            <ActivityStat label="Events" value={events.length} />
+            <ActivityStat label="Running" value={agents.filter((agent) => agent.status === "running").length} />
+            <ActivityStat label="Errors" value={events.filter((event) => event.type.includes("error")).length} />
+          </div>
+          <p className="mt-3 text-xs leading-relaxed text-text-muted">The live timeline is available as a focused full-screen view so dense streaming rows do not dominate the mobile page.</p>
+          <button type="button" onClick={() => setShowTimeline(true)} className="touch-target mt-3 w-full rounded-lg border border-accent/40 px-4 text-sm font-semibold text-accent">Open live timeline</button>
+        </section>
+      )}
+
+      <Modal open={showTimeline} onClose={() => setShowTimeline(false)} width="max-w-none" ariaLabel="Live activity timeline">
+        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div><div className="text-[10px] font-bold uppercase tracking-wide text-accent">Activity</div><h2 className="text-base font-semibold text-text">Live timeline</h2></div>
+          <button type="button" onClick={() => setShowTimeline(false)} className="touch-target inline-flex h-11 w-11 items-center justify-center rounded text-xl text-text-muted" aria-label="Close timeline">×</button>
+        </div>
+        <div className="page-safe-bottom min-h-[75dvh] overflow-auto p-2">
+          <AgentActionTimeline agents={agents} events={events} appBusEvents={appBusEvents} loading={loading} />
+        </div>
+      </Modal>
     </div>
   );
+}
+
+function ActivityStat({ label, value }: { label: string; value: number }) {
+  return <div className="rounded-lg border border-border bg-bg p-3 text-center"><div className="text-lg font-bold text-text">{value}</div><div className="mt-0.5 text-[10px] uppercase tracking-wide text-text-dim">{label}</div></div>;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -445,9 +423,9 @@ function AgentActionRow({ action }: { action: AgentAction }) {
   return (
     <details className="group" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary className="list-none cursor-pointer px-3 py-2.5 hover:bg-bg-hover">
-        <div className="grid grid-cols-[70px_minmax(88px,140px)_minmax(0,1fr)_auto] items-start gap-2 text-xs">
+        <div className="grid grid-cols-[56px_minmax(0,1fr)_auto] items-start gap-2 text-xs sm:grid-cols-[70px_minmax(88px,140px)_minmax(0,1fr)_auto]">
           <div className="font-mono text-text-dim tabular-nums">{formatActionTime(action.time)}</div>
-          <div className="min-w-0">
+          <div className="hidden min-w-0 sm:block">
             {action.agentId ? (
               <Link
                 to={`/agents/${action.agentId}`}
@@ -478,7 +456,7 @@ function AgentActionRow({ action }: { action: AgentAction }) {
         </div>
       </summary>
       {open && hasDetails && (
-        <div className="px-3 pb-3 pl-[calc(70px+0.75rem)]">
+        <div className="px-3 pb-3 sm:pl-[calc(70px+0.75rem)]">
           <div className="space-y-2">
             {action.args && <ActionPayloadBlock title="Arguments" text={action.args} />}
             {action.result && <ActionPayloadBlock title="Result" text={action.result} />}

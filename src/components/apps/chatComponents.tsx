@@ -194,7 +194,7 @@ export function ChatComponentList({
 }): ReactNode {
   if (!components || components.length === 0) return null;
   return (
-    <div className="mt-2 flex flex-col gap-2 max-w-full">
+    <div className="mt-3 flex w-full min-w-0 max-w-full flex-col gap-2">
       {components.map((c, i) => (
         // Composite key: app + name keep components stable across
         // renders even if the array changes shape (e.g. an inserted
@@ -202,15 +202,16 @@ export function ChatComponentList({
         // disambiguates two of the same component on one message.
         // Pure index-keying made React reuse DOM nodes for the wrong
         // entry whenever the array mutated mid-flight.
-        <ChatComponentMount
-          key={`${c.app}:${c.name}:${i}`}
-          comp={c}
-          apps={apps}
-          projectId={projectId}
-          messageId={messageId}
-          onMessageUpdated={onMessageUpdated}
-          onActionComplete={onActionComplete}
-        />
+        <div key={`${c.app}:${c.name}:${i}`} className="chat-component-frame">
+          <ChatComponentMount
+            comp={c}
+            apps={apps}
+            projectId={projectId}
+            messageId={messageId}
+            onMessageUpdated={onMessageUpdated}
+            onActionComplete={onActionComplete}
+          />
+        </div>
       ))}
     </div>
   );
@@ -283,8 +284,8 @@ function ApprovalCard({
         : "Pending";
 
   return (
-    <div className="rounded-lg border border-accent/35 bg-bg-card/90 p-3 max-w-2xl">
-      <div className="flex items-start justify-between gap-3">
+    <div className="w-full max-w-2xl rounded-xl border border-accent/35 bg-bg-card/90 p-3 sm:p-4">
+      <div className="flex flex-col items-start gap-2 sm:flex-row sm:justify-between sm:gap-3">
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-wide text-accent font-bold">
             Approval
@@ -304,19 +305,19 @@ function ApprovalCard({
         </span>
       </div>
       {body && (
-        <p className="mt-2 text-xs text-text-muted leading-relaxed whitespace-pre-wrap break-words">
+        <p className="mt-3 text-sm text-text-muted leading-relaxed whitespace-pre-wrap break-words">
           {body}
         </p>
       )}
       {status === "pending" ? (
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className="mt-4 grid grid-cols-1 gap-2 min-[420px]:grid-cols-2 sm:flex sm:flex-wrap">
           {actions.map((action) => (
             <button
               key={action.id}
               type="button"
               disabled={!id || !!submitting}
               onClick={() => void sendAction(action.id)}
-              className={`rounded-md border px-3 py-1.5 text-xs font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+              className={`touch-target w-full rounded-lg border px-3 py-2 text-sm font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed sm:w-auto sm:text-xs ${
                 action.style === "danger" || action.id === "deny"
                   ? "border-red/40 text-red hover:bg-red/10"
                   : action.style === "primary" || action.id === "approve"
@@ -359,7 +360,7 @@ function ReportCard({ props }: { props: Record<string, unknown> }) {
 
   return (
     <>
-      <div className="rounded-lg border border-accent/25 bg-bg-card/90 p-3 max-w-2xl">
+      <div className="w-full max-w-2xl rounded-xl border border-accent/25 bg-bg-card/90 p-3 sm:p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-[10px] uppercase tracking-wide text-accent font-bold">Report</div>
@@ -368,21 +369,21 @@ function ReportCard({ props }: { props: Record<string, unknown> }) {
           </div>
         </div>
         {summary && (
-          <p className="mt-2 text-xs text-text-muted leading-relaxed whitespace-pre-wrap break-words">
+          <p className="mt-3 text-sm text-text-muted leading-relaxed whitespace-pre-wrap break-words">
             {summary}
           </p>
         )}
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="mt-3 text-[11px] text-accent hover:text-accent-hover font-bold"
+          className="touch-target mt-3 inline-flex items-center rounded-lg border border-accent/30 px-3 text-xs font-bold text-accent hover:bg-accent/10 hover:text-accent-hover"
         >
           Open report
         </button>
       </div>
 
       <Modal open={open} onClose={() => setOpen(false)} width="max-w-3xl">
-        <div className="px-5 py-4 border-b border-border flex items-start justify-between gap-4">
+        <div className="px-4 py-3 sm:px-5 sm:py-4 border-b border-border flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="text-[10px] uppercase tracking-wide text-accent font-bold">Report</div>
             <h2 className="mt-1 text-lg font-bold text-text break-words">{title}</h2>
@@ -391,12 +392,12 @@ function ReportCard({ props }: { props: Record<string, unknown> }) {
           <button
             type="button"
             onClick={() => setOpen(false)}
-            className="shrink-0 text-text-muted hover:text-text border border-border rounded px-2 py-1 text-xs"
+            className="touch-target shrink-0 inline-flex h-11 items-center text-text-muted hover:text-text border border-border rounded-lg px-3 text-xs"
           >
             Close
           </button>
         </div>
-        <div className="overflow-auto px-5 py-4 space-y-4">
+        <div className="page-safe-bottom overflow-auto px-4 py-4 sm:px-5 space-y-5">
           {summary && (
             <section>
               <h3 className="text-[11px] uppercase tracking-wide text-text-dim mb-1">Summary</h3>
@@ -450,7 +451,7 @@ function AlertCard({ props }: { props: Record<string, unknown> }) {
         : "border-accent/25 bg-bg-card/90 text-accent";
 
   return (
-    <div className={`rounded-lg border p-3 max-w-2xl ${tone}`}>
+    <div className={`w-full max-w-2xl rounded-xl border p-3 sm:p-4 ${tone}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-wide font-bold">
@@ -463,7 +464,7 @@ function AlertCard({ props }: { props: Record<string, unknown> }) {
         </span>
       </div>
       {body && (
-        <p className="mt-2 text-xs text-text-muted leading-relaxed whitespace-pre-wrap break-words">
+        <p className="mt-3 text-sm text-text-muted leading-relaxed whitespace-pre-wrap break-words">
           {body}
         </p>
       )}

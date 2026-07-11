@@ -53,14 +53,14 @@ export function ChatSidebar({
   }, [sorted, filter]);
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="px-3 py-2 border-b border-border">
+    <div className="flex h-full flex-col">
+      <div className="border-b border-border px-3 py-3 md:py-2">
         <input
           type="text"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder={t("chat.sidebar.filterAgents")}
-          className="w-full bg-bg-input border border-border rounded px-2 py-1 text-sm text-text focus:outline-none focus:border-accent placeholder:text-text-dim"
+          className="min-h-11 w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-base text-text placeholder:text-text-dim focus:border-accent focus:outline-none md:min-h-0 md:rounded md:px-2 md:py-1 md:text-sm"
         />
       </div>
 
@@ -68,7 +68,7 @@ export function ChatSidebar({
         {t("chat.sidebar.directMessages")}
       </div>
 
-      <ul className="flex-1 overflow-y-auto">
+      <ul className="page-safe-bottom flex-1 overflow-y-auto overscroll-contain">
         {filtered.length === 0 ? (
           <li className="px-3 py-4 text-text-dim text-sm">{t("chat.sidebar.noAgents")}</li>
         ) : (
@@ -81,18 +81,18 @@ export function ChatSidebar({
               <li key={inst.id}>
                 <button
                   onClick={() => onSelect(chatId)}
-                  className={`w-full text-left px-3 py-2 flex items-start gap-2 transition-colors ${
+                  className={`w-full min-h-16 text-left px-4 py-3 md:min-h-0 md:px-3 md:py-2 flex items-start gap-3 md:gap-2 transition-colors ${
                     active ? "bg-bg-hover" : "hover:bg-bg-hover"
                   }`}
                 >
                   <span
-                    className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${
+                    className={`w-2 h-2 md:w-1.5 md:h-1.5 rounded-full shrink-0 mt-1.5 ${
                       inst.status === "running" ? "bg-green" : "bg-text-dim"
                     }`}
                   />
                   <span className="flex-1 min-w-0">
                     <span className="flex items-baseline gap-2">
-                      <span className={`text-sm truncate flex-1 ${active ? "text-text font-medium" : "text-text"}`}>
+                      <span className={`text-[15px] md:text-sm truncate flex-1 ${active ? "text-text font-medium" : "text-text"}`}>
                         {inst.name}
                       </span>
                       {s?.latest_at && (
@@ -102,7 +102,7 @@ export function ChatSidebar({
                       )}
                     </span>
                     {s?.latest_preview && (
-                      <span className="block text-[11px] text-text-muted truncate mt-0.5">
+                      <span className="block text-xs md:text-[11px] text-text-muted truncate mt-1 md:mt-0.5">
                         {previewLabel(s, t)}
                       </span>
                     )}

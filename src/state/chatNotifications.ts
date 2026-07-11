@@ -113,6 +113,14 @@ function hasInboxComponent(msg: ChatMessageRow): boolean {
   );
 }
 
+function hasStatusComponent(msg: ChatMessageRow): boolean {
+	return (msg.components || []).some((c) => c.app === "channel-chat" && c.name === "status-card");
+}
+
+function dispatchStatusMessage(msg: ChatMessageRow): void {
+	window.dispatchEvent(new CustomEvent("apteva.statusMessage", { detail: msg }));
+}
+
 function dispatchInboxMessage(msg: ChatMessageRow): void {
   window.dispatchEvent(new CustomEvent("apteva.inboxMessage", { detail: msg }));
 }
@@ -323,8 +331,12 @@ export function markAllChatsSeen(): void {
 }
 
 function ingest(msg: ChatMessageRow): void {
-  if (msg.role === "system") return;
-  if (hasInboxComponent(msg)) {
+	if (msg.role === "system") return;
+	if (hasStatusComponent(msg)) {
+		dispatchStatusMessage(msg);
+		return;
+	}
+	if (hasInboxComponent(msg)) {
     dispatchInboxMessage(msg);
     upsertInboxNotificationFromMessage(msg);
     const notif = notifications.getSnapshot().find((n) => n.id === `inbox:${msg.id}`);
@@ -368,12 +380,15 @@ function startSSE(): () => void {
   let es: EventSource | null = null;
   let closed = false;
   let backoff = 500;
+  let attempts = 0;
+  let retryTimer: number | null = null;
 
   const open = () => {
     if (closed) return;
     es = chat.streamUser();
     es.onopen = () => {
       backoff = 500; // reset on successful connect
+      attempts = 0;
     };
     es.onmessage = (ev) => {
       if (!ev.data) return;
@@ -386,7 +401,12 @@ function startSSE(): () => void {
     es.onerror = () => {
       es?.close();
       if (closed) return;
-      setTimeout(open, backoff);
+      attempts += 1;
+      if (attempts >= 6) return;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        open();
+      }, backoff);
       backoff = Math.min(backoff * 2, 30000);
     };
   };
@@ -395,6 +415,7 @@ function startSSE(): () => void {
 
   return () => {
     closed = true;
+    if (retryTimer !== null) window.clearTimeout(retryTimer);
     es?.close();
   };
 }

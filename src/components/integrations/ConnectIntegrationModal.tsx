@@ -131,6 +131,7 @@ export function ConnectIntegrationModal({
       // OAuth: server returned a redirect_url — pop it and poll.
       if (result && typeof result === "object" && "redirect_url" in result) {
         const r = result as ConnectCreateResponse;
+        if (!r.redirect_url) throw new Error("OAuth response did not include a redirect URL");
         const popup = openOAuthPopup(r.redirect_url);
         if (!popup) {
           setSubmitError(

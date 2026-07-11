@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
-import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, type Provider, type ProviderTypeInfo, type ProviderAuthStart, type ProviderAuthStatus, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser } from "../api";
+import { useState, useEffect, useCallback } from "react";
+import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, type Provider, type ProviderTypeInfo, type ProviderAuthStart, type ProviderAuthStatus, type ProviderUsageSnapshot, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser } from "../api";
 import { Modal } from "../components/Modal";
+import { ProviderUsageDetails, ProviderUsageSummary } from "../components/ProviderUsage";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme, type ThemeName, type ThemeMode } from "../hooks/useTheme";
@@ -56,7 +57,7 @@ export function Settings() {
   const { t } = useTranslation();
   // Multi-user: Users tab is admin-only. Non-admins still get every
   // other tab; just hides the platform-wide user management surface.
-  const isAdmin = user && user !== false && user.role === "admin";
+  const isAdmin = !!user && user.role === "admin";
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "projects", label: t("settings.tabs.projects") },
@@ -76,12 +77,25 @@ export function Settings() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b border-border px-6 py-4">
+      <div className="border-b border-border px-4 py-3 sm:px-6 sm:py-4">
         <h1 className="text-text text-lg font-bold">{t("settings.title")}</h1>
       </div>
 
       {/* Tab bar */}
-      <div className="border-b border-border px-6 flex gap-0">
+      <div className="border-b border-border px-4 py-3 sm:hidden">
+        <label className="block">
+          <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-text-dim">Section</span>
+          <select
+            value={tab}
+            onChange={(event) => setTab(event.target.value as Tab)}
+            className="min-h-11 w-full rounded-lg border border-border bg-bg-input px-3 text-base text-text focus:border-accent focus:outline-none"
+            aria-label="Settings section"
+          >
+            {tabs.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+          </select>
+        </label>
+      </div>
+      <div className="hidden border-b border-border px-6 sm:flex gap-0">
         {tabs.map((t) => (
           <button
             key={t.id}
@@ -97,7 +111,7 @@ export function Settings() {
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="page-safe-bottom flex-1 overflow-y-auto p-4 sm:p-6">
         {tab === "projects" && <ProjectsTab />}
         {tab === "appearance" && <AppearanceTab />}
         {tab === "channels" && <ChannelsTab />}
@@ -600,6 +614,7 @@ function ChannelsTab() {
 
 function ProvidersTab() {
   const { currentProject } = useProjects();
+  const { t } = useTranslation();
   const [providerList, setProviderList] = useState<Provider[]>([]);
   const [types, setTypes] = useState<ProviderTypeInfo[]>([]);
   const [configuring, setConfiguring] = useState<ProviderTypeInfo | null>(null);
@@ -621,6 +636,31 @@ function ProvidersTab() {
   // time — the button disables to avoid double-fires).
   const [testResultByID, setTestResultByID] = useState<Record<number, import("../api").ProviderTestResult>>({});
   const [testingProviderID, setTestingProviderID] = useState<number | null>(null);
+  const [usageByID, setUsageByID] = useState<Record<number, ProviderUsageSnapshot>>({});
+  const [usageLoadingByID, setUsageLoadingByID] = useState<Record<number, boolean>>({});
+  const [usageErrorByID, setUsageErrorByID] = useState<Record<number, string>>({});
+  const [usageDetails, setUsageDetails] = useState<{ provider: Provider; usage: ProviderUsageSnapshot } | null>(null);
+
+  const loadProviderUsage = useCallback(async (providerID: number, refresh = false) => {
+    setUsageLoadingByID((current) => ({ ...current, [providerID]: true }));
+    try {
+      const usage = await providers.usage(providerID, refresh);
+      setUsageByID((current) => ({ ...current, [providerID]: usage }));
+      setUsageErrorByID((current) => {
+        if (!current[providerID]) return current;
+        const next = { ...current };
+        delete next[providerID];
+        return next;
+      });
+    } catch (err: any) {
+      setUsageErrorByID((current) => ({
+        ...current,
+        [providerID]: err?.message || "Usage unavailable",
+      }));
+    } finally {
+      setUsageLoadingByID((current) => ({ ...current, [providerID]: false }));
+    }
+  }, []);
 
   const handleTest = async (name: string) => {
     const p = getActive(name);
@@ -647,6 +687,28 @@ function ProvidersTab() {
     providerTypes.list().then(setTypes).catch(() => {});
   };
   useEffect(() => { load(); }, [currentProject?.id]);
+
+  useEffect(() => {
+    const supportedNames = new Set(
+      types
+        .filter((type) => type.capabilities?.includes("subscription_usage"))
+        .map((type) => type.name),
+    );
+    const eligible = providerList.filter((provider) => supportedNames.has(provider.name));
+    if (eligible.length === 0) return;
+
+    const refreshEligible = () => {
+      if (document.visibilityState !== "visible") return;
+      eligible.forEach((provider) => void loadProviderUsage(provider.id));
+    };
+    refreshEligible();
+    const interval = window.setInterval(refreshEligible, 5 * 60 * 1000);
+    window.addEventListener("focus", refreshEligible);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshEligible);
+    };
+  }, [providerList, types, loadProviderUsage]);
 
   const isActive = (name: string) => providerList.some((p) => p.name === name);
   const getActive = (name: string) => providerList.find((p) => p.name === name);
@@ -879,10 +941,12 @@ function ProvidersTab() {
           <h3 className="text-text-muted text-sm font-bold mb-3 uppercase tracking-wide">
             {typeLabels[groupType] || groupType}
           </h3>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {items.map((pt) => {
-              const active = isActive(pt.name);
+              const activeProvider = getActive(pt.name);
+              const active = !!activeProvider;
               const unsupported = (pt.runtime_status || "available") === "unsupported";
+              const supportsUsage = !!pt.capabilities?.includes("subscription_usage");
               return (
                 <div
                   key={pt.id}
@@ -937,6 +1001,19 @@ function ProvidersTab() {
                     )}
                   </div>
                   <p className="text-text-muted text-xs leading-relaxed mb-2">{pt.description}</p>
+                  {active && supportsUsage && activeProvider ? (
+                    <ProviderUsageSummary
+                      usage={usageByID[activeProvider.id]}
+                      loading={usageLoadingByID[activeProvider.id]}
+                      refreshing={usageLoadingByID[activeProvider.id] && !!usageByID[activeProvider.id]}
+                      error={usageErrorByID[activeProvider.id]}
+                      onRefresh={() => void loadProviderUsage(activeProvider.id, true)}
+                      onOpenDetails={() => {
+                        const usage = usageByID[activeProvider.id];
+                        if (usage) setUsageDetails({ provider: activeProvider, usage });
+                      }}
+                    />
+                  ) : null}
                   {active ? (
                     <div className="flex items-center gap-3">
                       {(pt.auth_type || "api_key") === "api_key" ? (
@@ -1134,6 +1211,36 @@ function ProvidersTab() {
             </div>
           </form>
         )}
+      </Modal>
+
+      <Modal
+        open={!!usageDetails}
+        onClose={() => setUsageDetails(null)}
+        ariaLabel={t("settings.providers.usageDetails")}
+      >
+        {usageDetails ? (
+          <div className="p-6">
+            <div className="flex items-start justify-between gap-4 mb-5">
+              <div>
+                <h3 className="text-text text-base font-bold">{t("settings.providers.usageDetails")}</h3>
+                <p className="text-xs text-text-muted mt-1">
+                  {usageDetails.provider.name}
+                  {usageDetails.usage.plan ? ` · ${usageDetails.usage.plan}` : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUsageDetails(null)}
+                className="w-8 h-8 inline-flex items-center justify-center border border-border rounded text-text-muted hover:text-text"
+                aria-label={t("settings.providers.close")}
+                title={t("settings.providers.close")}
+              >
+                ×
+              </button>
+            </div>
+            <ProviderUsageDetails usage={usageDetails.usage} />
+          </div>
+        ) : null}
       </Modal>
     </div>
   );
@@ -3709,11 +3816,18 @@ function DataTab() {
 // require a server restart to change.
 
 function ServerTab() {
+  const { user } = useAuth();
+  const isAdmin = !!user && user.role === "admin";
   const [data, setData] = useState<ServerSettingsType | null>(null);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [lifecyclePolicy, setLifecyclePolicy] = useState<"restart" | "rolling" | "preserve">("restart");
+  const [bootResume, setBootResume] = useState<"auto" | "staggered" | "manual">("staggered");
+  const [bootDelay, setBootDelay] = useState("5s");
+  const [rolloutDelay, setRolloutDelay] = useState("15s");
+  const [lifecycleSaving, setLifecycleSaving] = useState(false);
 
   const load = () => {
     serverSettings
@@ -3721,6 +3835,10 @@ function ServerTab() {
       .then((d) => {
         setData(d);
         setDraft(d.public_url.value);
+        setLifecyclePolicy(d.agent_lifecycle.update_policy);
+        setBootResume(d.agent_lifecycle.boot_resume);
+        setBootDelay(d.agent_lifecycle.boot_resume_delay);
+        setRolloutDelay(d.agent_lifecycle.rollout_delay);
       })
       .catch((err) => setError(err?.message || "Failed to load"));
   };
@@ -3752,6 +3870,32 @@ function ServerTab() {
   }
 
   const pu = data.public_url;
+
+  const handleLifecycleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSaved(false);
+    setLifecycleSaving(true);
+    try {
+      const updated = await serverSettings.update({
+        agent_update_policy: lifecyclePolicy,
+        agent_boot_resume: bootResume,
+        agent_boot_resume_delay: bootDelay,
+        agent_rollout_delay: rolloutDelay,
+      });
+      setData(updated);
+      setLifecyclePolicy(updated.agent_lifecycle.update_policy);
+      setBootResume(updated.agent_lifecycle.boot_resume);
+      setBootDelay(updated.agent_lifecycle.boot_resume_delay);
+      setRolloutDelay(updated.agent_lifecycle.rollout_delay);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err: any) {
+      setError(err?.message || "Failed to save agent lifecycle settings");
+    } finally {
+      setLifecycleSaving(false);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -3846,6 +3990,79 @@ function ServerTab() {
           )}
         </div>
       </form>
+
+      {isAdmin && <form onSubmit={handleLifecycleSave} className="border border-border rounded-lg p-5 bg-bg-card space-y-5">
+        <div>
+          <h3 className="text-text text-sm font-bold">Agent lifecycle</h3>
+          <p className="mt-1 text-xs leading-relaxed text-text-muted">
+            Control what happens to active agent cores when Apteva is updated or restarted.
+            Stopping Apteva completely always stops every agent process.
+          </p>
+        </div>
+
+        <label className="block">
+          <span className="block text-xs font-bold text-text mb-2">During updates and server restarts</span>
+          <select
+            value={lifecyclePolicy}
+            onChange={(e) => setLifecyclePolicy(e.target.value as typeof lifecyclePolicy)}
+            className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 text-sm text-text focus:border-accent focus:outline-none"
+          >
+            <option value="restart">Restart active agents gradually</option>
+            <option value="rolling">Keep running, then update cores one at a time</option>
+            <option value="preserve">Keep running without updating their cores</option>
+          </select>
+          <p className="mt-2 text-xs text-text-dim">
+            {lifecyclePolicy === "restart"
+              ? "Applies the new core immediately. Agents are unavailable until their turn in the startup queue."
+              : lifecyclePolicy === "rolling"
+                ? "Reattaches all agents first, then replaces one core at a time after each becomes healthy."
+                : "Reattaches existing cores. Their current versions remain active until manually updated."}
+          </p>
+        </label>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="block">
+            <span className="block text-xs font-bold text-text mb-2">When Apteva starts</span>
+            <select
+              value={bootResume}
+              onChange={(e) => setBootResume(e.target.value as typeof bootResume)}
+              className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 text-sm text-text focus:border-accent focus:outline-none"
+            >
+              <option value="staggered">Resume gradually</option>
+              <option value="auto">Resume immediately</option>
+              <option value="manual">Do not resume automatically</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="block text-xs font-bold text-text mb-2">Fresh-start interval</span>
+            <input
+              value={bootDelay}
+              onChange={(e) => setBootDelay(e.target.value)}
+              disabled={bootResume !== "staggered"}
+              placeholder="5s"
+              className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 font-mono text-sm text-text focus:border-accent focus:outline-none disabled:opacity-50"
+            />
+          </label>
+          <label className="block sm:col-span-2">
+            <span className="block text-xs font-bold text-text mb-2">Rolling-update interval</span>
+            <input
+              value={rolloutDelay}
+              onChange={(e) => setRolloutDelay(e.target.value)}
+              placeholder="15s"
+              className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 font-mono text-sm text-text focus:border-accent focus:outline-none"
+            />
+            <p className="mt-2 text-xs text-text-dim">Accepted examples: 15s, 1m, 2m30s.</p>
+          </label>
+        </div>
+
+        <button
+          type="submit"
+          disabled={lifecycleSaving}
+          className="px-5 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
+        >
+          {lifecycleSaving ? "Saving…" : "Save agent lifecycle"}
+        </button>
+      </form>}
     </div>
   );
 }
@@ -4186,7 +4403,7 @@ function ProjectMembersPane({
   onClose: () => void;
 }) {
   const { user } = useAuth();
-  const isAdmin = user && user !== false && user.role === "admin";
+  const isAdmin = !!user && user.role === "admin";
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [invites, setInvites] = useState<ProjectInvite[]>([]);
   const [loading, setLoading] = useState(true);
@@ -4203,7 +4420,7 @@ function ProjectMembersPane({
   // non-owner who somehow opens the modal sees a read-only view. Admins
   // are always treated as effective owners (matches server-side
   // requireProjectAccess short-circuit).
-  const myRole: ProjectRole | null = user && user !== false
+  const myRole: ProjectRole | null = user
     ? (members.find((m) => m.user_id === user.id)?.role
         || (user.role === "admin" ? "owner" : null))
     : null;
@@ -4336,7 +4553,7 @@ function ProjectMembersPane({
                   <div className="text-text-dim text-[11px]">User #{m.user_id}</div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {canManage && user && user !== false && m.user_id !== user.id ? (
+                  {canManage && user && m.user_id !== user.id ? (
                     <>
                       <select
                         value={m.role}
@@ -4543,7 +4760,7 @@ function UsersTab() {
         </div>
         <button
           onClick={() => setShowAdd(true)}
-          className="px-3 py-1.5 bg-accent text-bg text-xs font-bold rounded-lg hover:bg-accent-hover transition-colors"
+          className="touch-target shrink-0 px-3 py-1.5 bg-accent text-bg text-xs font-bold rounded-lg hover:bg-accent-hover transition-colors"
         >
           + Add user
         </button>
@@ -4561,7 +4778,27 @@ function UsersTab() {
         <p className="text-text-muted text-xs">No users yet.</p>
       ) : (
         <div className="border border-border rounded-lg overflow-hidden">
-          <table className="w-full text-xs">
+          <div className="divide-y divide-border md:hidden">
+            {rows.map((u) => (
+              <article key={`mobile-${u.id}`} className="space-y-3 p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="break-all font-mono text-sm text-text">{u.email}</span>
+                  {u.is_admin && <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-accent">admin</span>}
+                  {u.is_self && !u.is_admin && <span className="rounded bg-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-muted">you</span>}
+                </div>
+                <dl className="grid grid-cols-2 gap-2 text-xs">
+                  <div><dt className="text-[10px] uppercase tracking-wide text-text-dim">Created</dt><dd className="mt-0.5 text-text-muted">{fmtDate(u.created_at)}</dd></div>
+                  <div><dt className="text-[10px] uppercase tracking-wide text-text-dim">Owned</dt><dd className="mt-0.5 text-text-muted">{u.agents} agents · {u.keys} keys · {u.projects} projects</dd></div>
+                </dl>
+                <div className="grid grid-cols-2 gap-2">
+                  {!u.is_self && <button type="button" onClick={() => toggleRole(u)} className="touch-target rounded-lg border border-border px-2 text-xs text-text-muted">{u.is_admin ? "Demote" : "Make admin"}</button>}
+                  <button type="button" onClick={() => setResetTarget(u)} className="touch-target rounded-lg border border-border px-2 text-xs text-text-muted">Reset password</button>
+                  {!u.is_admin && !u.is_self && <button type="button" onClick={() => setDeleteTarget(u)} className="touch-target rounded-lg border border-red/40 px-2 text-xs text-red">Delete</button>}
+                </div>
+              </article>
+            ))}
+          </div>
+          <table className="hidden w-full text-xs md:table">
             <thead className="bg-bg-hover text-text-muted">
               <tr className="text-left">
                 <th className="px-3 py-2 font-normal">Email</th>

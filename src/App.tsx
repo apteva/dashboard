@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
+import { lazy, Suspense, type ReactNode } from "react";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
 
 // LegacyInstanceRedirect bounces /instances/:id to /agents/:id so any
@@ -13,25 +14,30 @@ import { ProjectProvider } from "./hooks/useProjects";
 import { ThemeProvider } from "./hooks/useTheme";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
-import { Connect } from "./pages/Connect";
-import { Onboarding } from "./pages/Onboarding";
-import { Dashboard } from "./pages/Dashboard";
-import { Build } from "./pages/Build";
-import { Chat } from "./pages/Chat";
-import { Activity } from "./pages/Activity";
-import { Monitor } from "./pages/Monitor";
-import { Agents } from "./pages/Agents";
-import { Agent } from "./pages/Agent";
-import { AgentNew } from "./pages/AgentNew";
-import { Integrations } from "./pages/Integrations";
-import { Analytics } from "./pages/Analytics";
-import { Settings } from "./pages/Settings";
-import { Apps } from "./pages/Apps";
-import { Skills } from "./pages/Skills";
-import { EnvironmentDetail, Environments } from "./pages/Environments";
-import { AppProjectPage } from "./pages/AppProjectPage";
 
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
+// Route modules are intentionally lazy. Settings, environments, analytics,
+// and app management contain large graphs/forms that should not delay login
+// or the project dashboard for users who never visit those screens.
+const Connect = lazy(() => import("./pages/Connect").then((m) => ({ default: m.Connect })));
+const Onboarding = lazy(() => import("./pages/Onboarding").then((m) => ({ default: m.Onboarding })));
+const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
+const Build = lazy(() => import("./pages/Build").then((m) => ({ default: m.Build })));
+const Chat = lazy(() => import("./pages/Chat").then((m) => ({ default: m.Chat })));
+const Activity = lazy(() => import("./pages/Activity").then((m) => ({ default: m.Activity })));
+const Monitor = lazy(() => import("./pages/Monitor").then((m) => ({ default: m.Monitor })));
+const Agents = lazy(() => import("./pages/Agents").then((m) => ({ default: m.Agents })));
+const Agent = lazy(() => import("./pages/Agent").then((m) => ({ default: m.Agent })));
+const AgentNew = lazy(() => import("./pages/AgentNew").then((m) => ({ default: m.AgentNew })));
+const Integrations = lazy(() => import("./pages/Integrations").then((m) => ({ default: m.Integrations })));
+const Analytics = lazy(() => import("./pages/Analytics").then((m) => ({ default: m.Analytics })));
+const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
+const Apps = lazy(() => import("./pages/Apps").then((m) => ({ default: m.Apps })));
+const Skills = lazy(() => import("./pages/Skills").then((m) => ({ default: m.Skills })));
+const Environments = lazy(() => import("./pages/Environments").then((m) => ({ default: m.Environments })));
+const EnvironmentDetail = lazy(() => import("./pages/Environments").then((m) => ({ default: m.EnvironmentDetail })));
+const AppProjectPage = lazy(() => import("./pages/AppProjectPage").then((m) => ({ default: m.AppProjectPage })));
+
+function ProtectedRoute({ children }: { children: ReactNode }) {
   const { authenticated } = useAuth();
   console.log("[auth] ProtectedRoute render, authenticated=", authenticated, "path=", window.location.pathname);
   if (authenticated === null) {
@@ -65,7 +71,8 @@ export default function App() {
     <BrowserRouter>
       <ThemeProvider>
         <AuthProvider>
-          <Routes>
+          <Suspense fallback={<RouteFallback />}>
+            <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/connect/:token" element={<Connect />} />
           <Route
@@ -114,9 +121,18 @@ export default function App() {
                 which one. */}
             <Route path="/apps/:name/page" element={<AppProjectPage />} />
           </Route>
-          </Routes>
+            </Routes>
+          </Suspense>
         </AuthProvider>
       </ThemeProvider>
     </BrowserRouter>
+  );
+}
+
+function RouteFallback() {
+  return (
+    <div className="flex h-full min-h-screen items-center justify-center bg-bg text-xs text-text-muted">
+      Loading…
+    </div>
   );
 }

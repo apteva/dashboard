@@ -115,13 +115,11 @@ if (typeof window !== "undefined" && !window.__aptevaTelemetryBus) {
       }
     };
     next.onerror = () => {
-      // EventSource silently flips to readyState=CONNECTING and tries
-      // to reconnect on its own; we layer our own bounded retry on
-      // top so a genuine 4xx (e.g. project deleted) doesn't churn
-      // forever. Once we've exceeded the budget we leave the bus
-      // closed; setProjectId resets it on the next project switch.
-      if (next.readyState !== EventSource.CLOSED) return;
       if (next !== es) return; // already replaced
+      // Take ownership of reconnects. Native EventSource normally changes to
+      // CONNECTING and retries forever; returning in that state made the
+      // documented retry budget ineffective for persistent 4xx responses.
+      next.close();
       es = null;
       reconnectAttempts += 1;
       if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return;

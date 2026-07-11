@@ -68,7 +68,9 @@ export function ChatSwitcher({
 
   // Autofocus the input on mount.
   useEffect(() => {
-    inputRef.current?.focus();
+    if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) {
+      inputRef.current?.focus();
+    }
   }, []);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -90,25 +92,37 @@ export function ChatSwitcher({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center pt-[20vh]"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 sm:items-start sm:pt-[18vh]"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Switch conversation"
     >
       <div
-        className="w-full max-w-md bg-bg border border-border rounded-lg shadow-2xl overflow-hidden"
+        className="safe-area-y flex h-full w-full flex-col overflow-hidden bg-bg shadow-2xl sm:h-auto sm:max-h-[64vh] sm:max-w-md sm:rounded-lg sm:border sm:border-border sm:p-0"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="px-3 py-2 border-b border-border">
+        <div className="flex min-h-14 items-center gap-2 border-b border-border px-3 sm:hidden">
+          <div className="min-w-0 flex-1">
+            <div className="text-base font-semibold text-text">Find a conversation</div>
+            <div className="text-[11px] text-text-muted">Search agents in this project</div>
+          </div>
+          <button type="button" onClick={onClose} className="touch-target inline-flex h-11 w-11 items-center justify-center rounded text-xl text-text-muted hover:bg-bg-hover hover:text-text" aria-label="Close conversation search">
+            ×
+          </button>
+        </div>
+        <div className="border-b border-border px-3 py-3 sm:py-2">
           <input
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder={t("chat.switcher.placeholder")}
-            className="w-full bg-transparent text-text text-sm focus:outline-none placeholder:text-text-dim"
+            className="min-h-11 w-full rounded-lg border border-border bg-bg-input px-3 text-base text-text placeholder:text-text-dim focus:border-accent focus:outline-none sm:min-h-0 sm:rounded-none sm:border-0 sm:bg-transparent sm:px-0 sm:text-sm"
           />
         </div>
 
-        <ul className="max-h-[50vh] overflow-y-auto">
+        <ul className="page-safe-bottom min-h-0 flex-1 overflow-y-auto overscroll-contain sm:max-h-[50vh]">
           {filtered.length === 0 ? (
             <li className="px-3 py-4 text-text-dim text-sm">{t("chat.switcher.noMatches")}</li>
           ) : (
@@ -121,7 +135,7 @@ export function ChatSwitcher({
                   <button
                     onMouseEnter={() => setCursor(i)}
                     onClick={() => onSelect(`default-${inst.id}`)}
-                    className={`w-full text-left px-3 py-2 flex items-center gap-2 ${
+                    className={`w-full min-h-16 px-4 py-3 text-left flex items-center gap-3 sm:min-h-0 sm:px-3 sm:py-2 sm:gap-2 ${
                       active ? "bg-bg-hover" : ""
                     }`}
                   >
@@ -131,9 +145,9 @@ export function ChatSwitcher({
                       }`}
                     />
                     <span className="flex-1 min-w-0">
-                      <span className="text-sm text-text truncate">{inst.name}</span>
+                      <span className="text-[15px] text-text truncate sm:text-sm">{inst.name}</span>
                       {s?.latest_preview && (
-                        <span className="block text-[11px] text-text-muted truncate">
+                        <span className="mt-0.5 block truncate text-xs text-text-muted sm:text-[11px]">
                           {s.latest_preview}
                         </span>
                       )}
@@ -150,7 +164,7 @@ export function ChatSwitcher({
           )}
         </ul>
 
-        <div className="border-t border-border px-3 py-1.5 flex items-center justify-between text-[10px] text-text-dim">
+        <div className="hidden border-t border-border px-3 py-1.5 items-center justify-between text-[10px] text-text-dim sm:flex">
           <span>{t("chat.switcher.navigate")}</span>
           <span>{t("chat.switcher.select")}</span>
           <span>{t("chat.switcher.close")}</span>

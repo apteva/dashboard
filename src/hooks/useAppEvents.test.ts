@@ -11,10 +11,9 @@
 //   - cleanup on unmount closes the EventSource
 //   - malformed JSON doesn't crash
 //
-// We do NOT exercise the auto-reconnect path here — that would
-// require simulating EventSource.CLOSED state transitions and waiting
-// on real timers. The reconnect logic is small and tested by hand
-// against the live server.
+// The reconnect test asserts the security/performance-critical first step:
+// an error closes native EventSource even while it reports CONNECTING, so the
+// browser cannot run an unbounded retry loop beneath our bounded timer.
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { renderHook, act } from "@testing-library/react";
@@ -195,5 +194,14 @@ describe("useAppEvents", () => {
     expect(firstES!.closed).toBe(true);
     expect(lastES).not.toBe(firstES);
     expect(lastES!.url).toContain("project_id=p2");
+  });
+
+  test("closes native EventSource on error before scheduling bounded retry", () => {
+    const { unmount } = renderHook(() => useAppEvents("storage", "p1", () => {}));
+    const failed = lastES!;
+    failed.readyState = FakeEventSource.CONNECTING;
+    act(() => failed.triggerError());
+    expect(failed.closed).toBe(true);
+    unmount();
   });
 });

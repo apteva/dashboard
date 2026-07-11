@@ -127,7 +127,7 @@ export function AgentContextCard({ instance, chatId }: Props) {
         {directiveTrim.length > 200 && (
           <button
             onClick={() => setShowFullDirective((v) => !v)}
-            className="text-[10px] text-accent hover:underline mt-1"
+            className="touch-target inline-flex items-center text-xs text-accent hover:underline mt-1"
           >
             {showFullDirective ? t("chat.context.less") : t("chat.context.more")}
           </button>
@@ -196,7 +196,7 @@ export function AgentContextCard({ instance, chatId }: Props) {
       <div className="pt-3 border-t border-border space-y-1.5">
         <Link
           to={`/agents/${instance.id}`}
-          className="block w-full text-center text-xs text-text border border-border rounded px-2 py-1.5 hover:bg-bg-hover"
+          className="touch-target flex w-full items-center justify-center text-sm sm:text-xs text-text border border-border rounded-lg px-3 py-2 hover:bg-bg-hover"
         >
           {t("chat.context.openAgent")}
         </Link>
@@ -205,14 +205,14 @@ export function AgentContextCard({ instance, chatId }: Props) {
             <button
               onClick={handlePause}
               disabled={busy !== ""}
-              className="block w-full text-center text-xs text-text-muted border border-border rounded px-2 py-1.5 hover:bg-bg-hover disabled:opacity-50"
+              className="touch-target block w-full text-center text-sm sm:text-xs text-text-muted border border-border rounded-lg px-3 py-2 hover:bg-bg-hover disabled:opacity-50"
             >
               {busy === "pause" ? t("chat.context.pausing") : paused ? t("chat.context.resume") : t("chat.context.pause")}
             </button>
             <button
               onClick={handleRestart}
               disabled={busy !== ""}
-              className="block w-full text-center text-xs text-text-muted border border-border rounded px-2 py-1.5 hover:bg-bg-hover disabled:opacity-50"
+              className="touch-target block w-full text-center text-sm sm:text-xs text-text-muted border border-border rounded-lg px-3 py-2 hover:bg-bg-hover disabled:opacity-50"
             >
               {busy === "restart" ? t("chat.context.restarting") : t("chat.context.restart")}
             </button>

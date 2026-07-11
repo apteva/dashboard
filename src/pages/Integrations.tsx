@@ -24,7 +24,7 @@ import {
 // www.google.com/s2/favicons?domain=… which 404s when Google's cache
 // has nothing for the host; before this component, every miss
 // produced ~30 stack frames of D8/GG/F8 chatter in the console.
-function AppLogo({ src, className }: { src?: string; className?: string }) {
+function AppLogo({ src, className }: { src?: string | null; className?: string }) {
   const [broken, setBroken] = useState(false);
   if (!src || broken) return null;
   return (
@@ -963,9 +963,9 @@ export function Integrations() {
     return (
       <div
         key={c.id}
-        className="border border-border rounded-lg p-4 bg-bg-card flex items-center justify-between gap-4"
+        className="border border-border rounded-lg p-3 sm:p-4 bg-bg-card flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
       >
-        <div className="min-w-0 flex items-center gap-3">
+        <div className="min-w-0 flex flex-wrap items-center gap-2 sm:gap-3">
           <span
             className={`inline-block w-2.5 h-2.5 rounded-full ${
               c.status === "active"
@@ -1022,7 +1022,7 @@ export function Integrations() {
             <button
               type="button"
               onClick={() => setOpenMenuFor(menuOpen ? null : c.id)}
-              className="w-8 h-8 rounded border border-border text-text-muted hover:text-text hover:bg-bg-hover transition-colors"
+            className="touch-target w-11 h-11 sm:w-8 sm:h-8 rounded border border-border text-text-muted hover:text-text hover:bg-bg-hover transition-colors"
               title="Connection actions"
               aria-label="Connection actions"
             >
@@ -1104,7 +1104,7 @@ export function Integrations() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b border-border px-6 py-4">
+      <div className="border-b border-border px-4 py-3 sm:px-6 sm:py-4">
         <h1 className="text-text text-lg font-bold">Integrations</h1>
         <p className="text-text-muted text-sm mt-1">
           Connect apps and services to your Apteva instances.
@@ -1113,10 +1113,10 @@ export function Integrations() {
 
       {/* Source tabs — Apteva Local is always available; Composio
           stays a real provider, gated on its API key being set. */}
-      <div className="border-b border-border px-6 flex gap-0">
+      <div className="border-b border-border flex max-w-full gap-0 overflow-x-auto px-4 sm:px-6">
         <button
           onClick={() => setTab("local")}
-          className={`px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
+          className={`shrink-0 whitespace-nowrap px-4 sm:px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
             tab === "local"
               ? "text-accent border-accent"
               : "text-text-muted border-transparent hover:text-text"
@@ -1127,7 +1127,7 @@ export function Integrations() {
         <button
           onClick={() => setTab("composio")}
           disabled={!hasComposio}
-          className={`px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
+          className={`shrink-0 whitespace-nowrap px-4 sm:px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
             tab === "composio"
               ? "text-accent border-accent"
               : "text-text-muted border-transparent hover:text-text"
@@ -1137,7 +1137,7 @@ export function Integrations() {
         </button>
         <button
           onClick={() => setTab("usage")}
-          className={`px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
+          className={`shrink-0 whitespace-nowrap px-4 sm:px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
             tab === "usage"
               ? "text-accent border-accent"
               : "text-text-muted border-transparent hover:text-text"
@@ -1148,7 +1148,7 @@ export function Integrations() {
       </div>
 
       <div className="flex-1 flex min-h-0">
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        <div className="page-safe-bottom flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
           {/* Active connections — shared across sources.
               v0.15.0 splits the list into "Project: <name>" and
               "Global" sections so the operator can tell at a glance
@@ -1308,7 +1308,7 @@ export function Integrations() {
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-text text-base font-bold">Composio App Catalog</h2>
                 <button
-                  onClick={loadComposioApps}
+                  onClick={() => loadComposioApps()}
                   className="text-xs text-accent hover:text-accent-hover transition-colors"
                 >
                   Refresh
@@ -2092,7 +2092,7 @@ function IntegrationUsagePanel({ projectId }: { projectId?: string }) {
             </div>
           )}
         </div>
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[860px] text-sm">
             <thead className="text-text-dim border-b border-border">
               <tr>
@@ -2158,8 +2158,40 @@ function IntegrationUsagePanel({ projectId }: { projectId?: string }) {
             </tbody>
           </table>
         </div>
+        <div className="divide-y divide-border md:hidden">
+          {loading && <div className="px-4 py-6 text-center text-sm text-text-muted">Loading usage…</div>}
+          {!loading && (!summary || summary.rows.length === 0) && <div className="px-4 py-6 text-center text-sm text-text-muted">No usage recorded.</div>}
+          {!loading && summary?.rows.map((row, idx) => (
+            <article key={`mobile:${row.app_slug}:${row.tool}:${row.unit}:${row.grant_id || ""}:${idx}`} className="space-y-3 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-text">{row.app_slug || "unknown"}</div>
+                  <div className="mt-0.5 break-all font-mono text-xs text-text-muted">{row.tool || "tool"}</div>
+                </div>
+                <div className="shrink-0 text-right text-sm font-semibold text-text">{formatUsageNumber(row.quantity)} {formatUsageUnit(row.unit, row.quantity)}</div>
+              </div>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                <UsageField label="Calls" value={formatUsageNumber(row.calls)} />
+                <UsageField label="Errors" value={formatUsageNumber(row.errors)} tone={row.errors > 0 ? "red" : undefined} />
+                <UsageField label="Direction" value={row.direction || "local"} />
+                <UsageField label="Grant" value={row.grant_id ? shortUsageID(row.grant_id) : "-"} mono />
+                <UsageField label="Caller" value={row.caller_app_name || (row.caller_install_id ? `install ${row.caller_install_id}` : "-")} />
+                <UsageField label="Last used" value={row.last_used_at ? new Date(row.last_used_at).toLocaleString() : "-"} />
+              </dl>
+            </article>
+          ))}
+        </div>
       </div>
     </section>
+  );
+}
+
+function UsageField({ label, value, tone, mono }: { label: string; value: string; tone?: "red"; mono?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[10px] uppercase tracking-wide text-text-dim">{label}</dt>
+      <dd className={`mt-0.5 break-words ${tone === "red" ? "text-red" : "text-text-muted"} ${mono ? "font-mono" : ""}`}>{value}</dd>
+    </div>
   );
 }
 

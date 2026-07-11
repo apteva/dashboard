@@ -36,6 +36,8 @@ import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
 import { EvalsPanel } from "./EvalsPanel";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
+import { useMediaQuery } from "../hooks/useMediaQuery";
+import { AgentCurrentStatus, useCurrentStatuses } from "./dashboard/CurrentStatuses";
 
 type RuntimeView = "stream" | "activity" | "memory" | "skills" | "apps" | "evals";
 
@@ -787,18 +789,18 @@ export function AgentView({
     view === "activity" ? (
       <ActivityPanel instance={instance} subscribe={subscribe} onReload={onReload} onThreadOpen={setSelectedThreadId} />
     ) : view === "memory" ? (
-      instance.status === "running" ? (
-        <div className="h-full min-h-0 flex flex-col">
-          <UnconsciousPanel instanceId={instance.id} compact />
+      <div className="h-full min-h-0 flex flex-col">
+          <UnconsciousPanel instanceId={instance.id} compact onAgentReload={onReload} />
+          {instance.status === "running" ? (
           <div className="flex-1 min-h-0">
             <MemoryPanel instanceId={instance.id} />
           </div>
-        </div>
-      ) : (
-        <div className="flex items-center justify-center h-full text-text-muted text-sm">
-          Start the agent to view its memory.
-        </div>
-      )
+          ) : (
+            <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
+              Start the agent to inspect persisted memories.
+            </div>
+          )}
+      </div>
     ) : view === "skills" ? (
       <SkillsPanel instanceId={instance.id} />
     ) : view === "apps" ? (
@@ -1044,6 +1046,11 @@ function AgentRuntimePanel({
   onDelete: () => void;
   advancedContent: ReactNode;
 }) {
+  const currentStatuses = useCurrentStatuses(instance.project_id || undefined);
+  const currentStatus = useMemo(
+    () => currentStatuses.find((status) => status.instance_id === instance.id),
+    [currentStatuses, instance.id],
+  );
   const [mcpServers, setMCPServers] = useState<MCPServerConfig[]>([]);
   const [installedApps, setInstalledApps] = useState<AppRow[]>([]);
   const [mcpInventory, setMCPInventory] = useState<MCPServer[]>([]);
@@ -1057,6 +1064,8 @@ function AgentRuntimePanel({
   });
   const [liveStatus, setLiveStatus] = useState<Status | null>(null);
   const [executionBusy, setExecutionBusy] = useState<"run" | "pause" | "step" | "back" | null>(null);
+  const [showMobileActions, setShowMobileActions] = useState(false);
+  const isDesktop = useMediaQuery("(min-width: 768px)");
 
   useEffect(() => {
     setSelectedRuntimeThread("main");
@@ -1201,7 +1210,26 @@ function AgentRuntimePanel({
           />
         </div>
       </Modal>
-      <div className="border-b border-border px-4 py-3 space-y-3">
+      <Modal open={showMobileActions} onClose={() => setShowMobileActions(false)} width="max-w-md" ariaLabel="Agent actions">
+        <div className="border-b border-border px-4 py-3">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-accent">Agent actions</div>
+          <div className="mt-1 truncate text-base font-semibold text-text">{instance.name}</div>
+        </div>
+        <div className="page-safe-bottom grid gap-2 p-3">
+          {instance.status === "running" ? (
+            <>
+              <button type="button" onClick={() => { setShowMobileActions(false); void onPause(); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text">Pause</button>
+              <button type="button" onClick={() => { setShowMobileActions(false); void onStop(); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-red">Stop</button>
+            </>
+          ) : (
+            <button type="button" onClick={() => { setShowMobileActions(false); void onStart(); }} className="touch-target rounded-lg border border-accent px-4 text-left text-sm font-semibold text-accent">Start</button>
+          )}
+          <button type="button" onClick={() => { setShowMobileActions(false); onConfig(); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text">Configuration</button>
+          <button type="button" onClick={() => { setShowMobileActions(false); onReset(); }} className="touch-target rounded-lg border border-yellow/40 px-4 text-left text-sm text-yellow">Reset agent</button>
+          <button type="button" onClick={() => { setShowMobileActions(false); onDelete(); }} className="touch-target rounded-lg border border-red/40 px-4 text-left text-sm text-red">Delete agent</button>
+        </div>
+      </Modal>
+      <div className="border-b border-border px-3 py-3 sm:px-4 space-y-3">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -1215,8 +1243,10 @@ function AgentRuntimePanel({
               <span>agent #{instance.id}</span>
               {instance.project_id && <span>project {instance.project_id}</span>}
             </div>
+            <AgentCurrentStatus status={currentStatus} />
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
+          <button type="button" onClick={() => setShowMobileActions(true)} className="touch-target inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border text-lg text-text-muted md:hidden" aria-label="Agent actions">⋮</button>
+          <div className="hidden items-center gap-1.5 shrink-0 md:flex">
             {instance.status === "running" ? (
               <>
                 <button onClick={onPause} className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-accent hover:border-accent">Pause</button>
@@ -1249,6 +1279,7 @@ function AgentRuntimePanel({
         />
       </div>
 
+      {isDesktop ? (
       <div className="shrink-0 grid grid-cols-2 divide-x divide-border border-b border-border">
         <ThreadSummary
           instanceId={instance.id}
@@ -1269,6 +1300,38 @@ function AgentRuntimePanel({
           onManage={() => setShowCapabilitiesManage(true)}
         />
       </div>
+      ) : (
+        <div className="shrink-0 border-b border-border bg-bg-card">
+          <details open className="border-b border-border group">
+            <summary className="touch-target flex cursor-pointer list-none items-center justify-between px-3 text-sm font-semibold text-text">
+              Current work and threads <span className="text-text-dim group-open:rotate-90">›</span>
+            </summary>
+            <ThreadSummary
+              instanceId={instance.id}
+              running={instance.status === "running"}
+              threads={threads}
+              activeTools={activeTools}
+              thinking={thinking}
+              selectedThreadId={selectedRuntimeThread}
+              onThreadSelect={selectRuntimeThread}
+              onThreadOpen={onThreadOpen}
+            />
+          </details>
+          <details className="group">
+            <summary className="touch-target flex cursor-pointer list-none items-center justify-between px-3 text-sm font-semibold text-text">
+              Capabilities <span className="text-text-dim group-open:rotate-90">›</span>
+            </summary>
+            <CapabilityShelf
+              mcpServers={mcpServers}
+              apps={installedApps}
+              inventory={mcpInventory}
+              instanceId={instance.id}
+              onAttachedChange={setMCPServers}
+              onManage={() => setShowCapabilitiesManage(true)}
+            />
+          </details>
+        </div>
+      )}
 
       <div className="border-b border-border px-3 py-2 flex items-center gap-2">
         <span className="text-[10px] uppercase tracking-wide text-text-muted shrink-0">View</span>
@@ -2732,17 +2795,24 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   useEffect(() => {
     if (!selectedDetail || availableModels[selectedDetail.id]) return;
     setLoadingModels(selectedDetail.id);
-    providersAPI.models(selectedDetail.id).then((m) => {
-      setAvailableModels((prev) => ({ ...prev, [selectedDetail.id]: m }));
-    }).catch(() => {}).finally(() => setLoadingModels(null));
+    providersAPI.models(selectedDetail.id)
+      .then(async (m) => {
+        const detail = await providersAPI.get(selectedDetail.id);
+        setAvailableModels((prev) => ({ ...prev, [selectedDetail.id]: m }));
+        setProviderDetails((prev) => ({ ...prev, [selectedDetail.id]: detail }));
+      })
+      .catch((err: any) => setError("Failed to fetch models: " + (err.message || "")))
+      .finally(() => setLoadingModels(null));
   }, [selectedDetail?.id]);
 
   const handleRefreshModels = async () => {
     if (!selectedDetail) return;
     setLoadingModels(selectedDetail.id);
     try {
-      const m = await providersAPI.models(selectedDetail.id);
+      const m = await providersAPI.models(selectedDetail.id, true);
+      const detail = await providersAPI.get(selectedDetail.id);
       setAvailableModels((prev) => ({ ...prev, [selectedDetail.id]: m }));
+      setProviderDetails((prev) => ({ ...prev, [selectedDetail.id]: detail }));
     } catch (err: any) {
       setError("Failed to fetch models: " + (err.message || ""));
     } finally { setLoadingModels(null); }
@@ -2753,15 +2823,19 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   const handleSave = async () => {
     setSaving(true); setError("");
     try {
-      // Update model sizes on the provider if changed
+      // Save model selections through the narrow server route. OAuth-backed
+      // providers keep their nested credentials and account state untouched.
       if (selectedDetail && selectedData) {
-        const d = { ...selectedData.data };
-        let changed = false;
-        if (modelLarge !== (d.model_large || "")) { d.model_large = modelLarge; changed = true; }
-        if (modelMedium !== (d.model_medium || "")) { d.model_medium = modelMedium; changed = true; }
-        if (modelSmall !== (d.model_small || "")) { d.model_small = modelSmall; changed = true; }
-        if (changed) {
-          await providersAPI.update(selectedDetail.id, selectedDetail.type, selectedDetail.name, d);
+        if (
+          modelLarge !== (selectedData.data.model_large || "") ||
+          modelMedium !== (selectedData.data.model_medium || "") ||
+          modelSmall !== (selectedData.data.model_small || "")
+        ) {
+          await providersAPI.updateModels(selectedDetail.id, {
+            large: modelLarge,
+            medium: modelMedium,
+            small: modelSmall,
+          });
         }
       }
 
@@ -2806,7 +2880,9 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         >
           <option value="">— not set —</option>
           {uniqueModels.map((m) => (
-            <option key={m.id} value={m.id}>{m.id}</option>
+            <option key={m.id} value={m.id}>
+              {m.name && m.name !== m.id ? `${m.name} (${m.id})` : m.id}
+            </option>
           ))}
         </select>
       ) : (

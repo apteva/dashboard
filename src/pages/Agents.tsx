@@ -1,38 +1,14 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { instances, core, subscriptions, instanceSkills, type Agent, type InstanceSkill, type MCPServerConfig, type RunMode, type Status, type SubscriptionInfo, type TelemetryEvent } from "../api";
+import { instances, core, instanceSkills, agentCoreRollouts, type Agent, type AgentCoreRollout, type InstanceSkill, type MCPServerConfig, type RunMode } from "../api";
 import { useProjects } from "../hooks/useProjects";
-import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { Modal } from "../components/Modal";
 import { sleepClassName, sleepLabel, sleepTitle, type SleepLike } from "../utils/sleepStatus";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
-
-// Per-instance live activity snapshot built from the all-instances SSE
-// stream. We keep just enough to render the row strip — the latest
-// thought line, the latest tool invocation (with done state), the most
-// recent llm.done iter/cost, and a "lastEventAt" timestamp so the UI
-// can mark instances as quiet after a few seconds of silence.
-interface LiveActivity {
-  lastThought?: string;
-  lastThoughtAt?: number;
-  // The most recent visible tool call, kept around after completion so the
-  // row strip shows "what just happened" rather than going blank. `toolDone`
-  // flips from false → true on tool.result so the chip can switch from a
-  // spinner to a checkmark, but the label stays visible until either a
-  // newer tool call replaces it or the 30s row-expiry kicks in.
-  activeTool?: string;
-  activeToolReason?: string;  // free-text "why" the agent supplied at call time
-  activeToolAt?: number;
-  toolDone?: boolean;
-  lastIter?: number;
-  lastModel?: string;
-  lastEventAt: number;
-  threadCount: number;
-}
+import { AgentCurrentStatus, useCurrentStatuses } from "../components/dashboard/CurrentStatuses";
 
 type AgentLiveStatus = { threads: number; iter: number; rate: string } & SleepLike;
-type AgentSubThread = { id: string; rate: string; iter: number; mcpNames: string[] } & SleepLike;
 type AgentsViewMode = "cards" | "list";
 
 function mcpNamesFromConfig(servers?: MCPServerConfig[]) {
@@ -47,6 +23,16 @@ function mcpNamesFromConfig(servers?: MCPServerConfig[]) {
   return names;
 }
 
+function mcpNamesFromAgentConfig(raw?: string): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as { mcp_servers?: MCPServerConfig[] };
+    return mcpNamesFromConfig(parsed.mcp_servers);
+  } catch {
+    return [];
+  }
+}
+
 // Agents is the fleet-list view: all instances in the current project,
 // with status + quick lifecycle actions + a create form. Clicking a row
 // navigates to /instances/:id which renders the full AgentView.
@@ -58,10 +44,10 @@ export function Agents() {
   const navigate = useNavigate();
 
   const [list, setList] = useState<Agent[]>([]);
-  const [agentSubscriptions, setAgentSubscriptions] = useState<Record<number, SubscriptionInfo[]>>({});
   const [agentSkills, setAgentSkills] = useState<Record<number, InstanceSkill[]>>({});
   const [loaded, setLoaded] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [showMobileActions, setShowMobileActions] = useState(false);
   const [name, setName] = useState("");
   const [directive, setDirective] = useState("");
   // Default new instances to "learn" — safest default for a fresh agent:
@@ -70,17 +56,16 @@ export function Agents() {
   // Can be changed to cautious/autonomous before create, or later in
   // AgentView / the ActivityPanel header toggle.
   const [createMode, setCreateMode] = useState<RunMode>("learn");
+  const [createUnconscious, setCreateUnconscious] = useState(true);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [rollout, setRollout] = useState<AgentCoreRollout | null>(null);
+  const [rolloutError, setRolloutError] = useState("");
 
   // Per-instance live thread count, keyed by instance id. Updated every
   // poll from core.status so the list reflects how active each instance is
   // without needing full thread data.
   const [liveStatus, setLiveStatus] = useState<Record<number, AgentLiveStatus | null>>({});
-  // Per-instance list of sub-threads (excluding "main") so the card can
-  // show what's actually running — id + pace + iter. Refreshed on the
-  // same 5s cadence as status. Empty array = no sub-threads.
-  const [subThreads, setSubThreads] = useState<Record<number, AgentSubThread[]>>({});
   // Per-instance saved MCP attachments. Sourced from /config so the
   // fleet row renders the same list while the agent is running or
   // stopped.
@@ -93,11 +78,29 @@ export function Agents() {
     }
   });
   const [now, setNow] = useState(Date.now());
+  const currentStatuses = useCurrentStatuses(projectId);
+  const currentStatusByAgent = useMemo(
+    () => Object.fromEntries(currentStatuses.map((status) => [status.instance_id, status])),
+    [currentStatuses],
+  );
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => agentCoreRollouts.get().then((value) => {
+      if (!cancelled) setRollout(value);
+    }).catch(() => {});
+    void refresh();
+    const timer = window.setInterval(refresh, rollout?.state === "running" ? 1500 : 10000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [rollout?.state]);
 
   const setAgentsViewMode = (mode: AgentsViewMode) => {
     setViewMode(mode);
@@ -108,25 +111,8 @@ export function Agents() {
     }
   };
 
-  // Live activity strip — driven by the all-instances SSE stream below.
-  // Single connection, server-side fan-out, so the page scales to many
-  // instances without N concurrent EventSources. Keyed by instance id.
-  const [liveActivity, setLiveActivity] = useState<Record<number, LiveActivity>>({});
-  // Force a 1Hz re-render so the "Xs ago" badges update without an event.
-  const [, tickRender] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => tickRender((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  // Inline-rename state. Only one row is editable at a time; null means
-  // no row is in edit mode. We store the draft separately so canceling
-  // restores the original without an extra fetch.
-  const [renamingId, setRenamingId] = useState<number | null>(null);
   // Quick-edit modal state. editTarget = the agent being edited; null
-  // = modal closed. We deliberately keep this separate from the
-  // legacy inline-rename so a rename in progress (renamingId) and the
-  // modal don't compete for the same row's name field.
+  // = modal closed.
   const [editTarget, setEditTarget] = useState<Agent | null>(null);
   const [editName, setEditName] = useState("");
   const [editDirective, setEditDirective] = useState("");
@@ -169,27 +155,20 @@ export function Agents() {
       setEditSaving(false);
     }
   };
-  const [renameDraft, setRenameDraft] = useState("");
-  const [renameError, setRenameError] = useState("");
-
-  // load() is also called by imperative callsites below (rename
-  // commit, start/stop, delete) where the response is the user's
+  // load() is also called by imperative callsites below (start/stop)
+  // where the response is the user's
   // intent and no cancellation is needed. The polling effect uses a
   // ref-tracked generation so its async responses don't write into a
   // newer project's state — see the effect below.
   const loadGen = useRef(0);
   const load = () => {
     const myGen = loadGen.current;
-    Promise.all([
-      instances.list(projectId),
-      subscriptions.list(projectId).catch(() => [] as SubscriptionInfo[]),
-    ])
-      .then(([items, subs]) => {
+    instances.list(projectId)
+      .then((items) => {
         // Drop the response if a new project was selected (or the
         // component unmounted) since this fetch fired.
         if (myGen !== loadGen.current) return;
         setList(items || []);
-        setAgentSubscriptions(groupSubscriptionsByAgent(subs || []));
         loadAgentSkills(items || [], myGen);
         setLoaded(true);
       })
@@ -205,11 +184,9 @@ export function Agents() {
     // projectId stops writing state.
     loadGen.current += 1;
     setList([]);
-    setAgentSubscriptions({});
     setAgentSkills({});
     setLoaded(false);
     setLiveStatus({});
-    setSubThreads({});
     setMainMCPs({});
     load();
     const t = setInterval(load, 5000);
@@ -239,217 +216,88 @@ export function Agents() {
     });
   };
 
-  // Poll core status for running instances so the list shows live activity.
-  // The status endpoint gives us thread count + iter + pace, which the SSE
-  // stream alone wouldn't reveal until a new event landed. We keep this as
-  // a 5-second backstop; the SSE handler below overlays sub-second updates
-  // on top whenever the cores are actively working.
+  const runtimeAgentsKey = list.map((inst) => `${inst.id}:${inst.status}`).join("|");
+  const mcpConfigKey = list.map((inst) => `${inst.id}:${inst.config}`).join("|");
+
+  // The fleet payload's config blob is only a fast fallback: for some older
+  // agents it does not contain the full persisted/live mcp_servers list.
+  // Resolve /config once when fleet membership or stored config changes, not
+  // on the five-second list poll, so MCP chips stay correct without restoring
+  // the old per-agent request storm.
   useEffect(() => {
     if (list.length === 0) return;
-    const refresh = () => {
-      list.forEach((inst) => {
-        // Saved MCP attachments live in the agent config. When the
-        // core is stopped, the server serves this from config.json.
-        core
-          .config(inst.id)
-          .then((cfg) => {
-            setMainMCPs((prev) => ({
-              ...prev,
-              [inst.id]: mcpNamesFromConfig(cfg.mcp_servers),
-            }));
-          })
-          .catch(() => {
-            setMainMCPs((prev) => ({ ...prev, [inst.id]: [] }));
-          });
-
-        if (inst.status !== "running") {
-          setLiveStatus((prev) => ({ ...prev, [inst.id]: null }));
-          // DO fetch threads for stopped instances — the server
-          // falls back to config.json on disk via serveStoppedInstanceData,
-          // so the card can still show persisted sub-threads and their
-          // per-thread MCP names without a live core. Only the
-          // live /status (iter/rate) is absent; we handle that via the
-          // null liveStatus above, which renders as "stopped".
-          core
-            .threads(inst.id)
-            .then((threads) => {
-              const subs = (threads || [])
-                .filter((t) => t.id !== "main")
-                .map((t) => ({
-                  id: t.id,
-                  rate: "stopped",
-                  iter: 0,
-                  mcpNames: t.mcp_names || [],
-                  sleep_state: t.sleep_state,
-                  sleep_thread_id: t.sleep_thread_id,
-                  sleep_started_at: t.sleep_started_at,
-                  next_wake_at: t.next_wake_at,
-                  sleep_total_ms: t.sleep_total_ms,
-                  sleep_remaining_ms: t.sleep_remaining_ms,
-                  sleep_iteration: t.sleep_iteration,
-                }));
-              setSubThreads((prev) => ({ ...prev, [inst.id]: subs }));
-            })
-            .catch(() => {
-              setSubThreads((prev) => ({ ...prev, [inst.id]: [] }));
-            });
-          return;
-        }
-        core
-          .status(inst.id)
-          .then((s: Status) => {
-            setLiveStatus((prev) => ({
-              ...prev,
-              [inst.id]: {
-                threads: s.threads,
-                iter: s.iteration,
-                rate: s.rate,
-                sleep_state: s.sleep_state,
-                sleep_thread_id: s.sleep_thread_id,
-                sleep_started_at: s.sleep_started_at,
-                next_wake_at: s.next_wake_at,
-                sleep_total_ms: s.sleep_total_ms,
-                sleep_remaining_ms: s.sleep_remaining_ms,
-                sleep_iteration: s.sleep_iteration,
-              },
-            }));
-          })
-          .catch(() => {});
-        // Thread list: filter out "main" since it's already surfaced via
-        // liveStatus and the saved MCP row comes from /config above.
-        core
-          .threads(inst.id)
-          .then((threads) => {
-            const subs = (threads || [])
-              .filter((t) => t.id !== "main")
-              .map((t) => ({
-                id: t.id,
-                rate: t.rate,
-                iter: t.iteration,
-                mcpNames: t.mcp_names || [],
-                sleep_state: t.sleep_state,
-                sleep_thread_id: t.sleep_thread_id,
-                sleep_started_at: t.sleep_started_at,
-                next_wake_at: t.next_wake_at,
-                sleep_total_ms: t.sleep_total_ms,
-                sleep_remaining_ms: t.sleep_remaining_ms,
-                sleep_iteration: t.sleep_iteration,
-              }));
-            setSubThreads((prev) => ({ ...prev, [inst.id]: subs }));
-          })
-          .catch(() => {});
-      });
-    };
-    refresh();
-    const t = setInterval(refresh, 5000);
-    return () => clearInterval(t);
-  }, [list]);
-
-  // ── Live activity — fed by the project-wide telemetry bus ──
-  //
-  // Pre-bus we opened our own EventSource against
-  // /api/telemetry/stream?all=1 here. That worked, but every page in
-  // the dashboard that wanted telemetry (ActivityFeed, AgentView,
-  // ChatPanel for "thinking…") opened its own SSE — three or four
-  // connections against the same data, eating into the browser's
-  // HTTP/1.1 6-per-origin cap. The bus collapses every consumer onto
-  // a single EventSource per project; we just keep dedup + the
-  // per-instance snapshot logic that's specific to the fleet view.
-  //
-  // Reset state on project switch — instances from project A shouldn't
-  // bleed into project B's activity map. The bus itself rebinds when
-  // Layout calls setProjectId on the new project.
-  const seenStreamEventsRef = useRef<Set<string>>(new Set());
-  const seenStreamOrderRef = useRef<string[]>([]);
-  useEffect(() => {
-    setLiveActivity({});
-    seenStreamEventsRef.current = new Set();
-    seenStreamOrderRef.current = [];
-  }, [projectId]);
-
-  useTelemetryEvents(null, (event: TelemetryEvent) => {
-    // Dedup by event.id — same as ChatPanel/AgentView. The
-    // server stream is already de-duplicated server-side, but
-    // StrictMode dev mounts and SSE auto-reconnects can replay
-    // the same id and we'd double-count thread.spawn etc.
-    if (event.id) {
-      if (seenStreamEventsRef.current.has(event.id)) return;
-      seenStreamEventsRef.current.add(event.id);
-      seenStreamOrderRef.current.push(event.id);
-      if (seenStreamOrderRef.current.length > 1000) {
-        const old = seenStreamOrderRef.current.shift();
-        if (old) seenStreamEventsRef.current.delete(old);
-      }
-    }
-
-    const instId = event.instance_id;
-    if (!instId) return;
-    const data = event.data || {};
-    const now = Date.now();
-
-    setLiveActivity((prev) => {
-      const cur: LiveActivity = prev[instId] || {
-        lastEventAt: now,
-        threadCount: 0,
-      };
-      const next: LiveActivity = { ...cur, lastEventAt: now };
-
-      if (event.type === "llm.done") {
-        // Most useful single event for the row strip — gives us
-        // iter, model, and the final assistant text in one shot.
-        if (typeof data.iteration === "number") next.lastIter = data.iteration;
-        if (typeof data.model === "string") next.lastModel = data.model;
-        if (typeof data.message === "string" && data.message.trim()) {
-          next.lastThought = String(data.message).split("\n")[0].slice(0, 140);
-          next.lastThoughtAt = now;
-        }
-        // The active tool from any in-progress tool.call is now
-        // stale once the iteration finishes — clear it.
-        next.activeTool = undefined;
-        next.activeToolAt = undefined;
-      }
-
-      if (event.type === "tool.call" && data.name) {
-        const name = String(data.name);
-        // Hide internal housekeeping tools from the strip; users
-        // care about real work, not pace/done/evolve/remember.
-        const hidden = new Set([
-          "pace", "done", "evolve", "remember", "send",
-          "channels_respond", "channels_send", "channels_status",
-        ]);
-        if (!hidden.has(name)) {
-          next.activeTool = name;
-          // Capture the free-text reason the agent passed via _reason
-          // so the row strip can show "Fetching spreadsheet metadata"
-          // instead of the raw "google-sheets_get_spreadsheet" slug.
-          next.activeToolReason =
-            typeof data.reason === "string" ? data.reason : undefined;
-          next.activeToolAt = now;
-          next.toolDone = false;
-        }
-      }
-
-      if (event.type === "tool.result" && data.name) {
-        // DO NOT clear the tool here. We want the row strip to keep
-        // showing the reason after the call completes — the user
-        // wants "what just happened" to stay visible, not flash and
-        // disappear. We only flip the toolDone flag so the chip
-        // switches from spinner to checkmark. The 30-second row
-        // expiry below handles eventual cleanup, and the next tool
-        // call overwrites this entry.
-        if (next.activeTool === String(data.name)) {
-          next.toolDone = true;
-        }
-      }
-
-      if (event.type === "thread.spawn") next.threadCount = (cur.threadCount || 0) + 1;
-      if (event.type === "thread.done") {
-        next.threadCount = Math.max(0, (cur.threadCount || 0) - 1);
-      }
-
-      return { ...prev, [instId]: next };
+    let cancelled = false;
+    const gen = loadGen.current;
+    const agents = list;
+    const fallback = Object.fromEntries(
+      agents.map((inst) => [inst.id, mcpNamesFromAgentConfig(inst.config)]),
+    );
+    setMainMCPs(fallback);
+    void mapWithConcurrency(agents, 6, async (inst) => {
+      const names = await core
+        .config(inst.id)
+        .then((config) => mcpNamesFromConfig(config.mcp_servers))
+        .catch(() => fallback[inst.id] || []);
+      return [inst.id, names] as const;
+    }).then((pairs) => {
+      if (cancelled || gen !== loadGen.current) return;
+      setMainMCPs(Object.fromEntries(pairs));
     });
-  });
+    return () => {
+      cancelled = true;
+    };
+    // The key changes only when agent membership or stored config changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mcpConfigKey]);
+
+  // Poll core status as a slow backstop. Requests are bounded
+  // to six in flight and state commits are batched once per refresh; the old
+  // implementation fired 2–3 requests and 2–3 React updates per agent every
+  // five seconds (about 60 requests/sec for a 100-agent fleet).
+  useEffect(() => {
+    if (list.length === 0) return;
+    let cancelled = false;
+    const agents = list;
+    const refresh = async () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const rows = await mapWithConcurrency(agents, 6, async (inst) => {
+        const statusResult = inst.status === "running"
+          ? await core.status(inst.id).catch(() => undefined)
+          : null;
+        const live: AgentLiveStatus | null | undefined = statusResult === null
+          ? null
+          : statusResult
+            ? {
+                threads: statusResult.threads,
+                iter: statusResult.iteration,
+                rate: statusResult.rate,
+                sleep_state: statusResult.sleep_state,
+                sleep_thread_id: statusResult.sleep_thread_id,
+                sleep_started_at: statusResult.sleep_started_at,
+                next_wake_at: statusResult.next_wake_at,
+                sleep_total_ms: statusResult.sleep_total_ms,
+                sleep_remaining_ms: statusResult.sleep_remaining_ms,
+                sleep_iteration: statusResult.sleep_iteration,
+              }
+            : undefined;
+        return { id: inst.id, live };
+      });
+      if (cancelled) return;
+      setLiveStatus((previous) => Object.fromEntries(rows.map((row) => [
+        row.id,
+        row.live === undefined ? previous[row.id] ?? null : row.live,
+      ])));
+    };
+    void refresh();
+    const t = setInterval(() => void refresh(), 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+    // The key changes only when fleet membership/runtime state changes; the
+    // 5s list refresh no longer tears down and immediately restarts this poll.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runtimeAgentsKey]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -463,10 +311,12 @@ export function Agents() {
       // to configure directive / MCPs / channels.
       await instances.create(name.trim(), directive.trim(), createMode, projectId, false, {
         includeChannels: true,
+        unconscious: createUnconscious,
       });
       setName("");
       setDirective("");
       setCreateMode("learn");
+      setCreateUnconscious(true);
       setShowCreate(false);
       load();
     } catch (err: any) {
@@ -490,34 +340,22 @@ export function Agents() {
     } catch {}
   };
 
-  const startRename = (inst: Agent) => {
-    setRenamingId(inst.id);
-    setRenameDraft(inst.name);
-    setRenameError("");
-  };
-
-  const cancelRename = () => {
-    setRenamingId(null);
-    setRenameDraft("");
-    setRenameError("");
-  };
-
-  const commitRename = async (id: number) => {
-    const next = renameDraft.trim();
-    if (!next) {
-      setRenameError("Name cannot be empty");
-      return;
-    }
-    // Optimistically update the row in-place so the UI doesn't flicker
-    // back to the old name while the request is in flight.
-    setList((prev) => prev.map((i) => (i.id === id ? { ...i, name: next } : i)));
-    setRenamingId(null);
+  const handleAgentCoreUpdate = async (id: number) => {
+    setRolloutError("");
     try {
-      await instances.rename(id, next);
-      load();
+      setRollout(await agentCoreRollouts.startAgent(id));
     } catch (err: any) {
-      setRenameError(err?.message || "Rename failed");
-      load();
+      setRolloutError(err?.message || "Failed to start core update");
+    }
+  };
+
+  const handleProjectCoreUpdate = async () => {
+    if (!projectId) return;
+    setRolloutError("");
+    try {
+      setRollout(await agentCoreRollouts.startProject(projectId));
+    } catch (err: any) {
+      setRolloutError(err?.message || "Failed to start rolling update");
     }
   };
 
@@ -525,16 +363,26 @@ export function Agents() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b border-border px-6 py-4 flex items-center justify-between">
-        <div>
+      <div className="border-b border-border px-4 py-3 sm:px-6 sm:py-4 flex items-center justify-between gap-3">
+        <div className="min-w-0">
           <h1 className="text-text text-lg font-bold">Agents</h1>
-          <p className="text-text-muted text-sm mt-1">
+          <p className="truncate text-text-muted text-xs mt-0.5 sm:text-sm sm:mt-1">
             {list.length === 0
               ? "No agents yet. Create one to get started."
               : `${list.length} agent${list.length === 1 ? "" : "s"} in this project.`}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="hidden items-center gap-2 sm:flex">
+          {list.some((agent) => agent.core_update_available) && (
+            <button
+              type="button"
+              onClick={handleProjectCoreUpdate}
+              disabled={rollout?.state === "running"}
+              className="px-3 py-2 border border-accent rounded-lg text-accent text-xs hover:bg-accent/10 disabled:opacity-50"
+            >
+              Update all gradually
+            </button>
+          )}
           <div className="flex items-center border border-border rounded-lg overflow-hidden">
             {(["cards", "list"] as AgentsViewMode[]).map((mode) => (
               <button
@@ -565,9 +413,30 @@ export function Agents() {
             + New Agent
           </button>
         </div>
+        <div className="flex shrink-0 items-center gap-2 sm:hidden">
+          <button type="button" onClick={() => navigate("/agents/new")} className="touch-target rounded-lg bg-accent px-3 text-sm font-bold text-bg" aria-label="Create agent">+ New</button>
+          <button type="button" onClick={() => setShowMobileActions(true)} className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-lg border border-border text-lg text-text-muted" aria-label="Agent page actions">⋮</button>
+        </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+      <div className="page-safe-bottom flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+        {rollout?.state === "running" && (
+          <div className="flex items-center gap-3 rounded-lg border border-accent/40 bg-accent/5 px-4 py-3 text-xs">
+            <span className="text-accent">Updating cores</span>
+            <span className="min-w-0 flex-1 truncate text-text-muted">
+              {rollout.current_agent_name || (rollout.current_agent_id ? `Agent #${rollout.current_agent_id}` : "Preparing")}
+            </span>
+            <span className="font-mono text-text-dim">{rollout.completed + rollout.failed}/{rollout.total}</span>
+            <button
+              type="button"
+              onClick={() => void agentCoreRollouts.cancel().then(() => agentCoreRollouts.get().then(setRollout))}
+              className="text-text-muted hover:text-red"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+        {rolloutError && <div className="text-sm text-red">{rolloutError}</div>}
         {list.length === 0 && (
           <div className="text-text-muted text-sm">
             No agents yet.{" "}
@@ -581,586 +450,145 @@ export function Agents() {
         )}
 
         {viewMode === "cards" ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {list.map((inst) => {
               const live = liveStatus[inst.id];
               const isRunning = inst.status === "running";
-              const pointingSubscriptions = agentSubscriptions[inst.id] || [];
               const assignedSkills = agentSkills[inst.id] || [];
               const mcpNames = mainMCPs[inst.id] || [];
-              const act = liveActivity[inst.id];
-              const actAgeMs = act ? Date.now() - act.lastEventAt : Number.POSITIVE_INFINITY;
-              const liveLabel = live
-                ? `${live.threads} threads · #${live.iter}`
-                : isRunning
-                  ? "running"
-                  : "stopped";
               return (
                 <article
                   key={inst.id}
-                  className="border border-border rounded-lg bg-bg-card hover:border-accent transition-colors min-h-[216px] flex flex-col overflow-hidden"
+                  className="relative min-h-[200px] rounded-lg border border-border bg-bg-card transition-colors hover:border-accent sm:h-[200px]"
                 >
-                  <Link
-                    to={`/agents/${inst.id}`}
-                    className="block p-4 flex-1 min-w-0"
-                    onClick={(e) => {
-                      if (renamingId === inst.id) e.preventDefault();
-                    }}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 min-w-0">
+                  <Link to={`/agents/${inst.id}`} className="block h-full min-w-0 p-4">
+                    <div className="min-w-0 pr-28">
+                      <div className="truncate text-sm font-bold text-text">{inst.name}</div>
+                      <div className="mt-1 flex items-center gap-2 text-[10px] text-text-dim">
+                        <span>#{inst.id}</span>
+                        <ModeBadge mode={inst.mode} />
+                        {inst.core_update_available && (
                           <span
-                            className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
-                              isRunning ? "bg-green" : "bg-red"
-                            }`}
-                          />
-                          <span className="text-text text-sm font-bold truncate">{inst.name}</span>
-                        </div>
-                        <div className="mt-1 flex items-center gap-2 text-[10px] text-text-dim">
-                          <span>#{inst.id}</span>
-                          <span
-                            className={`px-1.5 py-0.5 rounded uppercase tracking-wide ${
-                              inst.mode === "learn"
-                                ? "bg-green/20 text-green"
-                                : inst.mode === "cautious"
-                                  ? "bg-blue/20 text-blue"
-                                  : "bg-accent/20 text-accent"
-                            }`}
+                            className="rounded bg-yellow/10 px-1.5 py-0.5 text-yellow"
+                            title={`Running ${inst.core_version || "unknown"}; target ${inst.target_core_version || "current"}`}
                           >
-                            {inst.mode}
+                            core update
                           </span>
-                        </div>
+                        )}
                       </div>
-                      <span className="text-text-dim text-xs">→</span>
                     </div>
 
-                    <p className="mt-3 text-xs text-text-muted line-clamp-3 min-h-[3rem]">
-                      {inst.directive || <span className="text-text-dim">No directive</span>}
-                    </p>
-
-                    <div className="mt-3 flex items-center gap-2 text-[10px] text-text-dim min-h-[18px]">
-                      <span>{liveLabel}</span>
-                      {live && (
-                        <span
-                          className={`px-1.5 py-0.5 rounded ${sleepClassName(live)}`}
-                          title={sleepTitle(live, now)}
-                        >
-                          {sleepLabel(live, { compact: true, now })}
-                        </span>
-                      )}
+                    <div className="mt-4 min-h-[44px]">
+                      <AgentCurrentStatus status={currentStatusByAgent[inst.id]} compact showFallback showAge />
                     </div>
 
-                    <div className="mt-3 flex flex-wrap gap-1 overflow-hidden min-h-5 max-h-5">
-                      {assignedSkills.length > 0 && (
-                        <>
-                          {assignedSkills.slice(0, 2).map((skill) => (
-                            <span
-                              key={`card-skill-${skill.skill_id}-${skill.slug}`}
-                              className={`inline-flex items-center h-5 max-w-[7.5rem] px-1.5 rounded text-[10px] leading-none ${
-                                skill.status === "stale"
-                                  ? "bg-yellow/10 text-yellow"
-                                  : skill.status === "orphaned"
-                                    ? "bg-red/10 text-red"
-                                    : "bg-blue/10 text-blue"
-                              }`}
-                              title={skillTitle(skill)}
-                            >
-                              <span className="truncate">{skill.name || skill.slug}</span>
-                            </span>
-                          ))}
-                          {assignedSkills.length > 2 && (
-                            <span
-                              className="inline-flex items-center h-5 px-1.5 rounded text-[10px] leading-none bg-blue/10 text-blue"
-                              title={assignedSkills.slice(2).map(skillTitle).join("\n")}
-                            >
-                              +{assignedSkills.length - 2} skills
-                            </span>
-                          )}
-                        </>
-                      )}
-                      {mcpNames.length > 0 && (
-                        <>
-                          {mcpNames.slice(0, 2).map((m) => (
-                            <span
-                              key={`card-mcp-${m}`}
-                              className="inline-flex items-center h-5 max-w-[7.5rem] px-1.5 rounded text-[10px] leading-none bg-accent/10 text-accent font-mono"
-                              title={`mcp: ${m}`}
-                            >
-                              <span className="truncate">{m}</span>
-                            </span>
-                          ))}
-                          {mcpNames.length > 2 && (
-                            <span
-                              className="inline-flex items-center h-5 px-1.5 rounded text-[10px] leading-none bg-accent/10 text-accent"
-                              title={mcpNames.slice(2).join(", ")}
-                            >
-                              +{mcpNames.length - 2} mcp
-                            </span>
-                          )}
-                        </>
-                      )}
-                      {pointingSubscriptions.length > 0 && (
-                        <>
-                          {pointingSubscriptions.slice(0, 1).map((sub) => (
-                            <span
-                              key={`card-sub-${sub.id}`}
-                              className={`inline-flex items-center h-5 max-w-[7.5rem] px-1.5 rounded text-[10px] leading-none ${
-                                sub.enabled ? "bg-green/10 text-green" : "bg-border text-text-muted"
-                              }`}
-                              title={subscriptionTitle(sub)}
-                            >
-                              <span className="truncate">{subscriptionLabel(sub)}</span>
-                            </span>
-                          ))}
-                          {pointingSubscriptions.length > 1 && (
-                            <span
-                              className="inline-flex items-center h-5 px-1.5 rounded text-[10px] leading-none bg-green/10 text-green"
-                              title={pointingSubscriptions.slice(1).map(subscriptionTitle).join("\n")}
-                            >
-                              +{pointingSubscriptions.length - 1} subs
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </div>
-
-                    <div className="mt-3 flex items-center gap-2 text-[10px] min-h-[16px]">
-                      {isRunning && act && actAgeMs <= 120000 && (
-                        <>
-                          <span className={act.toolDone ? "text-green" : "text-accent"}>
-                            {act.activeTool ? (act.toolDone ? "✓" : "⟳") : "›"}
-                          </span>
-                          <span className="text-text-muted truncate">
-                            {act.activeToolReason || act.activeTool || act.lastThought}
-                          </span>
-                        </>
-                      )}
-                    </div>
+                    <RuntimeSummary live={live} running={isRunning} now={now} />
+                    <AgentCapabilityChips skills={assignedSkills} mcpNames={mcpNames} />
                   </Link>
-                  <div className="border-t border-border/70 px-3 py-2 flex items-center justify-between gap-2">
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        openEditModal(inst);
-                      }}
-                      className="px-2.5 py-1 border border-border rounded text-xs text-text-muted hover:text-text hover:border-text transition-colors"
-                    >
-                      Edit
-                    </button>
-                    {isRunning ? (
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleStop(inst.id);
-                        }}
-                        className="px-2.5 py-1 border border-border rounded text-xs text-text-muted hover:text-red hover:border-red transition-colors"
-                      >
-                        Stop
-                      </button>
-                    ) : (
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleStart(inst.id);
-                        }}
-                        className="px-2.5 py-1 border border-accent rounded text-xs text-accent hover:bg-accent hover:text-bg transition-colors"
-                      >
-                        Start
-                      </button>
-                    )}
+                  <div className="absolute right-3 top-3 z-20 flex items-center gap-2">
+                    <LifecycleBadge running={isRunning} />
+                    <AgentActionsMenu
+                      agent={inst}
+                      rolloutRunning={rollout?.state === "running"}
+                      onOpen={() => navigate(`/agents/${inst.id}`)}
+                      onEdit={() => openEditModal(inst)}
+                      onStart={() => handleStart(inst.id)}
+                      onStop={() => handleStop(inst.id)}
+                      onUpdateCore={() => void handleAgentCoreUpdate(inst.id)}
+                    />
                   </div>
                 </article>
               );
             })}
           </div>
         ) : (
-        <div className="space-y-2">
-          {list.map((inst) => {
-            const live = liveStatus[inst.id];
-            const isRunning = inst.status === "running";
-            const pointingSubscriptions = agentSubscriptions[inst.id] || [];
-            const assignedSkills = agentSkills[inst.id] || [];
-            return (
-              <div
-                key={inst.id}
-                className="border border-border rounded-lg bg-bg-card hover:border-accent transition-colors overflow-hidden"
-              >
-                <Link
-                  to={`/agents/${inst.id}`}
-                  // Stable card height: reserve a minimum so rows don't
-                  // jump when the live activity strip appears/disappears
-                  // or when the directive line wraps to a second row.
-                  // 7rem ≈ name + stats + 1-line directive + activity slot.
-                  className="block px-5 py-4 min-h-[7rem]"
-                  // Block the navigation Link from firing while the row is
-                  // in rename mode — otherwise clicking inside the input
-                  // would bubble up to the Link and load the instance page.
-                  onClick={(e) => {
-                    if (renamingId === inst.id) e.preventDefault();
-                  }}
-                >
-                  {/* items-start keeps the status dot pinned to the top of
-                      the row instead of re-centering vertically as content
-                      below grows — that's what made the dot look like it
-                      was "moving" between live updates. */}
-                  <div className="flex items-start gap-3">
-                    <span
-                      className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 mt-2 ${
-                        isRunning ? "bg-green" : "bg-red"
-                      }`}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-3">
-                        {renamingId === inst.id ? (
-                          <div className="flex items-center gap-2 flex-1 min-w-0">
-                            <input
-                              autoFocus
-                              value={renameDraft}
-                              onChange={(e) => setRenameDraft(e.target.value)}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                  e.preventDefault();
-                                  commitRename(inst.id);
-                                } else if (e.key === "Escape") {
-                                  e.preventDefault();
-                                  cancelRename();
-                                }
-                              }}
-                              maxLength={100}
-                              className="bg-bg-input border border-accent rounded px-2 py-0.5 text-sm text-text font-bold focus:outline-none flex-1 min-w-0"
-                            />
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                commitRename(inst.id);
-                              }}
-                              className="text-[10px] text-accent hover:text-accent-hover px-1 shrink-0"
-                            >
-                              save
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                cancelRename();
-                              }}
-                              className="text-[10px] text-text-muted hover:text-text px-1 shrink-0"
-                            >
-                              cancel
-                            </button>
-                          </div>
-                        ) : (
-                          <>
-                            <span className="text-text text-base font-bold truncate">{inst.name}</span>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                startRename(inst);
-                              }}
-                              title="Rename"
-                              className="text-text-dim hover:text-accent text-xs transition-colors shrink-0"
-                            >
-                              ✎
-                            </button>
-                          </>
-                        )}
-                        <span className="text-text-dim text-xs">#{inst.id}</span>
-                        <span
-                          title={
-                            inst.mode === "learn"
-                              ? "learn — asks before every new kind of action, remembers answers"
-                              : inst.mode === "cautious"
-                                ? "cautious — asks before state-changing actions"
-                                : "autonomous — acts independently"
-                          }
-                          className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide ${
-                            inst.mode === "learn"
-                              ? "bg-green/20 text-green"
-                              : inst.mode === "cautious"
-                                ? "bg-blue/20 text-blue"
-                                : "bg-accent/20 text-accent"
-                          }`}
-                        >
-                          {inst.mode}
-                        </span>
+          <div className="rounded-lg border border-border bg-bg-card">
+            <div className="hidden grid-cols-[minmax(12rem,1.2fr)_minmax(14rem,1.4fr)_minmax(8rem,.7fr)_minmax(10rem,1fr)_auto] gap-4 border-b border-border bg-bg-hover/40 px-4 py-2 text-[10px] font-bold uppercase tracking-wide text-text-dim lg:grid">
+              <span>Agent</span>
+              <span>Current status</span>
+              <span>Runtime</span>
+              <span>Capabilities</span>
+              <span className="text-right">Actions</span>
+            </div>
+            <div className="divide-y divide-border">
+              {list.map((inst) => {
+                const live = liveStatus[inst.id];
+                const isRunning = inst.status === "running";
+                const assignedSkills = agentSkills[inst.id] || [];
+                const mcpNames = mainMCPs[inst.id] || [];
+                return (
+                  <article
+                    key={inst.id}
+                    className="relative grid gap-3 px-4 py-3 pr-16 transition-colors hover:bg-bg-hover/30 lg:grid-cols-[minmax(12rem,1.2fr)_minmax(14rem,1.4fr)_minmax(8rem,.7fr)_minmax(10rem,1fr)_auto] lg:items-center lg:gap-4 lg:pr-4"
+                  >
+                    <Link to={`/agents/${inst.id}`} className="min-w-0">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-sm font-bold text-text">{inst.name}</span>
+                        <LifecycleBadge running={isRunning} compact />
                       </div>
-                      {renamingId === inst.id && renameError && (
-                        <p className="text-red text-[10px] mt-1">{renameError}</p>
-                      )}
-                      {/* Directive slot — fixed two-line height even when
-                          empty, so the row body doesn't shrink for
-                          undirected instances. */}
-                      <p className="text-text-muted text-xs mt-1 line-clamp-2 min-h-[2rem]">
-                        {inst.directive || <span className="text-text-dim">No directive</span>}
-                      </p>
-                      {/* Stats slot — always rendered with reserved
-                          height. While polling hasn't landed (or the
-                          instance isn't running) we show dim placeholders
-                          so the row keeps its size. */}
-                      <div className="flex items-center gap-4 mt-2 text-[10px] text-text-dim min-h-[14px]">
-                        {live ? (
-                          <>
-                            <span>{live.threads} threads</span>
-                            <span>#{live.iter}</span>
-                            <span
-                              className={`px-1.5 py-0.5 rounded text-[10px] ${sleepClassName(live)}`}
-                              title={sleepTitle(live, now)}
-                            >
-                              {sleepLabel(live, { compact: true, now })}
-                            </span>
-                          </>
-                        ) : isRunning ? (
-                          <span className="opacity-50">…</span>
-                        ) : (
-                          <span className="opacity-50">stopped</span>
-                        )}
+                      <div className="mt-1 flex items-center gap-2 text-[10px] text-text-dim">
+                        <span>#{inst.id}</span>
+                        <ModeBadge mode={inst.mode} />
+                        {inst.core_update_available && <span className="text-yellow">core update</span>}
                       </div>
-                      {pointingSubscriptions.length > 0 && (
-                        <div className="flex items-center flex-wrap gap-1 mt-1.5">
-                          <span className="text-[10px] text-text-dim">subs:</span>
-                          {pointingSubscriptions.slice(0, 3).map((sub) => (
-                            <span
-                              key={sub.id}
-                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] max-w-[13rem] ${
-                                sub.enabled
-                                  ? "bg-green/10 text-green"
-                                  : "bg-border text-text-muted"
-                              }`}
-                              title={subscriptionTitle(sub)}
-                            >
-                              <span className="truncate">{subscriptionLabel(sub)}</span>
-                              {sub.thread_id && sub.thread_id !== "main" && (
-                                <span className="opacity-70 font-mono">#{sub.thread_id}</span>
-                              )}
-                            </span>
-                          ))}
-                          {pointingSubscriptions.length > 3 && (
-                            <span
-                              className="text-[10px] text-text-dim px-1.5 py-0.5"
-                              title={pointingSubscriptions.slice(3).map(subscriptionTitle).join("\n")}
-                            >
-                              +{pointingSubscriptions.length - 3} more
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {assignedSkills.length > 0 && (
-                        <div className="flex items-center flex-wrap gap-1 mt-1.5">
-                          <span className="text-[10px] text-text-dim">skills:</span>
-                          {assignedSkills.slice(0, 3).map((skill) => (
-                            <span
-                              key={`${skill.skill_id}-${skill.slug}`}
-                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] max-w-[13rem] ${
-                                skill.status === "stale"
-                                  ? "bg-yellow/10 text-yellow"
-                                  : skill.status === "orphaned"
-                                    ? "bg-red/10 text-red"
-                                    : "bg-blue/10 text-blue"
-                              }`}
-                              title={skillTitle(skill)}
-                            >
-                              <span className="truncate">{skill.name || skill.slug}</span>
-                              {skill.status !== "synced" && (
-                                <span className="opacity-75">{skill.status}</span>
-                              )}
-                            </span>
-                          ))}
-                          {assignedSkills.length > 3 && (
-                            <span
-                              className="text-[10px] text-text-dim px-1.5 py-0.5"
-                              title={assignedSkills.slice(3).map(skillTitle).join("\n")}
-                            >
-                              +{assignedSkills.length - 3} more
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {/* Attached MCP servers for this agent. The
-                          main/catalog split is gone post-discovery
-                          refactor — every attached MCP is reachable
-                          via search_tools and the directive-fed
-                          preload; what shows here is the full
-                          attached surface, irrespective of which
-                          tools are active on any given turn. */}
-                      {(mainMCPs[inst.id] || []).length > 0 && (
-                        <div className="flex items-center flex-wrap gap-1 mt-1.5">
-                          <span className="text-[10px] text-text-dim">mcp:</span>
-                          {(mainMCPs[inst.id] || []).map((m) => (
-                            <span
-                              key={m}
-                              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-accent/10 text-accent font-mono"
-                              title={`main has direct access to ${m}`}
-                            >
-                              {m}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      {/* Sub-agents — one pill per child thread with its
-                          pace. Collapses to "+N more" past a small
-                          display cap so a noisy parent doesn't blow up
-                          the row height. */}
-                      {(() => {
-                        const subs = subThreads[inst.id] || [];
-                        if (subs.length === 0) return null;
-                        const cap = 4;
-                        const shown = subs.slice(0, cap);
-                        const extra = subs.length - shown.length;
-                        return (
-                          <div className="flex items-center flex-wrap gap-1.5 mt-1.5">
-                            {shown.map((s) => {
-                              const mcps = s.mcpNames || [];
-                              const title = mcps.length
-                                ? `${s.id} · iter #${s.iter} · ${sleepTitle(s, now)} · mcp: ${mcps.join(", ")}`
-                                : `${s.id} · iter #${s.iter} · ${sleepTitle(s, now)}`;
-                              return (
-                                <span
-                                  key={s.id}
-                                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${sleepClassName(s)}`}
-                                  title={title}
-                                >
-                                  <span className="font-mono">{s.id}</span>
-                                  <span className="opacity-60">#{s.iter}</span>
-                                  <span className="opacity-70">{sleepLabel(s, { compact: true, now })}</span>
-                                  {mcps.length > 0 && (
-                                    <span className="opacity-70">· {mcps.join("+")}</span>
-                                  )}
-                                </span>
-                              );
-                            })}
-                            {extra > 0 && (
-                              <span className="text-[10px] text-text-dim px-1.5 py-0.5">
-                                +{extra} more
-                              </span>
-                            )}
-                          </div>
-                        );
-                      })()}
-                      {/* Live activity strip — shows the current thought
-                          or active tool from the all-instances SSE stream.
-                          Always reserves a fixed slot so the row never
-                          jumps when activity appears/disappears. */}
-                      <div className="mt-2 flex items-start gap-2 text-[10px] min-w-0 min-h-[14px]">
-                        {(() => {
-                          const act = liveActivity[inst.id];
-                          if (!isRunning || !act) return null;
-                          const now = Date.now();
-                          const ageMs = now - act.lastEventAt;
-                          // Keep the strip visible for 2 minutes after the
-                          // last activity. Long enough for the user to see
-                          // "what just happened" when they switch tabs and
-                          // come back, short enough that idle rows go quiet.
-                          if (ageMs > 120000) return null;
-                          const ageLabel =
-                            ageMs < 1000
-                              ? "now"
-                              : ageMs < 60000
-                                ? `${Math.floor(ageMs / 1000)}s ago`
-                                : `${Math.floor(ageMs / 60000)}m ago`;
-                          if (act.activeTool) {
-                            // Prefer the free-text reason ("Fetching
-                            // spreadsheet metadata") over the raw slug
-                            // ("google-sheets_get_spreadsheet"). The
-                            // slug stays in the title attribute so
-                            // power users can hover to confirm which
-                            // tool fired.
-                            const label = act.activeToolReason || act.activeTool;
-                            const done = act.toolDone;
-                            return (
-                              <>
-                                <span
-                                  className={`shrink-0 ${done ? "text-green" : "text-accent tool-active-line"}`}
-                                  title={act.activeTool}
-                                >
-                                  {done ? "✓" : "⟳"}
-                                </span>
-                                <span
-                                  className="text-text-muted truncate flex-1 min-w-0"
-                                  title={act.activeTool}
-                                >
-                                  {label}
-                                </span>
-                                <span className="text-text-dim shrink-0">{ageLabel}</span>
-                              </>
-                            );
-                          }
-                          if (act.lastThought) {
-                            return (
-                              <>
-                                <span className="text-accent shrink-0">›</span>
-                                <span className="text-text-muted truncate flex-1 min-w-0">
-                                  {act.lastThought}
-                                </span>
-                                <span className="text-text-dim shrink-0">{ageLabel}</span>
-                              </>
-                            );
-                          }
-                          return null;
-                        })()}
-                      </div>
+                    </Link>
+
+                    <div className="min-w-0">
+                      <div className="mb-1 text-[9px] font-bold uppercase tracking-wide text-text-dim lg:hidden">Status</div>
+                      <AgentCurrentStatus status={currentStatusByAgent[inst.id]} compact showFallback />
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {/* Quick-edit affordance — opens a modal to tweak
-                          name + directive without leaving the fleet view.
-                          stopPropagation prevents the surrounding <Link>
-                          from navigating into the agent detail page. */}
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          openEditModal(inst);
-                        }}
-                        className="px-3 py-1 border border-border rounded-lg text-xs text-text-muted hover:text-text hover:border-text transition-colors"
-                        title="Edit name + directive"
-                      >
-                        Edit
-                      </button>
-                      {isRunning ? (
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            handleStop(inst.id);
-                          }}
-                          className="px-3 py-1 border border-border rounded-lg text-xs text-text-muted hover:text-red hover:border-red transition-colors"
-                        >
-                          Stop
-                        </button>
-                      ) : (
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            handleStart(inst.id);
-                          }}
-                          className="px-3 py-1 border border-accent rounded-lg text-xs text-accent hover:bg-accent hover:text-bg transition-colors"
-                        >
-                          Start
-                        </button>
-                      )}
-                      <span className="text-text-dim text-xs">→</span>
+
+                    <div>
+                      <div className="mb-1 text-[9px] font-bold uppercase tracking-wide text-text-dim lg:hidden">Runtime</div>
+                      <RuntimeSummary live={live} running={isRunning} now={now} compact />
                     </div>
-                  </div>
-                </Link>
-              </div>
-            );
-          })}
-        </div>
+
+                    <div className="min-w-0">
+                      <div className="mb-1 text-[9px] font-bold uppercase tracking-wide text-text-dim lg:hidden">Capabilities</div>
+                      <AgentCapabilityChips skills={assignedSkills} mcpNames={mcpNames} compact />
+                    </div>
+
+                    <div className="absolute right-3 top-3 z-20 flex items-center justify-end lg:static">
+                      <AgentActionsMenu
+                        agent={inst}
+                        rolloutRunning={rollout?.state === "running"}
+                        onOpen={() => navigate(`/agents/${inst.id}`)}
+                        onEdit={() => openEditModal(inst)}
+                        onStart={() => handleStart(inst.id)}
+                        onStop={() => handleStop(inst.id)}
+                        onUpdateCore={() => void handleAgentCoreUpdate(inst.id)}
+                      />
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
         )}
       </div>
+
+      <Modal open={showMobileActions} onClose={() => setShowMobileActions(false)} width="max-w-md" ariaLabel="Agent page actions">
+        <div className="border-b border-border px-4 py-3">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-accent">Agents</div>
+          <div className="mt-1 text-base font-semibold text-text">Display and creation</div>
+        </div>
+        <div className="page-safe-bottom grid gap-2 p-3">
+          <button type="button" onClick={() => { setAgentsViewMode("cards"); setShowMobileActions(false); }} className={`touch-target rounded-lg border px-4 text-left text-sm ${viewMode === "cards" ? "border-accent text-accent" : "border-border text-text"}`}>Card view</button>
+          <button type="button" onClick={() => { setAgentsViewMode("list"); setShowMobileActions(false); }} className={`touch-target rounded-lg border px-4 text-left text-sm ${viewMode === "list" ? "border-accent text-accent" : "border-border text-text"}`}>List view</button>
+          <button type="button" onClick={() => { setShowMobileActions(false); setShowCreate(true); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text">Quick create</button>
+          <button type="button" onClick={() => navigate("/agents/new")} className="touch-target rounded-lg border border-accent bg-accent/10 px-4 text-left text-sm font-semibold text-accent">Build a new agent</button>
+          {list.some((agent) => agent.core_update_available) && (
+            <button
+              type="button"
+              onClick={() => { setShowMobileActions(false); void handleProjectCoreUpdate(); }}
+              disabled={rollout?.state === "running"}
+              className="touch-target rounded-lg border border-yellow/60 px-4 text-left text-sm text-yellow disabled:opacity-50"
+            >
+              Update all cores gradually
+            </button>
+          )}
+        </div>
+      </Modal>
 
       {/* Quick-edit modal — name + directive only. Lives at page root
           so it overlays cleanly regardless of which row triggered it.
@@ -1247,7 +675,7 @@ export function Agents() {
           covers the full viewport regardless of which list row the
           user was viewing when they clicked + New Agent. */}
       <Modal open={showCreate} onClose={() => { setShowCreate(false); setError(""); }}>
-        <form onSubmit={handleCreate} className="p-4 sm:p-6 w-full max-w-[520px] space-y-4">
+        <form onSubmit={handleCreate} className="page-safe-bottom max-h-[90dvh] w-full max-w-[520px] space-y-4 overflow-y-auto p-4 sm:p-6">
           <h2 className="text-text text-base font-bold">Create agent</h2>
           <div>
             <label className="block text-text-muted text-sm mb-2">Name</label>
@@ -1308,6 +736,26 @@ export function Agents() {
                 "Acts independently. Only informs you before irreversible or high-blast-radius actions."}
             </div>
           </div>
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-bg-hover/30 p-3">
+            <div>
+              <div className="text-sm font-medium text-text">Background memory</div>
+              <p className="mt-0.5 text-xs leading-relaxed text-text-muted">
+                Consolidates activity into persistent memories in a background thread.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={createUnconscious}
+              onClick={() => setCreateUnconscious((value) => !value)}
+              className={`inline-flex h-8 shrink-0 items-center gap-2 rounded-full border px-2.5 text-xs font-semibold transition-colors ${
+                createUnconscious ? "border-green/40 bg-green/10 text-green" : "border-border text-text-muted"
+              }`}
+            >
+              <span className={`h-2 w-2 rounded-full ${createUnconscious ? "bg-green" : "bg-text-dim"}`} />
+              {createUnconscious ? "On" : "Off"}
+            </button>
+          </div>
           {error && <div className="text-red text-sm">{error}</div>}
           <div className="flex justify-end gap-3 pt-2">
             <button
@@ -1331,40 +779,252 @@ export function Agents() {
   );
 }
 
-function groupSubscriptionsByAgent(subs: SubscriptionInfo[]): Record<number, SubscriptionInfo[]> {
-  const grouped: Record<number, SubscriptionInfo[]> = {};
-  for (const sub of subs) {
-    const id = Number(sub.instance_id || 0);
-    if (!id) continue;
-    if (!grouped[id]) grouped[id] = [];
-    grouped[id].push(sub);
-  }
-  for (const id of Object.keys(grouped)) {
-    grouped[Number(id)].sort((a, b) => subscriptionLabel(a).localeCompare(subscriptionLabel(b)));
-  }
-  return grouped;
+function ModeBadge({ mode }: { mode: RunMode }) {
+  const color =
+    mode === "learn"
+      ? "bg-green/20 text-green"
+      : mode === "cautious"
+        ? "bg-blue/20 text-blue"
+        : "bg-accent/20 text-accent";
+  const title =
+    mode === "learn"
+      ? "Learn mode — asks before each new kind of action"
+      : mode === "cautious"
+        ? "Cautious mode — asks before state-changing actions"
+        : "Autonomous mode — acts independently";
+  return (
+    <span title={title} className={`rounded px-1.5 py-0.5 uppercase tracking-wide ${color}`}>
+      {mode}
+    </span>
+  );
 }
 
-function subscriptionLabel(sub: SubscriptionInfo): string {
-  const name = (sub.name || "").trim();
-  if (name) return name;
-  const firstEvent = (sub.events || []).find(Boolean);
-  if (firstEvent) return firstEvent;
-  const slug = (sub.slug || "").trim();
-  if (slug) return slug.replace(":", ".");
-  return sub.source === "app_event" ? "app event" : "webhook";
+function LifecycleBadge({ running, compact = false }: { running: boolean; compact?: boolean }) {
+  return (
+    <span
+      className={`shrink-0 rounded font-bold uppercase tracking-wide ${compact ? "px-1.5 py-0.5 text-[8px]" : "px-1.5 py-0.5 text-[9px]"} ${
+        running ? "bg-green/15 text-green" : "bg-red/15 text-red"
+      }`}
+    >
+      {running ? "running" : "stopped"}
+    </span>
+  );
 }
 
-function subscriptionTitle(sub: SubscriptionInfo): string {
-  const parts = [
-    subscriptionLabel(sub),
-    sub.enabled ? "enabled" : "disabled",
-    sub.source ? `source: ${sub.source}` : "",
-    sub.thread_id ? `thread: ${sub.thread_id}` : "thread: main",
-    (sub.events || []).length > 0 ? `events: ${(sub.events || []).join(", ")}` : "",
-    sub.slug ? `slug: ${sub.slug}` : "",
-  ].filter(Boolean);
-  return parts.join("\n");
+function RuntimeSummary({
+  live,
+  running,
+  now,
+  compact = false,
+}: {
+  live?: AgentLiveStatus | null;
+  running: boolean;
+  now: number;
+  compact?: boolean;
+}) {
+  if (!live) {
+    return (
+      <div className={`${compact ? "" : "mt-3 min-h-[18px]"} text-[10px] text-text-dim`}>
+        {running ? "Runtime connecting…" : "Stopped"}
+      </div>
+    );
+  }
+  return (
+    <div className={`flex min-w-0 items-center gap-2 text-[10px] text-text-dim ${compact ? "" : "mt-3 min-h-[18px]"}`}>
+      <span>{live.threads} {live.threads === 1 ? "thread" : "threads"}</span>
+      <span>· #{live.iter}</span>
+      <span className={`rounded px-1.5 py-0.5 ${sleepClassName(live)}`} title={sleepTitle(live, now)}>
+        {sleepLabel(live, { compact: true, now })}
+      </span>
+    </div>
+  );
+}
+
+function AgentCapabilityChips({
+  skills,
+  mcpNames,
+  compact = false,
+}: {
+  skills: InstanceSkill[];
+  mcpNames: string[];
+  compact?: boolean;
+}) {
+  const capabilities = [
+    ...skills.map((skill) => ({
+      key: `skill-${skill.skill_id}-${skill.slug}`,
+      label: skill.name || skill.slug,
+      prefix: "",
+      title: skillTitle(skill),
+      color:
+        skill.status === "stale"
+          ? "bg-yellow/10 text-yellow"
+          : skill.status === "orphaned"
+            ? "bg-red/10 text-red"
+            : "bg-blue/10 text-blue",
+    })),
+    ...mcpNames.map((name) => ({
+      key: `mcp-${name}`,
+      label: name,
+      prefix: "mcp:",
+      title: `MCP: ${name}`,
+      color: "bg-accent/10 text-accent",
+    })),
+  ];
+  if (capabilities.length === 0) {
+    return (
+      <div className={`${compact ? "" : "mt-3 min-h-5"} truncate text-[10px] text-text-dim`}>
+        No capabilities attached
+      </div>
+    );
+  }
+  const shown = capabilities.slice(0, 2);
+  const hidden = capabilities.slice(2);
+  return (
+    <div className={`flex min-h-5 min-w-0 items-center gap-1 overflow-hidden ${compact ? "" : "mt-3"}`}>
+      {shown.map((capability) => (
+        <span
+          key={capability.key}
+          title={capability.title}
+          className={`inline-flex h-5 max-w-[7.5rem] shrink items-center rounded px-1.5 text-[10px] leading-none ${capability.color}`}
+        >
+          {capability.prefix && <span className="mr-0.5 shrink-0 opacity-60">{capability.prefix}</span>}
+          <span className="truncate">{capability.label}</span>
+        </span>
+      ))}
+      {hidden.length > 0 && (
+        <span
+          title={hidden.map((capability) => capability.label).join(", ")}
+          className="inline-flex h-5 shrink-0 items-center rounded bg-border px-1.5 text-[10px] leading-none text-text-muted"
+        >
+          +{hidden.length}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function AgentActionsMenu({
+  agent,
+  rolloutRunning,
+  onOpen,
+  onEdit,
+  onStart,
+  onStop,
+  onUpdateCore,
+}: {
+  agent: Agent;
+  rolloutRunning: boolean;
+  onOpen: () => void;
+  onEdit: () => void;
+  onStart: () => void;
+  onStop: () => void;
+  onUpdateCore: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const running = agent.status === "running";
+
+  useEffect(() => {
+    if (!open) return;
+    const dismissOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("keydown", dismissOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("keydown", dismissOnEscape);
+    };
+  }, [open]);
+
+  const choose = (action: () => void) => {
+    setOpen(false);
+    action();
+  };
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className={`inline-flex h-8 w-8 items-center justify-center rounded-md text-lg leading-none transition-colors ${
+          open ? "bg-bg-hover text-text" : "text-text-muted hover:bg-bg-hover hover:text-text"
+        }`}
+        aria-label={`Actions for ${agent.name}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        ⋮
+      </button>
+      {open && (
+        <div
+          role="menu"
+          aria-label={`Actions for ${agent.name}`}
+          className="absolute right-0 top-full z-50 mt-1 w-48 overflow-hidden rounded-lg border border-border bg-bg-card py-1 shadow-2xl shadow-black/60"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => choose(onOpen)}
+            className="flex min-h-10 w-full items-center px-3 text-left text-xs text-text transition-colors hover:bg-bg-hover"
+          >
+            Open details
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => choose(onEdit)}
+            className="flex min-h-10 w-full items-center px-3 text-left text-xs text-text transition-colors hover:bg-bg-hover"
+          >
+            Edit agent
+          </button>
+          {running && agent.core_update_available && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => choose(onUpdateCore)}
+              disabled={rolloutRunning}
+              className="flex min-h-10 w-full items-center px-3 text-left text-xs text-yellow transition-colors hover:bg-bg-hover disabled:opacity-50"
+            >
+              Update core
+            </button>
+          )}
+          <div className="my-1 border-t border-border" />
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => choose(running ? onStop : onStart)}
+            className={`flex min-h-10 w-full items-center px-3 text-left text-xs font-semibold transition-colors hover:bg-bg-hover ${
+              running ? "text-red" : "text-accent"
+            }`}
+          >
+            {running ? "Stop agent" : "Start agent"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await mapper(items[index]!);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 function skillTitle(skill: InstanceSkill): string {

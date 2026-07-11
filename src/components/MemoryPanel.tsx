@@ -8,10 +8,11 @@ import { Modal } from "./Modal";
 // where users actually *manage* the learn-mode safety profile: see
 // what the agent picked up, correct badly-worded rules, prune noise.
 //
-// Layout: filter bar on top, row-per-memory below. Click a row to
-// edit. Click the trash icon to delete with confirm. Tag extracted
-// by the server (the bracketed prefix the remember-tool guidance
-// asks the agent to use) colors the row and fuels the filter.
+// Layout: filter bar on top, row-per-memory below. Each row exposes
+// persistent edit and delete actions so management works just as well
+// on touch screens as it does with a mouse. Tag extracted by the server
+// (the bracketed prefix the remember-tool guidance asks the agent to use)
+// colors the row and fuels the filter.
 interface Props {
   instanceId: number;
 }
@@ -115,8 +116,14 @@ export function MemoryPanel({ instanceId }: Props) {
   };
 
   const openEdit = (item: MemoryItem) => {
+    setError(null);
     setEditing(item);
     setEditText(item.text);
+  };
+
+  const openDelete = (item: MemoryItem) => {
+    setError(null);
+    setDeleting(item);
   };
 
   const saveEdit = async () => {
@@ -138,14 +145,14 @@ export function MemoryPanel({ instanceId }: Props) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b border-border px-4 py-3 flex items-center gap-3">
+      <div className="border-b border-border px-4 py-3 flex flex-wrap items-center gap-2 sm:gap-3">
         <span className="text-text-muted text-xs">// MEMORY</span>
         <span className="text-text-dim text-xs">{items.length} total</span>
         <input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="filter…"
-          className="ml-auto bg-bg-input border border-border rounded px-2 py-1 text-xs text-text focus:outline-none focus:border-accent w-48"
+          className="order-last w-full bg-bg-input border border-border rounded px-2 py-1 text-xs text-text focus:outline-none focus:border-accent sm:order-none sm:ml-auto sm:w-48"
         />
         <button
           onClick={load}
@@ -193,8 +200,7 @@ export function MemoryPanel({ instanceId }: Props) {
         {filtered.map((it) => (
           <div
             key={it.index}
-            className="border-b border-border-subtle px-4 py-2 hover:bg-bg-hover group cursor-pointer"
-            onClick={() => openEdit(it)}
+            className="border-b border-border-subtle px-4 py-3 hover:bg-bg-hover"
           >
             <div className="flex items-start gap-2">
               {it.tag && (
@@ -205,27 +211,37 @@ export function MemoryPanel({ instanceId }: Props) {
               <div className="flex-1 text-sm text-text leading-snug whitespace-pre-wrap break-words">
                 {it.tag ? it.text.replace(/^\s*\[[^\]]+\]\s*/, "") : it.text}
               </div>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setDeleting(it);
-                }}
-                className="opacity-0 group-hover:opacity-100 text-text-muted hover:text-red text-xs transition-opacity shrink-0"
-                title="delete"
-              >
-                ✕
-              </button>
             </div>
-            <div className="text-text-dim text-[10px] mt-1 flex gap-2">
-              <span>#{it.index}</span>
-              <span>·</span>
-              <span>{fmtTime(it.time)}</span>
-              {it.namespace && (
-                <>
-                  <span>·</span>
-                  <span>ns:{it.namespace}</span>
-                </>
-              )}
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <div className="flex min-w-0 flex-wrap gap-2 text-[10px] text-text-dim">
+                <span>#{it.index}</span>
+                <span>·</span>
+                <span>{fmtTime(it.time)}</span>
+                {it.namespace && (
+                  <>
+                    <span>·</span>
+                    <span>ns:{it.namespace}</span>
+                  </>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => openEdit(it)}
+                  className="inline-flex min-h-9 items-center rounded px-2.5 text-[11px] text-text-muted transition-colors hover:bg-bg-card hover:text-text"
+                  aria-label={`Edit memory ${it.index}`}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openDelete(it)}
+                  className="inline-flex min-h-9 items-center rounded px-2.5 text-[11px] text-red transition-colors hover:bg-red/10"
+                  aria-label={`Delete memory ${it.index}`}
+                >
+                  Delete
+                </button>
+              </div>
             </div>
           </div>
         ))}
@@ -246,21 +262,39 @@ export function MemoryPanel({ instanceId }: Props) {
             rows={6}
             className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent resize-none font-mono"
           />
-          <div className="flex justify-end gap-3 pt-1">
+          {error && <div className="text-red text-xs">{error}</div>}
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
             <button
-              onClick={() => setEditing(null)}
-              className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text"
+              type="button"
+              onClick={() => {
+                if (!editing) return;
+                const item = editing;
+                setEditing(null);
+                openDelete(item);
+              }}
+              className="px-3 py-2 text-sm text-red hover:bg-red/10 rounded-lg"
               disabled={saving}
             >
-              Cancel
+              Delete memory
             </button>
-            <button
-              onClick={saveEdit}
-              disabled={saving || !editText.trim()}
-              className="px-4 py-2 bg-accent text-bg font-bold rounded-lg text-sm hover:bg-accent-hover disabled:opacity-50"
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setEditing(null)}
+                className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text"
+                disabled={saving}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveEdit}
+                disabled={saving || !editText.trim()}
+                className="px-4 py-2 bg-accent text-bg font-bold rounded-lg text-sm hover:bg-accent-hover disabled:opacity-50"
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
           </div>
         </div>
       </Modal>
@@ -277,6 +311,7 @@ export function MemoryPanel({ instanceId }: Props) {
               {deleting.text}
             </div>
           )}
+          {error && <div className="text-red text-xs">{error}</div>}
           <div className="flex justify-end gap-3 pt-1">
             <button
               onClick={() => setDeleting(null)}
