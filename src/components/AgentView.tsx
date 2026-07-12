@@ -38,6 +38,11 @@ import { EvalsPanel } from "./EvalsPanel";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { AgentCurrentStatus, useCurrentStatuses } from "./dashboard/CurrentStatuses";
+import {
+  appendRuntimeThoughtText,
+  cleanReasoningDisplay,
+  type RuntimeThoughtText,
+} from "../utils/runtimeThought";
 
 type RuntimeView = "stream" | "activity" | "memory" | "skills" | "apps" | "evals";
 
@@ -46,6 +51,8 @@ interface RuntimeEventItem {
   kind: "thought" | "tool" | "thread" | "channel" | "error" | "event";
   label: string;
   detail?: string;
+  reasoningDetail?: string;
+  responseDetail?: string;
   toolName?: string;
   toolArgs?: string;
   toolResult?: string;
@@ -256,6 +263,7 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
       kind: "thought",
       label: "Reasoning",
       detail: text,
+      reasoningDetail: text,
       status: "running",
     };
   }
@@ -269,17 +277,20 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
       kind: "thought",
       label: "Response",
       detail: text,
+      responseDetail: text,
       status: "running",
     };
   }
 
   if (ev.type === "llm.done") {
+    const message = compactText(data.message || data.model);
     return {
       ...base,
       key: thoughtEventKey(ev),
       kind: "thought",
       label: "Completed reasoning step",
-      detail: compactText(data.message || data.model),
+      detail: message,
+      responseDetail: message,
       status: "success",
       durationMs: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
     };
@@ -377,10 +388,25 @@ function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): Runtim
       ev.type === "llm.tool_chunk" && item.toolArgs
         ? `${prevItem.toolArgs || ""}${item.toolArgs}`
         : item.toolArgs || prevItem.toolArgs;
-    let detail = item.detail || prevItem.detail;
-    if ((ev.type === "llm.thinking" || ev.type === "llm.chunk") && item.detail) {
-      detail = prevItem.raw?.type === "llm.start" ? item.detail : `${prevItem.detail || ""}${item.detail}`;
+    let thoughtText: RuntimeThoughtText = {
+      reasoning: prevItem.reasoningDetail || item.reasoningDetail,
+      response: prevItem.responseDetail || item.responseDetail,
+    };
+    if (ev.type === "llm.thinking" && item.reasoningDetail) {
+      thoughtText = appendRuntimeThoughtText(
+        { reasoning: prevItem.reasoningDetail, response: prevItem.responseDetail },
+        "reasoning",
+        item.reasoningDetail,
+      );
     }
+    if (ev.type === "llm.chunk" && item.responseDetail) {
+      thoughtText = appendRuntimeThoughtText(
+        { reasoning: prevItem.reasoningDetail, response: prevItem.responseDetail },
+        "response",
+        item.responseDetail,
+      );
+    }
+    const detail = thoughtText.response || thoughtText.reasoning || item.detail || prevItem.detail;
     next[idx] = {
       ...prevItem,
       ...item,
@@ -389,6 +415,8 @@ function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): Runtim
           ? prevItem.label
           : item.label || prevItem.label,
       detail,
+      reasoningDetail: thoughtText.reasoning,
+      responseDetail: thoughtText.response,
       toolArgs: args,
       toolResult: item.toolResult || prevItem.toolResult,
     };
@@ -2658,6 +2686,8 @@ function runtimeVisual(event: RuntimeEventItem): {
 
 function RuntimeRow({ event }: { event: RuntimeEventItem }) {
   const visual = runtimeVisual(event);
+  const reasoning = cleanReasoningDisplay(event.reasoningDetail || "");
+  const response = event.responseDetail || "";
 
   return (
     <details className={`group rounded border border-transparent hover:bg-bg-card/40 ${visual.hoverBorder}`}>
@@ -2670,8 +2700,8 @@ function RuntimeRow({ event }: { event: RuntimeEventItem }) {
             <span className={`text-[10px] uppercase tracking-wide shrink-0 ${visual.labelClass}`}>{event.kind}</span>
             <span className="text-xs text-text truncate">{event.label}</span>
           </div>
-          {event.detail && (
-            <div className="text-[11px] text-text-dim truncate mt-0.5">{event.detail}</div>
+          {(response || reasoning || event.detail) && (
+            <div className="text-[11px] text-text-dim truncate mt-0.5">{response || reasoning || event.detail}</div>
           )}
           {event.kind === "tool" && event.toolArgs && (
             <div className="text-[10px] text-text-muted truncate mt-0.5 font-mono">
@@ -2693,6 +2723,12 @@ function RuntimeRow({ event }: { event: RuntimeEventItem }) {
           )}
           {event.kind === "tool" && event.toolResult && (
             <RuntimePayloadBlock title="Result" text={event.toolResult} />
+          )}
+          {event.kind === "thought" && reasoning && (
+            <RuntimePayloadBlock title="Reasoning" text={reasoning} dim />
+          )}
+          {event.kind === "thought" && response && (
+            <RuntimePayloadBlock title="Response" text={response} />
           )}
           <RuntimePayloadBlock title="Raw event" text={formatToolPayload(event.raw)} dim />
         </div>

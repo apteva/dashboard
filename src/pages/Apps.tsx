@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Link } from "react-router-dom";
 import {
   apps,
@@ -62,6 +62,7 @@ export function Apps() {
   const [marketplace, setMarketplace] = useState<MarketplaceEntry[]>([]);
   const [marketplaceTotal, setMarketplaceTotal] = useState(0);
   const [marketplaceCategories, setMarketplaceCategories] = useState<Record<string, number>>({});
+  const [installedSearch, setInstalledSearch] = useState("");
   const [marketplaceSearch, setMarketplaceSearch] = useState("");
   const [marketplaceQuery, setMarketplaceQuery] = useState("");
   const [marketplaceCategory, setMarketplaceCategory] = useState<string>("all");
@@ -213,6 +214,11 @@ export function Apps() {
     }
   }, [rows, detailInstall]);
 
+  const filteredInstalled = useMemo(
+    () => filterInstalledApps(rows, installedSearch),
+    [rows, installedSearch],
+  );
+
   return (
     <div className="flex flex-col h-full">
       <div className="border-b border-border px-4 py-3 sm:px-6 sm:py-4 flex items-start justify-between gap-3">
@@ -259,18 +265,73 @@ export function Apps() {
             </p>
           </div>
         ) : (
-          // Installed apps are inventory, not pitch decks — render
-          // as compact rows (status-led, actionable) rather than the
-          // marketing cards we use on the Marketplace tab.
-          <div className="space-y-2 md:space-y-0 md:border md:border-border md:rounded-lg md:divide-y md:divide-border md:overflow-hidden">
-            {rows.map((r) => (
-              <AppListRow
-                key={r.install_id}
-                app={r}
-                onChange={refreshInstalled}
-                onOpenDetails={() => setDetailInstall(r)}
-              />
-            ))}
+          <div className="space-y-3">
+            <div className="flex flex-col gap-2 rounded-lg border border-border bg-bg-card p-2 sm:flex-row sm:items-center">
+              <label className="relative min-w-0 flex-1 sm:max-w-xl">
+                <span className="sr-only">Search installed apps</span>
+                <svg
+                  viewBox="0 0 20 20"
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dim"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                >
+                  <circle cx="8.5" cy="8.5" r="5" />
+                  <path d="m12.25 12.25 4 4" />
+                </svg>
+                <input
+                  type="text"
+                  inputMode="search"
+                  value={installedSearch}
+                  onChange={(e) => setInstalledSearch(e.target.value)}
+                  placeholder="Search installed apps…"
+                  className="h-10 w-full rounded-md border border-border bg-bg-input pl-9 pr-9 text-sm text-text outline-none placeholder:text-text-dim focus:border-accent"
+                />
+                {installedSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setInstalledSearch("")}
+                    className="absolute right-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded text-sm text-text-dim hover:bg-bg-hover hover:text-text"
+                    aria-label="Clear installed app search"
+                    title="Clear search"
+                  >
+                    ×
+                  </button>
+                )}
+              </label>
+              <span className="px-1 text-[11px] tabular-nums text-text-dim sm:ml-auto sm:shrink-0">
+                {installedSearch.trim() ? `${filteredInstalled.length} of ${rows.length}` : `${rows.length}`} installed
+              </span>
+            </div>
+
+            {filteredInstalled.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center">
+                <p className="text-sm text-text-muted">No installed apps match “{installedSearch.trim()}”.</p>
+                <button
+                  type="button"
+                  onClick={() => setInstalledSearch("")}
+                  className="mt-2 text-xs text-accent hover:underline"
+                >
+                  Clear search
+                </button>
+              </div>
+            ) : (
+              // Installed apps are inventory, not pitch decks — render
+              // as compact rows (status-led, actionable) rather than the
+              // marketing cards we use on the Marketplace tab.
+              <div className="space-y-2 md:space-y-0 md:overflow-hidden md:rounded-lg md:border md:border-border md:divide-y md:divide-border">
+                {filteredInstalled.map((r) => (
+                  <AppListRow
+                    key={r.install_id}
+                    app={r}
+                    onChange={refreshInstalled}
+                    onOpenDetails={() => setDetailInstall(r)}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )
       ) : (
@@ -353,6 +414,33 @@ export function Apps() {
       />
     </div>
   );
+}
+
+export function filterInstalledApps(rows: AppRow[], query: string): AppRow[] {
+  const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return rows;
+
+  return rows.filter((app) => {
+    const scope = app.project_id ? "project" : "global";
+    const searchable = [
+      app.display_name,
+      app.name,
+      app.description,
+      app.status,
+      app.status_message,
+      app.error_message,
+      app.source,
+      app.version,
+      app.available_version,
+      scope,
+      ...(app.permissions || []),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLocaleLowerCase();
+
+    return terms.every((term) => searchable.includes(term));
+  });
 }
 
 function MarketplaceView({
