@@ -13,6 +13,7 @@ import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 import type { SubscribeFn } from "./AgentView";
 import { renderSafeMarkdown } from "../utils/safeMarkdown";
 import { mergeChatMessages } from "../utils/chatMessages";
+import { runtimeToolLabel } from "../utils/runtimeToolLabel";
 import { Modal } from "./Modal";
 
 export interface ChatPanelHeader {
@@ -89,10 +90,10 @@ interface LiveTool {
 // Tools we hide from the chat timeline. Pure agent housekeeping:
 //   pace — sleep-rate adjustments fire constantly
 //   done — thread terminator
-//   channels_respond/channels_send/channels_status — ARE visible chat messages;
-//     surfacing them as separate tool calls is pure noise (the user
-//     already sees the message they produced as assistant turns).
-const HIDDEN_TOOLS = new Set(["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_request_approval"]);
+//   channels_respond/channels_send — visible chat messages already rendered
+//     as assistant turns. channels_publish/channels_set_status render in the
+//     Inbox/status surfaces. Showing any of them as tool rows is duplicate noise.
+const HIDDEN_TOOLS = new Set(["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status", "channels_request_approval"]);
 
 // `send` is useful when it explains meaningful delegation, but noisy
 // when it is only an internal completion/report-back hop.
@@ -1618,7 +1619,10 @@ function toolDisplayName(name: string): string {
 }
 
 function toolLabel(tool: LiveTool, t: (key: string, options?: Record<string, unknown>) => string): string {
-  return tool.reason || (tool.state === "streaming" ? t("chat.panel.preparingTool", { name: toolDisplayName(tool.name) }) : t("chat.panel.working"));
+  const fallback = tool.state === "streaming"
+    ? t("chat.panel.preparingTool", { name: toolDisplayName(tool.name) })
+    : t("chat.panel.working");
+  return runtimeToolLabel(tool.name, tool.reason, fallback);
 }
 
 function toolDurationLabel(ms: number): string {

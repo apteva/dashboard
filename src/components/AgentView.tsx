@@ -21,6 +21,7 @@ import {
 } from "../api";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { sleepClassName, sleepLabel, sleepProgress, sleepTitle } from "../utils/sleepStatus";
+import { runtimeToolLabel } from "../utils/runtimeToolLabel";
 
 export type EventListener = (event: TelemetryEvent) => void;
 export type SubscribeFn = (listener: EventListener) => () => void;
@@ -34,7 +35,6 @@ import { AppPanels } from "./AppPanels";
 import { Modal } from "./Modal";
 import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
-import { EvalsPanel } from "./EvalsPanel";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { AgentCurrentStatus, useCurrentStatuses } from "./dashboard/CurrentStatuses";
@@ -44,7 +44,7 @@ import {
   type RuntimeThoughtText,
 } from "../utils/runtimeThought";
 
-type RuntimeView = "stream" | "activity" | "memory" | "skills" | "apps" | "evals";
+type RuntimeView = "stream" | "activity" | "memory" | "skills" | "apps";
 
 interface RuntimeEventItem {
   key: string;
@@ -194,7 +194,7 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
   if (ev.type === "llm.tool_chunk") {
     const name = compactText(data.tool || data.name);
     if (!name) return null;
-    if (["pace", "done", "channels_respond", "channels_send", "channels_status"].includes(name)) return null;
+    if (["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"].includes(name)) return null;
     return {
       ...base,
       key: toolEventKey(ev, name),
@@ -210,14 +210,14 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
   if (ev.type === "tool.call") {
     const name = compactText(data.name);
     if (!name) return null;
-    if (["pace", "done", "channels_respond", "channels_send", "channels_status"].includes(name)) return null;
-    const reason = compactText(data.reason, `Running ${name}`);
+    if (["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"].includes(name)) return null;
+    const reason = compactText(data.reason);
     const args = formatToolPayload(toolArgsValue(data));
     return {
       ...base,
       key: toolEventKey(ev, name),
       kind: "tool",
-      label: reason,
+      label: runtimeToolLabel(name, reason, `Running ${name}`),
       detail: name,
       toolName: name,
       toolArgs: args,
@@ -228,7 +228,7 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
   if (ev.type === "tool.result") {
     const name = compactText(data.name || data.tool);
     if (!name) return null;
-    if (["pace", "done", "channels_respond", "channels_send", "channels_status"].includes(name)) return null;
+    if (["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"].includes(name)) return null;
     const failed = !!data.is_error;
     return {
       ...base,
@@ -749,7 +749,7 @@ export function AgentView({
 
     // Track active tools — keep visible for 3s after completion
     // Skip noisy inline tools (send, pace, done, evolve, remember) and channels from display
-    const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_send", "channels_status"]);
+    const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"]);
     const toolName = String(data.name || "");
     const showTool = event.thread_id && toolName && !hiddenTools.has(toolName) && !toolName.startsWith("channels_");
 
@@ -840,8 +840,6 @@ export function AgentView({
           className="space-y-3"
         />
       </div>
-    ) : view === "evals" ? (
-      <EvalsPanel agentID={instance.id} />
     ) : null;
 
   return (
@@ -1201,7 +1199,6 @@ function AgentRuntimePanel({
     "memory",
     "skills",
     "apps",
-    "evals",
   ];
 
   return (

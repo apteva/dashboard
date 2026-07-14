@@ -1,34 +1,23 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   agentTemplates,
   apps as appsAPI,
-  evals as evalsAPI,
   instances,
   integrations as integrationsAPI,
   providers,
-  synthesizeDirective,
   type AgentTemplate,
   type AppRow,
   type AppGrantPolicy,
   type AppPermissionCatalog,
   type AppSummary,
   type ConnectionInfo,
-  type EvalMock,
-  type EvalRun,
-  type EvalStreamHandle,
-  type DirectiveEditSuggestion,
-  type IterationEvent,
-  type RunOptions,
   type MarketplaceEntry,
 } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { ConnectIntegrationModal } from "../components/integrations/ConnectIntegrationModal";
-import {
-  appendDirectiveLearning,
-  structureDirectiveDraft,
-} from "../utils/directiveMarkdown";
+import { structureDirectiveDraft } from "../utils/directiveMarkdown";
 
 // AgentNew — guided "build your first agent" wizard. Four steps:
 //
@@ -47,7 +36,7 @@ import {
 // providers.list() at mount and either gates the final step or
 // downgrades to start=false with a clear notice.
 
-type StepId = "template" | "details" | "setup" | "verify" | "review";
+type StepId = "template" | "details" | "setup" | "review";
 
 const STEPS: { id: StepId; label: string }[] = [
   { id: "template", label: "Template" },
@@ -62,16 +51,9 @@ const STEPS: { id: StepId; label: string }[] = [
   // auto-install at create time so they show as informational;
   // required integrations check the operator's existing connections
   // by compatible_slugs and offer a deep-link to /integrations when
-  // none match. Skippable — Verify will run with mocked tool
-  // responses if integrations aren't connected, which is fine for
-  // behavioural grading but should be flagged.
+  // none match. The step is skippable; missing dependencies are
+  // surfaced before the agent is created.
   { id: "setup",    label: "Setup" },
-  // Verify — run a starter eval against the draft directive before
-  // commit. The eval comes from the template's suggested_evals
-  // (seeded at agent-create time on the server side, but PR-1
-  // surfaces it pre-create via a stateless /evals/preview call so
-  // operators can iterate on the directive without churning rows).
-  { id: "verify",   label: "Verify" },
   { id: "review",   label: "Review" },
 ];
 
@@ -92,18 +74,6 @@ interface AppAccessDraft {
   delete: boolean;
 }
 
-interface DraftEval {
-  // Seeded from the template's suggested_evals[0] when the operator
-  // picks a template in step 1. description + goals are editable in
-  // the Verify step; mocks are shown collapsed (read-only) as the
-  // pinned-tools list the agent will see during the run.
-  name: string;
-  description: string;
-  goals: string[];
-  mocks: EvalMock[];
-  max_turns: number;
-}
-
 interface WizardState {
   templateID: string | null;
   name: string;
@@ -120,20 +90,6 @@ interface WizardState {
   boundAppInstallIDs: Set<number>;
   boundConnectionIDs: Set<number>;
   appAccess: Record<number, AppAccessDraft>;
-  // Verify-step draft. null when the template has no suggested
-  // evals or before any template is picked.
-  draftEval: DraftEval | null;
-  // Per-click run policy. Default is improvement mode (5
-  // iterations) so wizard runs surface judge suggestions for
-  // weak directives. Operator can flip to strict (1 iteration)
-  // via the toggle when they just want a pass/fail signal.
-  verifyOptions: RunOptions;
-  // Directive edits the operator has accepted from a run's
-  // suggested_improvements. Stored separately from `directive`
-  // until create() time so the operator can toggle them on/off
-  // before committing. Each entry includes the suggestion id so
-  // the UI can show which ones are queued.
-  acceptedEdits: { id: string; add: string; reason?: string }[];
 }
 
 const INITIAL: WizardState = {
@@ -150,9 +106,6 @@ const INITIAL: WizardState = {
   boundConnectionIDs: new Set<number>(),
   appAccess: {},
   recommendedApps: [],
-  draftEval: null,
-  verifyOptions: { max_iterations: 5, strict_mocks: false },
-  acceptedEdits: [],
 };
 
 function defaultAppAccessDraft(): AppAccessDraft {
@@ -227,33 +180,6 @@ export function AgentNew() {
   // Inline status the Review step renders during create — one line
   // per app the wizard is installing on the user's behalf.
   const [installProgress, setInstallProgress] = useState<Record<string, string>>({});
-
-  // Verify step state. verifyRun is the *final* EvalRun emitted by
-  // the streaming runner's done event; verifyIteration is the most
-  // recent in-flight iteration event (cleared on done). verifyRunning
-  // gates the Run button; verifyError surfaces network / runner
-  // failures distinct from a fail-verdict (a fail verdict is a
-  // successful run with red goals). verifyAutoRun = checkbox state
-  // for "auto-continue between iterations"; default off so first-time
-  // users see the step UX.
-  const [verifyRun, setVerifyRun] = useState<EvalRun | null>(null);
-  const [verifyRunning, setVerifyRunning] = useState(false);
-  const [verifyError, setVerifyError] = useState<string | null>(null);
-  const [verifyIteration, setVerifyIteration] = useState<IterationEvent | null>(null);
-  const [verifyAutoRun, setVerifyAutoRun] = useState(false);
-  // streamRef holds the in-flight SSE handle so Continue/Stop/abort
-  // can address it without forcing a re-render on every state tick.
-  // autoRunRef mirrors verifyAutoRun for the same reason — the
-  // onIteration callback closes over it once at stream-open time.
-  const streamRef = useRef<EvalStreamHandle | null>(null);
-  const autoRunRef = useRef(verifyAutoRun);
-  useEffect(() => {
-    autoRunRef.current = verifyAutoRun;
-  }, [verifyAutoRun]);
-  // Tear down any open stream on unmount so a navigation-away doesn't
-  // leave a server-side runner parked on the control channel until
-  // the per-iteration timeout (server cleans up after 10min/iter).
-  useEffect(() => () => streamRef.current?.abort(), []);
 
   useEffect(() => {
     agentTemplates.list().then(setTemplates).catch(() => setTemplates([]));
@@ -389,102 +315,7 @@ export function AgentNew() {
     }
   };
 
-  // runVerify opens an SSE stream against the streaming preview
-  // endpoint. Sends the effective directive (base + any accepted
-  // edits so the next run measures what the operator would actually
-  // persist on Create) and the per-click RunOptions toggle. The
-  // server emits one iteration event per attempt and parks waiting
-  // for continueVerify/stopVerify between them (or auto-continues
-  // when verifyAutoRun is on). The final EvalRun arrives via the
-  // done event.
-  const runVerify = () => {
-    if (!state.draftEval) return;
-    // Cancel any prior in-flight stream before kicking off a new one.
-    // Unrequested late events from a stale run would otherwise scramble
-    // the result panel during a quick "Run again" click.
-    streamRef.current?.abort();
-    streamRef.current = null;
-    setVerifyRunning(true);
-    setVerifyError(null);
-    setVerifyRun(null);
-    setVerifyIteration(null);
-    const effectiveDirective = composeDirective(state.directive, state.acceptedEdits);
-    streamRef.current = evalsAPI.previewStream(
-      {
-        directive: effectiveDirective,
-        name: state.name,
-        project_id: currentProject?.id,
-        eval: {
-          name: state.draftEval.name,
-          description: state.draftEval.description,
-          goals: state.draftEval.goals,
-          mocks: state.draftEval.mocks,
-          max_turns: state.draftEval.max_turns,
-        },
-        options: state.verifyOptions,
-      },
-      {
-        onIteration: (it) => {
-          setVerifyIteration(it);
-          // Auto-advance only on non-final events — the final iteration
-          // breaks the runner's loop on its own; the step endpoint
-          // would 404 by the time the POST landed.
-          if (!it.final && autoRunRef.current) {
-            void streamRef.current?.sendStep("continue").catch(() => {});
-          }
-        },
-        onDone: (run) => {
-          setVerifyRun(run);
-          setVerifyIteration(null);
-          setVerifyRunning(false);
-          streamRef.current = null;
-        },
-        onError: (err) => {
-          setVerifyError(err.message);
-          setVerifyRunning(false);
-          streamRef.current = null;
-        },
-      },
-    );
-  };
-
-  const continueVerify = () => {
-    void streamRef.current?.sendStep("continue").catch((e: any) => {
-      setVerifyError(e?.message || "continue failed");
-    });
-  };
-  const stopVerify = () => {
-    void streamRef.current?.sendStep("stop").catch((e: any) => {
-      setVerifyError(e?.message || "stop failed");
-    });
-  };
-  const setAutoRun = (v: boolean) => {
-    setVerifyAutoRun(v);
-    // If the toggle flips on while parked at a non-final iteration,
-    // release it immediately so the operator doesn't have to also
-    // click Continue.
-    if (v && verifyIteration && !verifyIteration.final && streamRef.current) {
-      void streamRef.current.sendStep("continue").catch(() => {});
-    }
-  };
-
   const applyTemplate = (t: AgentTemplate) => {
-    // Seed the Verify step's draft eval from the template's first
-    // suggested_eval if it has one. Description comes from the
-    // template directly; legacy templates without it fall back to
-    // a backfilled description from the trigger via the server's
-    // suggested_evals projection (description is always populated
-    // on the wire).
-    const firstSuggested = t.suggested_evals?.[0];
-    const draftEval: DraftEval | null = firstSuggested
-      ? {
-          name: firstSuggested.name,
-          description: firstSuggested.description || derivedDescriptionFromTrigger(firstSuggested.trigger),
-          goals: firstSuggested.goals.slice(),
-          mocks: firstSuggested.mocks,
-          max_turns: firstSuggested.max_turns ?? 5,
-        }
-      : null;
     setState((s) => ({
       ...s,
       templateID: t.id,
@@ -494,14 +325,7 @@ export function AgentNew() {
       mode: t.mode as Mode,
       unconscious: t.unconscious,
       recommendedApps: t.recommended_apps || [],
-      draftEval,
-      // Reset queued edits when switching templates so we don't
-      // carry directive proposals from a previous template's run
-      // into a new one.
-      acceptedEdits: [],
     }));
-    setVerifyRun(null);
-    setVerifyError(null);
   };
 
   const create = async () => {
@@ -519,60 +343,21 @@ export function AgentNew() {
       if (tpl) await installRequiredApps(tpl);
 
       const startNow = hasProvider !== false;
-      // Fold any judge-proposed directive edits the operator
-      // accepted in Verify into the directive at create-time. They
-      // were ephemeral until this point; from here on they're part
-      // of the agent's stored directive and bump the directive
-      // history audit table at the agent's first run.
-      const effectiveDirective = composeDirective(state.directive, state.acceptedEdits);
       const boundAppGrants = buildAppGrantPolicies(state);
       const created = await instances.create(
         state.name.trim(),
-        effectiveDirective,
+        state.directive,
         state.mode,
         currentProject?.id,
         startNow,
         {
           includeChannels: state.includeChannels,
           unconscious: state.unconscious,
-          templateID: state.templateID || undefined,
           boundAppInstallIDs: Array.from(state.boundAppInstallIDs),
           boundConnectionIDs: Array.from(state.boundConnectionIDs),
           boundAppGrants,
         },
       );
-      // Persist the wizard's draft eval as a real agent_evals row
-      // attached to the newly-created agent. Template-seeded evals
-      // are already written server-side via templateID handling;
-      // this covers two cases that one doesn't:
-      //   1. Operator started from an Empty template and authored
-      //      an eval inline → the wizard's Verify step is the only
-      //      place this eval exists, so it'd vanish if we didn't
-      //      persist it here.
-      //   2. Operator edited a template-seeded draft (different
-      //      goals, different trigger text) → their edits would
-      //      get lost since the server seed wrote the original
-      //      template values.
-      // Best-effort: a persist failure doesn't block agent create.
-      // The agent still works; operator can re-create the eval
-      // from the detail page if needed.
-      if (state.draftEval && state.draftEval.goals.some((g) => g.trim())) {
-        try {
-          await evalsAPI.create(created.id, {
-            name: state.draftEval.name,
-            description: state.draftEval.description,
-            goals: state.draftEval.goals.filter((g) => g.trim()),
-            mocks: state.draftEval.mocks,
-            max_turns: state.draftEval.max_turns,
-          });
-        } catch (e) {
-          // Surface as a console warning rather than blocking nav —
-          // the agent is alive; the operator will discover the eval
-          // is missing on the detail page and can re-add it.
-          console.warn("persist draft eval failed", e);
-        }
-      }
-
       // P1.1 gate may have returned a created-but-stopped row with a
       // .warning field. Either way we land on the detail page; the
       // warning will surface there.
@@ -620,22 +405,6 @@ export function AgentNew() {
               setState={setState}
               onRefresh={refreshConnections}
               projectId={currentProject?.id}
-            />
-          )}
-          {step.id === "verify" && (
-            <VerifyStep
-              state={state}
-              setState={setState}
-              run={verifyRun}
-              running={verifyRunning}
-              errorMessage={verifyError}
-              iteration={verifyIteration}
-              autoRun={verifyAutoRun}
-              onAutoRunChange={setAutoRun}
-              onRun={runVerify}
-              onContinue={continueVerify}
-              onStop={stopVerify}
-              onJumpToDirective={() => setStepIdx(1)}
             />
           )}
           {step.id === "review" && (
@@ -788,66 +557,6 @@ interface DetailsStepProps {
   setState: React.Dispatch<React.SetStateAction<WizardState>>;
 }
 
-// SuggestFromGoalsButton — calls the server's /agents/seed-directive
-// endpoint with the wizard's current eval goals + agent name, then
-// pastes the returned directive into state.directive. Disabled when
-// no goals exist yet (template provided none, operator hasn't typed
-// any). The platform meta-agent does the synthesis; one LLM call,
-// 5-15s depending on load. We park a small loading + error indicator
-// inline so the operator can see the call landed (or failed loud).
-function SuggestFromGoalsButton({
-  state,
-  setState,
-}: {
-  state: WizardState;
-  setState: React.Dispatch<React.SetStateAction<WizardState>>;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const goals = (state.draftEval?.goals ?? []).filter((g) => g.trim() !== "");
-  const disabled = busy || goals.length === 0;
-
-  const onClick = async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      const resp = await synthesizeDirective({
-        goals,
-        agent_name: state.name || undefined,
-        current_directive: state.directive || undefined,
-      });
-      setState((s) => ({ ...s, directive: resp.directive }));
-    } catch (e: any) {
-      setErr(e?.message ?? "synthesis failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="flex items-center gap-2">
-      {err && (
-        <span className="text-red text-[11px]" title={err}>
-          ✗ {err.length > 60 ? err.slice(0, 60) + "…" : err}
-        </span>
-      )}
-      <button
-        type="button"
-        onClick={onClick}
-        disabled={disabled}
-        className="text-accent text-xs hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
-        title={
-          goals.length === 0
-            ? "Add eval goals first (Verify step)"
-            : "Ask the platform to draft a starter directive from your eval goals"
-        }
-      >
-        {busy ? "Synthesizing…" : "Suggest from goals"}
-      </button>
-    </div>
-  );
-}
-
 // DetailsStep — single merged step covering everything the operator
 // authors about the agent itself: name, directive, safety mode,
 // background memory. Was two steps (Details + Behavior) until the
@@ -912,7 +621,6 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
             >
               Structure
             </button>
-            <SuggestFromGoalsButton state={state} setState={setState} />
           </div>
         </div>
         <textarea
@@ -929,7 +637,7 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
           spellCheck={false}
         />
         <p className="text-text-muted text-xs mt-1.5">
-          Markdown headings make later self-edits and eval lessons land in the right section.
+          Markdown headings make later self-edits and focused updates land in the right section.
         </p>
       </div>
 
@@ -1002,9 +710,8 @@ interface SetupStepProps {
 // to /integrations (new tab) plus a Refresh button so the operator
 // doesn't have to leave the wizard once OAuth completes.
 //
-// The step is skippable: Verify will still run with mocked tool
-// responses regardless of what's connected. A note in Verify
-// reminds the operator when integrations are missing.
+// The step is skippable. Missing integrations are called out before
+// creation so the operator understands what the live agent can reach.
 function SetupStep({
   template,
   installedApps,
@@ -1189,7 +896,7 @@ function SetupStep({
           </ul>
           {missingIntegrations.length > 0 && (
             <div className="text-xs text-amber border-l-2 border-amber pl-3 mt-1">
-              {missingIntegrations.length} required integration{missingIntegrations.length === 1 ? "" : "s"} not connected. Verify will run with mocked responses, but the live agent won't reach them until set up.
+              {missingIntegrations.length} required integration{missingIntegrations.length === 1 ? "" : "s"} not connected. The live agent will not reach them until they are set up.
             </div>
           )}
         </div>
@@ -1668,666 +1375,7 @@ function RequirementRow({
   );
 }
 
-interface VerifyStepProps {
-  state: WizardState;
-  setState: React.Dispatch<React.SetStateAction<WizardState>>;
-  run: EvalRun | null;
-  running: boolean;
-  errorMessage: string | null;
-  // Per-iteration in-flight event from the streaming runner.
-  // Mutually exclusive with `run`: while the stream is open we show
-  // iteration state; once the done event arrives we swap to the
-  // final run panel.
-  iteration: IterationEvent | null;
-  autoRun: boolean;
-  onAutoRunChange: (v: boolean) => void;
-  onRun: () => void;
-  onContinue: () => void;
-  onStop: () => void;
-  onJumpToDirective: () => void;
-}
-
-// VerifyStep renders the wizard's preflight eval.
-//
-// Operator surface is three fields — description (what the agent
-// should do), goals (the judge's rubric), and a strict-vs-improve
-// toggle that controls whether the run is a single-shot
-// verification or a multi-iteration improvement loop. The system
-// handles tool mocking, judging, and (in improvement mode)
-// proposing directive edits the operator can queue into the
-// directive before agent create.
-function VerifyStep({
-  state,
-  setState,
-  run,
-  running,
-  errorMessage,
-  iteration,
-  autoRun,
-  onAutoRunChange,
-  onRun,
-  onContinue,
-  onStop,
-  onJumpToDirective,
-}: VerifyStepProps) {
-  const draft = state.draftEval;
-
-  // Empty state — no template suggested_eval and operator hasn't
-  // added one yet. Offer a "+ Add an eval" CTA so they can author
-  // one inline instead of being told to come back from the agent
-  // detail page.
-  if (!draft) {
-    return (
-      <div className="flex flex-col gap-4">
-        <div>
-          <h2 className="text-text text-lg font-bold">Verify</h2>
-          <p className="text-text-muted text-sm mt-1">
-            Define a behavioural eval: a description of what the agent should do + a list of goals the platform's meta-agent will grade against. Iterate until every goal is green.
-          </p>
-        </div>
-        <div className="border border-border border-dashed rounded-lg px-4 py-6 text-center">
-          <p className="text-text-muted text-sm mb-3">
-            No eval yet. Add one to verify the agent's behaviour before creation.
-          </p>
-          <button
-            onClick={() =>
-              setState((s) => ({
-                ...s,
-                draftEval: makeBlankDraftEval(),
-              }))
-            }
-            className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
-          >
-            + Add an eval
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  const updateDraft = (patch: Partial<DraftEval>) =>
-    setState((s) => (s.draftEval ? { ...s, draftEval: { ...s.draftEval, ...patch } } : s));
-  const setGoal = (i: number, value: string) => {
-    const goals = draft.goals.slice();
-    goals[i] = value;
-    updateDraft({ goals });
-  };
-  const addGoal = () => updateDraft({ goals: [...draft.goals, ""] });
-  const removeGoal = (i: number) => updateDraft({ goals: draft.goals.filter((_, j) => j !== i) });
-
-  const setMaxIterations = (n: number) =>
-    setState((s) => ({ ...s, verifyOptions: { ...s.verifyOptions, max_iterations: n } }));
-
-  // Suggestion acceptance: clicking the checkbox queues the
-  // directive edit into state.acceptedEdits. Already-accepted
-  // edits show pre-checked; toggling off removes them. Edits are
-  // persisted into the agent's directive at create() time, not
-  // immediately — operator can run again to confirm.
-  const toggleAcceptEdit = (sugg: DirectiveEditSuggestion) => {
-    setState((s) => {
-      const has = s.acceptedEdits.some((e) => e.id === sugg.id);
-      const next = has
-        ? s.acceptedEdits.filter((e) => e.id !== sugg.id)
-        : [...s.acceptedEdits, { id: sugg.id, add: sugg.add, reason: sugg.reason }];
-      return { ...s, acceptedEdits: next };
-    });
-  };
-
-  return (
-    <div className="flex flex-col gap-5">
-      <div>
-        <h2 className="text-text text-lg font-bold">Verify</h2>
-        <p className="text-text-muted text-sm mt-1">
-          Run an eval against your draft agent before creating it. Write what the agent should do + the goals it'll be graded against. In improvement mode, the platform judge proposes directive edits you can queue into the directive.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <div className="flex flex-col gap-3">
-          <div>
-            <label className="text-text-muted text-xs uppercase tracking-wide block mb-1">Eval name</label>
-            <input
-              type="text"
-              value={draft.name}
-              onChange={(e) => updateDraft({ name: (e.target as HTMLInputElement).value })}
-              placeholder="e.g. Replies to incoming chat"
-              className="w-full bg-bg-input border border-border rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
-            />
-          </div>
-          <div>
-            <label className="text-text-muted text-xs uppercase tracking-wide block mb-1">Description</label>
-            <textarea
-              value={draft.description}
-              onChange={(e) => updateDraft({ description: (e.target as HTMLTextAreaElement).value })}
-              rows={5}
-              placeholder="What the agent is being asked to do. E.g. 'Reconcile this week's Stripe payouts against open invoices and post a discrepancy report to #finance.'"
-              className="w-full bg-bg-input border border-border rounded-md px-3 py-2 text-sm text-text font-mono resize-y focus:outline-none focus:border-accent"
-            />
-            <p className="text-text-dim text-[11px] mt-1">
-              The agent reads this as its opening event. The judge reads it too to interpret your goals.
-            </p>
-          </div>
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-text-muted text-xs uppercase tracking-wide">Goals</label>
-              <button
-                onClick={addGoal}
-                className="text-accent text-xs hover:underline"
-              >
-                + Add goal
-              </button>
-            </div>
-            <ul className="flex flex-col gap-2">
-              {draft.goals.map((g, i) => (
-                <li key={i} className="flex items-start gap-2">
-                  <textarea
-                    value={g}
-                    onChange={(e) => setGoal(i, e.target.value)}
-                    rows={2}
-                    placeholder="A behaviour the agent should demonstrate (e.g. 'Reply within 200 words')"
-                    className="flex-1 bg-bg-input border border-border rounded p-2 text-text text-sm font-mono resize-y focus:outline-none focus:border-accent"
-                  />
-                  <button
-                    onClick={() => removeGoal(i)}
-                    className="text-text-muted hover:text-red text-xs mt-2"
-                    title="Remove goal"
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <p className="text-text-dim text-[11px] mt-1">
-              The judge grades each goal pass/fail. The agent does NOT see this list — otherwise it'd parrot the criteria back.
-            </p>
-          </div>
-          {draft.mocks.length > 0 && (
-            <details className="text-text-muted text-xs">
-              <summary className="cursor-pointer hover:text-text">
-                {draft.mocks.length} pinned mock{draft.mocks.length === 1 ? "" : "s"} (tool responses)
-              </summary>
-              <pre className="text-text-muted text-xs mt-2 bg-bg-card border border-border rounded p-3 overflow-x-auto font-mono">
-                {JSON.stringify(draft.mocks, null, 2)}
-              </pre>
-            </details>
-          )}
-
-          {/* Iteration count. Improvement loop is always on in the
-              wizard — the judge proposes directive edits when an
-              attempt fails, the agent retries with them ephemerally
-              applied, and the operator can queue accepted edits into
-              the directive on Create. Higher count = more LLM cost
-              per run but better chance of converging on a fix. */}
-          <div className="border border-border rounded-md p-3 bg-bg-card flex flex-col gap-2">
-            <label className="text-text-muted text-xs uppercase tracking-wide">Iterations</label>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                min={2}
-                max={10}
-                value={state.verifyOptions.max_iterations ?? 5}
-                onChange={(e) => {
-                  const raw = Number((e.target as HTMLInputElement).value) || 5;
-                  setMaxIterations(Math.max(2, Math.min(10, raw)));
-                }}
-                className="w-20 bg-bg-input border border-border rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
-              />
-              <span className="text-text-muted text-xs">
-                attempts (loop ends early on pass)
-              </span>
-            </div>
-            <label className="flex items-center gap-2 text-text-muted text-xs cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={autoRun}
-                onChange={(e) => onAutoRunChange((e.target as HTMLInputElement).checked)}
-                className="accent-accent"
-              />
-              <span>
-                Auto-run all iterations
-                <span className="text-text-dim"> — skip the pause between attempts</span>
-              </span>
-            </label>
-            <p className="text-text-dim text-[11px]">
-              Each iteration is one agent run + judge pass. With Auto-run off, the run pauses after every attempt so you can inspect the result and decide whether to continue or stop.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3 pt-2">
-            <button
-              onClick={onRun}
-              disabled={running || draft.goals.every((g) => !g.trim()) || !draft.description.trim()}
-              className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
-            >
-              {running ? "Running…" : run ? "Run again" : "Run eval"}
-            </button>
-            {run && run.status !== "error" && (
-              <button
-                onClick={onJumpToDirective}
-                className="text-text-muted text-xs hover:text-text underline-offset-2 hover:underline"
-              >
-                Edit directive
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-3 min-w-0">
-          <label className="text-text-muted text-xs uppercase tracking-wide">Result</label>
-          {errorMessage && (
-            <div className="text-red text-sm border-l-2 border-red pl-3">{errorMessage}</div>
-          )}
-          {!run && !iteration && !errorMessage && (
-            <div className="text-text-muted text-sm">
-              Click <span className="text-text font-medium">Run eval</span> to test against your goals.{" "}
-              {autoRun
-                ? "Auto-run on — the full loop will play through without pausing."
-                : "Run pauses after each iteration so you can decide whether to continue."}
-            </div>
-          )}
-          {/* In-flight iteration view: shown between the first event
-              landing and the done event finalizing. The user inspects
-              this iteration's verdict + suggestions and decides to
-              continue or stop. */}
-          {!run && iteration && (
-            <IterationPane
-              iteration={iteration}
-              running={running}
-              autoRun={autoRun}
-              onContinue={onContinue}
-              onStop={onStop}
-              acceptedEditIds={new Set(state.acceptedEdits.map((e) => e.id))}
-              onToggleAccept={toggleAcceptEdit}
-            />
-          )}
-          {/* Final run view (done event delivered): same panel as
-              before, no behaviour change for batch-mode callers. */}
-          {run && (
-            <VerifyRunPane
-              run={run}
-              acceptedEditIds={new Set(state.acceptedEdits.map((e) => e.id))}
-              onToggleAccept={toggleAcceptEdit}
-            />
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// makeBlankDraftEval — seed an empty draft when the template
-// didn't ship one and the operator clicks "+ Add an eval".
-// Description default is a one-line hint so the textarea isn't
-// blank-staring at the operator; one empty goal slot opens the
-// list editor.
-function makeBlankDraftEval(): DraftEval {
-  return {
-    name: "My first eval",
-    description: "",
-    goals: [""],
-    mocks: [],
-    max_turns: 5,
-  };
-}
-
-// derivedDescriptionFromTrigger renders a legacy trigger blob into
-// the natural-language description the new wizard wants. Server
-// already does this for stored rows; templates loaded over the
-// wire that still ship `trigger` (and no description) get the
-// same treatment here so the editor never lands on an empty
-// textarea for a template that has data.
-function derivedDescriptionFromTrigger(trg?: EvalMockTrigger): string {
-  if (!trg || !trg.type) return "";
-  const p = (trg.payload || {}) as Record<string, any>;
-  switch (trg.type) {
-    case "chat_message": {
-      const parts = ["Incoming chat message"];
-      if (p.from) parts.push(`from ${p.from}`);
-      if (p.channel) parts.push(`in ${p.channel}`);
-      return parts.join(" ") + (p.text ? `:\n${p.text}` : ".");
-    }
-    case "webhook":
-      return "Incoming webhook event:\n" + JSON.stringify(p, null, 2);
-    case "scheduled_tick":
-      return `Scheduled tick at ${p.iso_time || "(unspecified)"}.`;
-    default:
-      return `Event of type ${trg.type}:\n` + JSON.stringify(p, null, 2);
-  }
-}
-
-// Local alias so we don't need to re-import EvalTrigger now that
-// it's purely a legacy compat shape.
-type EvalMockTrigger = { type: string; payload?: Record<string, unknown> };
-
-// composeDirective folds the operator's queued judge suggestions
-// onto the base directive in stable order. Used in two places:
-//   - runVerify → so the next preview measures what would actually
-//     ship on Create.
-//   - create() → so the persisted directive includes them.
-function composeDirective(base: string, edits: { id: string; add: string }[]): string {
-  return appendDirectiveLearning(base, edits.map((e) => e.add));
-}
-
-// IterationPane renders the in-flight state between the runner's
-// per-iteration emit and the final done event. Same structural
-// pieces as VerifyRunPane (verdict, per-goal grid, suggestions
-// with apply-checkboxes, trajectory) — plus the Continue/Stop row
-// the operator drives the loop with.
-//
-// When `iteration.final` is true the runner is already collapsing
-// to the done event; we keep the buttons hidden and show a
-// "finalizing…" hint so the operator doesn't try to step a loop
-// that's no longer parked.
-//
-// When autoRun is on we hide the buttons too (the runner is
-// auto-driven by the onIteration handler in AgentNew) and surface
-// a "auto-continuing…" line so the operator knows what's happening.
-function IterationPane({
-  iteration,
-  running,
-  autoRun,
-  onContinue,
-  onStop,
-  acceptedEditIds,
-  onToggleAccept,
-}: {
-  iteration: IterationEvent;
-  running: boolean;
-  autoRun: boolean;
-  onContinue: () => void;
-  onStop: () => void;
-  acceptedEditIds?: Set<string>;
-  onToggleAccept?: (sugg: DirectiveEditSuggestion) => void;
-}) {
-  const v = iteration.verdict;
-  const isPass = v?.overall === "pass";
-  const isFinal = iteration.final;
-  const showControls = !isFinal && !autoRun && running;
-  return (
-    <div className="flex flex-col gap-3">
-      <div
-        className={`px-3 py-2 rounded border text-sm ${
-          isPass ? "border-green/40 bg-green/5 text-green" : "border-red/40 bg-red/5 text-red"
-        }`}
-      >
-        Iteration {iteration.iteration} of {iteration.max_iterations} —{" "}
-        {isPass ? "✓ Pass" : "✗ Fail"}
-        {isFinal && (
-          <span className="text-text-muted text-xs ml-2">— finalizing run…</span>
-        )}
-        {!isFinal && autoRun && (
-          <span className="text-text-muted text-xs ml-2">— auto-continuing…</span>
-        )}
-      </div>
-
-      {v && (
-        <div className="flex flex-col gap-2">
-          {v.reasoning && (
-            <p className="text-text-muted text-xs italic">{v.reasoning}</p>
-          )}
-          <ul className="flex flex-col gap-1.5">
-            {v.per_goal.map((g, i) => (
-              <li key={i} className="flex items-start gap-2">
-                <span
-                  className={`inline-block w-3 h-3 rounded-full mt-1 shrink-0 ${
-                    g.verdict === "pass" ? "bg-green" : "bg-red"
-                  }`}
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="text-text text-sm">{g.goal}</div>
-                  <div className="text-text-muted text-xs mt-0.5">{g.why}</div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {iteration.suggestions?.directive_edits &&
-        iteration.suggestions.directive_edits.length > 0 &&
-        onToggleAccept && (
-          <div className="border border-border rounded-md p-3 bg-bg-card flex flex-col gap-2">
-            <div className="text-text-muted text-xs uppercase tracking-wide">
-              Directive suggestions so far
-            </div>
-            <ul className="flex flex-col gap-2 mt-1">
-              {iteration.suggestions.directive_edits.map((sugg) => {
-                const accepted = acceptedEditIds?.has(sugg.id) ?? false;
-                return (
-                  <li key={sugg.id} className="flex items-start gap-2">
-                    <input
-                      type="checkbox"
-                      checked={accepted}
-                      onChange={() => onToggleAccept(sugg)}
-                      className="mt-1 shrink-0"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-text text-sm whitespace-pre-wrap">{sugg.add}</div>
-                      {sugg.reason && (
-                        <div className="text-text-muted text-xs mt-0.5 italic">{sugg.reason}</div>
-                      )}
-                      {sugg.helped && (
-                        <div className="text-green text-[11px] mt-0.5">✓ helped a later iteration pass</div>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
-
-      {showControls && (
-        <div className="flex items-center gap-3 pt-1">
-          <button
-            onClick={onContinue}
-            className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
-          >
-            Continue to iteration {iteration.iteration + 1}
-          </button>
-          <button
-            onClick={onStop}
-            className="px-3 py-2 text-text-muted text-sm hover:text-text border border-border rounded-lg"
-          >
-            Stop here
-          </button>
-        </div>
-      )}
-
-      <details className="text-text-muted text-xs">
-        <summary className="cursor-pointer hover:text-text">
-          Trajectory ({iteration.trajectory.turns.length} turn{iteration.trajectory.turns.length === 1 ? "" : "s"})
-        </summary>
-        <div className="mt-2 flex flex-col gap-1.5 max-h-96 overflow-y-auto font-mono">
-          {iteration.trajectory.turns.map((turn, i) => {
-            const isJudge = turn.role === "judge";
-            const isSystem = turn.role === "system";
-            return (
-              <div
-                key={i}
-                className={`text-xs border-l-2 pl-2 ${
-                  isJudge ? "border-amber" : isSystem ? "border-text-dim" : "border-border"
-                }`}
-              >
-                <span className={isJudge ? "text-amber" : isSystem ? "text-text-dim" : "text-accent"}>
-                  {turn.role.toUpperCase()}
-                  {turn.iteration ? ` (iter ${turn.iteration})` : ""}
-                </span>
-                {turn.content && (
-                  <span className="text-text ml-2 whitespace-pre-wrap">{turn.content}</span>
-                )}
-                {turn.tool_call && (
-                  <span className="text-text ml-2">
-                    {turn.tool_call.app}.{turn.tool_call.tool}
-                    {turn.tool_call.warning && (
-                      <span className="text-amber ml-1">[{turn.tool_call.warning}]</span>
-                    )}
-                    {turn.tool_call.error && (
-                      <span className="text-red ml-1">error: {turn.tool_call.error}</span>
-                    )}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </details>
-    </div>
-  );
-}
-
-// VerifyRunPane renders the captured trajectory + per-goal
-// verdicts + (in improvement mode) the judge's directive-edit
-// suggestions with apply-checkboxes. acceptedEditIds is the
-// caller's queue of already-accepted suggestion ids so the
-// checkboxes render in the right state across re-renders.
-function VerifyRunPane({
-  run,
-  acceptedEditIds,
-  onToggleAccept,
-}: {
-  run: EvalRun;
-  acceptedEditIds?: Set<string>;
-  onToggleAccept?: (sugg: DirectiveEditSuggestion) => void;
-}) {
-  const isPass = run.status === "pass";
-  const isError = run.status === "error";
-  return (
-    <div className="flex flex-col gap-3">
-      <div
-        className={`px-3 py-2 rounded border text-sm ${
-          isPass
-            ? "border-green/40 bg-green/5 text-green"
-            : isError
-              ? "border-amber/40 bg-amber/5 text-amber"
-              : "border-red/40 bg-red/5 text-red"
-        }`}
-      >
-        {isPass ? "✓ Pass" : isError ? "⚠ Error" : "✗ Fail"}
-        {run.duration_ms > 0 && (
-          <span className="text-text-muted text-xs ml-2">
-            — {(run.duration_ms / 1000).toFixed(1)}s
-            {run.iterations_used > 1 && ` · ${run.iterations_used} iteration${run.iterations_used === 1 ? "" : "s"}`}
-            {`, ${run.turns_used} turn${run.turns_used === 1 ? "" : "s"}`}
-          </span>
-        )}
-      </div>
-
-      {run.error_message && (
-        <div className="text-amber text-xs border-l-2 border-amber pl-3 whitespace-pre-wrap">
-          {run.error_message}
-        </div>
-      )}
-
-      {run.verdict && (
-        <div className="flex flex-col gap-2">
-          {run.verdict.reasoning && (
-            <p className="text-text-muted text-xs italic">{run.verdict.reasoning}</p>
-          )}
-          <ul className="flex flex-col gap-1.5">
-            {run.verdict.per_goal.map((g, i) => (
-              <li key={i} className="flex items-start gap-2">
-                <span
-                  className={`inline-block w-3 h-3 rounded-full mt-1 shrink-0 ${
-                    g.verdict === "pass" ? "bg-green" : "bg-red"
-                  }`}
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="text-text text-sm">{g.goal}</div>
-                  <div className="text-text-muted text-xs mt-0.5">{g.why}</div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Suggestions — only shown when the run gathered any across
-          its iterations. Each directive edit gets a checkbox the
-          operator toggles to queue it into the wizard's
-          acceptedEdits state. */}
-      {run.suggestions?.directive_edits && run.suggestions.directive_edits.length > 0 && onToggleAccept && (
-        <div className="border border-border rounded-md p-3 bg-bg-card flex flex-col gap-2">
-          <div className="text-text-muted text-xs uppercase tracking-wide">
-            Directive suggestions
-          </div>
-          <p className="text-text-dim text-[11px]">
-            The judge proposed these edits to help the agent pass. Check the ones you want appended to the directive on Create.
-          </p>
-          <ul className="flex flex-col gap-2 mt-1">
-            {run.suggestions.directive_edits.map((sugg) => {
-              const accepted = acceptedEditIds?.has(sugg.id) ?? false;
-              return (
-                <li key={sugg.id} className="flex items-start gap-2">
-                  <input
-                    type="checkbox"
-                    checked={accepted}
-                    onChange={() => onToggleAccept(sugg)}
-                    className="mt-1 shrink-0"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-text text-sm whitespace-pre-wrap">{sugg.add}</div>
-                    {sugg.reason && (
-                      <div className="text-text-muted text-xs mt-0.5 italic">{sugg.reason}</div>
-                    )}
-                    {sugg.helped && (
-                      <div className="text-green text-[11px] mt-0.5">✓ helped a later iteration pass</div>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-
-      <details className="text-text-muted text-xs">
-        <summary className="cursor-pointer hover:text-text">
-          Trajectory ({run.trajectory.turns.length} turn{run.trajectory.turns.length === 1 ? "" : "s"})
-        </summary>
-        <div className="mt-2 flex flex-col gap-1.5 max-h-96 overflow-y-auto font-mono">
-          {run.trajectory.turns.map((turn, i) => {
-            const isJudge = turn.role === "judge";
-            const isSystem = turn.role === "system";
-            return (
-              <div
-                key={i}
-                className={`text-xs border-l-2 pl-2 ${
-                  isJudge
-                    ? "border-amber"
-                    : isSystem
-                      ? "border-text-dim"
-                      : "border-border"
-                }`}
-              >
-                <span className={isJudge ? "text-amber" : isSystem ? "text-text-dim" : "text-accent"}>
-                  {turn.role.toUpperCase()}
-                  {turn.iteration ? ` (iter ${turn.iteration})` : ""}
-                </span>
-                {turn.content && (
-                  <span className="text-text ml-2 whitespace-pre-wrap">{turn.content}</span>
-                )}
-                {turn.tool_call && (
-                  <span className="text-text ml-2">
-                    {turn.tool_call.app}.{turn.tool_call.tool}
-                    {turn.tool_call.warning && (
-                      <span className="text-amber ml-1">[{turn.tool_call.warning}]</span>
-                    )}
-                    {turn.tool_call.error && (
-                      <span className="text-red ml-1">error: {turn.tool_call.error}</span>
-                    )}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </details>
-    </div>
-  );
-}
-
-interface ReviewStepProps {
+ interface ReviewStepProps {
   state: WizardState;
   hasProvider: boolean | null;
   onEdit: (stepIdx: number) => void;

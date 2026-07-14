@@ -182,7 +182,6 @@ export function Layout() {
     { to: "/integrations", label: t("nav.integrations") },
     { to: "/apps", label: t("nav.apps") },
     { to: "/skills", label: t("nav.skills") },
-    { to: "/environments", label: t("nav.environments") },
     { to: "/analytics", label: t("nav.usage") },
     { to: "/settings", label: t("nav.settings") },
   ];

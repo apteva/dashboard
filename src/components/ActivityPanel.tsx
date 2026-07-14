@@ -160,7 +160,8 @@ function mergeHistoricalThoughts(current: ThoughtEntry[], historical: ThoughtEnt
 // would otherwise dominate the rail without telling the operator
 // anything. `channels_respond`, `channels_send`, and `channels_status` are how the
 // agent puts text into chat — the messages already render in the
-// chat panel, so showing the tool call too is redundant noise.
+// chat panel, so showing the tool call too is redundant noise. Publications
+// and current status render in their own Inbox/status surfaces for the same reason.
 //
 // `send` is intentionally NOT hidden: it's the inter-thread dispatch
 // event ("main is talking to leader", "leader is talking to a
@@ -170,7 +171,7 @@ function mergeHistoricalThoughts(current: ThoughtEntry[], historical: ThoughtEnt
 // can't tell who initiated the conversation.
 const hiddenTools = new Set([
   "pace", "done",
-  "channels_respond", "channels_send", "channels_status",
+  "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status",
 ]);
 
 // fmtK compacts token counts for the context gauge. Mirrors the helper

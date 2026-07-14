@@ -63,7 +63,7 @@ type AgentConfigSnapshot = {
   threads?: Thread[];
 };
 
-const hiddenSystemTools = new Set(["pace", "done", "channels_respond", "channels_send", "channels_status"]);
+const hiddenSystemTools = new Set(["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"]);
 
 export function Activity() {
   usePageTitle("Activity");

@@ -592,7 +592,7 @@ export function Agents() {
 
       {/* Quick-edit modal — name + directive only. Lives at page root
           so it overlays cleanly regardless of which row triggered it.
-          For deeper config (mode, providers, MCP wiring, evals)
+          For deeper config (mode, providers, and MCP wiring)
           operators still go through the agent detail page. */}
       <Modal open={!!editTarget} onClose={closeEditModal}>
         {editTarget && (
@@ -604,7 +604,7 @@ export function Agents() {
               <h2 className="text-text text-base font-bold">Edit agent</h2>
               <p className="text-text-muted text-xs mt-1">
                 Quick edits — name + directive. For mode, providers,
-                MCPs, evals, open the agent's detail page.
+                MCPs, open the agent's detail page.
               </p>
             </div>
             <div>
@@ -642,7 +642,7 @@ export function Agents() {
               />
               <p className="text-text-dim text-xs mt-1">
                 Saving updates the running core in place. Markdown sections
-                make future edits and eval lessons safer.
+                make future edits safer.
               </p>
             </div>
             {editError && (

@@ -15,7 +15,7 @@ import { ThemeProvider } from "./hooks/useTheme";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
 
-// Route modules are intentionally lazy. Settings, environments, analytics,
+// Route modules are intentionally lazy. Settings, analytics,
 // and app management contain large graphs/forms that should not delay login
 // or the project dashboard for users who never visit those screens.
 const Connect = lazy(() => import("./pages/Connect").then((m) => ({ default: m.Connect })));
@@ -33,8 +33,6 @@ const Analytics = lazy(() => import("./pages/Analytics").then((m) => ({ default:
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 const Apps = lazy(() => import("./pages/Apps").then((m) => ({ default: m.Apps })));
 const Skills = lazy(() => import("./pages/Skills").then((m) => ({ default: m.Skills })));
-const Environments = lazy(() => import("./pages/Environments").then((m) => ({ default: m.Environments })));
-const EnvironmentDetail = lazy(() => import("./pages/Environments").then((m) => ({ default: m.EnvironmentDetail })));
 const AppProjectPage = lazy(() => import("./pages/AppProjectPage").then((m) => ({ default: m.AppProjectPage })));
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -113,8 +111,6 @@ export default function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/apps" element={<Apps />} />
             <Route path="/skills" element={<Skills />} />
-            <Route path="/environments" element={<Environments />} />
-            <Route path="/environments/:id" element={<EnvironmentDetail />} />
             {/* Generic per-app project-level page. The project.page
                 slot of any installed app's manifest gets rendered here.
                 One route serves every app — :name in the URL picks
