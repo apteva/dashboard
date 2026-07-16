@@ -22,6 +22,7 @@ import {
   shouldHideChatTool,
   type ToolActivity,
 } from "./chat/toolActivityModel";
+import { splitToolTelemetryPaintFrame } from "../utils/toolTelemetryPaint";
 import { useToolVisualRegistry } from "./chat/toolVisuals";
 
 export interface ChatPanelHeader {
@@ -507,22 +508,27 @@ export function ChatPanel({
   // Filter: only the housekeeping set (pace/done/send). Everything
   // else, on every thread, surfaces — that's the user's "who is
   // doing what" requirement.
+  const flushToolEventFrame = useCallback(function flushToolEventFrame() {
+    toolAnimationFrameRef.current = null;
+    const { paint, deferred } = splitToolTelemetryPaintFrame(pendingToolEventsRef.current);
+    pendingToolEventsRef.current = deferred;
+    const replacePlaceholder = pendingToolReplacementRef.current;
+    pendingToolReplacementRef.current = false;
+    if (paint.length > 0) {
+      if (replacePlaceholder) setThinkingPlaceholder(null);
+      setLiveTools((previous) => mergeToolActivityEvents(previous, paint));
+    }
+    if (pendingToolEventsRef.current.length > 0) {
+      toolAnimationFrameRef.current = window.requestAnimationFrame(flushToolEventFrame);
+    }
+  }, []);
+
   const queueToolEvent = useCallback((event: TelemetryEvent, replacesThinking: boolean) => {
     pendingToolEventsRef.current.push(event);
     pendingToolReplacementRef.current ||= replacesThinking;
     if (toolAnimationFrameRef.current !== null) return;
-    toolAnimationFrameRef.current = window.requestAnimationFrame(() => {
-      toolAnimationFrameRef.current = null;
-      const events = pendingToolEventsRef.current;
-      pendingToolEventsRef.current = [];
-      const replacePlaceholder = pendingToolReplacementRef.current;
-      pendingToolReplacementRef.current = false;
-      if (events.length > 0) {
-        if (replacePlaceholder) setThinkingPlaceholder(null);
-        setLiveTools((previous) => mergeToolActivityEvents(previous, events));
-      }
-    });
-  }, []);
+    toolAnimationFrameRef.current = window.requestAnimationFrame(flushToolEventFrame);
+  }, [flushToolEventFrame]);
 
   const cancelPendingToolEvents = useCallback(() => {
     pendingToolEventsRef.current = [];

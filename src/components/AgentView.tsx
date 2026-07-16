@@ -22,6 +22,7 @@ import {
 import { useTelemetryConnectionState, useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { sleepClassName, sleepLabel, sleepProgress, sleepTitle } from "../utils/sleepStatus";
 import { runtimeToolLabel } from "../utils/runtimeToolLabel";
+import { splitToolTelemetryPaintFrame } from "../utils/toolTelemetryPaint";
 
 export type EventListener = (event: TelemetryEvent) => void;
 export type SubscribeFn = (listener: EventListener) => () => void;
@@ -616,18 +617,12 @@ export function AgentView({
     };
   }, [instance.id, rememberHandledEventID]);
 
-  const flushRuntimeEvents = useCallback(() => {
-    if (runtimeFrameRef.current !== null) {
-      window.cancelAnimationFrame(runtimeFrameRef.current);
-      runtimeFrameRef.current = null;
-    }
-    const pending = pendingRuntimeEventsRef.current;
-    if (pending.length === 0) return;
-    pendingRuntimeEventsRef.current = [];
-    setRuntimeEvents((prev) => pending.reduce(mergeRuntimeEvent, prev));
+  const applyRuntimeEvents = useCallback((events: TelemetryEvent[]) => {
+    if (events.length === 0) return;
+    setRuntimeEvents((prev) => events.reduce(mergeRuntimeEvent, prev));
     setThreadLiveEvents((prev) => {
       const next: Record<string, TelemetryEvent[]> = { ...prev };
-      for (const event of pending) {
+      for (const event of events) {
         if (!event.thread_id) continue;
         const arr = next[event.thread_id] || [];
         next[event.thread_id] = [...arr, event].slice(-200);
@@ -636,14 +631,34 @@ export function AgentView({
     });
   }, []);
 
+  const flushRuntimeEventFrame = useCallback(function flushRuntimeEventFrame() {
+    runtimeFrameRef.current = null;
+    const { paint, deferred } = splitToolTelemetryPaintFrame(pendingRuntimeEventsRef.current);
+    pendingRuntimeEventsRef.current = deferred;
+    applyRuntimeEvents(paint);
+    if (pendingRuntimeEventsRef.current.length > 0) {
+      runtimeFrameRef.current = window.requestAnimationFrame(flushRuntimeEventFrame);
+    }
+  }, [applyRuntimeEvents]);
+
+  // Restore/reset paths need an immediate, complete drain. Live delivery uses
+  // flushRuntimeEventFrame instead so a fast chunk → call → result burst gets
+  // a browser paint at each lifecycle boundary.
+  const flushRuntimeEvents = useCallback(() => {
+    if (runtimeFrameRef.current !== null) {
+      window.cancelAnimationFrame(runtimeFrameRef.current);
+      runtimeFrameRef.current = null;
+    }
+    const pending = pendingRuntimeEventsRef.current;
+    pendingRuntimeEventsRef.current = [];
+    applyRuntimeEvents(pending);
+  }, [applyRuntimeEvents]);
+
   const queueRuntimeEvent = useCallback((event: TelemetryEvent) => {
     pendingRuntimeEventsRef.current.push(event);
     if (runtimeFrameRef.current !== null) return;
-    runtimeFrameRef.current = window.requestAnimationFrame(() => {
-      runtimeFrameRef.current = null;
-      flushRuntimeEvents();
-    });
-  }, [flushRuntimeEvents]);
+    runtimeFrameRef.current = window.requestAnimationFrame(flushRuntimeEventFrame);
+  }, [flushRuntimeEventFrame]);
 
   useEffect(() => () => {
     if (runtimeFrameRef.current !== null) {
