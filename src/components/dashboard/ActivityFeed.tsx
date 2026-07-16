@@ -1,273 +1,262 @@
-// Cross-instance live activity feed. Subscribes to the project-wide
-// telemetry bus (window.__aptevaTelemetryBus, fed by ONE EventSource
-// against /telemetry/stream?all=1&project_id=…) and renders a rolling
-// window of the most recent events as a single timeline. Filter tabs
-// let the user narrow to tools / thoughts / errors. Each row links to
-// the originating instance.
-//
-// Two design choices worth flagging:
-//   1. We keep at most MAX_ROWS in memory, dropping the oldest as new
-//      ones arrive. The dashboard isn't a log search tool — it's a
-//      live pulse. /agents/:id has the deep telemetry view.
-//   2. Filtering is purely client-side. The SSE delivers everything,
-//      tabs just show/hide rows. Switching tabs is instant and the
-//      counts stay accurate.
-
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { instances, type Agent, type TelemetryEvent } from "../../api";
+import { telemetry, type Agent, type TelemetryEvent } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
 import { useTelemetryEvents } from "../../hooks/useTelemetryBus";
 
-const MAX_ROWS = 200;
-
-type Tab = "all" | "tools" | "thoughts" | "errors";
+const MAX_ROWS = 80;
+const HISTORY_PER_AGENT = 10;
+const HIDDEN_SYSTEM_TOOLS = new Set([
+  "pace",
+  "done",
+  "channels_respond",
+  "channels_send",
+  "channels_status",
+  "channels_publish",
+  "channels_set_status",
+]);
 
 interface Row {
   id: string;
   instanceId: number;
-  threadId: string;
   type: string;
   time: number;
-  category: "tool" | "thought" | "channel" | "error" | "other";
-  icon: string;
+  category: "tool" | "channel" | "error" | "thread";
   title: string;
   detail?: string;
-  ok?: boolean;
 }
 
-export function ActivityFeed() {
+export function ActivityFeed({
+  agents,
+}: {
+  agents: Agent[];
+}) {
   const { currentProject } = useProjects();
   const projectId = currentProject?.id;
-
   const [rows, setRows] = useState<Row[]>([]);
-  const [nameById, setNameById] = useState<Map<number, string>>(new Map());
-  const [tab, setTab] = useState<Tab>("all");
-  // "Live" is approximated as "we've received any event in this
-  // session" because the bus's connection state isn't directly
-  // observable to consumers. The bus reconnects on its own with
-  // bounded retry; if events stop arriving, the dot won't go red,
-  // but neither does anything else in the dashboard. Acceptable.
-  const [hasEvents, setHasEvents] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const nameById = useMemo(
+    () => new Map(agents.map((agent) => [agent.id, agent.name])),
+    [agents],
+  );
 
-  // Resolve instance id → name once on mount and every 30s. The SSE
-  // doesn't carry names; we annotate rows on render.
   useEffect(() => {
     let cancelled = false;
-    const refresh = () => {
-      instances.list(projectId).then((list: Agent[]) => {
-        if (cancelled) return;
-        setNameById(new Map(list.map((i) => [i.id, i.name])));
-      }).catch(() => {});
-    };
-    refresh();
-    const t = setInterval(refresh, 30_000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [projectId]);
-
-  // Reset rows when the project changes — old project's events
-  // shouldn't bleed across.
-  useEffect(() => {
     setRows([]);
-    setHasEvents(false);
-  }, [projectId]);
+    if (!projectId || agents.length === 0) {
+      setLoading(false);
+      return () => { cancelled = true; };
+    }
 
-  // Subscribe to ALL events in the project via the shared bus.
-  // The bus owns the single EventSource; we just receive callbacks.
-  useTelemetryEvents(null, (ev: TelemetryEvent) => {
-    const row = toRow(ev);
-    if (!row) return;
-    setHasEvents(true);
-    setRows((prev) => {
-      const next = [row, ...prev];
-      return next.length > MAX_ROWS ? next.slice(0, MAX_ROWS) : next;
+    setLoading(true);
+    Promise.all(
+      agents.map((agent) => telemetry.query(agent.id, undefined, HISTORY_PER_AGENT).catch(() => [] as TelemetryEvent[])),
+    ).then((history) => {
+      if (cancelled) return;
+      const initial = history
+        .flat()
+        .map(toSignificantRow)
+        .filter((row): row is Row => row !== null);
+      setRows(mergeRows([], initial));
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
     });
+
+    return () => { cancelled = true; };
+  }, [agents, projectId]);
+
+  useTelemetryEvents(projectId ? null : undefined, (event: TelemetryEvent) => {
+    const row = toSignificantRow(event);
+    if (!row) return;
+    setRows((previous) => mergeRows(previous, [row]));
   });
 
-  const filtered = rows.filter((r) => matches(r, tab));
+  const visible = rows.slice(0, 8);
 
   return (
-    <div className="border border-border rounded-lg flex flex-col min-h-[300px]">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-        <div className="flex items-center gap-3">
-          <div className="text-xs text-text-dim uppercase tracking-wide">
-            Activity
+    <section className="overflow-hidden rounded-lg border border-border bg-bg-card">
+      <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-bold text-text">Recent activity</h2>
+            {visible.length > 0 && (
+              <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-bg-hover px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-text-muted">
+                {visible.length}
+              </span>
+            )}
           </div>
-          <div
-            className={`w-1.5 h-1.5 rounded-full ${hasEvents ? "bg-green" : "bg-text-dim"}`}
-            title={hasEvents ? "live" : "dishasEvents"}
-          />
+          <p className="mt-0.5 text-[11px] text-text-dim">Significant agent and tool events</p>
         </div>
-        <div className="flex items-center gap-1 text-xs">
-          {(["all", "tools", "thoughts", "errors"] as Tab[]).map((t) => {
-            const count = t === "all" ? rows.length : rows.filter((r) => matches(r, t)).length;
-            const active = tab === t;
-            return (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={`px-2 py-1 rounded ${active ? "text-text bg-bg-hover" : "text-text-muted hover:text-text"}`}
-              >
-                {t}{count > 0 && <span className="ml-1 text-text-dim">{count}</span>}
-              </button>
-            );
-          })}
-        </div>
+        <Link to="/monitor?view=activity" className="shrink-0 pt-0.5 text-[11px] text-text-muted hover:text-text">
+          View operations →
+        </Link>
       </div>
 
-      <div className="flex-1 overflow-auto max-h-[420px]">
-        {filtered.length === 0 ? (
-          <div className="flex items-center justify-center h-32">
-            <div className="text-text-dim text-sm">
-              {hasEvents ? "waiting for events…" : "connecting…"}
-            </div>
+      {loading && visible.length === 0 ? (
+        <div className="flex min-h-[112px] items-center px-4 text-xs text-text-dim">Loading recent activity…</div>
+      ) : visible.length === 0 ? (
+        <div className="flex min-h-[112px] items-center px-4 py-5">
+          <div>
+            <p className="text-xs font-medium text-text-muted">No significant activity yet</p>
+            <p className="mt-1 text-[11px] text-text-dim">Agent actions and errors will appear here.</p>
           </div>
-        ) : (
-          <ul className="divide-y divide-border">
-            {filtered.map((r) => (
-              <li
-                key={r.id}
-                className="px-3 py-1.5 hover:bg-bg-hover transition-colors text-xs flex items-start gap-2 font-mono"
-              >
-                <span className="text-text-dim w-12 shrink-0">{fmtTime(r.time)}</span>
-                <span className={`shrink-0 ${iconColor(r)}`}>{r.icon}</span>
+        </div>
+      ) : (
+        <ul className="divide-y divide-border">
+          {visible.map((row) => {
+            const tone = rowTone(row.category);
+            return (
+              <li key={row.id}>
                 <Link
-                  to={`/agents/${r.instanceId}`}
-                  className="shrink-0 text-text-muted hover:text-text truncate max-w-[100px]"
-                  title={nameById.get(r.instanceId) || `#${r.instanceId}`}
+                  to={`/agents/${row.instanceId}`}
+                  className="grid min-h-[58px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 transition-colors hover:bg-bg-hover"
                 >
-                  {nameById.get(r.instanceId) || `#${r.instanceId}`}
+                  <span className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-[11px] font-bold ${tone.badge}`}>
+                    {row.category === "error" ? "!" : row.category === "channel" ? "↑" : row.category === "thread" ? "✓" : "›"}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="truncate text-xs font-medium text-text">{row.title}</span>
+                      <span className="shrink-0 text-[10px] text-text-dim">·</span>
+                      <span className="shrink-0 text-[10px] text-text-muted">
+                        {nameById.get(row.instanceId) || `Agent #${row.instanceId}`}
+                      </span>
+                    </div>
+                    {row.detail && <p className="mt-1 truncate text-[11px] text-text-muted">{row.detail}</p>}
+                  </div>
+                  <time className="text-[10px] tabular-nums text-text-dim" title={new Date(row.time).toLocaleString()}>
+                    {formatRelative(row.time)}
+                  </time>
                 </Link>
-                <span className={`flex-1 truncate ${r.category === "error" ? "text-yellow" : "text-text"}`}>
-                  {r.title}
-                  {r.detail && (
-                    <span className="text-text-muted ml-2">{r.detail}</span>
-                  )}
-                </span>
               </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
 
-// toRow normalises the heterogenous telemetry event types into a
-// single shape the feed renders. Returns null for events we don't
-// want to surface (e.g. `llm.thinking` mid-token chunks would flood
-// the feed; only `llm.start` / `llm.done` are worth showing).
-function toRow(ev: TelemetryEvent): Row | null {
-  const t = Date.parse(ev.time) || Date.now();
-  const id = ev.id || `${ev.instance_id}-${t}-${ev.type}`;
+function toSignificantRow(event: TelemetryEvent): Row | null {
+  const time = Date.parse(event.time) || Date.now();
+  const id = event.id || `${event.instance_id}-${time}-${event.type}`;
 
-  switch (ev.type) {
-    case "tool.call":
-      return {
-        id, instanceId: ev.instance_id, threadId: ev.thread_id, type: ev.type, time: t,
-        category: "tool",
-        icon: "⚡",
-        title: String(ev.data?.name || ev.data?.tool || "tool"),
-        detail: argsPreview(ev.data?.args),
-      };
-    case "tool.result":
-      return {
-        id, instanceId: ev.instance_id, threadId: ev.thread_id, type: ev.type, time: t,
-        category: ev.data?.is_error ? "error" : "tool",
-        icon: ev.data?.is_error ? "✗" : "✓",
-        ok: !ev.data?.is_error,
-        title: String(ev.data?.name || ev.data?.tool || "tool"),
-        detail: ev.data?.is_error ? truncate(String(ev.data?.error || ev.data?.content || ""), 80) : undefined,
-      };
-    case "llm.done":
-      return {
-        id, instanceId: ev.instance_id, threadId: ev.thread_id, type: ev.type, time: t,
-        category: "thought",
-        icon: "✦",
-        title: String(ev.data?.model || "llm"),
-        detail: `${ev.data?.tokens_in ?? 0}↑ ${ev.data?.tokens_out ?? 0}↓ ${ev.data?.duration_ms ?? 0}ms`,
-      };
-    case "event.received": {
-      const msg = String(ev.data?.message || "");
-      // Only surface user-facing channel events, not internal signals
-      // like [admin] / [system].
-      const m = msg.match(/^\[(\w+)\] (.*)$/s);
-      if (!m) return null;
-      const channel = m[1];
-      if (!channel) return null;
-      if (["admin", "system", "inject"].includes(channel)) return null;
-      return {
-        id, instanceId: ev.instance_id, threadId: ev.thread_id, type: ev.type, time: t,
-        category: "channel",
-        icon: "↑",
-        title: `[${channel}]`,
-        detail: truncate(m[2] || "", 80),
-      };
-    }
-    case "thread.spawn":
-      return {
-        id, instanceId: ev.instance_id, threadId: ev.thread_id, type: ev.type, time: t,
-        category: "thought",
-        icon: "→",
-        title: "spawn",
-        detail: String(ev.data?.name || ev.data?.thread_id || ""),
-      };
-    case "thread.done":
-      return {
-        id, instanceId: ev.instance_id, threadId: ev.thread_id, type: ev.type, time: t,
-        category: "thought",
-        icon: "✓",
-        title: "thread done",
-        detail: String(ev.data?.thread_id || ev.thread_id),
-      };
-    case "error":
-      return {
-        id, instanceId: ev.instance_id, threadId: ev.thread_id, type: ev.type, time: t,
-        category: "error",
-        icon: "⚠",
-        title: "error",
-        detail: truncate(String(ev.data?.message || ev.data?.error || ""), 100),
-      };
-    default:
-      return null; // skip noise (llm.thinking, llm.start, llm.tool_chunk, etc.)
+  if (event.type === "tool.call") {
+    const tool = String(event.data?.name || event.data?.tool || "");
+    if (!tool || HIDDEN_SYSTEM_TOOLS.has(tool)) return null;
+    const reason = extractReason(event.data?.args);
+    if (!reason) return null;
+    return {
+      id,
+      instanceId: event.instance_id,
+      type: event.type,
+      time,
+      category: "tool",
+      title: reason,
+      detail: humanizeTool(tool),
+    };
   }
-}
 
-function matches(r: Row, tab: Tab): boolean {
-  switch (tab) {
-    case "all": return true;
-    case "tools": return r.category === "tool";
-    case "thoughts": return r.category === "thought";
-    case "errors": return r.category === "error";
+  if (event.type === "tool.result" && event.data?.is_error) {
+    const tool = String(event.data?.name || event.data?.tool || "tool");
+    if (HIDDEN_SYSTEM_TOOLS.has(tool)) return null;
+    return {
+      id,
+      instanceId: event.instance_id,
+      type: event.type,
+      time,
+      category: "error",
+      title: `${humanizeTool(tool)} failed`,
+      detail: truncate(String(event.data?.error || event.data?.content || ""), 100),
+    };
   }
-}
 
-function iconColor(r: Row): string {
-  switch (r.category) {
-    case "tool": return "text-accent";
-    case "thought": return "text-text-muted";
-    case "channel": return "text-blue";
-    case "error": return "text-yellow";
-    default: return "text-text-dim";
+  if (event.type === "event.received") {
+    const message = String(event.data?.message || "");
+    const match = message.match(/^\[(\w+)]\s*(.*)$/s);
+    const channel = match?.[1] || "";
+    const detail = match?.[2] || "";
+    if (!match || ["admin", "system", "inject", "console"].includes(channel) || /^\[(chat|system|admin)]/i.test(detail)) return null;
+    return {
+      id,
+      instanceId: event.instance_id,
+      type: event.type,
+      time,
+      category: "channel",
+      title: `Message received via ${channel}`,
+      detail: truncate(detail, 100),
+    };
   }
+
+  if (event.type === "thread.done") {
+    return {
+      id,
+      instanceId: event.instance_id,
+      type: event.type,
+      time,
+      category: "thread",
+      title: "Agent work completed",
+      detail: String(event.data?.name || "").trim() || undefined,
+    };
+  }
+
+  if (event.type === "error") {
+    return {
+      id,
+      instanceId: event.instance_id,
+      type: event.type,
+      time,
+      category: "error",
+      title: "Agent error",
+      detail: truncate(String(event.data?.message || event.data?.error || ""), 100),
+    };
+  }
+
+  return null;
 }
 
-function fmtTime(ms: number): string {
-  const d = new Date(ms);
-  return d.toTimeString().slice(0, 5); // HH:MM in local time
+function mergeRows(previous: Row[], incoming: Row[]) {
+  const byId = new Map<string, Row>();
+  for (const row of [...previous, ...incoming]) byId.set(row.id, row);
+  return [...byId.values()].sort((a, b) => b.time - a.time).slice(0, MAX_ROWS);
 }
 
-function argsPreview(args: any): string | undefined {
-  if (!args) return undefined;
+function extractReason(args: unknown) {
+  if (!args) return "";
+  if (typeof args === "object") {
+    const reason = (args as Record<string, unknown>)._reason;
+    return typeof reason === "string" ? truncate(reason.trim(), 110) : "";
+  }
+  if (typeof args !== "string") return "";
   try {
-    const s = typeof args === "string" ? args : JSON.stringify(args);
-    return truncate(s, 60);
+    const parsed = JSON.parse(args) as Record<string, unknown>;
+    return typeof parsed._reason === "string" ? truncate(parsed._reason.trim(), 110) : "";
   } catch {
-    return undefined;
+    return "";
   }
 }
 
-function truncate(s: string, n: number): string {
-  if (s.length <= n) return s;
-  return s.slice(0, n) + "…";
+function humanizeTool(tool: string) {
+  const leaf = tool.includes("__") ? tool.split("__").pop() || tool : tool;
+  return leaf.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function rowTone(category: Row["category"]) {
+  if (category === "error") return { badge: "bg-red/15 text-red" };
+  if (category === "channel") return { badge: "bg-blue/15 text-blue" };
+  if (category === "thread") return { badge: "bg-green/15 text-green" };
+  return { badge: "bg-accent/15 text-accent" };
+}
+
+function formatRelative(time: number) {
+  const age = Math.max(0, Date.now() - time);
+  if (age < 60_000) return "now";
+  if (age < 3_600_000) return `${Math.floor(age / 60_000)}m`;
+  if (age < 86_400_000) return `${Math.floor(age / 3_600_000)}h`;
+  return `${Math.floor(age / 86_400_000)}d`;
+}
+
+function truncate(value: string, length: number) {
+  if (value.length <= length) return value;
+  return `${value.slice(0, length)}…`;
 }

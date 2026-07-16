@@ -67,6 +67,15 @@ describe("ChatConnectionsManager", () => {
       call_id: "call-1",
       text: "Hello in pro",
     });
+    source.stream({
+      type: "stream",
+      chat_id: "default-286",
+      thread_id: "main",
+      call_id: "call-1",
+      text: "",
+      done: true,
+    });
+    expect(frames).toEqual(["Hello in pro"]);
     source.message({
       id: 650,
       chat_id: "default-286",

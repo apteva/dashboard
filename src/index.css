@@ -62,6 +62,13 @@
   --safe-area-right: env(safe-area-inset-right, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-left: env(safe-area-inset-left, 0px);
+  --chat-tool-running: #f97316;
+  --chat-tool-failed: #ff3d24;
+}
+
+[data-mode="light"] {
+  --chat-tool-running: #c2410c;
+  --chat-tool-failed: #c92314;
 }
 
 /* ─── Palettes (4 = theme × mode) ─────────────────────────────────
@@ -239,6 +246,23 @@ body {
 
 #root {
   min-height: 100%;
+}
+
+/* Authenticated routes are a fixed viewport shell with deliberately nested
+ * scrollers. Lock the document only while Layout is mounted so overflow from
+ * a long chat/runtime stream can never become blank page-level scroll. */
+html.apteva-shell-active,
+body.apteva-shell-active {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body.apteva-shell-active #root {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* Shared mobile geometry. These classes keep fixed chrome and sheets clear
@@ -486,6 +510,60 @@ select {
 .tool-cursor {
   animation: tool-breathe 1s ease-in-out infinite;
   color: var(--accent);
+}
+
+/* Chat tool activity. Status remains readable in the text; source icons
+ * stay neutral. Only an icon for active work breathes, so the motion points
+ * at the work without surrounding every integration logo with state chrome. */
+@keyframes chat-tool-breathe {
+  0%, 100% { transform: scale(0.99); opacity: 0.82; filter: brightness(1); }
+  50% { transform: scale(1); opacity: 1; filter: brightness(1.12); }
+}
+
+.chat-tool-running-text {
+  color: var(--chat-tool-running);
+}
+
+.chat-tool-failed-text {
+  color: var(--chat-tool-failed);
+}
+
+.chat-tool-icon-running {
+  animation: chat-tool-breathe 1.9s ease-in-out infinite;
+  transform-origin: center;
+  will-change: transform, opacity, filter;
+}
+
+.chat-tool-icon {
+  transition: transform 180ms ease, opacity 180ms ease, filter 180ms ease;
+}
+
+@keyframes chat-thinking-dot {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 0.9; transform: translateY(-1px); }
+}
+
+.chat-thinking-dots > span {
+  width: 0.22rem;
+  height: 0.22rem;
+  border-radius: 999px;
+  background: currentColor;
+  animation: chat-thinking-dot 1.35s ease-in-out infinite;
+}
+
+.chat-thinking-dots > span:nth-child(2) { animation-delay: 120ms; }
+.chat-thinking-dots > span:nth-child(3) { animation-delay: 240ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-tool-icon-running {
+    animation: none;
+    opacity: 1;
+  }
+
+  .chat-thinking-dots > span {
+    animation: none;
+    opacity: 0.65;
+  }
 }
 
 /* Scrollbar */

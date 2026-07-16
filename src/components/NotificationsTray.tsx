@@ -78,7 +78,7 @@ export function NotificationsTray() {
       const chatId = n.id.startsWith("chat:") ? n.id.slice(5) : "";
       if (chatId && n.latestId) markChatSeen(chatId, n.latestId);
     } else if (n.ref?.kind === "inbox") {
-      navigate("/");
+      navigate("/monitor?scope=all");
     }
     setOpen(false);
   }

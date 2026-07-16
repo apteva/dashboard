@@ -939,6 +939,7 @@ export interface ConnectionInfo {
   app_slug: string;
   app_name: string;
   name: string;
+  logo?: string;
   auth_type: string;
   status: string;
   source: string;                // 'local' | 'composio'
@@ -1737,6 +1738,7 @@ export interface TelemetryEvent {
   type: string;
   time: string;
   data: Record<string, any>;
+  seq?: number;
 }
 
 // Telemetry stats from server
@@ -1772,6 +1774,19 @@ export interface MCPServerConfig {
   connected?: boolean;     // present on GET, absent on PUT
 }
 
+export interface ContextResetResult {
+  status: string;
+  id: string;
+  before_count: number;
+  after_count: number;
+  removed_count: number;
+  before_chars: number;
+  after_chars: number;
+  removed_chars: number;
+  threads_removed?: number;
+  memory_removed?: number;
+}
+
 export const core = {
   status: (instanceId: number) => request<Status>("GET", `/agents/${instanceId}/status`),
   threads: (instanceId: number) => request<Thread[]>("GET", `/agents/${instanceId}/threads`),
@@ -1790,7 +1805,7 @@ export const core = {
   // thread's iteration counter + identity. Works for main as well — the
   // only way to unstick main short of a full instance reset.
   resetThread: (instanceId: number, threadId: string) =>
-    request<{ status: string; id: string; count: number }>(
+    request<ContextResetResult>(
       "POST",
       `/agents/${instanceId}/threads/${encodeURIComponent(threadId)}/reset`,
     ),
@@ -1802,7 +1817,7 @@ export const core = {
     instanceId: number,
     opts: { history?: boolean; threads?: boolean; memory?: boolean },
   ) =>
-    request<{ status: string }>(
+    request<{ status: string; reset?: ContextResetResult }>(
       "PUT",
       `/agents/${instanceId}/config`,
       { reset: {
@@ -1897,7 +1912,7 @@ export const core = {
     instanceId: number,
     opts?: { history?: boolean; memory?: boolean; threads?: boolean },
   ) =>
-    request<{ status: string }>("PUT", `/agents/${instanceId}/config`, {
+    request<{ status: string; reset?: ContextResetResult }>("PUT", `/agents/${instanceId}/config`, {
       reset: {
         history: opts?.history ?? true,
         memory: opts?.memory ?? false,
@@ -2028,11 +2043,12 @@ export const email = {
 };
 
 export const telemetry = {
-  query: (instanceId: number, type?: string, limit?: number, threadId?: string) => {
+  query: (instanceId: number, type?: string, limit?: number, threadId?: string, since?: string) => {
     const params = new URLSearchParams({ agent_id: String(instanceId) });
     if (type) params.set("type", type);
     if (limit) params.set("limit", String(limit));
     if (threadId) params.set("thread_id", threadId);
+    if (since) params.set("since", since);
     return request<TelemetryEvent[]>("GET", `/telemetry?${params}`);
   },
   stats: (instanceId: number, period: string = "24h") =>
@@ -2697,6 +2713,8 @@ export interface CurrentStatusMessageRow {
 	detail?: string;
 	state: "working" | "waiting" | "blocked" | "completed";
 	progress?: number;
+	next?: string;
+	next_at?: string;
 	stale: boolean;
 }
 

@@ -17,12 +17,14 @@ export function useCurrentStatuses(projectId?: string) {
       load();
     };
     window.addEventListener("apteva.statusMessage", onStatus);
+    window.addEventListener("apteva.chatStreamRecovered", onStatus);
     const timer = window.setInterval(() => {
       setNow(Date.now());
       load();
     }, 60_000);
     return () => {
       window.removeEventListener("apteva.statusMessage", onStatus);
+      window.removeEventListener("apteva.chatStreamRecovered", onStatus);
       window.clearInterval(timer);
     };
   }, [load]);
@@ -79,15 +81,17 @@ export function AgentCurrentStatus({
   compact = false,
   showFallback = false,
   showAge = false,
+  showNextFallback = false,
 }: {
   status?: CurrentStatusMessageRow;
   compact?: boolean;
   showFallback?: boolean;
   showAge?: boolean;
+  showNextFallback?: boolean;
 }) {
   if (!status && !showFallback) return null;
   return (
-    <div className={compact ? "min-w-0" : "mt-2 max-w-3xl min-w-0"}>
+    <div className={compact ? `min-w-0 ${showAge && showNextFallback ? "min-h-[66px]" : ""}` : "mt-2 max-w-3xl min-w-0"}>
       {showAge && (
         <div className="mb-1.5 min-h-3 text-left text-[9px] text-text-dim">
           {status && (
@@ -98,18 +102,29 @@ export function AgentCurrentStatus({
         </div>
       )}
       {status ? (
-        <StatusContent status={status} compact={compact} />
+        <StatusContent status={status} compact={compact} showNextFallback={showNextFallback} />
       ) : (
-        <div className="flex min-w-0 items-center gap-2 text-xs text-text-dim">
-          <StatusMarker stale />
-          <span className="truncate">No current status reported</span>
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2 text-xs text-text-dim">
+            <StatusMarker stale />
+            <span className="truncate">No current status reported</span>
+          </div>
+          {showNextFallback && <NextStepRow />}
         </div>
       )}
     </div>
   );
 }
 
-function StatusContent({ status, compact = false }: { status: CurrentStatusMessageRow; compact?: boolean }) {
+function StatusContent({
+  status,
+  compact = false,
+  showNextFallback = false,
+}: {
+  status: CurrentStatusMessageRow;
+  compact?: boolean;
+  showNextFallback?: boolean;
+}) {
   const tone = statusTone(status.state, status.stale);
   return (
     <div className="grid min-w-0 grid-cols-[1rem_minmax(0,1fr)] gap-x-2">
@@ -128,7 +143,23 @@ function StatusContent({ status, compact = false }: { status: CurrentStatusMessa
             <div className={`h-full ${tone.bar}`} style={{ width: `${Math.max(0, Math.min(100, status.progress))}%` }} />
           </div>
         )}
+        {(status.next || showNextFallback) && <NextStepRow next={status.next} nextAt={status.next_at} />}
       </div>
+    </div>
+  );
+}
+
+function NextStepRow({ next, nextAt }: { next?: string; nextAt?: string }) {
+  const label = next?.trim() || "No pending work";
+  return (
+    <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-4">
+      <span className="shrink-0 font-bold uppercase text-text-dim">Next</span>
+      <span className={`truncate ${next ? "text-text-muted" : "text-text-dim"}`} title={next || undefined}>{label}</span>
+      {next && nextAt && (
+        <time className="ml-auto shrink-0 tabular-nums text-text-dim" title={formatExact(nextAt)}>
+          {formatNextAt(nextAt)}
+        </time>
+      )}
     </div>
   );
 }
@@ -218,6 +249,24 @@ function formatAge(value: string) {
 function formatRelativeAge(value: string) {
   const age = formatAge(value);
   return age === "now" ? "just now" : `${age} ago`;
+}
+
+function formatNextAt(value: string) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  const remaining = timestamp - Date.now();
+  if (remaining > 0) {
+    const minutes = Math.max(1, Math.ceil(remaining / 60_000));
+    if (minutes < 60) return `in ${minutes}m`;
+    const hours = Math.ceil(minutes / 60);
+    if (hours < 24) return `in ${hours}h`;
+  }
+  return new Date(timestamp).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function formatExact(value: string) {

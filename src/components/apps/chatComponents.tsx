@@ -51,8 +51,13 @@ export interface UIComponentSpec {
 export interface InstalledAppRow {
   install_id: number;
   name: string;
+  display_name?: string;
   version: string;
+  icon?: string;
   source?: string;
+  surfaces?: {
+    mcp_tool_names?: string[];
+  };
   ui_components?: UIComponentSpec[];
 }
 
@@ -553,8 +558,17 @@ export function useInstalledApps(projectId: string | null | undefined): Installe
           arr.map((r: any) => ({
             install_id: r.install_id ?? r.id ?? 0,
             name: String(r.name ?? ""),
+            display_name: String(r.display_name ?? r.name ?? ""),
             version: String(r.version ?? ""),
+            icon: typeof r.icon === "string" ? r.icon : undefined,
             source: typeof r.source === "string" ? r.source : undefined,
+            surfaces: r.surfaces && typeof r.surfaces === "object"
+              ? {
+                  mcp_tool_names: Array.isArray(r.surfaces.mcp_tool_names)
+                    ? r.surfaces.mcp_tool_names.map(String)
+                    : [],
+                }
+              : undefined,
             ui_components: Array.isArray(r.ui_components) ? r.ui_components : [],
           })),
         );

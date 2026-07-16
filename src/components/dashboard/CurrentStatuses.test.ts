@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { CurrentStatusMessageRow } from "../../api";
-import { ageCurrentStatusRows } from "./CurrentStatuses";
+import { AgentCurrentStatus, ageCurrentStatusRows } from "./CurrentStatuses";
 
 const NOW = Date.parse("2026-07-11T12:00:00Z");
 
@@ -32,5 +34,31 @@ describe("ageCurrentStatusRows", () => {
     const [row] = ageCurrentStatusRows([status("blocked", 7 * 24 * 60 * 60_000)], NOW);
     expect(row?.state).toBe("blocked");
     expect(row?.stale).toBe(true);
+  });
+});
+
+describe("AgentCurrentStatus", () => {
+  test("reserves and labels the next-step row when no next work exists", () => {
+    const html = renderToStaticMarkup(createElement(AgentCurrentStatus, {
+      status: status("completed", 1_000),
+      compact: true,
+      showFallback: true,
+      showAge: true,
+      showNextFallback: true,
+    }));
+    expect(html).toContain("Next");
+    expect(html).toContain("No pending work");
+    expect(html).toContain("min-h-[66px]");
+  });
+
+  test("shows the same next-step row when no status has been reported", () => {
+    const html = renderToStaticMarkup(createElement(AgentCurrentStatus, {
+      compact: true,
+      showFallback: true,
+      showAge: true,
+      showNextFallback: true,
+    }));
+    expect(html).toContain("No current status reported");
+    expect(html).toContain("No pending work");
   });
 });

@@ -380,17 +380,23 @@ function startSSE(): () => void {
   let es: EventSource | null = null;
   let closed = false;
   let backoff = 500;
-  let attempts = 0;
   let retryTimer: number | null = null;
 
   const open = () => {
-    if (closed) return;
-    es = chat.streamUser();
-    es.onopen = () => {
+    if (closed || es) return;
+    const source = chat.streamUser();
+    es = source;
+    source.onopen = () => {
+      if (source !== es) return;
       backoff = 500; // reset on successful connect
-      attempts = 0;
+      // The wildcard stream is live-only. Reseed every successful connection
+      // so messages/inbox items written during a gap are recovered, and tell
+      // current-status consumers to refresh their latest snapshot as well.
+      void seed();
+      void seedInbox();
+      window.dispatchEvent(new Event("apteva.chatStreamRecovered"));
     };
-    es.onmessage = (ev) => {
+    source.onmessage = (ev) => {
       if (!ev.data) return;
       try {
         ingest(JSON.parse(ev.data) as ChatMessageRow);
@@ -398,11 +404,12 @@ function startSSE(): () => void {
         // ignore unparseable
       }
     };
-    es.onerror = () => {
-      es?.close();
+    source.onerror = () => {
+      if (source !== es) return;
+      source.close();
+      es = null;
       if (closed) return;
-      attempts += 1;
-      if (attempts >= 6) return;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
       retryTimer = window.setTimeout(() => {
         retryTimer = null;
         open();
@@ -411,12 +418,30 @@ function startSSE(): () => void {
     };
   };
 
+  const recoverNow = () => {
+    if (closed || es) return;
+    if (retryTimer !== null) {
+      window.clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    backoff = 500;
+    open();
+  };
+  const onVisibility = () => {
+    if (document.visibilityState === "visible") recoverNow();
+  };
+
   open();
+  window.addEventListener("online", recoverNow);
+  document.addEventListener("visibilitychange", onVisibility);
 
   return () => {
     closed = true;
     if (retryTimer !== null) window.clearTimeout(retryTimer);
     es?.close();
+    es = null;
+    window.removeEventListener("online", recoverNow);
+    document.removeEventListener("visibilitychange", onVisibility);
   };
 }
 

@@ -311,8 +311,9 @@ export class ChatConnectionsManager {
         const f = JSON.parse((ev as MessageEvent).data) as StreamFrame;
         if (!f || f.type !== "stream") return;
         if (f.done) {
-          c.currentStream = null;
-          for (const fn of c.streamListeners) fn(null);
+          // Keep the last complete streaming frame visible until the durable
+          // agent row arrives on the default SSE lane. Clearing on tool.result
+          // created a blank frame between ephemeral and persisted content.
           return;
         }
         c.currentStream = f;

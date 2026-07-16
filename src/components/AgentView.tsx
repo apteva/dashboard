@@ -19,7 +19,7 @@ import {
   type TelemetryEvent,
   type Thread,
 } from "../api";
-import { useTelemetryEvents } from "../hooks/useTelemetryBus";
+import { useTelemetryConnectionState, useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { sleepClassName, sleepLabel, sleepProgress, sleepTitle } from "../utils/sleepStatus";
 import { runtimeToolLabel } from "../utils/runtimeToolLabel";
 
@@ -30,7 +30,7 @@ import { ActivityPanel } from "./ActivityPanel";
 import { MemoryPanel } from "./MemoryPanel";
 import { UnconsciousPanel } from "./UnconsciousPanel";
 import { InjectPanel } from "./InjectPanel";
-import { ThreadDetailModal } from "./ThreadDetailModal";
+import { ThreadDetailModal, formatContextResetResult } from "./ThreadDetailModal";
 import { AppPanels } from "./AppPanels";
 import { Modal } from "./Modal";
 import { LiveStatsBar } from "./LiveStatsBar";
@@ -511,6 +511,10 @@ export function AgentView({
   // double-mount SSE doesn't feed every chunk through twice.
   const seenLiveRef = useRef<Set<string>>(new Set());
   const seenLiveOrderRef = useRef<string[]>([]);
+  const pendingRuntimeEventsRef = useRef<TelemetryEvent[]>([]);
+  const runtimeFrameRef = useRef<number | null>(null);
+  const lastStoredTelemetryMsRef = useRef(0);
+  const handleEventRef = useRef<(event: TelemetryEvent) => void>(() => {});
   const subscribe: SubscribeFn = useCallback((cb) => {
     listenersRef.current.add(cb);
     return () => { listenersRef.current.delete(cb); };
@@ -530,6 +534,7 @@ export function AgentView({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
+  const [resetFeedback, setResetFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [showConfig, setShowConfig] = useState(false);
   const [view, setView] = useState<RuntimeView>("stream");
   const [mobilePane, setMobilePane] = useState<"chat" | "runtime">("runtime");
@@ -561,10 +566,18 @@ export function AgentView({
     setRuntimeEvents([]);
     setRuntimeLoading(true);
     setThreadLiveEvents({});
+    setResetFeedback(null);
+    setShowResetConfirm(false);
     seenHandledEventsRef.current = new Set();
     seenHandledOrderRef.current = [];
     seenLiveRef.current = new Set();
     seenLiveOrderRef.current = [];
+    pendingRuntimeEventsRef.current = [];
+    lastStoredTelemetryMsRef.current = 0;
+    if (runtimeFrameRef.current !== null) {
+      window.cancelAnimationFrame(runtimeFrameRef.current);
+      runtimeFrameRef.current = null;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instance.id]);
 
@@ -576,6 +589,10 @@ export function AgentView({
         if (cancelled) return;
         const historical = [...events].reverse();
         if (historical.length === 0) return;
+        for (const event of historical) {
+          const ms = telemetryTimeMs(event);
+          if (ms > lastStoredTelemetryMsRef.current) lastStoredTelemetryMsRef.current = ms;
+        }
         setRuntimeEvents((prev) => historical.reduce(mergeRuntimeEvent, prev));
         setThreadLiveEvents((prev) => {
           const next: Record<string, TelemetryEvent[]> = { ...prev };
@@ -598,6 +615,43 @@ export function AgentView({
       cancelled = true;
     };
   }, [instance.id, rememberHandledEventID]);
+
+  const flushRuntimeEvents = useCallback(() => {
+    if (runtimeFrameRef.current !== null) {
+      window.cancelAnimationFrame(runtimeFrameRef.current);
+      runtimeFrameRef.current = null;
+    }
+    const pending = pendingRuntimeEventsRef.current;
+    if (pending.length === 0) return;
+    pendingRuntimeEventsRef.current = [];
+    setRuntimeEvents((prev) => pending.reduce(mergeRuntimeEvent, prev));
+    setThreadLiveEvents((prev) => {
+      const next: Record<string, TelemetryEvent[]> = { ...prev };
+      for (const event of pending) {
+        if (!event.thread_id) continue;
+        const arr = next[event.thread_id] || [];
+        next[event.thread_id] = [...arr, event].slice(-200);
+      }
+      return next;
+    });
+  }, []);
+
+  const queueRuntimeEvent = useCallback((event: TelemetryEvent) => {
+    pendingRuntimeEventsRef.current.push(event);
+    if (runtimeFrameRef.current !== null) return;
+    runtimeFrameRef.current = window.requestAnimationFrame(() => {
+      runtimeFrameRef.current = null;
+      flushRuntimeEvents();
+    });
+  }, [flushRuntimeEvents]);
+
+  useEffect(() => () => {
+    if (runtimeFrameRef.current !== null) {
+      window.cancelAnimationFrame(runtimeFrameRef.current);
+      runtimeFrameRef.current = null;
+    }
+    pendingRuntimeEventsRef.current = [];
+  }, []);
 
   // Poll instance config for the channels MCP presence so the chat
   // panel can gray itself out when an operator detaches channels from
@@ -664,6 +718,7 @@ export function AgentView({
     }
     const restoreMs = restoreCheckpointMs(event);
     if (restoreMs > 0) {
+      flushRuntimeEvents();
       setRuntimeEvents((prev) => prev.filter((e) => telemetryTimeMs(e.raw) < restoreMs));
       setThreadLiveEvents((prev) => {
         const next: Record<string, TelemetryEvent[]> = {};
@@ -679,14 +734,10 @@ export function AgentView({
     // Fan out to every subscribed panel synchronously — no React batching.
     listenersRef.current.forEach((cb) => cb(event));
     const data = event.data || {};
-    setRuntimeEvents((prev) => mergeRuntimeEvent(prev, event));
-
-    // Collect live events per thread for detail modal
-    if (event.thread_id) {
-      setThreadLiveEvents((prev) => {
-        const arr = prev[event.thread_id] || [];
-        return { ...prev, [event.thread_id]: [...arr.slice(-200), event] };
-      });
+    queueRuntimeEvent(event);
+    if (!["llm.start", "llm.chunk", "llm.thinking", "llm.tool_chunk"].includes(event.type)) {
+      const ms = telemetryTimeMs(event);
+      if (ms > lastStoredTelemetryMsRef.current) lastStoredTelemetryMsRef.current = ms;
     }
 
     // Track threads
@@ -777,6 +828,7 @@ export function AgentView({
       ));
     }
   };
+  handleEventRef.current = handleEvent;
 
   // Telemetry input — consumes the project-wide bus
   // (window.__aptevaTelemetryBus) filtered to this instance. Pre-bus
@@ -801,6 +853,58 @@ export function AgentView({
     instance.status === "running" ? instance.id : undefined,
     handleEvent,
   );
+
+  // SSE is the fast path; stored telemetry is the correctness backstop. Query
+  // a small overlap window so any event missed during a reconnect or server
+  // restart is fanned through the same deduped handler within five seconds.
+  useEffect(() => {
+    if (instance.status !== "running") return;
+    let cancelled = false;
+    let inFlight = false;
+    const reconcile = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        const sinceMs = Math.max(0, lastStoredTelemetryMsRef.current - 2_000);
+        const events = await telemetry.query(
+          instance.id,
+          undefined,
+          1000,
+          undefined,
+          sinceMs > 0 ? new Date(sinceMs).toISOString() : undefined,
+        );
+        if (cancelled) return;
+        const historical = [...events].reverse();
+        for (const event of historical) {
+          handleEventRef.current(event);
+          const ms = telemetryTimeMs(event);
+          if (ms > lastStoredTelemetryMsRef.current) lastStoredTelemetryMsRef.current = ms;
+        }
+      } catch {
+        // The next interval, reconnect, or visibility transition retries.
+      } finally {
+        inFlight = false;
+      }
+    };
+    const recover = () => {
+      if (document.visibilityState === "hidden") return;
+      void reconcile();
+    };
+    void reconcile();
+    const interval = window.setInterval(() => void reconcile(), 5_000);
+    window.addEventListener("online", recover);
+    window.addEventListener("apteva.telemetry.reconnected", recover);
+    window.addEventListener("apteva.telemetry.gap", recover);
+    document.addEventListener("visibilitychange", recover);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("online", recover);
+      window.removeEventListener("apteva.telemetry.reconnected", recover);
+      window.removeEventListener("apteva.telemetry.gap", recover);
+      document.removeEventListener("visibilitychange", recover);
+    };
+  }, [instance.id, instance.status]);
 
   // Sync threads from poll (works for both running and stopped)
   useEffect(() => {
@@ -843,30 +947,68 @@ export function AgentView({
     ) : null;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {/* Reset confirmation */}
-      <Modal open={showResetConfirm} onClose={() => setShowResetConfirm(false)}>
+      <Modal
+        open={showResetConfirm}
+        onClose={() => {
+          if (resetBusy) return;
+          setShowResetConfirm(false);
+          setResetFeedback(null);
+        }}
+      >
         <div className="p-6">
-          <h3 className="text-text text-lg font-bold mb-2">Reset Agent</h3>
-          <p className="text-text-dim text-sm mb-6">
+          <h3 className="text-text text-lg font-bold mb-2">Reset context</h3>
+          <p className="text-text-dim text-sm mb-4">
             Wipe <span className="text-text font-bold">{instance.name}</span>'s conversation history and kill every sub-thread?
             Directive, MCP servers, and integrations are kept. This cannot be undone.
           </p>
+          {resetFeedback && (
+            <div
+              role={resetFeedback.tone === "error" ? "alert" : "status"}
+              className={`mb-5 rounded border px-3 py-2 text-xs leading-relaxed ${
+                resetFeedback.tone === "error"
+                  ? "border-red/40 bg-red/10 text-red"
+                  : "border-green/40 bg-green/10 text-green"
+              }`}
+            >
+              <span className="font-bold">
+                {resetFeedback.tone === "error" ? "Context cleanup failed. " : "Context cleaned. "}
+              </span>
+              <span className={resetFeedback.tone === "error" ? "" : "text-text-muted"}>
+                {resetFeedback.message}
+              </span>
+            </div>
+          )}
           <div className="flex justify-end gap-3">
             <button
-              onClick={() => setShowResetConfirm(false)}
+              onClick={() => {
+                setShowResetConfirm(false);
+                setResetFeedback(null);
+              }}
               className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
               disabled={resetBusy}
             >
-              Cancel
+              {resetFeedback?.tone === "success" ? "Close" : "Cancel"}
             </button>
             <button
               onClick={async () => {
                 setResetBusy(true);
+                setResetFeedback(null);
                 try {
-                  await core.resetInstance(instance.id, { history: true, threads: true });
-                  setShowResetConfirm(false);
+                  const response = await core.resetInstance(instance.id, { history: true, threads: true });
+                  const result = response.reset;
+                  const message = result
+                    ? `${formatContextResetResult(result)} Removed ${result.threads_removed || 0} ${result.threads_removed === 1 ? "sub-thread" : "sub-threads"}.`
+                    : "The core confirmed the cleanup. Refresh the agent to inspect the new context.";
+                  setResetFeedback({ tone: "success", message });
+                  setGraphThreads((prev) => prev.filter((thread) => thread.id === "main"));
                   onReload();
+                } catch (error: any) {
+                  setResetFeedback({
+                    tone: "error",
+                    message: error?.message || "Context cleanup failed",
+                  });
                 } finally {
                   setResetBusy(false);
                 }
@@ -874,7 +1016,7 @@ export function AgentView({
               disabled={resetBusy}
               className="px-4 py-2 bg-yellow text-bg rounded-lg text-sm font-bold hover:opacity-80 transition-opacity disabled:opacity-50"
             >
-              {resetBusy ? "resetting…" : "Reset"}
+              {resetBusy ? "resetting…" : resetFeedback?.tone === "success" ? "Reset again" : "Reset context"}
             </button>
           </div>
         </div>
@@ -951,7 +1093,7 @@ export function AgentView({
       />
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col lg:flex-row min-h-0">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         <div className="lg:hidden shrink-0 border-b border-border px-3 py-2 flex items-center gap-2 bg-bg">
           <button
             type="button"
@@ -977,7 +1119,7 @@ export function AgentView({
           </button>
         </div>
         {/* Chat panel */}
-        <div className={`${mobilePane === "chat" ? "flex" : "hidden"} lg:flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-border lg:w-1/3 lg:min-w-[320px]`}>
+        <div className={`${mobilePane === "chat" ? "flex" : "hidden"} min-h-0 flex-col overflow-hidden border-b border-border lg:flex lg:w-1/3 lg:min-w-[320px] lg:border-b-0 lg:border-r`}>
           {instance.status !== "running" ? (
             <div className="flex items-center justify-center h-full text-text-muted text-sm">
               Agent is stopped. Start it to begin chatting.
@@ -995,7 +1137,7 @@ export function AgentView({
           )}
         </div>
 
-        <div className={`${mobilePane === "runtime" ? "flex" : "hidden"} lg:flex flex-1 min-w-0 min-h-0`}>
+        <div className={`${mobilePane === "runtime" ? "flex" : "hidden"} min-h-0 min-w-0 flex-1 overflow-hidden lg:flex`}>
           <AgentRuntimePanel
             instance={instance}
             threads={graphThreads}
@@ -1092,6 +1234,7 @@ function AgentRuntimePanel({
   const [executionBusy, setExecutionBusy] = useState<"run" | "pause" | "step" | "back" | null>(null);
   const [showMobileActions, setShowMobileActions] = useState(false);
   const isDesktop = useMediaQuery("(min-width: 768px)");
+  const telemetryConnection = useTelemetryConnectionState();
 
   useEffect(() => {
     setSelectedRuntimeThread("main");
@@ -1202,7 +1345,7 @@ function AgentRuntimePanel({
   ];
 
   return (
-    <section className="flex-1 min-w-0 flex flex-col bg-bg">
+    <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg">
       <Modal
         open={showCapabilitiesManage}
         onClose={() => setShowCapabilitiesManage(false)}
@@ -1250,7 +1393,7 @@ function AgentRuntimePanel({
             <button type="button" onClick={() => { setShowMobileActions(false); void onStart(); }} className="touch-target rounded-lg border border-accent px-4 text-left text-sm font-semibold text-accent">Start</button>
           )}
           <button type="button" onClick={() => { setShowMobileActions(false); onConfig(); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text">Configuration</button>
-          <button type="button" onClick={() => { setShowMobileActions(false); onReset(); }} className="touch-target rounded-lg border border-yellow/40 px-4 text-left text-sm text-yellow">Reset agent</button>
+          <button type="button" onClick={() => { setShowMobileActions(false); onReset(); }} className="touch-target rounded-lg border border-yellow/40 px-4 text-left text-sm text-yellow">Reset context</button>
           <button type="button" onClick={() => { setShowMobileActions(false); onDelete(); }} className="touch-target rounded-lg border border-red/40 px-4 text-left text-sm text-red">Delete agent</button>
         </div>
       </Modal>
@@ -1267,6 +1410,11 @@ function AgentRuntimePanel({
               <span>{instance.mode}</span>
               <span>agent #{instance.id}</span>
               {instance.project_id && <span>project {instance.project_id}</span>}
+              {instance.status === "running" && telemetryConnection !== "open" && (
+                <span className="text-yellow" aria-live="polite">
+                  live {telemetryConnection === "connecting" ? "connecting" : "reconnecting"}
+                </span>
+              )}
             </div>
             <AgentCurrentStatus status={currentStatus} />
           </div>
@@ -1281,7 +1429,7 @@ function AgentRuntimePanel({
               <button onClick={onStart} className="px-2 py-1 border border-accent rounded text-[11px] text-accent hover:bg-accent hover:text-bg">Start</button>
             )}
             <button onClick={onConfig} className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-text">Config</button>
-            <button onClick={onReset} className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-yellow">Reset</button>
+            <button onClick={onReset} className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-yellow">Reset context</button>
             <button onClick={onDelete} className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-red">Delete</button>
           </div>
         </div>

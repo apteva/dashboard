@@ -23,7 +23,6 @@ const Onboarding = lazy(() => import("./pages/Onboarding").then((m) => ({ defaul
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
 const Build = lazy(() => import("./pages/Build").then((m) => ({ default: m.Build })));
 const Chat = lazy(() => import("./pages/Chat").then((m) => ({ default: m.Chat })));
-const Activity = lazy(() => import("./pages/Activity").then((m) => ({ default: m.Activity })));
 const Monitor = lazy(() => import("./pages/Monitor").then((m) => ({ default: m.Monitor })));
 const Agents = lazy(() => import("./pages/Agents").then((m) => ({ default: m.Agents })));
 const Agent = lazy(() => import("./pages/Agent").then((m) => ({ default: m.Agent })));
@@ -95,7 +94,7 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/build" element={<Build />} />
             <Route path="/agents" element={<Agents />} />
-            <Route path="/activity" element={<Activity />} />
+            <Route path="/activity" element={<Navigate to="/monitor?view=activity" replace />} />
             <Route path="/monitor" element={<Monitor />} />
             <Route path="/agents/new" element={<AgentNew />} />
             <Route path="/chat" element={<Chat />} />

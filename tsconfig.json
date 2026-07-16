@@ -27,6 +27,7 @@
     "noPropertyAccessFromIndexSignature": false
   },
   "exclude": [
+    "dist",
     "src/components/MCPPanel.tsx",
     "src/pages/Config.tsx",
     "src/pages/Threads.tsx"

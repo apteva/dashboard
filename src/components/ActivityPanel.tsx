@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { core, instances, telemetry, type Agent, type RunMode, type Status, type TelemetryEvent, type Thread } from "../api";
 import type { SubscribeFn } from "./AgentView";
 import { Modal } from "./Modal";
@@ -148,6 +148,49 @@ function mergeHistoricalThoughts(current: ThoughtEntry[], historical: ThoughtEnt
     .slice(-HISTORICAL_THOUGHT_LIMIT);
 }
 
+function reduceLiveThoughtEvent(thoughts: ThoughtEntry[], event: TelemetryEvent): ThoughtEntry[] {
+  const data = event.data || {};
+  const threadId = event.thread_id || "main";
+  const iteration = Number(data.iteration) || 0;
+  const time = eventTimeMs(event);
+  if (event.type === "llm.thinking") {
+    const text = String(data.text || "");
+    if (!text) return thoughts;
+    for (let i = thoughts.length - 1; i >= 0; i--) {
+      const thought = thoughts[i];
+      if (thought.streaming && thought.reasoning && thought.threadId === threadId) {
+        const next = [...thoughts];
+        next[i] = { ...thought, text: thought.text + text, time };
+        return next;
+      }
+    }
+    return [...thoughts, { threadId, text, iteration, streaming: true, reasoning: true, time }].slice(-20);
+  }
+  if (event.type !== "llm.chunk") return thoughts;
+  const text = String(data.text || "");
+  if (!text) return thoughts;
+  const next = thoughts.map((thought) =>
+    thought.streaming && thought.reasoning && thought.threadId === threadId
+      ? { ...thought, streaming: false }
+      : thought,
+  );
+  for (let i = next.length - 1; i >= 0; i--) {
+    const thought = next[i];
+    if (thought.streaming && thought.threadId === threadId) {
+      next[i] = { ...thought, text: thought.text + text, time };
+      return next;
+    }
+  }
+  const latestClosed = next.reduce((latest, thought) => {
+    if (!thought.streaming && thought.threadId === threadId && thought.iteration > latest) {
+      return thought.iteration;
+    }
+    return latest;
+  }, 0);
+  if (iteration > 0 && iteration <= latestClosed) return next;
+  return [...next, { threadId, text, iteration, streaming: true, reasoning: false, time }].slice(-20);
+}
+
 // Noisy internal tools that clutter the Tool Calls list. `pace` fires on
 // every iteration-rate change (very often), `send`/`done` are glue
 // calls, and `channels_*` is the outbound chat bridge — none of these
@@ -254,6 +297,36 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
   const [mode, setMode] = useState<RunMode>(
     (instance.mode as RunMode) || "autonomous",
   );
+  const pendingThoughtEventsRef = useRef<TelemetryEvent[]>([]);
+  const thoughtFrameRef = useRef<number | null>(null);
+
+  const flushThoughtEvents = useCallback(() => {
+    if (thoughtFrameRef.current !== null) {
+      window.cancelAnimationFrame(thoughtFrameRef.current);
+      thoughtFrameRef.current = null;
+    }
+    const pending = pendingThoughtEventsRef.current;
+    if (pending.length === 0) return;
+    pendingThoughtEventsRef.current = [];
+    setThoughts((prev) => pending.reduce(reduceLiveThoughtEvent, prev));
+  }, []);
+
+  const queueThoughtEvent = useCallback((event: TelemetryEvent) => {
+    pendingThoughtEventsRef.current.push(event);
+    if (thoughtFrameRef.current !== null) return;
+    thoughtFrameRef.current = window.requestAnimationFrame(() => {
+      thoughtFrameRef.current = null;
+      flushThoughtEvents();
+    });
+  }, [flushThoughtEvents]);
+
+  useEffect(() => () => {
+    if (thoughtFrameRef.current !== null) {
+      window.cancelAnimationFrame(thoughtFrameRef.current);
+      thoughtFrameRef.current = null;
+    }
+    pendingThoughtEventsRef.current = [];
+  }, []);
 
   // Reset state when instance changes
   useEffect(() => {
@@ -265,6 +338,11 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
     setThinking({});
     setCtxByThread({});
     setUsageByThread({});
+    pendingThoughtEventsRef.current = [];
+    if (thoughtFrameRef.current !== null) {
+      window.cancelAnimationFrame(thoughtFrameRef.current);
+      thoughtFrameRef.current = null;
+    }
   }, [instance.id]);
 
   // Re-render every 500ms for decay animation + GC of faded entries.
@@ -361,6 +439,7 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
 
     const restoreMs = restoreCheckpointMs(event);
     if (restoreMs > 0) {
+      flushThoughtEvents();
       setThoughts((prev) => prev.filter((t) => t.time < restoreMs));
       setTools((prev) => prev.filter((t) => t.time < restoreMs));
       setIncomingEvents((prev) => prev.filter((e) => e.time < restoreMs));
@@ -376,84 +455,22 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
       return;
     }
 
-    // llm.thinking — reasoning tokens (separate from output)
-    if (event.type === "llm.thinking" && data.text) {
-      // Clear the "waiting" thinking state — reasoning tokens are arriving
+    // High-frequency reasoning/output chunks are accumulated synchronously
+    // and committed once per animation frame. This preserves every token while
+    // preventing a burst from scheduling dozens of full panel renders.
+    if ((event.type === "llm.thinking" || event.type === "llm.chunk") && data.text) {
       setThinking((prev) => {
         if (!prev[event.thread_id || "main"]) return prev;
         const next = { ...prev };
         delete next[event.thread_id || "main"];
         return next;
       });
-      setThoughts((prev) => {
-        for (let i = prev.length - 1; i >= 0; i--) {
-          if (prev[i].streaming && prev[i].reasoning && prev[i].threadId === event.thread_id) {
-            const updated = [...prev];
-            updated[i] = { ...updated[i], text: updated[i].text + data.text };
-            return updated;
-          }
-        }
-        return [...prev, {
-          threadId: event.thread_id, text: data.text,
-          iteration: Number(data.iteration) || 0,
-          streaming: true, reasoning: true, time: Date.now(),
-        }];
-      });
+      queueThoughtEvent(event);
       return;
     }
 
-    if (event.type === "llm.chunk" && data.text) {
-      // Clear thinking state — output tokens arriving
-      setThinking((prev) => {
-        if (!prev[event.thread_id || "main"]) return prev;
-        const next = { ...prev };
-        delete next[event.thread_id || "main"];
-        return next;
-      });
-      // Close any open reasoning entry for this thread (reasoning phase done)
-      setThoughts((prev) => {
-        const updated = prev.map((t) =>
-          t.streaming && t.reasoning && t.threadId === event.thread_id
-            ? { ...t, streaming: false }
-            : t,
-        );
-        return updated !== prev ? updated : prev;
-      });
-      const chunkIter = Number(data.iteration) || 0;
-      setThoughts((prev) => {
-        // First: append to an in-progress streaming entry if one exists
-        // for this thread.
-        for (let i = prev.length - 1; i >= 0; i--) {
-          if (prev[i].streaming && prev[i].threadId === event.thread_id) {
-            const updated = [...prev];
-            updated[i] = { ...updated[i], text: updated[i].text + data.text };
-            return updated;
-          }
-        }
-        // No streaming entry. Check whether this chunk belongs to an
-        // iteration that has already been closed by llm.done — if so,
-        // it's a late/stranded event and we drop it instead of opening
-        // a new entry that would never get closed. We look for any
-        // finalized thought on this thread with iteration >= chunkIter
-        // as the signal.
-        const latestClosed = prev.reduce((acc, t) => {
-          if (!t.streaming && t.threadId === event.thread_id && t.iteration > acc) {
-            return t.iteration;
-          }
-          return acc;
-        }, 0);
-        if (chunkIter > 0 && chunkIter <= latestClosed) {
-          // Late chunk from an already-finalized iteration — drop it.
-          return prev;
-        }
-        return [...prev, {
-          threadId: event.thread_id, text: data.text, iteration: chunkIter,
-          streaming: true, reasoning: false, time: Date.now(),
-        }];
-      });
-    }
-
     if (event.type === "llm.done") {
+      flushThoughtEvents();
       // Clear thinking state
       setThinking((prev) => {
         if (!prev[event.thread_id || "main"]) return prev;
@@ -759,7 +776,7 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
       });
     }
     });
-  }, [subscribe]);
+  }, [subscribe, flushThoughtEvents, queueThoughtEvent]);
 
   const formatUptime = (s: number) => {
     if (s < 60) return `${s}s`;

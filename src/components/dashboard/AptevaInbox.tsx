@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   chat,
   type AlertMessageRow,
@@ -16,10 +17,16 @@ type InboxItem =
 
 export function AptevaInbox({
   allProjects = false,
+  projectId: projectIdOverride,
   limit = 12,
+  variant = "default",
+  onCountChange,
 }: {
   allProjects?: boolean;
+  projectId?: string;
   limit?: number;
+  variant?: "default" | "home" | "monitor";
+  onCountChange?: (count: number) => void;
 }) {
   const { currentProject } = useProjects();
   const [approvals, setApprovals] = useState<ApprovalMessageRow[]>([]);
@@ -30,7 +37,8 @@ export function AptevaInbox({
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const loadEpoch = useRef(0);
-  const scope = allProjects ? "*" : currentProject?.id ?? null;
+  const effectiveProjectId = projectIdOverride ?? currentProject?.id;
+  const scope = allProjects ? "*" : effectiveProjectId ?? null;
   const scopeIsCurrent = loadedScope === scope;
 
   useEffect(() => {
@@ -40,7 +48,7 @@ export function AptevaInbox({
 
   const load = useCallback(() => {
     const epoch = ++loadEpoch.current;
-    const projectId = allProjects ? undefined : currentProject?.id;
+    const projectId = allProjects ? undefined : effectiveProjectId;
     if (!allProjects && !projectId) {
       setApprovals([]);
       setReports([]);
@@ -70,7 +78,7 @@ export function AptevaInbox({
       .finally(() => {
         if (epoch === loadEpoch.current) setLoading(false);
       });
-  }, [allProjects, currentProject?.id, limit, scope]);
+  }, [allProjects, effectiveProjectId, limit, scope]);
 
   useEffect(() => {
     let timer: number | null = null;
@@ -117,38 +125,66 @@ export function AptevaInbox({
       ...(scopeIsCurrent ? alerts : []).map((row): InboxItem => ({ kind: "alert", row })),
     ];
     return merged
-      .sort((a, b) => b.row.message.id - a.row.message.id)
+      .sort((a, b) => {
+        if (variant === "monitor") {
+          const priority = { approval: 0, alert: 1, report: 2 } as const;
+          const byPriority = priority[a.kind] - priority[b.kind];
+          if (byPriority !== 0) return byPriority;
+        }
+        return b.row.message.id - a.row.message.id;
+      })
       .slice(0, limit);
-  }, [alerts, approvals, reports, limit, scopeIsCurrent]);
+  }, [alerts, approvals, reports, limit, scopeIsCurrent, variant]);
+
+  useEffect(() => {
+    onCountChange?.(items.length);
+  }, [items.length, onCountChange]);
 
   return (
-    <section className="border border-border bg-bg-card rounded-lg min-h-[300px] flex flex-col overflow-hidden">
+    <section className={`border border-border bg-bg-card rounded-lg flex flex-col overflow-hidden ${variant === "home" ? "" : "min-h-[300px]"}`}>
       <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-text text-sm font-bold">Apteva Inbox</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-text text-sm font-bold">{variant === "default" ? "Apteva Inbox" : "Needs attention"}</h2>
+            {variant !== "default" && items.length > 0 && (
+              <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-accent">
+                {items.length}
+              </span>
+            )}
+          </div>
           <p className="text-text-dim text-[11px] mt-0.5">
             Approvals, reports, and alerts from agents
           </p>
         </div>
-        <button
-          type="button"
-          onClick={load}
-          disabled={loading}
-          className="text-[11px] text-text-muted hover:text-text disabled:opacity-40"
-        >
-          {loading ? "Loading..." : "Refresh"}
-        </button>
+        <div className="flex items-center gap-3">
+          {variant === "home" && (
+            <Link to="/monitor" className="text-[11px] text-text-muted hover:text-text">
+              View operations →
+            </Link>
+          )}
+          <button
+            type="button"
+            onClick={load}
+            disabled={loading}
+            className={`text-[11px] text-text-muted hover:text-text disabled:opacity-40 ${variant === "home" ? "sr-only" : ""}`}
+          >
+            {loading ? "Loading..." : "Refresh"}
+          </button>
+        </div>
       </div>
 
-      <div className="flex-1 p-3 space-y-3 overflow-auto">
+      <div className={`flex-1 p-3 space-y-3 overflow-auto ${variant === "home" ? "max-h-[360px]" : variant === "monitor" ? "max-h-[680px]" : ""}`}>
         {error && (
           <div className="rounded border border-red/30 bg-red/10 px-3 py-2 text-[11px] text-red">
             {error}
           </div>
         )}
         {!loading && !error && items.length === 0 && (
-          <div className="h-full min-h-[180px] flex items-center justify-center text-center text-xs text-text-muted">
-            No inbox items
+          <div className={`h-full flex items-center px-1 text-xs text-text-muted ${variant === "home" ? "min-h-[88px]" : "min-h-[180px] justify-center text-center"}`}>
+            <div>
+              <p className="font-medium">You're all caught up</p>
+              {variant === "home" && <p className="mt-1 text-[11px] text-text-dim">Approvals, alerts, and new reports will appear here.</p>}
+            </div>
           </div>
         )}
         {items.map((item) => (

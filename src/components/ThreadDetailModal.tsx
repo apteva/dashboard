@@ -6,6 +6,7 @@ import {
   type Thread,
   type ThreadContextMessage,
   type PromptComposition,
+  type ContextResetResult,
 } from "../api";
 import { Modal } from "./Modal";
 
@@ -35,6 +36,20 @@ interface ContextSnapshot {
   fetchedAt: number; // ms epoch — surfaced so the user knows how fresh the snapshot is
 }
 
+type ResetNotice =
+  | { tone: "success"; message: string; result: ContextResetResult }
+  | { tone: "error"; message: string };
+
+export function formatContextResetResult(result: ContextResetResult): string {
+  const removedMessages = Math.max(0, result.removed_count || 0);
+  const removedChars = Math.max(0, result.removed_chars || 0);
+  const remainingMessages = Math.max(0, result.after_count || 0);
+  const removed = removedMessages === 0
+    ? "The conversation context was already clean."
+    : `Removed ${removedMessages} conversation ${removedMessages === 1 ? "message" : "messages"} (${formatChars(removedChars)}).`;
+  return `${removed} ${remainingMessages} ${remainingMessages === 1 ? "message remains" : "messages remain"} in the live context.`;
+}
+
 export function ThreadDetailModal({ open, onClose, thread, instanceId, liveEvents, onKilled }: Props) {
   const [tab, setTab] = useState<Tab>("live");
   const [history, setHistory] = useState<TelemetryEvent[]>([]);
@@ -46,6 +61,7 @@ export function ThreadDetailModal({ open, onClose, thread, instanceId, liveEvent
   const [confirmKill, setConfirmKill] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [resetNotice, setResetNotice] = useState<ResetNotice | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll live feed
@@ -131,8 +147,15 @@ export function ThreadDetailModal({ open, onClose, thread, instanceId, liveEvent
       setHistory([]);
       setCtx(null);
       setCtxError("");
+      setResetNotice(null);
+      setConfirmReset(false);
     }
   }, [open]);
+
+  useEffect(() => {
+    setResetNotice(null);
+    setConfirmReset(false);
+  }, [thread?.id]);
 
   if (!thread) return null;
 
@@ -158,11 +181,21 @@ export function ThreadDetailModal({ open, onClose, thread, instanceId, liveEvent
                   <button
                     onClick={async () => {
                       setResetBusy(true);
+                      setResetNotice(null);
                       try {
                         const resp = await core.resetThread(instanceId, thread.id);
                         setConfirmReset(false);
-                        setCtx((prev) => prev ? { ...prev, count: resp.count, messages: prev.messages.slice(0, 1), total_chars: 0, fetchedAt: Date.now() } : prev);
-                        setHistory([]);
+                        setResetNotice({ tone: "success", message: formatContextResetResult(resp), result: resp });
+                        // Never manufacture a cleaned snapshot from stale UI
+                        // state. Reload what the running core will actually send
+                        // to the model on its next request.
+                        loadContext(thread.id);
+                      } catch (error: any) {
+                        setConfirmReset(false);
+                        setResetNotice({
+                          tone: "error",
+                          message: error?.message || "Context cleanup failed",
+                        });
                       } finally {
                         setResetBusy(false);
                       }
@@ -186,7 +219,7 @@ export function ThreadDetailModal({ open, onClose, thread, instanceId, liveEvent
                   className="px-2 py-0.5 border border-border rounded text-[10px] text-text-muted hover:text-yellow hover:border-yellow transition-colors"
                   title="Wipe this thread's conversation history; keep the thread alive"
                 >
-                  reset
+                  reset context
                 </button>
               )}
               {thread.id !== "main" && (
@@ -246,6 +279,23 @@ export function ThreadDetailModal({ open, onClose, thread, instanceId, liveEvent
           {/* Directive */}
           {thread.directive && (
             <p className="mt-2 text-[10px] text-text-dim leading-relaxed line-clamp-2">{thread.directive}</p>
+          )}
+          {resetNotice && (
+            <div
+              role={resetNotice.tone === "error" ? "alert" : "status"}
+              className={`mt-3 rounded border px-3 py-2 text-[11px] leading-relaxed ${
+                resetNotice.tone === "error"
+                  ? "border-red/40 bg-red/10 text-red"
+                  : "border-green/40 bg-green/10 text-green"
+              }`}
+            >
+              <span className="font-bold">
+                {resetNotice.tone === "error" ? "Context cleanup failed. " : "Context cleaned. "}
+              </span>
+              <span className={resetNotice.tone === "error" ? "" : "text-text-muted"}>
+                {resetNotice.message}
+              </span>
+            </div>
           )}
           {/* Tabs */}
           <div className="flex items-end gap-1 mt-3">

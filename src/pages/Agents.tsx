@@ -459,7 +459,7 @@ export function Agents() {
               return (
                 <article
                   key={inst.id}
-                  className="relative min-h-[200px] rounded-lg border border-border bg-bg-card transition-colors hover:border-accent sm:h-[200px]"
+                  className="relative min-h-[220px] rounded-lg border border-border bg-bg-card transition-colors hover:border-accent sm:h-[220px]"
                 >
                   <Link to={`/agents/${inst.id}`} className="block h-full min-w-0 p-4">
                     <div className="min-w-0 pr-28">
@@ -478,8 +478,8 @@ export function Agents() {
                       </div>
                     </div>
 
-                    <div className="mt-4 min-h-[44px]">
-                      <AgentCurrentStatus status={currentStatusByAgent[inst.id]} compact showFallback showAge />
+                    <div className="mt-4 min-h-[66px]">
+                      <AgentCurrentStatus status={currentStatusByAgent[inst.id]} compact showFallback showAge showNextFallback />
                     </div>
 
                     <RuntimeSummary live={live} running={isRunning} now={now} />
@@ -535,7 +535,7 @@ export function Agents() {
 
                     <div className="min-w-0">
                       <div className="mb-1 text-[9px] font-bold uppercase tracking-wide text-text-dim lg:hidden">Status</div>
-                      <AgentCurrentStatus status={currentStatusByAgent[inst.id]} compact showFallback />
+                      <AgentCurrentStatus status={currentStatusByAgent[inst.id]} compact showFallback showNextFallback />
                     </div>
 
                     <div>

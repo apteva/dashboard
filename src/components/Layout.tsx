@@ -53,6 +53,21 @@ export function Layout() {
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(readContextAgentChatOpenDefault);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
+  // The authenticated dashboard is a viewport shell: pages provide their own
+  // scroll containers. Keep the browser document itself locked while Layout is
+  // mounted. Without this, Chromium can propagate the overflow geometry of a
+  // deeply nested runtime stream to <html> even though every visible ancestor
+  // is height-constrained, which lets the operator scroll below the app into a
+  // large blank area. Cleanup restores ordinary document scrolling for login
+  // and onboarding routes.
+  useEffect(() => {
+    const roots = [document.documentElement, document.body];
+    for (const root of roots) root.classList.add("apteva-shell-active");
+    return () => {
+      for (const root of roots) root.classList.remove("apteva-shell-active");
+    };
+  }, []);
+
   // Boot the global notifications source once the user is logged in.
   //
   // We deliberately do NOT call chatConnections.stopAll() in cleanup.
@@ -174,7 +189,6 @@ export function Layout() {
     { to: "/", label: t("nav.dashboard") },
     { to: "/build", label: t("nav.build") },
     { to: "/agents", label: t("nav.agents") },
-    { to: "/activity", label: t("nav.activity") },
     { to: "/monitor", label: t("nav.monitor") },
     { to: "/chat", label: t("nav.chat") },
   ];
@@ -422,7 +436,7 @@ export function Layout() {
   );
 
   return (
-    <div className="flex h-dvh min-h-dvh bg-bg overflow-hidden">
+    <div className="app-shell flex h-dvh min-h-dvh bg-bg overflow-hidden">
       {/* Sidebar */}
       <nav className="hidden md:flex w-56 shrink-0 border-r border-border flex-col">
         {renderSidebar(false)}
@@ -452,7 +466,7 @@ export function Layout() {
       )}
 
       {/* Main content */}
-      <main className="flex-1 min-w-0 overflow-hidden flex flex-col">
+      <main className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col">
         {/* Slim top bar — global controls. Currently just the
             notifications tray; placeholder for future search,
             user-shortcut, or quick-create surfaces. */}
@@ -478,7 +492,7 @@ export function Layout() {
           </div>
           <NotificationsTray />
         </div>
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-hidden">
           <Outlet />
         </div>
       </main>

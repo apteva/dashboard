@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
 import { useTranslation } from "react-i18next";
-import { chat, type ChatAttachment, type ChatMessageContext, type ChatMessageRow } from "../api";
+import { chat, telemetry, type ChatAttachment, type ChatMessageContext, type ChatMessageRow, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import {
   ChatComponentList,
@@ -8,13 +8,21 @@ import {
 } from "./apps/chatComponents";
 import { ChatStatusDot } from "./ChatStatusDot";
 import { markChatSeen, focusChat } from "../state/chatNotifications";
-import { chatConnections } from "../state/chatConnections";
+import { chatConnections, type StreamFrame } from "../state/chatConnections";
 import { useTelemetryEvents } from "../hooks/useTelemetryBus";
 import type { SubscribeFn } from "./AgentView";
 import { renderSafeMarkdown } from "../utils/safeMarkdown";
 import { mergeChatMessages } from "../utils/chatMessages";
-import { runtimeToolLabel } from "../utils/runtimeToolLabel";
 import { Modal } from "./Modal";
+import { ChatToolActivity } from "./chat/ToolActivity";
+import {
+  buildChatTimeline,
+  isChatConversationThread,
+  mergeToolActivityEvents,
+  shouldHideChatTool,
+  type ToolActivity,
+} from "./chat/toolActivityModel";
+import { useToolVisualRegistry } from "./chat/toolVisuals";
 
 export interface ChatPanelHeader {
   title: string;
@@ -66,75 +74,6 @@ interface DraftAttachment extends ChatAttachment {
   size: number;
 }
 
-// LiveTool — one tool call surfaced inline in the chat timeline.
-// Distinct from any chat row; lives only in component state and is
-// keyed by provider call_id. Tracks the streaming → called → done
-// lifecycle plus enough metadata (thread, reason, duration) to
-// render "who is doing what" between agent messages.
-//
-// startedAt is fixed at first-sight and never moves, so the tool's
-// position in the interleaved timeline is stable even as state
-// transitions in (re-renders only update icon / reason / duration).
-interface LiveTool {
-  id: string;             // call_id from the provider, or thread:name fallback
-  threadId: string;       // "main" or sub-thread id — rendered so user can tell who's acting
-  name: string;           // tool slug
-  reason: string;         // the agent's free-text _reason at call time
-  state: "streaming" | "called" | "done";
-  success?: boolean;      // only on done
-  durationMs?: number;    // only on done
-  startedAt: number;      // canonical sort key for the timeline
-  doneAt?: number;        // ms timestamp; for cap-eviction policy
-}
-
-// Tools we hide from the chat timeline. Pure agent housekeeping:
-//   pace — sleep-rate adjustments fire constantly
-//   done — thread terminator
-//   channels_respond/channels_send — visible chat messages already rendered
-//     as assistant turns. channels_publish/channels_set_status render in the
-//     Inbox/status surfaces. Showing any of them as tool rows is duplicate noise.
-const HIDDEN_TOOLS = new Set(["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status", "channels_request_approval"]);
-
-// `send` is useful when it explains meaningful delegation, but noisy
-// when it is only an internal completion/report-back hop.
-function shouldHideTool(name: string, reason = ""): boolean {
-  if (HIDDEN_TOOLS.has(name)) return true;
-  if (name !== "send") return false;
-  const normalized = reason.trim().toLowerCase();
-  if (!normalized) return true;
-  return (
-    normalized === "report completion" ||
-    normalized === "report back" ||
-    normalized === "report result" ||
-    normalized.includes("completion")
-  );
-}
-
-// Cap on retained tool entries. Once exceeded we drop the oldest
-// completed entry. In-flight (streaming/called) entries are never
-// dropped — losing them mid-flight would leave the timeline with a
-// "started but never finished" state we couldn't reason about.
-const MAX_LIVE_TOOLS = 200;
-const TOOL_BURST_MIN = 2;
-const TOOL_BURST_IDLE_GAP_MS = 30_000;
-
-// enforceCap drops the oldest completed entries when the map exceeds
-// MAX_LIVE_TOOLS. Mutates and returns the same map for callsite
-// brevity. No-op when under the cap, so the common case stays cheap.
-function enforceCap(m: Map<string, LiveTool>): Map<string, LiveTool> {
-  if (m.size <= MAX_LIVE_TOOLS) return m;
-  const done = [...m.values()]
-    .filter((t) => t.state === "done")
-    .sort((a, b) => (a.doneAt || a.startedAt) - (b.doneAt || b.startedAt));
-  let toDrop = m.size - MAX_LIVE_TOOLS;
-  for (const t of done) {
-    if (toDrop <= 0) break;
-    m.delete(t.id);
-    toDrop--;
-  }
-  return m;
-}
-
 // ChatPanel — DB-backed conversation view for a single instance.
 //
 // Previous implementation reconstructed chat state from a telemetry
@@ -163,6 +102,7 @@ export function ChatPanel({
   const { currentProject } = useProjects();
   const projectId = currentProject?.id ?? "";
   const installedApps = useInstalledApps(projectId || null);
+  const toolVisualRegistry = useToolVisualRegistry(projectId || null, installedApps);
 
   const [chatId, setChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessageRow[]>([]);
@@ -175,40 +115,15 @@ export function ChatPanel({
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const suppressNextThinkingRef = useRef(false);
-  const suppressNextThinkingTimerRef = useRef<number | null>(null);
 
-  const armQuietFollowupTurn = useCallback(() => {
-    suppressNextThinkingRef.current = true;
-    if (suppressNextThinkingTimerRef.current !== null) {
-      window.clearTimeout(suppressNextThinkingTimerRef.current);
-    }
-    suppressNextThinkingTimerRef.current = window.setTimeout(() => {
-      suppressNextThinkingRef.current = false;
-      suppressNextThinkingTimerRef.current = null;
-    }, 15_000);
-  }, []);
-
-  const clearQuietFollowupTurn = useCallback(() => {
-    suppressNextThinkingRef.current = false;
-    if (suppressNextThinkingTimerRef.current !== null) {
-      window.clearTimeout(suppressNextThinkingTimerRef.current);
-      suppressNextThinkingTimerRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => {
-    return () => clearQuietFollowupTurn();
-  }, [clearQuietFollowupTurn]);
-
-  // Ephemeral tool-activity strip. NEVER enters `messages` — that's
-  // the previous implementation's mistake. The strip is pinned above
-  // the input; in-flight tools appear there, completed ones fade out.
-  // Keyed by call id (falls back to thread:name when id is absent
-  // mid-stream), so the same tool transitions cleanly through its
-  // streaming → called → done lifecycle without duplicating rows.
-  const [liveTools, setLiveTools] = useState<Map<string, LiveTool>>(() => new Map());
+  // Ephemeral tool activity. It never enters `messages`; the two sources
+  // only meet when the timeline is derived for rendering.
+  const [liveTools, setLiveTools] = useState<Map<string, ToolActivity>>(() => new Map());
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<string>>(() => new Set());
+  const toolHistoryKeyRef = useRef("");
+  const pendingToolEventsRef = useRef<TelemetryEvent[]>([]);
+  const pendingToolReplacementRef = useRef(false);
+  const toolAnimationFrameRef = useRef<number | null>(null);
 
   // Ephemeral streaming bubble — the LLM-args text for an in-progress
   // `channels_respond` tool call, surfaced as the user's reply arrives
@@ -217,6 +132,60 @@ export function ChatPanel({
   // subscribeStream — server flag CHANNELCHAT_STREAMING=0 stops the
   // frames at the source, so this state simply stays null end-to-end.
   const [streamingText, setStreamingText] = useState<string | null>(null);
+  const pendingStreamFrameRef = useRef<StreamFrame | null>(null);
+  const streamAnimationFrameRef = useRef<number | null>(null);
+  const [thinkingPlaceholder, setThinkingPlaceholder] = useState<{ since: number; threadId: string } | null>(null);
+  const awaitingChatResponseRef = useRef(false);
+  const awaitingChatResponseTimerRef = useRef<number | null>(null);
+  const suppressNextThinkingRef = useRef(false);
+  const quietFollowupInFlightRef = useRef(false);
+  const suppressNextThinkingTimerRef = useRef<number | null>(null);
+
+  const armQuietFollowupTurn = useCallback(() => {
+    suppressNextThinkingRef.current = true;
+    quietFollowupInFlightRef.current = false;
+    if (suppressNextThinkingTimerRef.current !== null) {
+      window.clearTimeout(suppressNextThinkingTimerRef.current);
+    }
+    suppressNextThinkingTimerRef.current = window.setTimeout(() => {
+      suppressNextThinkingRef.current = false;
+      quietFollowupInFlightRef.current = false;
+      suppressNextThinkingTimerRef.current = null;
+    }, 15_000);
+  }, []);
+
+  const clearQuietFollowupTurn = useCallback(() => {
+    suppressNextThinkingRef.current = false;
+    quietFollowupInFlightRef.current = false;
+    if (suppressNextThinkingTimerRef.current !== null) {
+      window.clearTimeout(suppressNextThinkingTimerRef.current);
+      suppressNextThinkingTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearQuietFollowupTurn(), [clearQuietFollowupTurn]);
+
+  const markAwaitingChatResponse = useCallback(() => {
+    awaitingChatResponseRef.current = true;
+    if (awaitingChatResponseTimerRef.current !== null) {
+      window.clearTimeout(awaitingChatResponseTimerRef.current);
+    }
+    awaitingChatResponseTimerRef.current = window.setTimeout(() => {
+      awaitingChatResponseRef.current = false;
+      awaitingChatResponseTimerRef.current = null;
+      setThinkingPlaceholder(null);
+    }, 5 * 60_000);
+  }, []);
+
+  const clearAwaitingChatResponse = useCallback(() => {
+    awaitingChatResponseRef.current = false;
+    if (awaitingChatResponseTimerRef.current !== null) {
+      window.clearTimeout(awaitingChatResponseTimerRef.current);
+      awaitingChatResponseTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearAwaitingChatResponse(), [clearAwaitingChatResponse]);
 
   // Explicit connect/disconnect, session-only.
   //
@@ -260,6 +229,19 @@ export function ChatPanel({
     const maxId = rows.reduce((highest, row) => Math.max(highest, row.id), sinceRef.current);
     sinceRef.current = maxId;
     setMessages((current) => mergeChatMessages(current, rows));
+    if (rows.some((row) => row.role === "agent")) {
+      // The manager performs this swap atomically for normal SSE delivery.
+      // Repeating it here covers REST reconciliation after a dropped frame:
+      // persisted content replaces the ephemeral bubble, never leaving both.
+      pendingStreamFrameRef.current = null;
+      if (streamAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(streamAnimationFrameRef.current);
+        streamAnimationFrameRef.current = null;
+      }
+      setStreamingText(null);
+      setThinkingPlaceholder(null);
+      clearAwaitingChatResponse();
+    }
     if (
       maxId > 0 &&
       chatId &&
@@ -267,7 +249,7 @@ export function ChatPanel({
     ) {
       markChatSeen(chatId, maxId);
     }
-  }, [chatId]);
+  }, [chatId, clearAwaitingChatResponse]);
 
   useEffect(() => {
     if (autoConnect && chatId) {
@@ -279,6 +261,9 @@ export function ChatPanel({
   useEffect(() => {
     setChatId(null);
     setMessages([]);
+    setThinkingPlaceholder(null);
+    clearQuietFollowupTurn();
+    clearAwaitingChatResponse();
     setHistoryReady(false);
     setError(null);
     sinceRef.current = 0;
@@ -300,7 +285,7 @@ export function ChatPanel({
       })
       .catch((e) => !cancelled && setError(errMsg(e)));
     return () => { cancelled = true; };
-  }, [instanceId]);
+  }, [instanceId, clearQuietFollowupTurn, clearAwaitingChatResponse]);
 
   // --- 2. Load history once chatId is known -----------------------------
   useEffect(() => {
@@ -456,75 +441,50 @@ export function ChatPanel({
   }, [chatId, historyReady, connected, sseOpen]);
 
   // --- 4. Stick-to-bottom auto-scroll (ChatGPT/Claude-style) -----------
-  //
-  // Two pieces:
-  //   A. Track whether the user is "at bottom" (within 60px of the
-  //      end). Anything further is a deliberate scroll-up — we don't
-  //      yank them back when new content arrives.
-  //   B. On every timeline/messages change, if they're at bottom,
-  //      pin to the new bottom. This fires per-streaming-chunk
-  //      because each chunk re-renders messages, AND on tool-row
-  //      arrivals because timeline changes there too.
-  //
-  // The previous version listened on `[messages]` only, so:
-  //   - tool rows arriving never scrolled.
-  //   - it always yanked to bottom even when the user had scrolled
-  //     up to read older history.
-  //   - streaming chunks technically did fire (messages array
-  //     replaced per chunk), but the yank-while-reading bug made it
-  //     feel wrong anyway.
-  const [atBottom, setAtBottom] = useState(true);
+  // Track the user's intent in a ref so scroll events don't re-render the
+  // entire transcript. Timeline updates only schedule one follow operation
+  // per animation frame; a burst of stream/tool/result events therefore
+  // produces one visual adjustment instead of several hard jumps.
+  const atBottomRef = useRef(true);
+  const followBottomAnimationFrameRef = useRef<number | null>(null);
+  const scheduleFollowBottom = useCallback(() => {
+    if (!atBottomRef.current || followBottomAnimationFrameRef.current !== null) return;
+    followBottomAnimationFrameRef.current = window.requestAnimationFrame(() => {
+      followBottomAnimationFrameRef.current = null;
+      if (!atBottomRef.current) return;
+      const el = scrollRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  }, []);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    atBottomRef.current = true;
     const onScroll = () => {
       const dist = el.scrollHeight - el.clientHeight - el.scrollTop;
-      setAtBottom(dist < 60);
+      atBottomRef.current = dist < 60;
     };
     el.addEventListener("scroll", onScroll, { passive: true });
-    // Seed on mount / chat switch so the initial empty viewport reads
-    // as "at bottom" (so the first message scrolls into view).
     onScroll();
     return () => el.removeEventListener("scroll", onScroll);
   }, [chatId]);
 
-  // Activity state. Declared up here (not next to its event handler
-  // far below) because the auto-scroll effect right beneath this
-  // depends on activity.phase — moving the useState down would
-  // re-introduce the TDZ error we just fixed in AgentView.
-  // The full state machine that drives this still lives further
-  // down beside the related useTelemetryEvents subscription; only
-  // the storage hook is hoisted.
-  type AgentActivity =
-    | { phase: "idle" }
-    | { phase: "thinking"; since: number; thread: string };
-  const [activity, setActivity] = useState<AgentActivity>({ phase: "idle" });
-
   useEffect(() => {
-    if (!chatId) return;
-    setActivity({ phase: "idle" });
-    armQuietFollowupTurn();
-  }, [connected, chatId, armQuietFollowupTurn]);
+    scheduleFollowBottom();
+  }, [messages, liveTools, streamingText, thinkingPlaceholder, scheduleFollowBottom]);
 
-  // Pin to bottom when the timeline grows OR the viewport shrinks
-  // and the user is at bottom. Deps cover three things:
-  //   - messages / liveTools / streamingText (timeline growth)
-  //   - atBottom (a user who scrolls back down auto-pins next render)
-  //   - activity.phase (the "Thinking…" strip toggling on shrinks the
-  //     scroll viewport by ~30px; without this dep the just-sent
-  //     user message gets clipped behind the strip until the next
-  //     message arrives)
-  useEffect(() => {
-    if (!atBottom) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [messages, liveTools, streamingText, atBottom, activity.phase]);
+  useEffect(() => () => {
+    if (followBottomAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(followBottomAnimationFrameRef.current);
+      followBottomAnimationFrameRef.current = null;
+    }
+  }, []);
 
   // --- 4b. Live tool activity (interleaved into the timeline) -----------
   //
-  // Subscribe to the per-instance telemetry SSE and track every
-  // tool call across every thread. The timeline render below sorts
+  // Subscribe through the project telemetry bus and track every tool
+  // call across every thread. The timeline render below sorts
   // these alongside DB messages by timestamp, so the user sees an
   // accurate "agent said X, then leader-thread did Y, then agent
   // said Z" reading order.
@@ -547,109 +507,103 @@ export function ChatPanel({
   // Filter: only the housekeeping set (pace/done/send). Everything
   // else, on every thread, surfaces — that's the user's "who is
   // doing what" requirement.
-  useEffect(() => {
-    return subscribe((ev) => {
-      if (ev.type === "llm.tool_chunk") {
-        const name = String(ev.data?.tool || "");
-        if ((name === "channels_respond" || name === "channels_send") && isActiveConversationThread(ev.thread_id, chatId)) {
-          clearQuietFollowupTurn();
-          return;
-        }
-        if (!name || shouldHideTool(name)) return;
-        const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
-        setLiveTools((prev) => {
-          if (prev.has(id)) return prev; // already tracked, ignore further chunks
-          const next = new Map(prev);
-          next.set(id, {
-            id,
-            threadId: ev.thread_id || "main",
-            name,
-            reason: "",
-            state: "streaming",
-            startedAt: Date.parse(ev.time) || Date.now(),
-          });
-          return enforceCap(next);
-        });
-        return;
-      }
-
-      if (ev.type === "tool.call") {
-        const name = String(ev.data?.name || "");
-        const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
-        const reason = String(ev.data?.reason || "");
-        if (name && !shouldHideTool(name, reason)) {
-          clearQuietFollowupTurn();
-        }
-        if (!name || shouldHideTool(name, reason)) {
-          setLiveTools((prev) => {
-            if (!prev.has(id)) return prev;
-            const next = new Map(prev);
-            next.delete(id);
-            return next;
-          });
-          return;
-        }
-        setLiveTools((prev) => {
-          const next = new Map(prev);
-          const existing = next.get(id);
-          next.set(id, {
-            id,
-            threadId: existing?.threadId || ev.thread_id || "main",
-            name,
-            reason,
-            state: "called",
-            startedAt: existing?.startedAt ?? (Date.parse(ev.time) || Date.now()),
-          });
-          return enforceCap(next);
-        });
-        return;
-      }
-
-      if (ev.type === "tool.result") {
-        const name = String(ev.data?.name || ev.data?.tool || "");
-        const id = String(ev.data?.id || `${ev.thread_id}:${name}`);
-        if (
-          (name === "channels_respond" || name === "channels_send") &&
-          !ev.data?.is_error &&
-          isActiveConversationThread(ev.thread_id, chatId)
-        ) {
-          armQuietFollowupTurn();
-          return;
-        }
-        if (!name || HIDDEN_TOOLS.has(name)) return;
-        const isError = !!ev.data?.is_error;
-        const durationMs =
-          typeof ev.data?.duration_ms === "number" ? ev.data.duration_ms : undefined;
-        setLiveTools((prev) => {
-          const next = new Map(prev);
-          const existing = next.get(id);
-          if (name === "send" && !existing) return prev;
-          next.set(id, {
-            id,
-            threadId: existing?.threadId || ev.thread_id || "main",
-            name,
-            reason: existing?.reason || "",
-            state: "done",
-            success: !isError,
-            durationMs,
-            startedAt: existing?.startedAt ?? (Date.parse(ev.time) || Date.now()),
-            doneAt: Date.now(),
-          });
-          return enforceCap(next);
-        });
-        return;
+  const queueToolEvent = useCallback((event: TelemetryEvent, replacesThinking: boolean) => {
+    pendingToolEventsRef.current.push(event);
+    pendingToolReplacementRef.current ||= replacesThinking;
+    if (toolAnimationFrameRef.current !== null) return;
+    toolAnimationFrameRef.current = window.requestAnimationFrame(() => {
+      toolAnimationFrameRef.current = null;
+      const events = pendingToolEventsRef.current;
+      pendingToolEventsRef.current = [];
+      const replacePlaceholder = pendingToolReplacementRef.current;
+      pendingToolReplacementRef.current = false;
+      if (events.length > 0) {
+        if (replacePlaceholder) setThinkingPlaceholder(null);
+        setLiveTools((previous) => mergeToolActivityEvents(previous, events));
       }
     });
-  }, [subscribe, chatId, armQuietFollowupTurn, clearQuietFollowupTurn]);
+  }, []);
+
+  const cancelPendingToolEvents = useCallback(() => {
+    pendingToolEventsRef.current = [];
+    pendingToolReplacementRef.current = false;
+    if (toolAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(toolAnimationFrameRef.current);
+      toolAnimationFrameRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => cancelPendingToolEvents, [cancelPendingToolEvents]);
+
+  useTelemetryEvents(instanceId, (ev) => {
+    const activeConversation = isChatConversationThread(ev.thread_id, chatId);
+    if (activeConversation && ev.type === "llm.start") {
+      // Telemetry is project-wide and may replay an already-running main
+      // iteration when this panel mounts. Only surface a placeholder for a
+      // response explicitly initiated from this mounted chat.
+      if (!awaitingChatResponseRef.current) return;
+      if (suppressNextThinkingRef.current) {
+        quietFollowupInFlightRef.current = true;
+        return;
+      }
+      if (streamingText === null) {
+        setThinkingPlaceholder((current) => current || {
+          since: Date.parse(ev.time) || Date.now(),
+          threadId: ev.thread_id || "main",
+        });
+      }
+      return;
+    }
+    if (activeConversation && ev.type === "llm.done") {
+      setThinkingPlaceholder(null);
+      if (quietFollowupInFlightRef.current) clearQuietFollowupTurn();
+      return;
+    }
+    if (activeConversation && (ev.type === "llm.error" || ev.type === "llm.err" || ev.type === "thread.done")) {
+      setThinkingPlaceholder(null);
+      clearQuietFollowupTurn();
+      clearAwaitingChatResponse();
+      return;
+    }
+    if (ev.type !== "llm.tool_chunk" && ev.type !== "tool.call" && ev.type !== "tool.result") return;
+    if (!activeConversation) return;
+    const name = String(ev.data?.name || ev.data?.tool || "");
+    const reason = String(ev.data?.reason || "");
+    const isResponseTool = name === "channels_respond" || name === "channels_send";
+    if (isResponseTool && activeConversation) {
+      if (ev.type === "llm.tool_chunk") clearQuietFollowupTurn();
+      if (
+        ev.type === "tool.result" &&
+        ev.data?.success !== false &&
+        ev.data?.is_error !== true
+      ) {
+        armQuietFollowupTurn();
+      }
+      return;
+    }
+    const replacesThinking = !shouldHideChatTool(name, reason);
+    if (replacesThinking) clearQuietFollowupTurn();
+    queueToolEvent(ev, replacesThinking);
+  });
 
   // Reset tool list when switching chats / instances. Otherwise stale
   // entries from a previous instance briefly leak into the new view.
   useEffect(() => {
+    cancelPendingToolEvents();
     setLiveTools(new Map());
     setExpandedToolGroups(new Set());
+    toolHistoryKeyRef.current = "";
     setStreamingText(null);
+    setThinkingPlaceholder(null);
     clearQuietFollowupTurn();
-  }, [instanceId, chatId, clearQuietFollowupTurn]);
+    clearAwaitingChatResponse();
+  }, [instanceId, chatId, cancelPendingToolEvents, clearQuietFollowupTurn, clearAwaitingChatResponse]);
+
+  useEffect(() => {
+    if (connected) return;
+    setThinkingPlaceholder(null);
+    clearAwaitingChatResponse();
+  }, [connected, clearAwaitingChatResponse]);
 
   // Subscribe to streaming-frame updates for this chat. Frames carry
   // monotonically growing text; setting state to the latest is enough,
@@ -657,68 +611,39 @@ export function ChatPanel({
   // real-message-arrival and on SSE drop) clears the bubble.
   useEffect(() => {
     if (!chatId) return;
-    return chatConnections.subscribeStream(chatId, (f) => {
+    const unsubscribe = chatConnections.subscribeStream(chatId, (f) => {
       if (f && !f.done) {
         clearQuietFollowupTurn();
-        setActivity({ phase: "idle" });
+        pendingStreamFrameRef.current = f;
+        if (streamAnimationFrameRef.current === null) {
+          streamAnimationFrameRef.current = window.requestAnimationFrame(() => {
+            streamAnimationFrameRef.current = null;
+            const latest = pendingStreamFrameRef.current;
+            pendingStreamFrameRef.current = null;
+            if (latest) {
+              setThinkingPlaceholder(null);
+              setStreamingText(latest.text);
+            }
+          });
+        }
+        return;
       }
-      setStreamingText(f && !f.done ? f.text : null);
+      pendingStreamFrameRef.current = null;
+      if (streamAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(streamAnimationFrameRef.current);
+        streamAnimationFrameRef.current = null;
+      }
+      setStreamingText(null);
     });
+    return () => {
+      unsubscribe();
+      pendingStreamFrameRef.current = null;
+      if (streamAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(streamAnimationFrameRef.current);
+        streamAnimationFrameRef.current = null;
+      }
+    };
   }, [chatId, clearQuietFollowupTurn]);
-
-  // --- 4c. Agent activity strip (Claude/ChatGPT-style "Thinking…") -----
-  //
-  // Drives a slim status row above the input that says what the agent
-  // is doing right now: thinking (LLM call in flight), running a tool,
-  // or idle (paced/done). Sources telemetry from the project-wide bus
-  // (window.__aptevaTelemetryBus) so it works on every page that
-  // mounts a ChatPanel — including the chat-only pages where the
-  // legacy `subscribe` prop is a noop. The bus opens ONE SSE per
-  // project regardless of how many panels mount; see
-  // hooks/useTelemetryBus.ts for the multiplexer.
-  // The strip mirrors LLM-in-flight only: visible while the model is
-  // generating, gone the moment llm.done fires. Tool execution is
-  // already rendered inline in the chat timeline (see ToolRow), so
-  // the strip would just duplicate that. This matches the right-rail
-  // status indicator's behavior. (The `activity` useState lives up
-  // near the auto-scroll effect that depends on `activity.phase`.)
-
-  // Reset activity when switching agents / chats — avoid showing
-  // "thinking" carried over from a previous instance's stream.
-  useEffect(() => {
-    setActivity({ phase: "idle" });
-    clearQuietFollowupTurn();
-  }, [instanceId, chatId, clearQuietFollowupTurn]);
-
-  // Only the active conversation thread drives the strip. Older chat
-  // routing used main; per-chat routing uses a core thread named
-  // `chat-${chatId}` so a busy main thread cannot block chat replies.
-  useTelemetryEvents(instanceId, (ev) => {
-    if (!isActiveConversationThread(ev.thread_id, chatId)) return;
-    if (ev.type === "llm.start") {
-      if (suppressNextThinkingRef.current) return;
-      setActivity({
-        phase: "thinking",
-        since: Date.parse(ev.time) || Date.now(),
-        thread: ev.thread_id || "main",
-      });
-      return;
-    }
-    // Any of these mean the LLM is no longer generating: the
-    // current call finished (llm.done), the thread terminated
-    // (thread.done), or an error stopped the call (llm.error).
-    // tool.call/tool.result aren't strip events anymore — those
-    // render in the timeline.
-    if (
-      ev.type === "llm.done" ||
-      ev.type === "llm.error" ||
-      ev.type === "thread.done"
-    ) {
-      clearQuietFollowupTurn();
-      setActivity({ phase: "idle" });
-      return;
-    }
-  });
 
   const addImageFiles = useCallback(async (files: FileList | File[]) => {
     const list = Array.from(files).filter((file) => file.type.startsWith("image/"));
@@ -762,6 +687,10 @@ export function ChatPanel({
     const text = planMode
       ? `[Plan mode] Investigate using read-only tools, then reply with a numbered plan to do:\n\n${raw}\n\nDo NOT call write/send/delete/create/update tools yet. I will approve the plan before you execute.`
       : raw;
+    clearQuietFollowupTurn();
+    markAwaitingChatResponse();
+    atBottomRef.current = true;
+    scheduleFollowBottom();
     setSending(true);
     setError(null);
     try {
@@ -782,11 +711,13 @@ export function ChatPanel({
         el.focus();
       }
     } catch (e) {
+      clearAwaitingChatResponse();
+      setThinkingPlaceholder(null);
       setError(errMsg(e));
     } finally {
       setSending(false);
     }
-  }, [input, attachments, chatId, sending, connected, planMode, messageContext, mergeDurableMessages]);
+  }, [input, attachments, chatId, sending, connected, planMode, messageContext, mergeDurableMessages, clearQuietFollowupTurn, markAwaitingChatResponse, clearAwaitingChatResponse, scheduleFollowBottom]);
 
   // postCanned sends a fixed reply on behalf of the user — used by the
   // plan-mode Approve / Reject / Refine quick-action buttons. Same
@@ -796,23 +727,29 @@ export function ChatPanel({
   const postCanned = useCallback(
     async (text: string) => {
       if (!chatId || sending || !connected) return;
+      clearQuietFollowupTurn();
+      markAwaitingChatResponse();
+      atBottomRef.current = true;
+      scheduleFollowBottom();
       setSending(true);
       setError(null);
       try {
         const posted = await chat.post(chatId, text, messageContext);
         mergeDurableMessages([posted]);
       } catch (e) {
+        clearAwaitingChatResponse();
+        setThinkingPlaceholder(null);
         setError(errMsg(e));
       } finally {
         setSending(false);
       }
     },
-    [chatId, sending, connected, messageContext, mergeDurableMessages],
+    [chatId, sending, connected, messageContext, mergeDurableMessages, clearQuietFollowupTurn, markAwaitingChatResponse, clearAwaitingChatResponse, scheduleFollowBottom],
   );
 
   // --- 6. Clear history -------------------------------------------------
   // Wipes the messages DB on the server AND the ephemeral on-screen
-  // state: tool-activity strip and any in-progress streaming bubble.
+  // state: tool activity and any in-progress streaming bubble.
   // Without the latter, Clear visually empties the message list but
   // tool rows + a hanging "thinking" bubble stay pinned above the
   // input, which feels broken.
@@ -824,7 +761,9 @@ export function ChatPanel({
       setMessages([]);
       setLiveTools(new Map());
       setStreamingText(null);
-      setActivity({ phase: "idle" });
+      setThinkingPlaceholder(null);
+      clearQuietFollowupTurn();
+      clearAwaitingChatResponse();
       sinceRef.current = 0;
     } catch (e) {
       setError(errMsg(e));
@@ -840,6 +779,39 @@ export function ChatPanel({
     setMessages((prev) => prev.map((row) => (row.id === message.id ? message : row)));
   }, []);
 
+  // Tool calls are persisted in telemetry separately from durable chat
+  // messages. Backfill the visible message window so activity survives a
+  // refresh, then feed it through the exact same idempotent reducer used by
+  // live events. A short look-behind catches a call that began just before
+  // the first loaded message and completed inside the window.
+  useEffect(() => {
+    if (!historyReady || !chatId || orderedMessages.length === 0) return;
+    const oldestMessageAt = Date.parse(orderedMessages[0]!.created_at);
+    if (!Number.isFinite(oldestMessageAt)) return;
+    const since = new Date(Math.max(0, oldestMessageAt - 5 * 60_000)).toISOString();
+    const key = `${instanceId}:${chatId}:${since}`;
+    if (toolHistoryKeyRef.current === key) return;
+    toolHistoryKeyRef.current = key;
+    let cancelled = false;
+    Promise.all([
+      telemetry.query(instanceId, "tool.call", 1000, undefined, since),
+      telemetry.query(instanceId, "tool.result", 1000, undefined, since),
+    ]).then(([calls, results]) => {
+      if (cancelled) return;
+      const conversationEvents = [...calls, ...results].filter((event) =>
+        isChatConversationThread(event.thread_id, chatId),
+      );
+      setLiveTools((previous) => mergeToolActivityEvents(previous, conversationEvents));
+    }).catch(() => {
+      // Live telemetry remains available when history is temporarily
+      // unreachable. Avoid turning an auxiliary timeline failure into a
+      // blocking chat error banner.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId, historyReady, instanceId, orderedMessages]);
+
   // Interleaved timeline of messages + tool bursts.
   //
   // The merge happens at render time only — tools and messages keep
@@ -854,72 +826,14 @@ export function ChatPanel({
   // visually anchor before the tool, since the tool was triggered by
   // the message.
   //
-  // Tool rendering rule: one tool remains one normal line. Two or
-  // more tools in the same work burst collapse to a single row with
-  // expandable details. Bursts are bounded by chat messages and by a
-  // long idle gap, so tight polling/render loops don't flood the
-  // transcript while genuinely separate tool phases still split.
-  const timeline = useMemo(() => {
-    type Item =
-      | { kind: "msg"; ts: number; msg: ChatMessageRow }
-      | { kind: "tool"; ts: number; tool: LiveTool };
-    type TimelineItem =
-      | Item
-      | { kind: "toolGroup"; ts: number; key: string; tools: LiveTool[] };
-    const items: Item[] = [];
-    for (const m of orderedMessages) {
-      items.push({ kind: "msg", ts: Date.parse(m.created_at) || 0, msg: m });
-    }
-    for (const t of liveTools.values()) {
-      items.push({ kind: "tool", ts: t.startedAt, tool: t });
-    }
-    items.sort((a, b) => {
-      if (a.ts !== b.ts) return a.ts - b.ts;
-      // Tie-break: messages before tools, then stable-by-id.
-      if (a.kind !== b.kind) return a.kind === "msg" ? -1 : 1;
-      if (a.kind === "msg" && b.kind === "msg") return a.msg.id - b.msg.id;
-      if (a.kind === "tool" && b.kind === "tool") {
-        return a.tool.id < b.tool.id ? -1 : 1;
-      }
-      return 0;
-    });
-    const grouped: TimelineItem[] = [];
-    let pending: LiveTool[] = [];
-
-    const flushTools = () => {
-      if (pending.length === 0) return;
-      if (pending.length >= TOOL_BURST_MIN) {
-        const first = pending[0]!;
-        const last = pending[pending.length - 1]!;
-        grouped.push({
-          kind: "toolGroup",
-          ts: first.startedAt,
-          key: `${first.id}:${first.startedAt}:${last.id}:${last.startedAt}`,
-          tools: pending,
-        });
-      } else {
-        for (const tool of pending) {
-          grouped.push({ kind: "tool", ts: tool.startedAt, tool });
-        }
-      }
-      pending = [];
-    };
-
-    for (const item of items) {
-      if (item.kind === "msg") {
-        flushTools();
-        grouped.push(item);
-        continue;
-      }
-      const last = pending[pending.length - 1];
-      if (last && item.tool.startedAt - last.startedAt > TOOL_BURST_IDLE_GAP_MS) {
-        flushTools();
-      }
-      pending.push(item.tool);
-    }
-    flushTools();
-    return grouped;
-  }, [orderedMessages, liveTools]);
+  // Every work burst keeps the same container identity from its first tool.
+  // When more tools join, the row gains expandable details in place instead
+  // of being unmounted and replaced. Bursts are bounded by chat messages and
+  // by a long idle gap.
+  const timeline = useMemo(
+    () => buildChatTimeline(orderedMessages, liveTools.values()),
+    [orderedMessages, liveTools],
+  );
 
   const toggleToolGroup = useCallback((key: string) => {
     setExpandedToolGroups((prev) => {
@@ -958,7 +872,7 @@ export function ChatPanel({
   );
 
   return (
-    <div className="flex flex-col h-full min-w-0">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       {!hideHeader && (
         <>
           {header ? (
@@ -1142,46 +1056,68 @@ export function ChatPanel({
       {/* Messages */}
       <div
         ref={scrollRef}
-        className={`scroll-safe-bottom flex-1 overflow-y-auto overflow-x-hidden px-3 py-3 sm:px-4 sm:py-4 space-y-4 min-w-0 transition-opacity duration-300 ${connected ? "" : "opacity-40"}`}
+        className={`scroll-safe-bottom flex-1 overflow-y-auto overflow-x-hidden px-3 py-3 sm:px-4 sm:py-4 min-w-0 transition-opacity duration-300 ${connected ? "" : "opacity-40"}`}
       >
         {!chatId && (
           <p className="text-text-muted text-xs text-center py-8">{t("chat.panel.loading")}</p>
         )}
-        {chatId && orderedMessages.length === 0 && (
+        {chatId && timeline.length === 0 && streamingText === null && thinkingPlaceholder === null && (
           <p className="text-text-muted text-xs text-center py-8">
             {t("chat.panel.empty")}
           </p>
         )}
-        {timeline.map((item) =>
-          item.kind === "msg" ? (
-            <MessageRow
-              key={`m${item.msg.id}`}
-              msg={item.msg}
-              projectId={projectId}
-              apps={installedApps}
-              onMessageUpdated={handleMessageUpdated}
-            />
-          ) : item.kind === "toolGroup" ? (
-            <ToolGroupRow
-              key={`tg${item.key}`}
-              tools={item.tools}
-              expanded={expandedToolGroups.has(item.key)}
-              onToggle={() => toggleToolGroup(item.key)}
-            />
-          ) : (
-            <ToolRow key={`t${item.tool.id}`} t={item.tool} />
-          ),
+        {timeline.map((item) => {
+          if (item.kind === "day") return <TimelineDayMarker key={item.key} timestamp={item.ts} />;
+          if (item.kind === "time") return <TimelineTimeMarker key={item.key} timestamp={item.ts} />;
+          if (item.kind === "message") {
+            return (
+              <div
+                key={item.key}
+                className={`${item.compactBefore ? "mt-1.5" : "mt-4"} first:mt-0`}
+                title={formatExactTimestamp(item.ts)}
+              >
+                <time dateTime={new Date(item.ts).toISOString()} className="sr-only">
+                  {formatExactTimestamp(item.ts)}
+                </time>
+                <MessageRow
+                  msg={item.message}
+                  projectId={projectId}
+                  apps={installedApps}
+                  onMessageUpdated={handleMessageUpdated}
+                />
+              </div>
+            );
+          }
+          if (item.kind === "toolGroup") {
+            return (
+              <div key={item.key} className="mt-4 first:mt-0" title={formatExactTimestamp(item.ts)}>
+                <ChatToolActivity
+                  tools={item.tools}
+                  parallel={item.parallel}
+                  expanded={expandedToolGroups.has(item.key)}
+                  onToggle={() => toggleToolGroup(item.key)}
+                  registry={toolVisualRegistry}
+                  detailsId={`chat-${instanceId}-${item.key.replace(/[^a-zA-Z0-9_-]/g, "-")}`}
+                />
+              </div>
+            );
+          }
+          return (
+            <div key={item.key} className="mt-4 first:mt-0" title={formatExactTimestamp(item.ts)}>
+              <ChatToolActivity tools={[item.tool]} registry={toolVisualRegistry} />
+            </div>
+          );
+        })}
+        {streamingText !== null && <div className="mt-4 first:mt-0"><StreamingBubble text={streamingText} /></div>}
+        {thinkingPlaceholder !== null && streamingText === null && (
+          <div
+            className="mt-4 first:mt-0"
+            title={formatExactTimestamp(thinkingPlaceholder.since)}
+          >
+            <ThinkingMessagePlaceholder />
+          </div>
         )}
-        {streamingText !== null && <StreamingBubble text={streamingText} />}
       </div>
-
-      {/* Activity strip — Claude/ChatGPT-style "Thinking…" line that
-          surfaces what the agent is doing right now. Lives between
-          messages and the input so it doesn't compete with chat
-          content but stays in the user's eyeline as they type. */}
-      {activity.phase !== "idle" && (
-        <ActivityStrip activity={activity} />
-      )}
 
       {/* Plan-mode quick actions. Only shown when plan mode is on AND
           the most recent message is from the agent (i.e. there's a
@@ -1582,6 +1518,31 @@ function StreamingBubble({ text }: { text: string }) {
   );
 }
 
+// Inline placeholder for the next assistant turn. It occupies transcript
+// space like a message and is swapped in the same React commit as the first
+// tool block, streaming text, or durable response. Keeping it inside the
+// scroller avoids changing the composer/viewport geometry.
+function ThinkingMessagePlaceholder() {
+  const { t } = useTranslation();
+  return (
+    <div
+      className="min-w-0"
+      role="status"
+      aria-live="polite"
+      aria-label={t("chat.panel.thinking")}
+    >
+      <div className="flex min-h-6 items-center gap-2 text-[15px] leading-relaxed text-text-muted sm:text-sm">
+        <span className="chat-thinking-dots inline-flex h-5 w-6 shrink-0 items-center justify-center gap-1" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </span>
+        <span>{t("chat.panel.thinking")}</span>
+      </div>
+    </div>
+  );
+}
+
 // closeOpenMarkdown closes the last unterminated bold/italic/inline-
 // code/fenced-code/link tokens in a string so a partial mid-stream
 // render doesn't flicker as the closing pair arrives. Doesn't try to
@@ -1607,237 +1568,55 @@ function closeOpenMarkdown(s: string): string {
   return out;
 }
 
-// ToolRow — inline tool indicator rendered between messages in the
-// chat timeline. Visually subdued (smaller, dimmer, indented) so it
-// reads as background activity, not as a primary turn. Layout:
-//
-//   ⟳ agent's reason                                         (1.2s)
-function toolDisplayName(name: string): string {
-  const parts = name.split(/[_:.-]+/).filter(Boolean);
-  if (parts.length > 1 && parts[0] === parts[1]) parts.shift();
-  return parts.join(" ") || name;
+function sameLocalDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-function toolLabel(tool: LiveTool, t: (key: string, options?: Record<string, unknown>) => string): string {
-  const fallback = tool.state === "streaming"
-    ? t("chat.panel.preparingTool", { name: toolDisplayName(tool.name) })
-    : t("chat.panel.working");
-  return runtimeToolLabel(tool.name, tool.reason, fallback);
+function formatExactTimestamp(timestamp: number, locale?: string): string {
+  return new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(timestamp));
 }
 
-function toolDurationLabel(ms: number): string {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
-}
-
-function plural(n: number, singular: string, pluralValue = `${singular}s`): string {
-  return `${n} ${n === 1 ? singular : pluralValue}`;
-}
-
-function compactLabels(tools: LiveTool[], limit: number, t: (key: string, options?: Record<string, unknown>) => string): { text: string; more: number } {
-  const labels: string[] = [];
-  for (const tool of tools) {
-    const label = toolLabel(tool, t);
-    if (!label || labels.includes(label)) continue;
-    labels.push(label);
-    if (labels.length >= limit) break;
-  }
-  return { text: labels.join(", "), more: Math.max(0, tools.length - labels.length) };
-}
-
-interface ToolDetailSummary {
-  key: string;
-  label: string;
-  count: number;
-  state: LiveTool["state"];
-  success?: boolean;
-  durationMs: number;
-}
-
-function summarizeToolDetails(tools: LiveTool[], t: (key: string, options?: Record<string, unknown>) => string): ToolDetailSummary[] {
-  const summaries = new Map<string, ToolDetailSummary>();
-  for (const tool of tools) {
-    const label = toolLabel(tool, t) || tool.name;
-    const stateKey =
-      tool.state === "done"
-        ? tool.success === false
-          ? "failed"
-          : "done"
-        : tool.state;
-    const key = `${label}:${stateKey}`;
-    const existing = summaries.get(key);
-    if (existing) {
-      existing.count += 1;
-      existing.durationMs += tool.durationMs || 0;
-      continue;
-    }
-    summaries.set(key, {
-      key,
-      label,
-      count: 1,
-      state: tool.state,
-      success: tool.success,
-      durationMs: tool.durationMs || 0,
-    });
-  }
-  return [...summaries.values()];
-}
-
-function ToolGroupRow({
-  tools,
-  expanded,
-  onToggle,
-}: {
-  tools: LiveTool[];
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const { t } = useTranslation();
-  const active = tools.filter((t) => t.state !== "done");
-  const failed = tools.filter((t) => t.state === "done" && t.success === false);
-  const completed = tools.filter((t) => t.state === "done");
-  const durationTotal = completed.reduce((sum, t) => sum + (t.durationMs || 0), 0);
-  const labelSource = failed.length > 0 ? [...failed, ...tools.filter((t) => !failed.includes(t))] : active.length > 0 ? [...active, ...tools.filter((t) => !active.includes(t))] : tools;
-  const labels = compactLabels(labelSource, 2, t);
-  const detailSummaries = summarizeToolDetails(tools, t);
-  const icon =
-    failed.length > 0
-      ? <span className="text-red shrink-0">✗</span>
-      : active.length > 0
-      ? <span className="text-accent shrink-0 animate-spin">⟳</span>
-      : <span className="text-green shrink-0">✓</span>;
-  const status =
-    failed.length > 0
-      ? t(failed.length === 1 ? "chat.panel.toolFailedStatus" : "chat.panel.toolsFailedStatus", { count: failed.length })
-      : active.length > 0
-      ? t(active.length === 1 ? "chat.panel.toolRunningStatus" : "chat.panel.toolsRunningStatus", { count: active.length })
-      : t(tools.length === 1 ? "chat.panel.toolCompletedStatus" : "chat.panel.toolsCompletedStatus", { count: tools.length });
-  const detailParts = [
-    durationTotal > 0 && active.length === 0 ? toolDurationLabel(durationTotal) : "",
-    labels.text,
-    labels.more > 0 ? `+${labels.more}` : "",
-  ].filter(Boolean);
-
+function TimelineDayMarker({ timestamp }: { timestamp: number }) {
+  const { t, i18n } = useTranslation();
+  const locale = i18n.resolvedLanguage || i18n.language || undefined;
+  const date = new Date(timestamp);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const day = sameLocalDay(date, today)
+    ? t("chat.panel.today")
+    : sameLocalDay(date, yesterday)
+      ? t("chat.panel.yesterday")
+      : new Intl.DateTimeFormat(locale, {
+          weekday: "long",
+          month: "short",
+          day: "numeric",
+          year: date.getFullYear() === today.getFullYear() ? undefined : "numeric",
+        }).format(date);
+  const time = new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(date);
   return (
-    <div className="min-w-0 pl-3">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex max-w-full items-center gap-1.5 text-[10px] text-text-dim hover:text-text-muted leading-tight"
-        title={expanded ? t("chat.panel.hideToolCalls") : t("chat.panel.showToolCalls")}
-      >
-        {icon}
-        <span className={failed.length > 0 ? "text-red shrink-0" : "shrink-0"}>{status}</span>
-        {detailParts.length > 0 && <span className="shrink-0">·</span>}
-        {detailParts.length > 0 && (
-          <span className="truncate text-left">
-            {detailParts.join(" · ")}
-          </span>
-        )}
-        <span className="shrink-0 text-text-dim opacity-70">{expanded ? t("chat.panel.hide") : t("chat.panel.details")}</span>
-      </button>
-      {expanded && (
-        <div className="mt-1 space-y-1 border-l border-border/70 pl-2">
-          {detailSummaries.map((summary) => (
-            <ToolSummaryRow key={summary.key} summary={summary} />
-          ))}
-        </div>
-      )}
+    <div className="my-5 flex items-center gap-3 first:mt-0" role="separator">
+      <span className="h-px flex-1 bg-border/70" />
+      <time dateTime={date.toISOString()} className="shrink-0 text-[10px] font-medium text-text-dim sm:text-[11px]">
+        {day} · {time}
+      </time>
+      <span className="h-px flex-1 bg-border/70" />
     </div>
   );
 }
 
-function ToolSummaryRow({ summary }: { summary: ToolDetailSummary }) {
-  const { t } = useTranslation();
-  const icon =
-    summary.state === "streaming"
-      ? <span className="text-yellow shrink-0 animate-pulse">◐</span>
-      : summary.state === "called"
-      ? <span className="text-accent shrink-0 animate-spin">⟳</span>
-      : <span className={`shrink-0 ${summary.success ? "text-green" : "text-red"}`}>{summary.success ? "✓" : "✗"}</span>;
-  const dur = summary.durationMs > 0 ? toolDurationLabel(summary.durationMs) : "";
+function TimelineTimeMarker({ timestamp }: { timestamp: number }) {
+  const { i18n } = useTranslation();
+  const locale = i18n.resolvedLanguage || i18n.language || undefined;
+  const date = new Date(timestamp);
   return (
-    <div className="flex items-center gap-1.5 min-w-0 leading-tight text-[10px] text-text-dim">
-      {icon}
-      <span className={summary.state === "streaming" ? "truncate italic" : "truncate"} title={summary.label}>
-        {summary.label}
-      </span>
-      {summary.count > 1 && <span className="shrink-0">x{summary.count}</span>}
-      {dur && <span className="shrink-0">({dur})</span>}
-      {summary.state === "done" && summary.success === false && (
-        <span className="shrink-0 text-red">{t("chat.panel.toolFailed")}</span>
-      )}
-    </div>
-  );
-}
-
-function ToolRow({ t: tool, compact = false }: { t: LiveTool; compact?: boolean }) {
-  const { t } = useTranslation();
-  const icon =
-    tool.state === "streaming"
-      ? <span className="text-yellow shrink-0 animate-pulse">◐</span>
-      : tool.state === "called"
-      ? <span className="text-accent shrink-0 animate-spin">⟳</span>
-      : <span className={`shrink-0 ${tool.success ? "text-green" : "text-red"}`}>{tool.success ? "✓" : "✗"}</span>;
-  const label = toolLabel(tool, t);
-  const dur =
-    tool.state === "done" && tool.durationMs != null
-      ? toolDurationLabel(tool.durationMs)
-      : "";
-
-  return (
-    <div className={`flex items-center gap-1.5 min-w-0 leading-tight text-[10px] text-text-dim ${compact ? "" : "pl-3"}`}>
-      {icon}
-      <span
-        className={tool.state === "streaming" ? "truncate italic" : "truncate"}
-        title={label}
-      >
-        {label}
-      </span>
-      {dur && <span className="shrink-0">({dur})</span>}
-      {tool.state === "done" && tool.success === false && (
-        <span className="shrink-0 text-red">{t("chat.panel.toolFailed")}</span>
-      )}
-    </div>
-  );
-}
-
-// ActivityStrip — slim status row above the chat input. Visible iff
-// the LLM is currently generating; mirrors the right-rail status
-// indicator's behavior. Tool execution is rendered inline in the
-// timeline, so the strip stays focused on a single signal: "is the
-// model thinking right now?". Duration counter updates every 500ms.
-type ActivityForStrip = { phase: "thinking"; since: number; thread: string };
-
-function isActiveConversationThread(threadId: string, chatId: string | null): boolean {
-  const normalized = threadId || "main";
-  if (normalized === "main") return true;
-  if (!chatId) return false;
-  return normalized === chatId || normalized === `chat-${chatId}`;
-}
-
-function ActivityStrip({ activity }: { activity: ActivityForStrip }) {
-  const { t } = useTranslation();
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => setTick((n) => n + 1), 500);
-    return () => clearInterval(t);
-  }, []);
-  const elapsedMs = Date.now() - activity.since;
-  void tick; // referenced to silence lint; the tick value isn't used directly
-  const elapsedLabel =
-    elapsedMs >= 1000
-      ? `${(elapsedMs / 1000).toFixed(1)}s`
-      : `${elapsedMs}ms`;
-
-  return (
-    <div className="shrink-0 px-4 pt-2 pb-2 flex items-center gap-2 text-[11px] text-text-muted bg-bg-card/40">
-      <span className="flex items-center gap-1 shrink-0">
-        <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-        <span className="w-1.5 h-1.5 rounded-full bg-accent/60 animate-pulse [animation-delay:200ms]" />
-      </span>
-      <span className="text-text shrink-0">{t("chat.panel.thinking")}</span>
-      <span className="flex-1" />
-      <span className="shrink-0 text-text-dim tabular-nums">{elapsedLabel}</span>
+    <div className="my-4 flex justify-center" role="separator">
+      <time dateTime={date.toISOString()} className="rounded-full bg-bg-subtle px-2.5 py-1 text-[10px] text-text-dim sm:text-[11px]">
+        {new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(date)}
+      </time>
     </div>
   );
 }

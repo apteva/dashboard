@@ -155,7 +155,7 @@ export function Chat() {
   };
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className={`${chatIdFromUrl ? "hidden md:flex" : "flex"} min-h-14 border-b border-border px-4 sm:px-6 py-2 items-center justify-between gap-3`}>
         <div className="min-w-0">
           <h1 className="truncate text-lg font-bold text-text">{t("chat.title")}</h1>

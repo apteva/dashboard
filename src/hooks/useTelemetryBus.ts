@@ -22,9 +22,9 @@
 //   - Components call subscribe(instanceId | null, fn). Returns an
 //     unsubscribe. Filter is optional — null subscribes to every
 //     event in the project (used by ActivityFeed, fleet views).
-//   - On EventSource error, the bus reconnects with bounded backoff
-//     (5 attempts, 2s gap). After that it gives up; the next
-//     setProjectId call (e.g. project switch) resets the budget.
+//   - On EventSource error, the bus reconnects forever with capped
+//     exponential backoff. The last server sequence is sent as `since=` so
+//     the server can replay a short gap before resuming live delivery.
 //
 // This module has SIDE EFFECTS at import time — installs the bridge
 // onto `window.__aptevaTelemetryBus`. main.tsx imports it for that
@@ -33,8 +33,10 @@
 
 import type { TelemetryEvent } from "../api";
 
-const RECONNECT_DELAY_MS = 2000;
-const MAX_RECONNECT_ATTEMPTS = 5;
+const RECONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 30_000;
+
+export type TelemetryConnectionState = "idle" | "connecting" | "open" | "reconnecting";
 
 interface Listener {
   instanceId: number | null; // null = all
@@ -57,6 +59,10 @@ interface TelemetryBridge {
 
   /** Current project, exposed for diagnostic logs only. */
   currentProjectId(): string | null;
+
+  /** Connection health for operator UI and reconnect-triggered backfills. */
+  connectionState(): TelemetryConnectionState;
+  subscribeState(fn: (state: TelemetryConnectionState) => void): () => void;
 }
 
 declare global {
@@ -72,7 +78,22 @@ if (typeof window !== "undefined" && !window.__aptevaTelemetryBus) {
   let es: EventSource | null = null;
   let reconnectTimer: number | null = null;
   let reconnectAttempts = 0;
+  let state: TelemetryConnectionState = "idle";
   const listeners = new Set<Listener>();
+  const stateListeners = new Set<(state: TelemetryConnectionState) => void>();
+  const lastSeqByScope = new Map<string, number>();
+
+  function updateState(next: TelemetryConnectionState): void {
+    if (state === next) return;
+    state = next;
+    for (const fn of [...stateListeners]) {
+      try {
+        fn(state);
+      } catch {
+        // Connection diagnostics must not affect delivery.
+      }
+    }
+  }
 
   function teardown(): void {
     if (reconnectTimer !== null) {
@@ -88,13 +109,24 @@ if (typeof window !== "undefined" && !window.__aptevaTelemetryBus) {
   function open(): void {
     if (!projectId) return;
     teardown();
-    const url =
-      `/api/telemetry/stream?all=1` +
-      `&project_id=${encodeURIComponent(projectId)}`;
+    const scope = projectId;
+    // The Monitor wallboard can temporarily request the caller's entire
+    // fleet. "*" is an internal sentinel: omitting project_id is the
+    // server's authenticated all-project mode. Every other value remains
+    // a regular project id, so normal pages keep their narrow stream.
+    const baseUrl = scope === "*"
+      ? `/api/telemetry/stream?all=1`
+      : `/api/telemetry/stream?all=1&project_id=${encodeURIComponent(scope)}`;
+    const since = lastSeqByScope.get(scope) || 0;
+    const url = `${baseUrl}&since=${since}`;
+    updateState(reconnectAttempts > 0 ? "reconnecting" : "connecting");
     const next = new EventSource(url, { withCredentials: true });
     es = next;
     next.onopen = () => {
+      const recovered = reconnectAttempts > 0;
       reconnectAttempts = 0;
+      updateState("open");
+      if (recovered) window.dispatchEvent(new Event("apteva.telemetry.reconnected"));
     };
     next.onmessage = (e) => {
       let ev: TelemetryEvent;
@@ -102,6 +134,10 @@ if (typeof window !== "undefined" && !window.__aptevaTelemetryBus) {
         ev = JSON.parse(e.data) as TelemetryEvent;
       } catch {
         return;
+      }
+      const seq = Number(ev.seq || e.lastEventId || 0);
+      if (Number.isFinite(seq) && seq > (lastSeqByScope.get(scope) || 0)) {
+        lastSeqByScope.set(scope, seq);
       }
       // Snapshot listeners so a subscriber that removes itself
       // mid-iteration doesn't skip its sibling.
@@ -114,6 +150,10 @@ if (typeof window !== "undefined" && !window.__aptevaTelemetryBus) {
         }
       }
     };
+    next.addEventListener("reset", () => {
+      lastSeqByScope.set(scope, 0);
+      window.dispatchEvent(new Event("apteva.telemetry.gap"));
+    });
     next.onerror = () => {
       if (next !== es) return; // already replaced
       // Take ownership of reconnects. Native EventSource normally changes to
@@ -122,14 +162,28 @@ if (typeof window !== "undefined" && !window.__aptevaTelemetryBus) {
       next.close();
       es = null;
       reconnectAttempts += 1;
-      if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return;
+      updateState("reconnecting");
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      const delay = Math.min(
+        RECONNECT_MAX_DELAY_MS,
+        RECONNECT_BASE_DELAY_MS * 2 ** Math.min(reconnectAttempts - 1, 5),
+      );
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
         open();
-      }, RECONNECT_DELAY_MS);
+      }, delay);
     };
   }
+
+  const recoverNow = () => {
+    if (!projectId || state === "open") return;
+    reconnectAttempts = 0;
+    open();
+  };
+  window.addEventListener("online", recoverNow);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") recoverNow();
+  });
 
   const bridge: TelemetryBridge = {
     setProjectId(next) {
@@ -141,6 +195,8 @@ if (typeof window !== "undefined" && !window.__aptevaTelemetryBus) {
         open();
       } else {
         teardown();
+        lastSeqByScope.clear();
+        updateState("idle");
       }
     },
     subscribe(instanceId, fn) {
@@ -153,6 +209,16 @@ if (typeof window !== "undefined" && !window.__aptevaTelemetryBus) {
     currentProjectId() {
       return projectId;
     },
+    connectionState() {
+      return state;
+    },
+    subscribeState(fn) {
+      stateListeners.add(fn);
+      fn(state);
+      return () => {
+        stateListeners.delete(fn);
+      };
+    },
   };
 
   window.__aptevaTelemetryBus = bridge;
@@ -160,7 +226,7 @@ if (typeof window !== "undefined" && !window.__aptevaTelemetryBus) {
 
 // ─── React hook ──────────────────────────────────────────────────────
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** Subscribe to telemetry from inside a React component.
  *
@@ -190,4 +256,18 @@ export function useTelemetryEvents(
     const filter: number | null = typeof instanceId === "number" ? instanceId : null;
     return bus.subscribe(filter, (ev) => handlerRef.current(ev));
   }, [instanceId]);
+}
+
+export function useTelemetryConnectionState(): TelemetryConnectionState {
+  const [state, setState] = useState<TelemetryConnectionState>(() =>
+    typeof window === "undefined"
+      ? "idle"
+      : window.__aptevaTelemetryBus?.connectionState() || "idle",
+  );
+  useEffect(() => {
+    const bus = window.__aptevaTelemetryBus;
+    if (!bus) return;
+    return bus.subscribeState(setState);
+  }, []);
+  return state;
 }
