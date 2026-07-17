@@ -656,11 +656,21 @@ export const instances = {
   sendEvent: (id: number, message: string | Array<{ type: string; text?: string; image_url?: { url: string }; audio_url?: { url: string; mime_type?: string } }>, threadId?: string) =>
     request<any>("POST", `/agents/${id}/event`, { message, ...(threadId ? { thread_id: threadId } : {}) }),
 
-  updateConfig: (id: number, opts: { directive?: string; mode?: string; providers?: Array<{ name: string; default: boolean }> }) =>
+  updateConfig: (id: number, opts: {
+    directive?: string;
+    mode?: string;
+    providers?: Array<{ name: string; default: boolean }>;
+    realtimeEnabled?: boolean;
+    realtimeVoice?: string;
+    realtimeVoiceMCP?: string[];
+  }) =>
     request<Agent>("PUT", `/agents/${id}/config`, {
       ...(opts.directive ? { directive: opts.directive } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
       ...(opts.providers ? { providers: opts.providers } : {}),
+      ...(opts.realtimeEnabled !== undefined ? { realtime_enabled: opts.realtimeEnabled } : {}),
+      ...(opts.realtimeVoice !== undefined ? { realtime_voice: opts.realtimeVoice } : {}),
+      ...(opts.realtimeVoiceMCP !== undefined ? { realtime_voice_mcp: opts.realtimeVoiceMCP } : {}),
     }),
 
   chatHistory: (id: number, limit?: number) =>
@@ -1653,6 +1663,9 @@ export interface Thread {
   rate: string;
   model: string;
   age: string;
+  realtime?: boolean;
+  voice?: string;
+  provider?: string;
   sleep_state?: SleepState;
   sleep_thread_id?: string;
   sleep_started_at?: string;
@@ -1661,6 +1674,35 @@ export interface Thread {
   sleep_remaining_ms?: number;
   sleep_iteration?: number;
 }
+
+export interface RealtimeThreadResponse {
+  status: "created" | "exists" | "renewed";
+  id: string;
+  audio_token: string;
+  format?: {
+    encoding: "pcm16";
+    sample_rate: number;
+    channels: number;
+  };
+}
+
+export interface RealtimeAvailability {
+  enabled: boolean;
+  available: boolean;
+  voice: string;
+  mcp: string[];
+  provider: string;
+}
+
+const REALTIME_DASHBOARD_DIRECTIVE = `
+
+[LIVE VOICE SESSION]
+You are speaking with the operator in a temporary dashboard voice session.
+- Be concise and conversational. Do not narrate internal reasoning.
+- Use only the capabilities attached to this thread.
+- Send important decisions, actionable requests, and confirmed work to main as they happen.
+- Do not claim that an external action succeeded until its tool result confirms it.
+- When you receive a session-ending instruction, send main one concise handoff containing decisions, completed actions, and pending work, then call done.`;
 
 // One message in a thread's live context window, as exposed by
 // GET /threads/:id/context. Mirrors core's Message struct — assistant
@@ -1800,6 +1842,31 @@ export const core = {
       `/agents/${instanceId}/threads/${encodeURIComponent(threadId)}`,
     ),
 
+  spawnRealtimeThread: (
+    instanceId: number,
+    threadId: string,
+    opts: { voice?: string; provider?: string; mcp?: string[]; tools?: string[] },
+  ) => request<RealtimeThreadResponse>(
+    "POST",
+    `/agents/${instanceId}/threads/${encodeURIComponent(threadId)}`,
+    {
+      realtime: true,
+      ephemeral: true,
+      voice: opts.voice || undefined,
+      provider: opts.provider || undefined,
+      mcp: opts.mcp || [],
+      tools: opts.tools || [],
+      bridge_disconnect_ttl_seconds: 45,
+      directive_suffix: REALTIME_DASHBOARD_DIRECTIVE,
+    },
+  ),
+
+  renewRealtimeAudioToken: (instanceId: number, threadId: string) =>
+    request<RealtimeThreadResponse>(
+      "POST",
+      `/agents/${instanceId}/threads/${encodeURIComponent(threadId)}/audio-token`,
+    ),
+
   // Clear the thread's history without killing it: wipes session.jsonl,
   // resets in-memory messages to just the system prompt, preserves the
   // thread's iteration counter + identity. Works for main as well — the
@@ -1860,6 +1927,10 @@ export const core = {
       execution_checkpoints?: ExecutionCheckpointMeta[];
       auto_approve?: string[];
       mcp_servers?: MCPServerConfig[];
+      providers?: Array<{ name: string; default?: boolean; realtime_voice?: string }>;
+      realtime_enabled?: boolean;
+      realtime_voice?: string;
+      realtime_voice_mcp?: string[];
     }>("GET", `/agents/${instanceId}/config`),
   setMode: (instanceId: number, mode: RunMode) =>
     request<{ status: string }>("PUT", `/agents/${instanceId}/config`, { mode }),

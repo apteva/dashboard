@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   instances,
@@ -7,6 +7,7 @@ import {
   type ChatMessageContext,
 } from "../api";
 import { useProjects } from "../hooks/useProjects";
+import { useRealtimeAvailability } from "../hooks/useRealtimeAvailability";
 import { ChatPanel } from "./ChatPanel";
 import type { EventListener, SubscribeFn } from "./AgentView";
 
@@ -17,10 +18,12 @@ export function ContextAgentChatWidget({
   open,
   onOpen,
   onClose,
+  selectHelperRequest = 0,
 }: {
   open: boolean;
   onOpen: () => void;
   onClose: () => void;
+  selectHelperRequest?: number;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -44,11 +47,13 @@ export function ContextAgentChatWidget({
   });
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const handledHelperRequest = useRef(0);
 
   const projectId = currentProject?.id ?? null;
   const activeAgents = loadedProjectId === projectId ? agents : [];
   const selectedAgent = activeAgents.find((a) => a.id === selectedAgentId) || null;
   const selectedIsHelper = selectedAgent?.kind === "platform_helper";
+  const realtime = useRealtimeAvailability(selectedAgent?.id, selectedAgent?.status === "running");
 
   const subscribeSelectedAgent = useCallback<SubscribeFn>(
     (listener: EventListener) => {
@@ -119,6 +124,17 @@ export function ContextAgentChatWidget({
     } catch {}
   }, [selectedAgentId]);
 
+  // The global launcher and legacy /build route target the one platform
+  // helper explicitly. The request may arrive before its async agent row, so
+  // consume it only after the current project's list is ready.
+  useEffect(() => {
+    if (!selectHelperRequest || handledHelperRequest.current === selectHelperRequest) return;
+    const helper = activeAgents.find((agent) => agent.kind === "platform_helper");
+    if (!helper) return;
+    handledHelperRequest.current = selectHelperRequest;
+    setSelectedAgentId(helper.id);
+  }, [activeAgents, selectHelperRequest]);
+
   const startSelectedAgent = async () => {
     if (!selectedAgent) return;
     setStarting(true);
@@ -149,8 +165,8 @@ export function ContextAgentChatWidget({
           type="button"
           onClick={onOpen}
           className="floating-chat-launcher-safe touch-target fixed z-40 flex h-12 w-12 items-center justify-center rounded-full border border-accent/50 bg-accent text-bg shadow-xl shadow-black/25 hover:bg-accent-hover transition-colors"
-          title="Ask an agent about this page"
-          aria-label="Ask an agent about this page"
+          title="Build or ask with Apteva Helper"
+          aria-label="Open Apteva Helper"
         >
           <ChatIcon />
         </button>
@@ -242,6 +258,8 @@ export function ContextAgentChatWidget({
                   <ChatPanel
                     key={selectedAgent.id}
                     instanceId={selectedAgent.id}
+                    agentName={selectedAgent.name}
+                    realtime={realtime}
                     subscribe={subscribeSelectedAgent}
                     autoConnect
                     hideHeader

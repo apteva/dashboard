@@ -268,19 +268,41 @@ function toActivityRow(event: TelemetryEvent): ActivityRow | null {
   }
 
   if (event.type === "thread.spawn") {
+	const realtime = !!event.data?.realtime;
     return {
       ...base,
       category: "thread",
-      title: "Started a new thread",
-      detail: String(event.data?.name || event.data?.thread_id || event.thread_id || "").trim() || undefined,
+      title: realtime ? "Started a live voice session" : "Started a new thread",
+      detail: realtime
+        ? [event.data?.voice, ...(Array.isArray(event.data?.mcp) ? event.data.mcp : [])].filter(Boolean).join(" · ") || undefined
+        : String(event.data?.name || event.data?.thread_id || event.thread_id || "").trim() || undefined,
+    };
+  }
+
+  if (event.type === "realtime.session_started") {
+    return {
+      ...base,
+      category: "thread",
+      title: "Live voice connected",
+      detail: [event.data?.voice, event.data?.model].filter(Boolean).join(" · ") || undefined,
+    };
+  }
+
+  if (event.type === "realtime.error") {
+    return {
+      ...base,
+      category: "error",
+      title: "Live voice error",
+      detail: truncate(String(event.data?.error || "The realtime provider reported an error"), 140),
     };
   }
 
   if (event.type === "thread.done") {
+	const realtime = String(event.thread_id || "").startsWith("dashboard-voice-");
     return {
       ...base,
       category: "thread",
-      title: "Agent work completed",
+      title: realtime ? "Live voice session ended" : "Agent work completed",
       detail: String(event.data?.name || event.data?.thread_id || event.thread_id || "").trim() || undefined,
     };
   }

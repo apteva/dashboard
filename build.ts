@@ -304,6 +304,14 @@ const html = `<!DOCTYPE html>
 
 await Bun.write("./dist/index.html", html);
 
+// AudioWorklet modules must be served as ordinary same-origin JavaScript.
+// Loading this processor from a blob URL is rejected by Safari and by strict
+// script-src CSP implementations.
+{
+  const { copyFileSync } = await import("fs");
+  copyFileSync("./src/realtime/capture-worklet.js", "./dist/realtime-capture-worklet.js");
+}
+
 // Copy favicons into dist/ so the server's embedded static tree serves
 // them. Skipped silently if missing so a checkout without the icons
 // still builds.
@@ -347,4 +355,5 @@ for (const output of result.outputs) {
 }
 console.log("  style.css");
 console.log("  index.html");
+console.log("  realtime-capture-worklet.js");
 console.log("  favicons + safari-pinned-tab.svg + apple-touch-icon.png");

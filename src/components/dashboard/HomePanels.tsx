@@ -2,37 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { Agent, CurrentStatusMessageRow, InstanceStats } from "../../api";
 
-export function HomeLiveStatuses({ statuses }: { statuses: CurrentStatusMessageRow[] }) {
-  const live = useMemo(
-    () => statuses
-      .filter((row) => row.state !== "completed" && !row.stale)
-      .sort((a, b) => statusRank(a) - statusRank(b) || Date.parse(b.message.created_at) - Date.parse(a.message.created_at))
-      .slice(0, 5),
-    [statuses],
-  );
-
-  return (
-    <section className="overflow-hidden rounded-lg border border-border bg-bg-card">
-      <PanelHeader
-        title="Live now"
-        subtitle="Current work reported by agents"
-        count={live.length}
-        to="/monitor"
-      />
-      {live.length === 0 ? (
-        <EmptyState title="Nothing is running right now" detail="New work will appear here as agents report it." />
-      ) : (
-        <div className="divide-y divide-border">
-          {live.map((row) => (
-            <StatusRow key={row.instance_id} row={row} />
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
-export function HomeFocusAgents({
+export function HomeLiveAgents({
   agents,
   statuses,
 }: {
@@ -43,58 +13,33 @@ export function HomeFocusAgents({
     () => new Map(statuses.map((row) => [row.instance_id, row])),
     [statuses],
   );
-  const focus = useMemo(() => agents
-    .filter((agent) => {
-      const status = statusByAgent.get(agent.id);
-      if (status) return status.state !== "completed" && !status.stale;
-      return agent.status === "running";
+  const live = useMemo(() => agents
+    .map((agent) => {
+      const reported = statusByAgent.get(agent.id);
+      const activeStatus = reported && reported.state !== "completed" && !reported.stale ? reported : undefined;
+      return { agent, status: activeStatus };
     })
+    .filter(({ agent, status }) => !!status || agent.status === "running")
     .sort((a, b) => {
-      const aStatus = statusByAgent.get(a.id);
-      const bStatus = statusByAgent.get(b.id);
-      return focusRank(a, aStatus) - focusRank(b, bStatus) || a.name.localeCompare(b.name);
+      return liveRank(a.agent, a.status) - liveRank(b.agent, b.status) || a.agent.name.localeCompare(b.agent.name);
     })
-    .slice(0, 6), [agents, statusByAgent]);
+    .slice(0, 5), [agents, statusByAgent]);
 
   return (
-    <section className="overflow-hidden rounded-lg border border-border bg-bg-card">
+    <section className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-bg-card xl:h-[460px]">
       <PanelHeader
-        title="Agents requiring focus"
-        subtitle="Running, waiting, or blocked"
-        count={focus.length}
-        to="/agents"
-        linkLabel="View agents"
+        title="Live now"
+        subtitle="Current work and running agents"
+        count={live.length}
+        to="/monitor"
       />
-      {focus.length === 0 ? (
-        <EmptyState title="No agents need attention" detail="Stopped and completed agents stay out of this overview." />
+      {live.length === 0 ? (
+        <EmptyState title="No active work reported" detail="Running agents and new work will appear here." />
       ) : (
-        <div className="divide-y divide-border">
-          {focus.map((agent) => {
-            const status = statusByAgent.get(agent.id);
-            const state = status?.state || (agent.status === "running" ? "running" : agent.status);
-            const tone = stateTone(state);
-            return (
-              <Link
-                key={agent.id}
-                to={`/agents/${agent.id}`}
-                className="flex min-h-[62px] items-center gap-3 px-4 py-2.5 transition-colors hover:bg-bg-hover"
-              >
-                <span className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[11px] font-bold ${tone.badge}`}>
-                  {state === "blocked" ? "!" : state === "waiting" ? "◷" : "›"}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className="truncate text-xs font-semibold text-text">{agent.name}</span>
-                    <span className={`shrink-0 text-[9px] font-bold uppercase tracking-wide ${tone.text}`}>{state}</span>
-                  </div>
-                  <p className="mt-1 truncate text-[11px] text-text-muted">
-                    {status?.title || `Agent #${agent.id}`}
-                  </p>
-                </div>
-                <span className="text-sm text-text-dim">→</span>
-              </Link>
-            );
-          })}
+        <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
+          {live.map(({ agent, status }) => (
+            <LiveAgentRow key={agent.id} agent={agent} status={status} />
+          ))}
         </div>
       )}
     </section>
@@ -115,21 +60,18 @@ export function HomeUsageSummary({ agents, stats }: { agents: Agent[]; stats: In
   const running = agents.filter((agent) => agent.status === "running").length;
 
   return (
-    <section className="rounded-lg border border-border bg-bg-card px-4 py-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xs font-bold uppercase tracking-wide text-text-dim">Last 24 hours</h2>
-          <p className="mt-0.5 text-[11px] text-text-dim">A compact project overview</p>
+    <section className="rounded-lg border border-border bg-bg-card px-3 py-2.5 sm:px-4">
+      <div className="grid gap-3 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:items-center">
+        <h2 className="whitespace-nowrap text-[10px] font-bold uppercase tracking-wide text-text-dim">Last 24 hours</h2>
+        <div className="grid grid-cols-2 gap-x-2 gap-y-2 sm:grid-cols-3 xl:grid-cols-6 xl:gap-x-3">
+          <Metric label="Agents" value={`${running} / ${agents.length}`} warn={agents.length > 0 && running === 0} />
+          <Metric label="LLM calls" value={formatNumber(totals.llmCalls)} />
+          <Metric label="Tool calls" value={formatNumber(totals.toolCalls)} />
+          <Metric label="Tokens" value={formatTokens(totals.tokens)} />
+          <Metric label="Errors" value={String(totals.errors)} warn={totals.errors > 0} />
+          <Metric label="Cost" value={formatCost(totals.cost)} />
         </div>
         <Link to="/analytics" className="text-[11px] text-text-muted hover:text-text">View usage →</Link>
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
-        <Metric label="Agents" value={`${running} / ${agents.length}`} warn={agents.length > 0 && running === 0} />
-        <Metric label="LLM calls" value={formatNumber(totals.llmCalls)} />
-        <Metric label="Tool calls" value={formatNumber(totals.toolCalls)} />
-        <Metric label="Tokens" value={formatTokens(totals.tokens)} />
-        <Metric label="Errors" value={String(totals.errors)} warn={totals.errors > 0} />
-        <Metric label="Cost" value={formatCost(totals.cost)} />
       </div>
     </section>
   );
@@ -168,37 +110,41 @@ function PanelHeader({
   );
 }
 
-function StatusRow({ row }: { row: CurrentStatusMessageRow }) {
-  const tone = stateTone(row.state);
+function LiveAgentRow({ agent, status }: { agent: Agent; status?: CurrentStatusMessageRow }) {
+  const state = status?.state || "running";
+  const tone = stateTone(state);
   return (
     <Link
-      to={`/agents/${row.instance_id}`}
+      to={`/agents/${agent.id}`}
       className="grid min-h-[68px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 transition-colors hover:bg-bg-hover"
     >
       <span className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-[11px] font-bold ${tone.badge}`}>
-        {row.state === "blocked" ? "!" : row.state === "waiting" ? "◷" : "›"}
+        {state === "blocked" ? "!" : state === "waiting" ? "◷" : "›"}
       </span>
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
-          <span className={`shrink-0 text-[9px] font-bold uppercase tracking-wide ${tone.text}`}>{row.state}</span>
-          <span className="truncate text-xs font-semibold text-text">{row.title}</span>
-          {row.progress != null && (
-            <span className="ml-auto shrink-0 text-[10px] tabular-nums text-text-dim">{Math.round(row.progress)}%</span>
+          <span className="truncate text-xs font-semibold text-text">{agent.name}</span>
+          <span className={`shrink-0 text-[9px] font-bold uppercase tracking-wide ${tone.text}`}>{state}</span>
+          {status?.progress != null && (
+            <span className="ml-auto shrink-0 text-[10px] tabular-nums text-text-dim">{Math.round(status.progress)}%</span>
           )}
         </div>
-        <div className="mt-1 flex min-w-0 items-center gap-2 text-[10px] text-text-muted">
-          <span className="truncate">{row.instance_name}</span>
-          {row.detail && <><span className="text-text-dim">·</span><span className="truncate">{row.detail}</span></>}
-        </div>
-        {row.progress != null && (
+        <p className="mt-1 truncate text-[11px] text-text-muted" title={status?.detail || undefined}>
+          {status?.title || "Running without active work reported"}
+        </p>
+        {status?.progress != null && (
           <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-bg-hover">
-            <div className={`h-full ${tone.bar}`} style={{ width: `${Math.max(0, Math.min(100, row.progress))}%` }} />
+            <div className={`h-full ${tone.bar}`} style={{ width: `${Math.max(0, Math.min(100, status.progress))}%` }} />
           </div>
         )}
       </div>
-      <time className="text-[10px] tabular-nums text-text-dim" title={formatExact(row.message.created_at)}>
-        {formatAge(row.message.created_at)}
-      </time>
+      {status ? (
+        <time className="text-[10px] tabular-nums text-text-dim" title={formatExact(status.message.created_at)}>
+          {formatAge(status.message.created_at)}
+        </time>
+      ) : (
+        <span className="text-sm text-text-dim">→</span>
+      )}
     </Link>
   );
 }
@@ -216,21 +162,14 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
 
 function Metric({ label, value, warn = false }: { label: string; value: string; warn?: boolean }) {
   return (
-    <div className="min-w-0 border-l border-border pl-3 first:border-l-0 first:pl-0 sm:first:border-l sm:first:pl-3">
-      <div className="text-[10px] uppercase tracking-wide text-text-dim">{label}</div>
-      <div className={`mt-1 truncate text-base font-bold tabular-nums ${warn ? "text-red" : "text-text"}`}>{value}</div>
+    <div className="flex min-w-0 items-baseline justify-between gap-2 border-l border-border/70 pl-2.5 first:border-l-0 first:pl-0 xl:justify-start">
+      <div className="truncate text-[9px] uppercase tracking-wide text-text-dim">{label}</div>
+      <div className={`shrink-0 text-sm font-bold tabular-nums ${warn ? "text-red" : "text-text"}`}>{value}</div>
     </div>
   );
 }
 
-function statusRank(row: CurrentStatusMessageRow) {
-  if (row.state === "blocked") return 0;
-  if (row.state === "working") return 1;
-  if (row.state === "waiting") return 2;
-  return 3;
-}
-
-function focusRank(agent: Agent, status?: CurrentStatusMessageRow) {
+function liveRank(agent: Agent, status?: CurrentStatusMessageRow) {
   if (status?.state === "blocked") return 0;
   if (status?.state === "working") return 1;
   if (status?.state === "waiting") return 2;

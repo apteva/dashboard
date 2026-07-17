@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
 import { useTranslation } from "react-i18next";
-import { chat, telemetry, type ChatAttachment, type ChatMessageContext, type ChatMessageRow, type TelemetryEvent } from "../api";
+import { chat, telemetry, type ChatAttachment, type ChatMessageContext, type ChatMessageRow, type RealtimeAvailability, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import {
   ChatComponentList,
@@ -24,6 +24,14 @@ import {
 } from "./chat/toolActivityModel";
 import { splitToolTelemetryPaintFrame } from "../utils/toolTelemetryPaint";
 import { useToolVisualRegistry } from "./chat/toolVisuals";
+import {
+  clearThinkingForIteration,
+  clearThinkingThroughGeneration,
+  telemetryIteration,
+  toolEventReplacesThinking,
+  type ChatThinkingPlaceholder,
+} from "../utils/chatThinkingLifecycle";
+import { MicrophoneIcon, useRealtimeVoice } from "../state/RealtimeVoiceContext";
 
 export interface ChatPanelHeader {
   title: string;
@@ -62,6 +70,8 @@ interface Props {
   header?: ChatPanelHeader;
   messageContext?: ChatMessageContext;
   historyLimit?: number;
+  realtime?: RealtimeAvailability;
+  agentName?: string;
 }
 
 const MAX_IMAGE_ATTACHMENTS = 4;
@@ -93,6 +103,8 @@ export function ChatPanel({
   header,
   messageContext,
   historyLimit,
+  realtime,
+  agentName = "Agent",
 }: Props) {
   const { t } = useTranslation();
   // Project context — needed so chat-attached components can scope
@@ -104,6 +116,10 @@ export function ChatPanel({
   const projectId = currentProject?.id ?? "";
   const installedApps = useInstalledApps(projectId || null);
   const toolVisualRegistry = useToolVisualRegistry(projectId || null, installedApps);
+  const voice = useRealtimeVoice();
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const activeVoiceHere = voice.session?.agentId === instanceId ? voice.session : null;
+  const completedVoiceHere = voice.lastSession?.agentId === instanceId ? voice.lastSession : null;
 
   const [chatId, setChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessageRow[]>([]);
@@ -123,7 +139,7 @@ export function ChatPanel({
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<string>>(() => new Set());
   const toolHistoryKeyRef = useRef("");
   const pendingToolEventsRef = useRef<TelemetryEvent[]>([]);
-  const pendingToolReplacementRef = useRef(false);
+  const pendingToolReplacementGenerationRef = useRef<number | null>(null);
   const toolAnimationFrameRef = useRef<number | null>(null);
 
   // Ephemeral streaming bubble — the LLM-args text for an in-progress
@@ -135,7 +151,8 @@ export function ChatPanel({
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const pendingStreamFrameRef = useRef<StreamFrame | null>(null);
   const streamAnimationFrameRef = useRef<number | null>(null);
-  const [thinkingPlaceholder, setThinkingPlaceholder] = useState<{ since: number; threadId: string } | null>(null);
+  const [thinkingPlaceholder, setThinkingPlaceholder] = useState<ChatThinkingPlaceholder | null>(null);
+  const thinkingGenerationRef = useRef(0);
   const awaitingChatResponseRef = useRef(false);
   const awaitingChatResponseTimerRef = useRef<number | null>(null);
   const suppressNextThinkingRef = useRef(false);
@@ -512,10 +529,14 @@ export function ChatPanel({
     toolAnimationFrameRef.current = null;
     const { paint, deferred } = splitToolTelemetryPaintFrame(pendingToolEventsRef.current);
     pendingToolEventsRef.current = deferred;
-    const replacePlaceholder = pendingToolReplacementRef.current;
-    pendingToolReplacementRef.current = false;
+    const replaceThroughGeneration = pendingToolReplacementGenerationRef.current;
+    pendingToolReplacementGenerationRef.current = null;
     if (paint.length > 0) {
-      if (replacePlaceholder) setThinkingPlaceholder(null);
+      if (replaceThroughGeneration !== null) {
+        setThinkingPlaceholder((current) =>
+          clearThinkingThroughGeneration(current, replaceThroughGeneration),
+        );
+      }
       setLiveTools((previous) => mergeToolActivityEvents(previous, paint));
     }
     if (pendingToolEventsRef.current.length > 0) {
@@ -525,14 +546,20 @@ export function ChatPanel({
 
   const queueToolEvent = useCallback((event: TelemetryEvent, replacesThinking: boolean) => {
     pendingToolEventsRef.current.push(event);
-    pendingToolReplacementRef.current ||= replacesThinking;
+    if (replacesThinking) {
+      const generation = thinkingGenerationRef.current;
+      pendingToolReplacementGenerationRef.current = Math.max(
+        pendingToolReplacementGenerationRef.current ?? generation,
+        generation,
+      );
+    }
     if (toolAnimationFrameRef.current !== null) return;
     toolAnimationFrameRef.current = window.requestAnimationFrame(flushToolEventFrame);
   }, [flushToolEventFrame]);
 
   const cancelPendingToolEvents = useCallback(() => {
     pendingToolEventsRef.current = [];
-    pendingToolReplacementRef.current = false;
+    pendingToolReplacementGenerationRef.current = null;
     if (toolAnimationFrameRef.current !== null) {
       window.cancelAnimationFrame(toolAnimationFrameRef.current);
       toolAnimationFrameRef.current = null;
@@ -544,6 +571,7 @@ export function ChatPanel({
   useTelemetryEvents(instanceId, (ev) => {
     const activeConversation = isChatConversationThread(ev.thread_id, chatId);
     if (activeConversation && ev.type === "llm.start") {
+      const generation = ++thinkingGenerationRef.current;
       // Telemetry is project-wide and may replay an already-running main
       // iteration when this panel mounts. Only surface a placeholder for a
       // response explicitly initiated from this mounted chat.
@@ -553,15 +581,19 @@ export function ChatPanel({
         return;
       }
       if (streamingText === null) {
-        setThinkingPlaceholder((current) => current || {
-          since: Date.parse(ev.time) || Date.now(),
+        setThinkingPlaceholder((current) => ({
+          since: current?.since ?? (Date.parse(ev.time) || Date.now()),
           threadId: ev.thread_id || "main",
-        });
+          generation,
+          iteration: telemetryIteration(ev.data),
+        }));
       }
       return;
     }
     if (activeConversation && ev.type === "llm.done") {
-      setThinkingPlaceholder(null);
+      setThinkingPlaceholder((current) =>
+        clearThinkingForIteration(current, telemetryIteration(ev.data)),
+      );
       if (quietFollowupInFlightRef.current) clearQuietFollowupTurn();
       return;
     }
@@ -587,7 +619,8 @@ export function ChatPanel({
       }
       return;
     }
-    const replacesThinking = !shouldHideChatTool(name, reason);
+    const replacesThinking =
+      !shouldHideChatTool(name, reason) && toolEventReplacesThinking(ev.type);
     if (replacesThinking) clearQuietFollowupTurn();
     queueToolEvent(ev, replacesThinking);
   });
@@ -681,6 +714,20 @@ export function ChatPanel({
   const removeAttachment = useCallback((id: string) => {
     setAttachments((current) => current.filter((att) => att.id !== id));
   }, []);
+
+  const handleVoice = useCallback(async () => {
+    setVoiceError(null);
+    if (activeVoiceHere) {
+      voice.toggleMute();
+      return;
+    }
+    if (!realtime) return;
+    try {
+      await voice.start({ agentId: instanceId, agentName, availability: realtime });
+    } catch (error) {
+      setVoiceError(error instanceof Error ? error.message : "Could not start voice.");
+    }
+  }, [activeVoiceHere, agentName, instanceId, realtime, voice]);
 
   // --- 5. Send handler ---------------------------------------------------
   const handleSend = useCallback(async () => {
@@ -1072,14 +1119,16 @@ export function ChatPanel({
             {t("chat.panel.empty")}
           </p>
         )}
-        {timeline.map((item) => {
+        {timeline.map((item, index) => {
+          const previousItem = timeline[index - 1];
           if (item.kind === "day") return <TimelineDayMarker key={item.key} timestamp={item.ts} />;
           if (item.kind === "time") return <TimelineTimeMarker key={item.key} timestamp={item.ts} />;
           if (item.kind === "message") {
+            const followsTool = previousItem?.kind === "tool" || previousItem?.kind === "toolGroup";
             return (
               <div
                 key={item.key}
-                className={`${item.compactBefore ? "mt-1.5" : "mt-4"} first:mt-0`}
+                className={`${item.compactBefore ? "mt-1.5" : followsTool ? "mt-2" : "mt-4"} first:mt-0`}
                 title={formatExactTimestamp(item.ts)}
               >
                 <time dateTime={new Date(item.ts).toISOString()} className="sr-only">
@@ -1096,7 +1145,7 @@ export function ChatPanel({
           }
           if (item.kind === "toolGroup") {
             return (
-              <div key={item.key} className="mt-4 first:mt-0" title={formatExactTimestamp(item.ts)}>
+              <div key={item.key} className="mt-2 first:mt-0" title={formatExactTimestamp(item.ts)}>
                 <ChatToolActivity
                   tools={item.tools}
                   parallel={item.parallel}
@@ -1109,15 +1158,15 @@ export function ChatPanel({
             );
           }
           return (
-            <div key={item.key} className="mt-4 first:mt-0" title={formatExactTimestamp(item.ts)}>
+            <div key={item.key} className="mt-2 first:mt-0" title={formatExactTimestamp(item.ts)}>
               <ChatToolActivity tools={[item.tool]} registry={toolVisualRegistry} />
             </div>
           );
         })}
-        {streamingText !== null && <div className="mt-4 first:mt-0"><StreamingBubble text={streamingText} /></div>}
+        {streamingText !== null && <div className="mt-2 first:mt-0"><StreamingBubble text={streamingText} /></div>}
         {thinkingPlaceholder !== null && streamingText === null && (
           <div
-            className="mt-4 first:mt-0"
+            className="mt-2 first:mt-0"
             title={formatExactTimestamp(thinkingPlaceholder.since)}
           >
             <ThinkingMessagePlaceholder />
@@ -1169,6 +1218,39 @@ export function ChatPanel({
             </span>
           </div>
         )}
+
+      {!activeVoiceHere && completedVoiceHere && completedVoiceHere.transcripts.length > 0 && (
+        <details className="mx-2 mb-1 shrink-0 rounded-lg border border-border/70 bg-bg-card/40 sm:mx-5">
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[10px] text-text-muted">
+            <span className="text-accent"><MicrophoneIcon /></span>
+            <span className="font-semibold text-text">Voice session ended</span>
+            <span>{completedVoiceHere.transcripts.length} transcript lines</span>
+            <span className="ml-auto text-text-dim">View</span>
+          </summary>
+          <div className="max-h-40 space-y-2 overflow-y-auto border-t border-border/70 px-3 py-2">
+            {completedVoiceHere.transcripts.map((line) => (
+              <p key={line.id} className="text-[11px] leading-relaxed text-text-muted">
+                <span className="mr-2 text-[9px] font-bold uppercase text-text-dim">{line.role === "user" ? "You" : "Agent"}</span>{line.text}
+              </p>
+            ))}
+          </div>
+        </details>
+      )}
+      {activeVoiceHere && (
+        <div className="mx-2 mb-1 shrink-0 rounded-lg border border-accent/25 bg-accent/[0.04] px-3 py-2 sm:mx-5">
+          <div className="flex items-center gap-2 text-[10px] text-text-muted">
+            <span className={`h-1.5 w-1.5 rounded-full bg-accent ${activeVoiceHere.state === "speaking" ? "animate-pulse" : ""}`} />
+            <span>{activeVoiceHere.state === "speaking" ? "Agent speaking" : activeVoiceHere.muted ? "Microphone muted" : "Voice session live"}</span>
+            {activeVoiceHere.activeToolReason && <span className="min-w-0 truncate text-text-dim">· {activeVoiceHere.activeToolReason}</span>}
+          </div>
+          {activeVoiceHere.transcripts.slice(-2).map((line) => (
+            <p key={line.id} className="mt-1 truncate text-[11px] text-text-muted">
+              <span className="mr-2 text-[9px] font-bold uppercase text-text-dim">{line.role === "user" ? "You" : "Agent"}</span>{line.text}
+            </p>
+          ))}
+        </div>
+      )}
+      {voiceError && <p className="mx-3 mb-1 shrink-0 text-[10px] text-red sm:mx-5">{voiceError}</p>}
 
       {/* Input */}
       <div className="chat-composer-safe shrink-0 px-2 pt-2 sm:px-5">
@@ -1252,6 +1334,22 @@ export function ChatPanel({
               <circle cx="13.5" cy="7.5" r="1" />
             </svg>
           </button>
+          {realtime?.enabled && realtime.available && (
+            <button
+              type="button"
+              onClick={() => void handleVoice()}
+              disabled={!!voice.session && !activeVoiceHere}
+              className={`touch-target flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-30 sm:h-8 sm:w-8 ${
+                activeVoiceHere
+                  ? "bg-accent/15 text-accent"
+                  : "text-text-muted hover:bg-bg-subtle hover:text-accent"
+              }`}
+              aria-label={activeVoiceHere ? (activeVoiceHere.muted ? "Unmute voice session" : "Mute voice session") : "Start voice session"}
+              title={activeVoiceHere ? (activeVoiceHere.muted ? "Unmute" : "Mute") : "Talk to this agent"}
+            >
+              <MicrophoneIcon muted={!!activeVoiceHere?.muted} />
+            </button>
+          )}
           <textarea
             id="chat-input"
             value={input}

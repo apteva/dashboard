@@ -141,11 +141,11 @@ export function AptevaInbox({
   }, [items.length, onCountChange]);
 
   return (
-    <section className={`border border-border bg-bg-card rounded-lg flex flex-col overflow-hidden ${variant === "home" ? "" : "min-h-[300px]"}`}>
+    <section className={`border border-border bg-bg-card rounded-lg flex flex-col overflow-hidden ${variant === "home" ? "h-full xl:h-[460px]" : "min-h-[300px]"}`}>
       <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="text-text text-sm font-bold">{variant === "default" ? "Apteva Inbox" : "Needs attention"}</h2>
+            <h2 className="text-text text-sm font-bold">{variant === "default" ? "Apteva Inbox" : variant === "home" ? "Inbox" : "Needs attention"}</h2>
             {variant !== "default" && items.length > 0 && (
               <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-accent">
                 {items.length}

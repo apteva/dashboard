@@ -79,19 +79,26 @@ export function CurrentStatuses({ projectId }: { projectId?: string }) {
 export function AgentCurrentStatus({
   status,
   compact = false,
+  embedded = false,
   showFallback = false,
   showAge = false,
   showNextFallback = false,
 }: {
   status?: CurrentStatusMessageRow;
   compact?: boolean;
+  embedded?: boolean;
   showFallback?: boolean;
   showAge?: boolean;
   showNextFallback?: boolean;
 }) {
   if (!status && !showFallback) return null;
+  const containerClass = compact
+    ? `min-w-0 ${showAge && showNextFallback ? "min-h-[66px]" : ""}`
+    : embedded
+      ? "min-w-0"
+      : "mt-2 max-w-3xl min-w-0";
   return (
-    <div className={compact ? `min-w-0 ${showAge && showNextFallback ? "min-h-[66px]" : ""}` : "mt-2 max-w-3xl min-w-0"}>
+    <div className={containerClass}>
       {showAge && (
         <div className="mb-1.5 min-h-3 text-left text-[9px] text-text-dim">
           {status && (

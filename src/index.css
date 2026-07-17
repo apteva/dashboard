@@ -528,6 +528,10 @@ select {
   color: var(--chat-tool-failed);
 }
 
+.chat-tool-copy {
+  color: var(--text-muted);
+}
+
 .chat-tool-icon-running {
   animation: chat-tool-breathe 1.9s ease-in-out infinite;
   transform-origin: center;

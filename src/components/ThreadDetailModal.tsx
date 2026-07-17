@@ -168,6 +168,11 @@ export function ThreadDetailModal({ open, onClose, thread, instanceId, liveEvent
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-green/60" />
               <h3 className="text-text font-bold text-sm">{thread.id}</h3>
+              {thread.realtime && (
+                <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-accent">
+                  Live voice{thread.voice ? ` · ${thread.voice}` : ""}
+                </span>
+              )}
               <span className="text-text-dim text-[10px] bg-border px-1.5 py-0.5 rounded">#{thread.iteration}</span>
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                 thread.rate === "fast" || thread.rate === "reactive" ? "bg-accent/15 text-accent" :
@@ -268,6 +273,7 @@ export function ThreadDetailModal({ open, onClose, thread, instanceId, liveEvent
           <div className="flex items-center gap-3 mt-2 text-[10px] text-text-dim">
             {thread.parent_id && <span>parent: <span className="text-text-muted">{thread.parent_id}</span></span>}
             {thread.model && <span>model: <span className="text-text-muted">{thread.model}</span></span>}
+            {thread.provider && <span>provider: <span className="text-text-muted">{thread.provider}</span></span>}
             {thread.mcp_names && thread.mcp_names.length > 0 && (
               <span className="flex gap-1">
                 {thread.mcp_names.map((m) => (

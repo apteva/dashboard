@@ -22,10 +22,12 @@ export function LiveStatsBar({
   instanceId,
   subscribe,
   sleep,
+  hideWhenEmpty = false,
 }: {
   instanceId: number;
   subscribe: SubscribeFn;
   sleep?: SleepLike | null;
+  hideWhenEmpty?: boolean;
 }) {
   const [stats, setStats] = useState({
     iters: 0,
@@ -151,8 +153,10 @@ export function LiveStatsBar({
 
   const nothingYet = stats.iters === 0;
 
+  if (hideWhenEmpty && nothingYet) return null;
+
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-6 py-1.5 border-b border-border bg-bg-card/40 text-[10px] font-mono">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-border/70 bg-bg-card/40 px-3 py-1.5 text-[10px] font-mono sm:px-4">
       <StatCell
         label="iters"
         value={nothingYet ? "—" : stats.iters.toString()}

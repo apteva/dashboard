@@ -9,6 +9,7 @@ import { Modal } from "../Modal";
 import { AgentContextCard } from "./AgentContextCard";
 import type { Agent } from "../../api";
 import type { SubscribeFn } from "../AgentView";
+import { useRealtimeAvailability } from "../../hooks/useRealtimeAvailability";
 
 interface Props {
   chatId: string | null;
@@ -29,6 +30,7 @@ export function ChatMain({
   const navigate = useNavigate();
   const [contextOpen, setContextOpen] = useState(false);
   const instanceId = instance?.id;
+  const realtime = useRealtimeAvailability(instanceId, instance?.status === "running");
   const subscribe = useCallback<SubscribeFn>(
     (listener) => {
       if (typeof instanceId !== "number") return () => {};
@@ -57,6 +59,8 @@ export function ChatMain({
         <ChatPanel
           key={chatId}
           instanceId={instance.id}
+          agentName={instance.name}
+          realtime={realtime}
           subscribe={subscribe}
           autoConnect
           header={{

@@ -116,10 +116,10 @@ export function ChatToolActivity({
   const accessibleSummary = `${title}, ${focusReason}, ${status.text}`;
 
   return (
-    <section className="chat-tool-activity min-w-0 py-2.5 sm:py-3" aria-label={accessibleSummary}>
+    <section className="chat-tool-activity min-w-0 py-0.5" aria-label={accessibleSummary}>
       <button
         type="button"
-        className={`grid min-h-11 w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 rounded-lg px-1 text-left sm:gap-3 ${
+        className={`grid min-h-9 w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-1 text-left ${
           grouped
             ? "hover:bg-bg-hover/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
             : "cursor-default"
@@ -132,23 +132,23 @@ export function ChatToolActivity({
         title={grouped ? `${title} · ${expanded ? t("chat.panel.hideToolCalls") : t("chat.panel.showToolCalls")}` : focusReason}
       >
         <ToolIconStack tools={tools} registry={registry} />
-        <span className="flex min-w-0 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-2.5">
-          <span className="flex min-w-0 items-baseline gap-1.5">
-            <span className="truncate text-[13px] font-medium text-text sm:text-sm" title={focusReason}>
+        <span className="flex min-w-0 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-2">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="chat-tool-copy truncate text-[13px] font-medium leading-5" title={focusReason}>
               {focusReason}
             </span>
             {remainingCount > 0 && (
               <span className="shrink-0 text-[11px] font-medium text-text-muted sm:text-xs">+{remainingCount}</span>
             )}
           </span>
-          <span className={`truncate text-[11px] sm:text-xs ${stateTextClass(status.state)}`}>{status.text}</span>
+          <span className={`truncate text-[11px] leading-5 sm:text-xs ${stateTextClass(status.state)}`}>{status.text}</span>
         </span>
         {grouped
           ? <ChevronIcon expanded={expanded} />
-          : <span className="h-5 w-5 shrink-0" aria-hidden="true" />}
+          : <span className="h-4 w-4 shrink-0" aria-hidden="true" />}
       </button>
       {grouped && expanded && (
-        <div id={resolvedDetailsId} className="mt-2 grid min-w-0 sm:pl-12">
+        <div id={resolvedDetailsId} className="mt-1 grid min-w-0 sm:pl-9">
           {tools.map((tool) => (
             <ToolCallRow key={tool.id} tool={tool} registry={registry} />
           ))}
@@ -174,14 +174,14 @@ function ToolIconStack({ tools, registry }: { tools: ToolActivity[]; registry: T
   const visible = sources.slice(0, 4);
   const extra = Math.max(0, sources.length - visible.length);
   return (
-    <span className="flex min-w-[2.15rem] items-center py-1 pl-0.5" aria-hidden="true">
+    <span className="flex min-w-[1.9rem] items-center py-0.5 pl-0.5" aria-hidden="true">
       {visible.map(({ tool, visual }, index) => (
         <span key={visual.key} className={index === 0 ? "relative" : "relative -ml-1.5"} style={{ zIndex: visible.length - index }}>
-          <ToolSourceIcon tool={tool} visual={visual} compact />
+          <ToolSourceIcon tool={tool} visual={visual} />
         </span>
       ))}
       {extra > 0 && (
-        <span className="relative -ml-1.5 inline-flex h-8 min-w-8 items-center justify-center rounded-lg bg-bg-hover px-1 text-[10px] font-semibold text-text-muted">
+        <span className="relative -ml-1.5 inline-flex h-7 min-w-7 items-center justify-center rounded-md bg-bg-hover px-1 text-[10px] font-semibold text-text-muted">
           +{extra}
         </span>
       )}
@@ -206,13 +206,13 @@ function ToolCallRow({
   const reason = reasonLabel(tool, t);
   return (
     <div
-      className={`grid min-h-12 min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 py-1.5 sm:gap-3 ${
+      className={`grid min-h-10 min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 py-0.5 ${
         standalone ? "chat-tool-activity px-1" : "border-t border-border/60 first:border-t-0"
       }`}
       aria-label={`${reason}, ${stateText}${duration ? `, ${duration}` : ""}`}
     >
       <ToolSourceIcon tool={tool} visual={visual} />
-      <span className="min-w-0 [overflow-wrap:anywhere] text-[13px] font-medium leading-relaxed text-text sm:text-sm">
+      <span className="chat-tool-copy min-w-0 [overflow-wrap:anywhere] text-[13px] font-medium leading-5">
         {reason}
       </span>
       <span className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] font-medium uppercase tracking-wide sm:text-[11px] ${stateTextClass(state)}`}>
@@ -228,11 +228,9 @@ function ToolCallRow({
 function ToolSourceIcon({
   tool,
   visual,
-  compact = false,
 }: {
   tool: ToolActivity;
   visual: ToolVisual;
-  compact?: boolean;
 }) {
   const canRenderImage = !!visual.iconUrl && /^(https?:|data:|\/)/.test(visual.iconUrl);
   const iconUrl = canRenderImage ? visual.iconUrl! : "";
@@ -243,13 +241,12 @@ function ToolSourceIcon({
     setImageLoaded(loadedToolIconUrls.has(iconUrl));
   }, [iconUrl]);
   const state = visualState(tool);
-  const size = compact ? "h-8 w-8 rounded-lg" : "h-9 w-9 rounded-[0.6rem]";
   const stateClass = state === "running" || state === "preparing"
     ? "chat-tool-icon-running"
     : "";
   return (
     <span
-      className={`chat-tool-icon relative inline-flex shrink-0 items-center justify-center bg-bg-hover text-text-muted ${size} ${stateClass}`}
+      className={`chat-tool-icon relative top-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-bg-hover text-text-muted ${stateClass}`}
       title={visual.label}
       aria-hidden="true"
     >
@@ -277,8 +274,8 @@ function ToolSourceIcon({
 function ToolGlyphIcon({ glyph }: { glyph: ToolGlyph }) {
   const common = {
     viewBox: "0 0 24 24",
-    width: 18,
-    height: 18,
+    width: 16,
+    height: 16,
     fill: "none",
     stroke: "currentColor",
     strokeWidth: 1.8,
@@ -298,7 +295,7 @@ function ToolGlyphIcon({ glyph }: { glyph: ToolGlyph }) {
 
 function ChevronIcon({ expanded }: { expanded: boolean }) {
   return (
-    <svg viewBox="0 0 20 20" className={`h-5 w-5 shrink-0 text-text-muted transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+    <svg viewBox="0 0 20 20" className={`h-4 w-4 shrink-0 text-text-muted transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
       <path d="m5 7.5 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );

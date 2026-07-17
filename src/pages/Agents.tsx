@@ -372,7 +372,7 @@ export function Agents() {
               : `${list.length} agent${list.length === 1 ? "" : "s"} in this project.`}
           </p>
         </div>
-        <div className="hidden items-center gap-2 sm:flex">
+        <div className="hidden items-center gap-2 lg:flex">
           {list.some((agent) => agent.core_update_available) && (
             <button
               type="button"
@@ -413,7 +413,7 @@ export function Agents() {
             + New Agent
           </button>
         </div>
-        <div className="flex shrink-0 items-center gap-2 sm:hidden">
+        <div className="flex shrink-0 items-center gap-2 lg:hidden">
           <button type="button" onClick={() => navigate("/agents/new")} className="touch-target rounded-lg bg-accent px-3 text-sm font-bold text-bg" aria-label="Create agent">+ New</button>
           <button type="button" onClick={() => setShowMobileActions(true)} className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-lg border border-border text-lg text-text-muted" aria-label="Agent page actions">⋮</button>
         </div>

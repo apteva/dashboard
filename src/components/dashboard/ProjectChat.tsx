@@ -24,6 +24,7 @@ import { ChatPanel } from "../ChatPanel";
 import type { SubscribeFn } from "../AgentView";
 import { notifications } from "../../state/notifications";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { useRealtimeAvailability } from "../../hooks/useRealtimeAvailability";
 
 const FOCUSED_KEY = "apteva.dashboard.projectChat.focused";
 const REFRESH_MS = 8000;
@@ -136,6 +137,7 @@ export function ProjectChat() {
   const focusedAgent = focused !== null
     ? projectList.find((inst) => inst.id === focused) || null
     : null;
+  const realtime = useRealtimeAvailability(focusedAgent?.id, focusedAgent?.status === "running");
   const projectIds = useMemo(() => new Set(projectList.map((agent) => agent.id)), [projectList]);
   const summaryByAgent = useMemo(() => {
     const map = new Map<number, UnreadSummaryRow>();
@@ -256,6 +258,8 @@ export function ProjectChat() {
             <ChatPanel
               key={focused /* force ChatPanel state to reset on switch */}
               instanceId={focused}
+              agentName={focusedAgent?.name || "Agent"}
+              realtime={realtime}
               subscribe={noopSubscribe}
               historyLimit={100}
             />

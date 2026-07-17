@@ -9,6 +9,8 @@ import { startChatNotifications } from "../state/chatNotifications";
 import { chatConnections, purgeLegacyChatConnectedKeys } from "../state/chatConnections";
 import { apps, platform, type PlatformStatus } from "../api";
 import { ContextAgentChatWidget, readContextAgentChatOpenDefault } from "./ContextAgentChatWidget";
+import { NewAgentButton } from "./NewAgentButton";
+import { RealtimeVoiceDock } from "../state/RealtimeVoiceContext";
 
 // Sidebar APPS section visible-cap. Above this, the overflow row
 // collapses the rest behind a "More apps (N)" toggle. Five is the
@@ -51,7 +53,34 @@ export function Layout() {
   const isMobileChatConversation = /^\/chat\/[^/]+/.test(location.pathname);
   const { user, logout } = useAuth();
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(readContextAgentChatOpenDefault);
+  const [helperSelectionRequest, setHelperSelectionRequest] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  const openPlatformHelper = useCallback(() => {
+    setHelperSelectionRequest((request) => request + 1);
+    setAgentDrawerOpen(true);
+  }, []);
+
+  // Conversational build entry points use a short-lived query flag. This
+  // lets /build redirects and buttons on other routes open the same global
+  // helper without introducing a second chat/history surface. Remove the
+  // flag immediately so refreshes do not keep reopening the drawer.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("helper") !== "build") return;
+
+    openPlatformHelper();
+    params.delete("helper");
+    const search = params.toString();
+    navigate(
+      {
+        pathname: location.pathname,
+        search: search ? `?${search}` : "",
+        hash: location.hash,
+      },
+      { replace: true },
+    );
+  }, [location.hash, location.pathname, location.search, navigate, openPlatformHelper]);
 
   // The authenticated dashboard is a viewport shell: pages provide their own
   // scroll containers. Keep the browser document itself locked while Layout is
@@ -187,7 +216,6 @@ export function Layout() {
   //                Things you do TO the platform, not WITH it.
   const primaryNav = [
     { to: "/", label: t("nav.dashboard") },
-    { to: "/build", label: t("nav.build") },
     { to: "/agents", label: t("nav.agents") },
     { to: "/monitor", label: t("nav.monitor") },
     { to: "/chat", label: t("nav.chat") },
@@ -327,20 +355,14 @@ export function Layout() {
           two-step). Filled accent so it stays the focal point of
           the sidebar regardless of which page is selected. */}
       <div className="px-3 py-3 border-b border-border">
-        <button
+        <NewAgentButton
+          label={t("nav.newAgent")}
           onClick={() => {
-            navigate("/agents/new");
             if (mobile) setMobileNavOpen(false);
           }}
-          className="w-full flex items-center justify-center gap-2 bg-accent text-bg rounded-lg px-3 py-2 text-sm font-bold hover:bg-accent-hover transition-colors"
+          className="w-full"
           title={t("nav.newAgentTitle")}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M12 5v14" />
-            <path d="M5 12h14" />
-          </svg>
-          {t("nav.newAgent")}
-        </button>
+        />
       </div>
 
       <div className="flex-1 py-3 overflow-y-auto">
@@ -499,9 +521,11 @@ export function Layout() {
 
       <ContextAgentChatWidget
         open={agentDrawerOpen}
-        onOpen={() => setAgentDrawerOpen(true)}
+        onOpen={openPlatformHelper}
         onClose={() => setAgentDrawerOpen(false)}
+        selectHelperRequest={helperSelectionRequest}
       />
+      <RealtimeVoiceDock />
     </div>
   );
 }

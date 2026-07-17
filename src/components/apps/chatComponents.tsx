@@ -77,20 +77,44 @@ interface NativeComponentProps {
 
 const moduleCache = new Map<string, LazyExoticComponent<ComponentType<NativeComponentProps>>>();
 
+interface ComponentModuleScope {
+  installId?: number;
+  projectId?: string;
+}
+
+export function buildChatComponentModuleURL(
+  appName: string,
+  entry: string,
+  version: string,
+  source?: string,
+  scope?: ComponentModuleScope,
+): string {
+  // Integration components are embedded dashboard assets rather than
+  // per-install sidecar modules, so install/project routing does not apply.
+  const integration = source === "integration";
+  const base = integration
+    ? `/api/integrations/${appName}${entry}`
+    : `/api/apps/${appName}${entry}`;
+  const params = new URLSearchParams();
+  if (version) params.set("v", version);
+  if (!integration && scope?.installId) params.set("install_id", String(scope.installId));
+  if (!integration && scope?.projectId) params.set("project_id", scope.projectId);
+  const query = params.toString();
+  return `${base}${query ? `?${query}` : ""}`;
+}
+
 function loadComponent(
   appName: string,
   entry: string,
   version: string,
   source?: string,
+  scope?: ComponentModuleScope,
 ): LazyExoticComponent<ComponentType<NativeComponentProps>> {
   // Integrations live under a different path than apps. The server
   // serves /api/integrations/<slug>/ui/<file> from the embedded
   // integrations dist tree; apps come from the per-install sidecar
   // proxy at /api/apps/<slug>/<entry>.
-  const base = source === "integration"
-    ? `/api/integrations/${appName}${entry}`
-    : `/api/apps/${appName}${entry}`;
-  const url = version ? `${base}?v=${encodeURIComponent(version)}` : base;
+  const url = buildChatComponentModuleURL(appName, entry, version, source, scope);
   let cached = moduleCache.get(url);
   if (cached) return cached;
   cached = lazy(async () => {
@@ -163,7 +187,10 @@ export function ChatComponentMount({
   if (spec.slots && !spec.slots.includes(slot)) {
     return <ComponentMissing reason={`component "${comp.app}:${comp.name}" not allowed in slot "${slot}"`} />;
   }
-  const Lazy = loadComponent(app.name, spec.entry, app.version, app.source);
+  const Lazy = loadComponent(app.name, spec.entry, app.version, app.source, {
+    installId: app.install_id,
+    projectId,
+  });
   return (
     <ComponentBoundary appName={app.name} componentName={comp.name}>
       <Suspense fallback={<ComponentSkeleton />}>

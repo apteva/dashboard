@@ -15,6 +15,7 @@ import {
   type PromptComposition,
   type Provider,
   type ProviderDetail,
+  type RealtimeAvailability,
   type Status,
   type TelemetryEvent,
   type Thread,
@@ -37,7 +38,6 @@ import { Modal } from "./Modal";
 import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
-import { useMediaQuery } from "../hooks/useMediaQuery";
 import { AgentCurrentStatus, useCurrentStatuses } from "./dashboard/CurrentStatuses";
 import {
   appendRuntimeThoughtText,
@@ -45,7 +45,7 @@ import {
   type RuntimeThoughtText,
 } from "../utils/runtimeThought";
 
-type RuntimeView = "stream" | "activity" | "memory" | "skills" | "apps";
+type RuntimeView = "stream" | "activity" | "memory" | "skills" | "apps" | "capabilities";
 
 interface RuntimeEventItem {
   key: string;
@@ -177,12 +177,6 @@ function formatToolPayload(value: unknown, max = 5000): string {
   return text;
 }
 
-function payloadPreview(text?: string, max = 160): string {
-  if (!text) return "";
-  const compact = text.replace(/\s+/g, " ").trim();
-  return compact.length > max ? `${compact.slice(0, max)}…` : compact;
-}
-
 function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
   const data = ev.data || {};
   const threadId = ev.thread_id || "main";
@@ -310,6 +304,39 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
 
   if (ev.type.startsWith("execution.")) {
     return null;
+  }
+
+  if (ev.type === "realtime.session_started") {
+    return {
+      ...base,
+      key: ev.id || `realtime-start:${threadId}:${ev.time}`,
+      kind: "thread",
+      label: "Live voice connected",
+      detail: [data.voice, data.model].filter(Boolean).join(" · "),
+      status: "running",
+    };
+  }
+
+  if (ev.type === "realtime.user" || ev.type === "realtime.assistant") {
+    return {
+      ...base,
+      key: ev.id || `${ev.type}:${threadId}:${ev.time}`,
+      kind: ev.type === "realtime.user" ? "channel" : "thought",
+      label: ev.type === "realtime.user" ? "Operator said" : "Agent said",
+      detail: compactText(data.text),
+      responseDetail: ev.type === "realtime.assistant" ? compactText(data.text) : undefined,
+      status: "info",
+    };
+  }
+
+  if (ev.type === "realtime.bridge_connected" || ev.type === "realtime.bridge_disconnected") {
+    return {
+      ...base,
+      key: ev.id || `${ev.type}:${threadId}:${ev.time}`,
+      kind: "thread",
+      label: ev.type === "realtime.bridge_connected" ? "Voice audio connected" : "Voice audio disconnected",
+      status: ev.type === "realtime.bridge_connected" ? "success" : "info",
+    };
   }
 
   if (ev.type === "thread.spawn") {
@@ -544,6 +571,13 @@ export function AgentView({
   // receiving user messages — we gray out the chat column to make that
   // state obvious instead of silently dropping typed messages.
   const [channelsAttached, setChannelsAttached] = useState(true);
+  const [realtime, setRealtime] = useState<RealtimeAvailability>({
+    enabled: false,
+    available: false,
+    voice: "marin",
+    mcp: [],
+    provider: "openai-realtime",
+  });
 
   // Track threads, tools, and active LLM calls for the runtime summary.
   const [graphThreads, setGraphThreads] = useState<Thread[]>(initialThreads);
@@ -675,6 +709,7 @@ export function AgentView({
   useEffect(() => {
     if (instance.status !== "running") {
       setChannelsAttached(false);
+      setRealtime((current) => ({ ...current, available: false }));
       return;
     }
     let cancelled = false;
@@ -686,6 +721,17 @@ export function AgentView({
             (s) => s.name === "channels" || s.name === "apteva-channels",
           );
           setChannelsAttached(has);
+          const realtimeProvider = (c.providers || []).find((provider) =>
+            provider.name === "openai-realtime" || provider.name.includes("realtime"),
+          );
+          const attached = new Set((c.mcp_servers || []).map((server) => server.name));
+          setRealtime({
+            enabled: !!c.realtime_enabled,
+            available: !!realtimeProvider,
+            voice: c.realtime_voice || realtimeProvider?.realtime_voice || "marin",
+            mcp: (c.realtime_voice_mcp || []).filter((name) => attached.has(name)),
+            provider: realtimeProvider?.name || "openai-realtime",
+          });
         })
         .catch(() => {});
     };
@@ -765,7 +811,21 @@ export function AgentView({
           const parent = prev.find((t) => t.id === parentId);
           depth = parent ? (parent.depth || 0) + 1 : 1;
         }
-        return [...prev, { id: event.thread_id, parent_id: parentId, depth, directive: data.directive || "", tools: [], iteration: 0, rate: "reactive", model: "", age: "0s" }];
+        return [...prev, {
+          id: event.thread_id,
+          parent_id: parentId,
+          depth,
+          directive: data.directive || "",
+          tools: data.tools || [],
+          mcp_names: data.mcp || [],
+          realtime: !!data.realtime,
+          voice: data.voice || undefined,
+          provider: data.provider || undefined,
+          iteration: 0,
+          rate: "reactive",
+          model: "",
+          age: "0s",
+        }];
       });
     }
     if (event.type === "thread.done") {
@@ -1134,7 +1194,7 @@ export function AgentView({
           </button>
         </div>
         {/* Chat panel */}
-        <div className={`${mobilePane === "chat" ? "flex" : "hidden"} min-h-0 flex-col overflow-hidden border-b border-border lg:flex lg:w-1/3 lg:min-w-[320px] lg:border-b-0 lg:border-r`}>
+        <div className={`${mobilePane === "chat" ? "flex" : "hidden"} min-h-0 flex-col overflow-hidden border-b border-border lg:flex lg:w-[42%] lg:min-w-[380px] lg:max-w-[680px] lg:border-b-0 lg:border-r`}>
           {instance.status !== "running" ? (
             <div className="flex items-center justify-center h-full text-text-muted text-sm">
               Agent is stopped. Start it to begin chatting.
@@ -1148,7 +1208,12 @@ export function AgentView({
               </div>
             </div>
           ) : (
-            <ChatPanel instanceId={instance.id} subscribe={subscribe} />
+            <ChatPanel
+              instanceId={instance.id}
+              agentName={instance.name}
+              subscribe={subscribe}
+              realtime={realtime}
+            />
           )}
         </div>
 
@@ -1247,8 +1312,7 @@ function AgentRuntimePanel({
   });
   const [liveStatus, setLiveStatus] = useState<Status | null>(null);
   const [executionBusy, setExecutionBusy] = useState<"run" | "pause" | "step" | "back" | null>(null);
-  const [showMobileActions, setShowMobileActions] = useState(false);
-  const isDesktop = useMediaQuery("(min-width: 768px)");
+  const [showDeveloperControls, setShowDeveloperControls] = useState(false);
   const telemetryConnection = useTelemetryConnectionState();
 
   useEffect(() => {
@@ -1258,7 +1322,6 @@ function AgentRuntimePanel({
 
   const selectRuntimeThread = (threadId: string) => {
     setSelectedRuntimeThread(threadId);
-    onViewChange("stream");
   };
 
   useEffect(() => {
@@ -1351,13 +1414,15 @@ function AgentRuntimePanel({
     }
   };
 
-  const views: RuntimeView[] = [
-    "stream",
-    "activity",
-    "memory",
-    "skills",
-    "apps",
+  const primaryViews: Array<{ id: RuntimeView; label: string }> = [
+    { id: "stream", label: "Live" },
+    { id: "memory", label: "Memory" },
+    { id: "capabilities", label: `Capabilities${mcpServers.length > 0 ? ` ${mcpServers.length}` : ""}` },
   ];
+  const executionControlsVisible =
+    showDeveloperControls || (
+      instance.status === "running" && (executionControl.mode !== "auto" || !!executionControl.waiting)
+    );
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg">
@@ -1393,154 +1458,129 @@ function AgentRuntimePanel({
           />
         </div>
       </Modal>
-      <Modal open={showMobileActions} onClose={() => setShowMobileActions(false)} width="max-w-md" ariaLabel="Agent actions">
-        <div className="border-b border-border px-4 py-3">
-          <div className="text-[10px] font-bold uppercase tracking-wide text-accent">Agent actions</div>
-          <div className="mt-1 truncate text-base font-semibold text-text">{instance.name}</div>
-        </div>
-        <div className="page-safe-bottom grid gap-2 p-3">
-          {instance.status === "running" ? (
-            <>
-              <button type="button" onClick={() => { setShowMobileActions(false); void onPause(); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text">Pause</button>
-              <button type="button" onClick={() => { setShowMobileActions(false); void onStop(); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-red">Stop</button>
-            </>
-          ) : (
-            <button type="button" onClick={() => { setShowMobileActions(false); void onStart(); }} className="touch-target rounded-lg border border-accent px-4 text-left text-sm font-semibold text-accent">Start</button>
-          )}
-          <button type="button" onClick={() => { setShowMobileActions(false); onConfig(); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text">Configuration</button>
-          <button type="button" onClick={() => { setShowMobileActions(false); onReset(); }} className="touch-target rounded-lg border border-yellow/40 px-4 text-left text-sm text-yellow">Reset context</button>
-          <button type="button" onClick={() => { setShowMobileActions(false); onDelete(); }} className="touch-target rounded-lg border border-red/40 px-4 text-left text-sm text-red">Delete agent</button>
-        </div>
-      </Modal>
-      <div className="border-b border-border px-3 py-3 sm:px-4 space-y-3">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full shrink-0 ${instance.status === "running" ? "bg-green" : instance.status === "paused" ? "bg-yellow" : "bg-red"}`} />
-              <h1 className="text-text text-sm font-bold truncate">{instance.name}</h1>
-              <span className="text-[10px] text-text-muted uppercase tracking-wide">{instance.status}</span>
-              <SleepPill sleep={liveStatus || statusFallbackForInstance(instance.status)} />
+      <div className="shrink-0 border-b border-border/70 bg-bg-card/20">
+        <div className="px-3 py-3 sm:px-4">
+          <div className="flex min-w-0 items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className={`h-2 w-2 shrink-0 rounded-full ${instance.status === "running" ? "bg-green" : instance.status === "paused" ? "bg-yellow" : "bg-red"}`} />
+                <h1 className="truncate text-sm font-bold text-text">{instance.name}</h1>
+                <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
+                  instance.status === "running"
+                    ? "bg-green/10 text-green"
+                    : instance.status === "paused"
+                      ? "bg-yellow/10 text-yellow"
+                      : "bg-red/10 text-red"
+                }`}>{instance.status}</span>
+                {instance.status !== "stopped" && (
+                  <SleepPill sleep={liveStatus || statusFallbackForInstance(instance.status)} />
+                )}
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-text-muted">
+                <span>{instance.mode}</span>
+                <span aria-hidden="true">·</span>
+                <span>#{instance.id}</span>
+                {instance.status === "running" && telemetryConnection !== "open" && (
+                  <span className="text-yellow" aria-live="polite">
+                    live {telemetryConnection === "connecting" ? "connecting" : "reconnecting"}
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-muted">
-              <span>{instance.mode}</span>
-              <span>agent #{instance.id}</span>
-              {instance.project_id && <span>project {instance.project_id}</span>}
-              {instance.status === "running" && telemetryConnection !== "open" && (
-                <span className="text-yellow" aria-live="polite">
-                  live {telemetryConnection === "connecting" ? "connecting" : "reconnecting"}
-                </span>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {instance.status === "running" ? (
+                <button onClick={onStop} className="h-9 rounded-md border border-red/40 px-3 text-xs font-semibold text-red hover:bg-red/10">Stop</button>
+              ) : (
+                <button onClick={onStart} className="h-9 rounded-md border border-accent bg-accent/10 px-3 text-xs font-semibold text-accent hover:bg-accent hover:text-bg">Start</button>
               )}
+              <AgentRuntimeActionsMenu
+                instance={instance}
+                developerControlsVisible={executionControlsVisible}
+                onPause={onPause}
+                onConfig={onConfig}
+                onCapabilities={() => setShowCapabilitiesManage(true)}
+                onDiagnostics={() => onViewChange("activity")}
+                onToggleDeveloperControls={() => setShowDeveloperControls((visible) => !visible)}
+                onReset={onReset}
+                onDelete={onDelete}
+              />
             </div>
-            <AgentCurrentStatus status={currentStatus} />
-          </div>
-          <button type="button" onClick={() => setShowMobileActions(true)} className="touch-target inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border text-lg text-text-muted md:hidden" aria-label="Agent actions">⋮</button>
-          <div className="hidden items-center gap-1.5 shrink-0 md:flex">
-            {instance.status === "running" ? (
-              <>
-                <button onClick={onPause} className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-accent hover:border-accent">Pause</button>
-                <button onClick={onStop} className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-red hover:border-red">Stop</button>
-              </>
-            ) : (
-              <button onClick={onStart} className="px-2 py-1 border border-accent rounded text-[11px] text-accent hover:bg-accent hover:text-bg">Start</button>
-            )}
-            <button onClick={onConfig} className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-text">Config</button>
-            <button onClick={onReset} className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-yellow">Reset context</button>
-            <button onClick={onDelete} className="px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-red">Delete</button>
           </div>
         </div>
-        <LiveStatsBar instanceId={instance.id} subscribe={subscribe} sleep={liveStatus} />
-        <ExecutionControlStrip
-          status={executionControl}
-          disabled={instance.status !== "running" || executionBusy !== null}
-          busy={executionBusy}
-          onRun={() => sendExecutionControl("run")}
-          onPause={() => sendExecutionControl("pause")}
-          onStep={() => sendExecutionControl("step")}
-          onBack={restorePreviousStep}
-          onThreadOpen={onThreadOpen}
-        />
-        <AppPanels
-          slot="instance.status"
-          instanceId={instance.id}
-          projectId={instance.project_id || undefined}
-          className="space-y-1.5"
-        />
-      </div>
-
-      {isDesktop ? (
-      <div className="shrink-0 grid grid-cols-2 divide-x divide-border border-b border-border">
-        <ThreadSummary
-          instanceId={instance.id}
-          running={instance.status === "running"}
-          threads={threads}
-          activeTools={activeTools}
-          thinking={thinking}
-          selectedThreadId={selectedRuntimeThread}
-          onThreadSelect={selectRuntimeThread}
-          onThreadOpen={onThreadOpen}
-        />
-        <CapabilityShelf
-          mcpServers={mcpServers}
-          apps={installedApps}
-          inventory={mcpInventory}
-          instanceId={instance.id}
-          onAttachedChange={setMCPServers}
-          onManage={() => setShowCapabilitiesManage(true)}
-        />
-      </div>
-      ) : (
-        <div className="shrink-0 border-b border-border bg-bg-card">
-          <details open className="border-b border-border group">
-            <summary className="touch-target flex cursor-pointer list-none items-center justify-between px-3 text-sm font-semibold text-text">
-              Current work and threads <span className="text-text-dim group-open:rotate-90">›</span>
-            </summary>
-            <ThreadSummary
-              instanceId={instance.id}
-              running={instance.status === "running"}
-              threads={threads}
-              activeTools={activeTools}
-              thinking={thinking}
-              selectedThreadId={selectedRuntimeThread}
-              onThreadSelect={selectRuntimeThread}
+        {instance.status === "running" && (
+          <LiveStatsBar instanceId={instance.id} subscribe={subscribe} sleep={liveStatus} />
+        )}
+        <div className={`px-3 py-3 sm:px-4 ${instance.status === "running" ? "" : "border-t border-border/70"}`}>
+          <div className="min-w-0">
+            <AgentCurrentStatus status={currentStatus} embedded showFallback />
+          </div>
+          <AppPanels
+            slot="instance.status"
+            instanceId={instance.id}
+            projectId={instance.project_id || undefined}
+            className="mt-2 space-y-1.5"
+          />
+        </div>
+        {executionControlsVisible && (
+          <div className="border-t border-border/70 px-3 py-2 sm:px-4">
+            <ExecutionControlStrip
+              status={executionControl}
+              disabled={instance.status !== "running" || executionBusy !== null}
+              busy={executionBusy}
+              onRun={() => sendExecutionControl("run")}
+              onPause={() => sendExecutionControl("pause")}
+              onStep={() => sendExecutionControl("step")}
+              onBack={restorePreviousStep}
               onThreadOpen={onThreadOpen}
             />
-          </details>
-          <details className="group">
-            <summary className="touch-target flex cursor-pointer list-none items-center justify-between px-3 text-sm font-semibold text-text">
-              Capabilities <span className="text-text-dim group-open:rotate-90">›</span>
-            </summary>
-            <CapabilityShelf
-              mcpServers={mcpServers}
-              apps={installedApps}
-              inventory={mcpInventory}
-              instanceId={instance.id}
-              onAttachedChange={setMCPServers}
-              onManage={() => setShowCapabilitiesManage(true)}
-            />
-          </details>
-        </div>
-      )}
+          </div>
+        )}
+      </div>
 
-      <div className="border-b border-border px-3 py-2 flex items-center gap-2">
-        <span className="text-[10px] uppercase tracking-wide text-text-muted shrink-0">View</span>
-        <div className="flex items-center gap-1 overflow-x-auto">
-          {views.map((v) => (
+      <RuntimeContextStrip
+        threads={threads}
+        activeTools={activeTools}
+        thinking={thinking}
+        selectedThreadId={selectedRuntimeThread}
+        capabilities={mcpServers}
+        onThreadSelect={selectRuntimeThread}
+        onThreadOpen={onThreadOpen}
+        onManageCapabilities={() => setShowCapabilitiesManage(true)}
+      />
+
+      <div className="shrink-0 flex items-center gap-2 border-b border-border/70 px-3 py-2 sm:px-4">
+        <div className="flex min-w-0 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Agent workspace">
+          {primaryViews.map((item) => (
             <button
-              key={v}
-              onClick={() => onViewChange(v)}
-              className={`px-2 py-1 rounded text-[11px] capitalize whitespace-nowrap transition-colors ${
-                view === v ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-bg-hover"
+              key={item.id}
+              onClick={() => onViewChange(item.id)}
+              role="tab"
+              aria-selected={view === item.id}
+              className={`rounded-md px-3 py-1.5 text-xs whitespace-nowrap transition-colors ${
+                view === item.id ? "bg-accent/15 text-accent" : "text-text-muted hover:bg-bg-hover hover:text-text"
               }`}
             >
-              {v}
+              {item.label}
             </button>
           ))}
         </div>
+        {view === "activity" && (
+          <button type="button" onClick={() => onViewChange("stream")} className="ml-auto rounded bg-yellow/10 px-2 py-1 text-[10px] text-yellow">
+            Diagnostics ×
+          </button>
+        )}
       </div>
 
       <div className="flex-1 min-h-0">
         {view === "stream" ? (
           <RuntimeStream events={events} selectedThreadId={selectedRuntimeThread} loading={runtimeLoading} />
+        ) : view === "capabilities" ? (
+          <AgentCapabilitiesView
+            instance={instance}
+            attached={mcpServers}
+            inventory={mcpInventory}
+            onManage={() => setShowCapabilitiesManage(true)}
+          />
         ) : advancedContent}
       </div>
       {instance.status === "running" && (
@@ -1548,6 +1588,271 @@ function AgentRuntimePanel({
       )}
     </section>
   );
+}
+
+function AgentRuntimeActionsMenu({
+  instance,
+  developerControlsVisible,
+  onPause,
+  onConfig,
+  onCapabilities,
+  onDiagnostics,
+  onToggleDeveloperControls,
+  onReset,
+  onDelete,
+}: {
+  instance: Agent;
+  developerControlsVisible: boolean;
+  onPause: () => void | Promise<void>;
+  onConfig: () => void;
+  onCapabilities: () => void;
+  onDiagnostics: () => void;
+  onToggleDeveloperControls: () => void;
+  onReset: () => void;
+  onDelete: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const dismissOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("keydown", dismissOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("keydown", dismissOnEscape);
+    };
+  }, [open]);
+
+  const choose = (action: () => void | Promise<void>) => {
+    setOpen(false);
+    void action();
+  };
+
+  const itemClass = "flex min-h-10 w-full items-center px-3 text-left text-xs text-text transition-colors hover:bg-bg-hover";
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className={`inline-flex h-9 w-9 items-center justify-center rounded-md border text-lg leading-none transition-colors ${
+          open ? "border-text-dim bg-bg-hover text-text" : "border-border text-text-muted hover:bg-bg-hover hover:text-text"
+        }`}
+        aria-label={`Actions for ${instance.name}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        ⋮
+      </button>
+      {open && (
+        <div role="menu" className="absolute right-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-lg border border-border bg-bg-card py-1 shadow-2xl shadow-black/60">
+          <button type="button" role="menuitem" onClick={() => choose(onConfig)} className={itemClass}>Configuration</button>
+          <button type="button" role="menuitem" onClick={() => choose(onCapabilities)} className={itemClass}>Manage capabilities</button>
+          {instance.status === "running" && (
+            <button type="button" role="menuitem" onClick={() => choose(onPause)} className={itemClass}>Pause agent</button>
+          )}
+          <div className="my-1 border-t border-border" />
+          <button type="button" role="menuitem" onClick={() => choose(onDiagnostics)} className={itemClass}>Open diagnostics</button>
+          <button type="button" role="menuitem" onClick={() => choose(onToggleDeveloperControls)} className={itemClass}>
+            {developerControlsVisible ? "Hide step controls" : "Show step controls"}
+          </button>
+          <div className="my-1 border-t border-border" />
+          <button type="button" role="menuitem" onClick={() => choose(onReset)} className={`${itemClass} text-yellow`}>Reset context</button>
+          <button type="button" role="menuitem" onClick={() => choose(onDelete)} className={`${itemClass} text-red`}>Delete agent</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RuntimeContextStrip({
+  threads,
+  activeTools,
+  thinking,
+  selectedThreadId,
+  capabilities,
+  onThreadSelect,
+  onThreadOpen,
+  onManageCapabilities,
+}: {
+  threads: Thread[];
+  activeTools: Record<string, string>;
+  thinking: Record<string, boolean>;
+  selectedThreadId: string;
+  capabilities: MCPServerConfig[];
+  onThreadSelect: (id: string) => void;
+  onThreadOpen: (id: string) => void;
+  onManageCapabilities: () => void;
+}) {
+  const mainThread: Thread = { id: "main", directive: "", tools: [], iteration: 0, rate: "", model: "", age: "" };
+  const rows = threads.some((thread) => thread.id === "main") ? threads : [mainThread, ...threads];
+  const selected = rows.find((thread) => thread.id === selectedThreadId) || rows[0] || mainThread;
+  const tool = activeTools[selected.id];
+  const isThinking = !!thinking[selected.id];
+  const state = tool
+    ? `Using ${tool}`
+    : selected.realtime
+      ? "Live voice"
+      : isThinking
+        ? "Thinking"
+        : selected.sleep_state
+          ? sleepLabel(selected, { compact: true })
+          : selected.rate || "Waiting";
+  const shownCapabilities = capabilities.slice(0, 3);
+
+  return (
+    <div className="shrink-0 flex min-w-0 flex-wrap items-center gap-2 border-b border-border/70 bg-bg-card/30 px-3 py-2 sm:px-4">
+      <span className="text-[9px] font-bold uppercase tracking-wide text-text-dim">Thread</span>
+      {rows.length > 1 ? (
+        <select
+          value={selected.id}
+          onChange={(event) => onThreadSelect(event.target.value)}
+          className="h-8 max-w-48 rounded-md border border-border bg-bg-input px-2 text-xs text-text focus:border-accent focus:outline-none"
+          aria-label="Runtime thread"
+        >
+          {rows.map((thread) => <option key={thread.id} value={thread.id}>{thread.name || thread.id}</option>)}
+        </select>
+      ) : (
+        <span className="text-xs font-medium text-text">{selected.name || selected.id}</span>
+      )}
+      {selected.realtime && (
+        <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-accent">
+          Voice{selected.voice ? ` · ${selected.voice}` : ""}
+        </span>
+      )}
+      <span className={`h-1.5 w-1.5 rounded-full ${tool ? "bg-accent animate-pulse" : isThinking ? "bg-yellow animate-pulse" : "bg-text-dim"}`} />
+      <span className="max-w-52 truncate text-[11px] text-text-muted">{state}</span>
+      <button type="button" onClick={() => onThreadOpen(selected.id)} className="rounded px-1.5 py-1 text-[10px] text-text-dim hover:bg-bg-hover hover:text-text">Details</button>
+
+      <button
+        type="button"
+        onClick={onManageCapabilities}
+        className="ml-auto flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-bg px-2 py-1.5 text-left hover:border-accent/50 hover:bg-bg-hover"
+        title="Select apps and MCP capabilities"
+      >
+        <span className="shrink-0 text-[9px] font-bold uppercase tracking-wide text-text-dim">Capabilities</span>
+        {shownCapabilities.length === 0 ? (
+          <span className="text-[11px] text-accent">Add</span>
+        ) : (
+          <>
+            <span className="hidden min-w-0 items-center gap-1 md:flex">
+              {shownCapabilities.map((capability) => (
+                <span key={capability.name} className="max-w-24 truncate rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">
+                  {capabilityDisplayName(capability.name)}
+                </span>
+              ))}
+            </span>
+            <span className="text-[11px] text-text-muted md:hidden">{capabilities.length} attached</span>
+            {capabilities.length > shownCapabilities.length && (
+              <span className="shrink-0 text-[10px] text-text-muted">+{capabilities.length - shownCapabilities.length}</span>
+            )}
+          </>
+        )}
+        <span className="shrink-0 text-text-dim" aria-hidden="true">›</span>
+      </button>
+    </div>
+  );
+}
+
+function AgentCapabilitiesView({
+  instance,
+  attached,
+  inventory,
+  onManage,
+}: {
+  instance: Agent;
+  attached: MCPServerConfig[];
+  inventory: MCPServer[];
+  onManage: () => void;
+}) {
+  const [section, setSection] = useState<"connections" | "skills" | "apps">("connections");
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 flex items-center gap-1 border-b border-border px-3 py-2 sm:px-4">
+        {([
+          ["connections", `MCP & Apps ${attached.length}`],
+          ["skills", "Skills"],
+          ["apps", "App panels"],
+        ] as const).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setSection(id)}
+            className={`rounded-md px-2.5 py-1.5 text-[11px] ${section === id ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
+          >
+            {label}
+          </button>
+        ))}
+        <button type="button" onClick={onManage} className="ml-auto rounded-md border border-accent/50 px-2.5 py-1.5 text-[11px] text-accent hover:bg-accent/10">
+          Manage
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1">
+        {section === "connections" ? (
+          <div className="h-full overflow-y-auto p-4 sm:p-5">
+            <div className="mb-4">
+              <h2 className="text-sm font-semibold text-text">Attached capabilities</h2>
+              <p className="mt-1 text-xs text-text-muted">Apps and MCP servers available to this agent. Use Manage to attach or remove them.</p>
+            </div>
+            {attached.length === 0 ? (
+              <button type="button" onClick={onManage} className="flex w-full items-center justify-between rounded-lg border border-dashed border-border px-4 py-5 text-left hover:border-accent/60 hover:bg-bg-card">
+                <span>
+                  <span className="block text-sm text-text">No capabilities attached</span>
+                  <span className="mt-1 block text-xs text-text-muted">Select an app or MCP server for this agent.</span>
+                </span>
+                <span className="text-xs font-semibold text-accent">Add capability</span>
+              </button>
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {attached.map((capability) => {
+                  const row = inventory.find((candidate) =>
+                    mcpCapabilityAliases(candidate).some((alias) => capabilityKey(alias) === capabilityKey(capability.name)),
+                  );
+                  return (
+                    <button key={capability.name} type="button" onClick={onManage} className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-bg-card/50 p-3 text-left hover:border-accent/50 hover:bg-bg-hover">
+                      <span className={`h-2 w-2 shrink-0 rounded-full ${capability.connected === false ? "bg-red" : "bg-green"}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-xs font-medium text-text">{row ? displayMCPName(row) : capabilityDisplayName(capability.name)}</span>
+                        <span className="mt-0.5 block truncate text-[10px] text-text-muted">{row ? `${row.tool_count || 0} tools · ${sourceLabel(row)}` : capability.transport || "MCP server"}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : section === "skills" ? (
+          <SkillsPanel instanceId={instance.id} />
+        ) : (
+          <div className="h-full overflow-auto p-3">
+            <AppPanels
+              slot="instance.tab"
+              instanceId={instance.id}
+              projectId={instance.project_id || undefined}
+              className="h-full space-y-3"
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function capabilityDisplayName(name: string): string {
+  return name
+    .replace(/^apteva[-_]/, "")
+    .replace(/^mcp[-_:]/, "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function statusFallbackForInstance(status: string) {
@@ -1840,6 +2145,8 @@ function CapabilitiesManager({
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [showAttachedOnly, setShowAttachedOnly] = useState(false);
 
   const loadInventory = useCallback(() => {
     setLoading(true);
@@ -1928,22 +2235,65 @@ function CapabilitiesManager({
     const row = findAppInventoryRow(app, appInventoryByKey);
     return capabilityIsAttached(attachedKeys, appCapabilityAliases(app, row));
   }).length;
+  const normalizedQuery = query.trim().toLowerCase();
+  const matchesQuery = (...values: Array<string | undefined>) =>
+    !normalizedQuery || values.some((value) => String(value || "").toLowerCase().includes(normalizedQuery));
+  const visibleAppRows = appRows.filter((app) => {
+    const row = findAppInventoryRow(app, appInventoryByKey);
+    const enabled = capabilityIsAttached(attachedKeys, appCapabilityAliases(app, row));
+    return (!showAttachedOnly || enabled) && matchesQuery(app.display_name, app.name, app.description, row?.name, row?.description);
+  });
+  const visibleOrphanAppRows = orphanAppRows.filter((row) =>
+    (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description),
+  );
+  const visibleIntegrationRows = integrationRows.filter((row) =>
+    (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description, mcpName(row)),
+  );
+  const visibleCustomRows = customRows.filter((row) =>
+    (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description, mcpName(row)),
+  );
+  const visibleCount = visibleAppRows.length + visibleOrphanAppRows.length + visibleIntegrationRows.length + visibleCustomRows.length;
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-5">
+    <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-border bg-bg-card px-4 py-3">
+        <div className="relative min-w-[14rem] flex-1">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dim">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-4-4" />
+          </svg>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search apps and MCP servers"
+            className="h-10 w-full rounded-lg border border-border bg-bg-input pl-9 pr-3 text-sm text-text placeholder:text-text-dim focus:border-accent focus:outline-none"
+          />
+        </div>
+        <div className="flex rounded-lg border border-border bg-bg p-0.5">
+          <button type="button" onClick={() => setShowAttachedOnly(false)} className={`rounded-md px-3 py-1.5 text-[11px] ${!showAttachedOnly ? "bg-bg-hover text-text" : "text-text-muted"}`}>All</button>
+          <button type="button" onClick={() => setShowAttachedOnly(true)} className={`rounded-md px-3 py-1.5 text-[11px] ${showAttachedOnly ? "bg-bg-hover text-text" : "text-text-muted"}`}>Attached {attached.length}</button>
+        </div>
+        <span className="w-full text-[10px] text-text-dim sm:w-auto">Changes apply immediately</span>
+      </div>
+      <div className="space-y-5 p-4">
       {error && (
         <div className="rounded border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">
           {error}
         </div>
       )}
-      <CapabilitySection
+      {visibleCount === 0 && !loading && (
+        <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center text-sm text-text-muted">
+          No capabilities match this search.
+        </div>
+      )}
+      {(visibleAppRows.length > 0 || visibleOrphanAppRows.length > 0 || (!normalizedQuery && !showAttachedOnly)) && <CapabilitySection
         title={`Apps — ${appAttachedCount}/${appRows.length} attached`}
         hint="Installed apps exposing MCP tools"
       >
-        {appRows.length === 0 && orphanAppRows.length === 0 && (
+        {visibleAppRows.length === 0 && visibleOrphanAppRows.length === 0 && (
           <EmptyCapabilityRow text="No running app MCP surfaces in this project." />
         )}
-        {appRows.map((app) => {
+        {visibleAppRows.map((app) => {
           const row = findAppInventoryRow(app, appInventoryByKey);
           const aliases = appCapabilityAliases(app, row);
           const name = row ? mcpName(row) : app.name;
@@ -1961,7 +2311,7 @@ function CapabilitiesManager({
             />
           );
         })}
-        {orphanAppRows.map((row) => {
+        {visibleOrphanAppRows.map((row) => {
           const name = mcpName(row);
           const enabled = attachedNames.has(name);
           return (
@@ -1976,16 +2326,16 @@ function CapabilitiesManager({
             />
           );
         })}
-      </CapabilitySection>
+      </CapabilitySection>}
 
-      <CapabilitySection
+      {(visibleIntegrationRows.length > 0 || (!normalizedQuery && !showAttachedOnly)) && <CapabilitySection
         title={`Integrations — ${integrationRows.filter((row) => mcpRowIsAttached(attachedKeys, row)).length}/${integrationRows.length} attached`}
         hint="OAuth and integration-backed MCP servers"
       >
-        {integrationRows.length === 0 && (
+        {visibleIntegrationRows.length === 0 && (
           <EmptyCapabilityRow text="No integration MCP servers available." />
         )}
-        {integrationRows.map((row) => {
+        {visibleIntegrationRows.map((row) => {
           const name = mcpName(row);
           const aliases = mcpCapabilityAliases(row);
           const enabled = capabilityIsAttached(attachedKeys, aliases);
@@ -2002,16 +2352,16 @@ function CapabilitiesManager({
             />
           );
         })}
-      </CapabilitySection>
+      </CapabilitySection>}
 
-      <CapabilitySection
+      {(visibleCustomRows.length > 0 || (!normalizedQuery && !showAttachedOnly)) && <CapabilitySection
         title={`Custom MCP Servers — ${customRows.filter((row) => mcpRowIsAttached(attachedKeys, row)).length}/${customRows.length} attached`}
         hint="Manually registered servers"
       >
-        {customRows.length === 0 && (
+        {visibleCustomRows.length === 0 && (
           <EmptyCapabilityRow text="No custom MCP servers available." />
         )}
-        {customRows.map((row) => {
+        {visibleCustomRows.map((row) => {
           const name = mcpName(row);
           const aliases = mcpCapabilityAliases(row);
           const enabled = capabilityIsAttached(attachedKeys, aliases);
@@ -2028,11 +2378,12 @@ function CapabilitiesManager({
             />
           );
         })}
-      </CapabilitySection>
+      </CapabilitySection>}
 
       {loading && (
         <div className="text-center text-xs text-text-muted py-2">Loading capabilities…</div>
       )}
+      </div>
     </div>
   );
 }
@@ -2719,11 +3070,19 @@ function RuntimeStream({
   selectedThreadId: string;
   loading: boolean;
 }) {
-  const [filter, setFilter] = useState<"all" | RuntimeEventItem["kind"]>("all");
+  type RuntimeFilter = "work" | "all" | RuntimeEventItem["kind"];
+  const [filter, setFilter] = useState<RuntimeFilter>("all");
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [query, setQuery] = useState("");
   const visible = events
     .filter((e) => (e.threadId || "main") === selectedThreadId)
-    .filter((e) => filter === "all" || e.kind === filter)
+    .filter((e) => {
+      if (filter === "all") return true;
+      if (filter === "work") {
+        return e.kind === "tool" || e.kind === "error" || e.kind === "thread" || (e.kind === "thought" && e.status === "running");
+      }
+      return e.kind === filter;
+    })
     .filter((e) => {
       const q = query.trim().toLowerCase();
       if (!q) return true;
@@ -2732,38 +3091,67 @@ function RuntimeStream({
     .slice()
     .reverse();
 
-  const filters: Array<"all" | RuntimeEventItem["kind"]> = ["all", "thought", "tool", "thread", "channel", "error"];
+  const primaryFilters: Array<{ id: RuntimeFilter; label: string }> = [
+    { id: "all", label: "All" },
+    { id: "work", label: "Work" },
+    { id: "tool", label: "Tools" },
+    { id: "error", label: "Errors" },
+  ];
+  const advancedFilters: Array<{ id: RuntimeFilter; label: string }> = [
+    { id: "thought", label: "Thoughts" },
+    { id: "thread", label: "Threads" },
+    { id: "channel", label: "Channels" },
+  ];
 
   return (
     <div className="h-full min-h-0 flex flex-col">
-      <div className="shrink-0 px-3 py-2 border-b border-border flex items-center gap-2">
+      <div className="shrink-0 flex flex-wrap items-center gap-2 border-b border-border/70 px-3 py-2">
         <div className="flex items-center gap-1 overflow-x-auto">
-          {filters.map((f) => (
+          {primaryFilters.map((item) => (
             <button
-              key={f}
-              onClick={() => setFilter(f)}
+              key={item.id}
+              onClick={() => setFilter(item.id)}
               className={`px-2 py-1 rounded text-[11px] capitalize whitespace-nowrap ${
-                filter === f ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"
+                filter === item.id ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"
               }`}
             >
-              {f}
+              {item.label}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => setShowAdvancedFilters((visible) => !visible)}
+            className={`rounded px-2 py-1 text-[11px] whitespace-nowrap ${showAdvancedFilters ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
+          >
+            More {showAdvancedFilters ? "−" : "+"}
+          </button>
         </div>
-        <span className="hidden sm:inline-flex shrink-0 rounded bg-bg-hover px-2 py-1 text-[10px] text-text-muted">
-          thread: <span className="ml-1 text-text">{selectedThreadId}</span>
-        </span>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search stream"
           className="ml-auto w-32 sm:w-44 bg-bg-input border border-border rounded px-2 py-1 text-[11px] text-text focus:outline-none focus:border-accent"
         />
+        {showAdvancedFilters && (
+          <div className="flex w-full items-center gap-1 border-t border-border-subtle pt-2">
+            <span className="mr-1 text-[9px] font-bold uppercase tracking-wide text-text-dim">Technical</span>
+            {advancedFilters.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setFilter(item.id)}
+                className={`rounded px-2 py-1 text-[10px] ${filter === item.id ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
         {visible.length === 0 ? (
           <div className="h-full flex items-center justify-center text-text-dim text-sm">
-            {loading ? "Loading runtime events..." : `No runtime events for ${selectedThreadId}.`}
+            {loading ? "Loading runtime events..." : filter === "work" ? "No recent operational activity." : `No matching runtime events for ${selectedThreadId}.`}
           </div>
         ) : (
           <div className="space-y-1.5">
@@ -2848,6 +3236,9 @@ function RuntimeRow({ event }: { event: RuntimeEventItem }) {
   const visual = runtimeVisual(event);
   const reasoning = cleanReasoningDisplay(event.reasoningDetail || "");
   const response = event.responseDetail || "";
+  const summaryDetail = response || reasoning || (
+    event.kind === "tool" && event.detail === event.toolName ? "" : event.detail || ""
+  );
 
   return (
     <details className={`group rounded border border-transparent hover:bg-bg-card/40 ${visual.hoverBorder}`}>
@@ -2860,13 +3251,8 @@ function RuntimeRow({ event }: { event: RuntimeEventItem }) {
             <span className={`text-[10px] uppercase tracking-wide shrink-0 ${visual.labelClass}`}>{event.kind}</span>
             <span className="text-xs text-text truncate">{event.label}</span>
           </div>
-          {(response || reasoning || event.detail) && (
-            <div className="text-[11px] text-text-dim truncate mt-0.5">{response || reasoning || event.detail}</div>
-          )}
-          {event.kind === "tool" && event.toolArgs && (
-            <div className="text-[10px] text-text-muted truncate mt-0.5 font-mono">
-              args: {payloadPreview(event.toolArgs)}
-            </div>
+          {summaryDetail && (
+            <div className="text-[11px] text-text-dim truncate mt-0.5">{summaryDetail}</div>
           )}
         </div>
         {event.durationMs != null && (
@@ -2926,6 +3312,11 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   const [modelSmall, setModelSmall] = useState("");
   const [directive, setDirective] = useState("");
   const [mode, setMode] = useState("");
+  const [realtimeEnabled, setRealtimeEnabled] = useState(false);
+  const [realtimeAvailable, setRealtimeAvailable] = useState(false);
+  const [realtimeVoice, setRealtimeVoice] = useState("marin");
+  const [realtimeVoiceMCP, setRealtimeVoiceMCP] = useState<string[]>([]);
+  const [realtimeCapabilityOptions, setRealtimeCapabilityOptions] = useState<MCPServerConfig[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -2951,6 +3342,28 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
       const cfg = JSON.parse(instance.config || "{}");
       setDefaultProvider(cfg.default_provider || "");
     } catch { setDefaultProvider(""); }
+
+    core.config(instance.id).then((config) => {
+      const realtimeProvider = (config.providers || []).find((provider) =>
+        provider.name === "openai-realtime" || provider.name.includes("realtime"),
+      );
+      const capabilityOptions = (config.mcp_servers || []).filter((server) =>
+        server.name !== "channels" &&
+        server.name !== "apteva-channels" &&
+        server.name !== "apteva-server",
+      );
+      const availableNames = new Set(capabilityOptions.map((server) => server.name));
+      setRealtimeAvailable(!!realtimeProvider);
+      setRealtimeEnabled(config.realtime_enabled ?? !!realtimeProvider);
+      setRealtimeVoice(config.realtime_voice || realtimeProvider?.realtime_voice || "marin");
+      setRealtimeCapabilityOptions(capabilityOptions);
+      setRealtimeVoiceMCP((config.realtime_voice_mcp || []).filter((name) => availableNames.has(name)));
+    }).catch(() => {
+      setRealtimeAvailable(false);
+      setRealtimeEnabled(false);
+      setRealtimeCapabilityOptions([]);
+      setRealtimeVoiceMCP([]);
+    });
 
     providersAPI.list(instance.project_id).then((list) => {
       const llm = (list || []).filter((p) => p.type === "llm");
@@ -3042,6 +3455,9 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         directive: directive || undefined,
         mode: mode || undefined,
         providers: provs,
+        realtimeEnabled,
+        realtimeVoice,
+        realtimeVoiceMCP,
       });
       onSaved();
       onClose();
@@ -3144,6 +3560,78 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
               </button>
             ))}
           </div>
+        </div>
+
+        {/* Realtime voice */}
+        <div className="rounded-lg border border-border p-3">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-xs font-bold uppercase tracking-wide text-text-muted">Realtime voice</div>
+              <p className="mt-1 text-[11px] leading-relaxed text-text-dim">
+                Start temporary live voice threads from this agent's chat. Important decisions and the final handoff return to main.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={realtimeEnabled}
+              disabled={!realtimeAvailable}
+              onClick={() => setRealtimeEnabled((value) => !value)}
+              className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${realtimeEnabled ? "bg-accent" : "bg-border"}`}
+              title={realtimeAvailable ? "Enable realtime voice" : "No realtime provider is configured"}
+            >
+              <span
+                aria-hidden="true"
+                className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                  realtimeEnabled ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+          {!realtimeAvailable ? (
+            <p className="mt-3 text-[11px] text-text-muted">Connect an OpenAI provider with realtime support to enable voice.</p>
+          ) : realtimeEnabled ? (
+            <div className="mt-4 space-y-4 border-t border-border/70 pt-4">
+              <div>
+                <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-text-dim">Voice</label>
+                <select
+                  value={realtimeVoice}
+                  onChange={(event) => setRealtimeVoice(event.target.value)}
+                  className="w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-xs text-text focus:border-accent focus:outline-none"
+                >
+                  {["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"].map((voice) => (
+                    <option key={voice} value={voice}>{voice[0].toUpperCase() + voice.slice(1)}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-wide text-text-dim">Voice capabilities</div>
+                <p className="mt-1 text-[11px] text-text-muted">Optional MCP servers available during calls. Main keeps its complete capability set.</p>
+                {realtimeCapabilityOptions.length === 0 ? (
+                  <p className="mt-2 text-[11px] text-text-dim">No optional capabilities are attached.</p>
+                ) : (
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    {realtimeCapabilityOptions.map((server) => {
+                      const selected = realtimeVoiceMCP.includes(server.name);
+                      return (
+                        <button
+                          key={server.name}
+                          type="button"
+                          onClick={() => setRealtimeVoiceMCP((current) => selected
+                            ? current.filter((name) => name !== server.name)
+                            : [...current, server.name])}
+                          className={`flex items-center gap-2 rounded-md border px-2.5 py-2 text-left text-[11px] ${selected ? "border-accent/60 bg-accent/10 text-text" : "border-border text-text-muted hover:text-text"}`}
+                        >
+                          <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] ${selected ? "border-accent bg-accent text-bg" : "border-border"}`}>{selected ? "✓" : ""}</span>
+                          <span className="truncate">{capabilityDisplayName(server.name)}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {/* Directive */}

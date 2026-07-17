@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { instances, telemetry, type Agent, type InstanceStats } from "../api";
+import { NewAgentButton } from "../components/NewAgentButton";
 import { ActivityFeed } from "../components/dashboard/ActivityFeed";
 import { AptevaInbox } from "../components/dashboard/AptevaInbox";
 import {
-  HomeFocusAgents,
-  HomeLiveStatuses,
+  HomeLiveAgents,
   HomeUsageSummary,
 } from "../components/dashboard/HomePanels";
 import { useCurrentStatuses } from "../components/dashboard/CurrentStatuses";
@@ -71,27 +71,19 @@ export function Dashboard() {
               What needs attention and what your agents are doing now.
             </p>
           </div>
-          <Link
-            to="/agents/new"
-            className="touch-target inline-flex items-center justify-center rounded-lg border border-accent bg-accent/10 px-3 text-sm font-bold text-accent hover:bg-accent/15"
-          >
-            + New agent
-          </Link>
+          <NewAgentButton />
         </div>
       </header>
 
       <main className="page-safe-bottom flex-1 space-y-4 overflow-auto p-3 sm:p-4">
-        <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(340px,0.85fr)]">
-          <AptevaInbox limit={5} variant="home" />
-          <HomeLiveStatuses statuses={statuses} />
-        </div>
-
-        <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(320px,0.85fr)_minmax(0,1.55fr)]">
-          <HomeFocusAgents agents={agents} statuses={statuses} />
-          <ActivityFeed agents={agents} />
-        </div>
-
         <HomeUsageSummary agents={agents} stats={stats} />
+
+        <div className="grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2">
+          <AptevaInbox limit={5} variant="home" />
+          <HomeLiveAgents agents={agents} statuses={statuses} />
+        </div>
+
+        <ActivityFeed agents={agents} />
       </main>
     </div>
   );
