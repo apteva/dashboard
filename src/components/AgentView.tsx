@@ -23,11 +23,12 @@ import {
 import { useTelemetryConnectionState, useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { sleepClassName, sleepLabel, sleepProgress, sleepTitle } from "../utils/sleepStatus";
 import { runtimeToolLabel } from "../utils/runtimeToolLabel";
+import { resolveEffectiveAgentProvider } from "../utils/providerSelection";
 import { splitToolTelemetryPaintFrame } from "../utils/toolTelemetryPaint";
 
 export type EventListener = (event: TelemetryEvent) => void;
 export type SubscribeFn = (listener: EventListener) => () => void;
-import { ChatPanel } from "./ChatPanel";
+import { AgentConversationPanel } from "./chat/AgentConversationPanel";
 import { ActivityPanel } from "./ActivityPanel";
 import { MemoryPanel } from "./MemoryPanel";
 import { UnconsciousPanel } from "./UnconsciousPanel";
@@ -1208,12 +1209,7 @@ export function AgentView({
               </div>
             </div>
           ) : (
-            <ChatPanel
-              instanceId={instance.id}
-              agentName={instance.name}
-              subscribe={subscribe}
-              realtime={realtime}
-            />
+			<AgentConversationPanel instance={instance} subscribe={subscribe} realtime={realtime} />
           )}
         </div>
 
@@ -3338,12 +3334,10 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
     setMode(instance.mode || "autonomous");
     setError("");
 
-    try {
-      const cfg = JSON.parse(instance.config || "{}");
-      setDefaultProvider(cfg.default_provider || "");
-    } catch { setDefaultProvider(""); }
+    setDefaultProvider("");
 
     core.config(instance.id).then((config) => {
+      setDefaultProvider(resolveEffectiveAgentProvider(instance.config || "{}", config.providers));
       const realtimeProvider = (config.providers || []).find((provider) =>
         provider.name === "openai-realtime" || provider.name.includes("realtime"),
       );
@@ -3359,6 +3353,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
       setRealtimeCapabilityOptions(capabilityOptions);
       setRealtimeVoiceMCP((config.realtime_voice_mcp || []).filter((name) => availableNames.has(name)));
     }).catch(() => {
+      setDefaultProvider(resolveEffectiveAgentProvider(instance.config || "{}"));
       setRealtimeAvailable(false);
       setRealtimeEnabled(false);
       setRealtimeCapabilityOptions([]);
@@ -3373,16 +3368,6 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
           setProviderDetails((prev) => ({ ...prev, [p.id]: d }));
         }).catch(() => {});
       }
-      // Pre-select the first available LLM provider when the instance has
-      // no stored default_provider yet. Without this the small/medium/large
-      // rows render empty on a fresh instance even though the project has
-      // providers configured — user then has to click twice (provider
-      // dropdown, then save) before anything meaningful shows.
-      setDefaultProvider((cur) => {
-        if (cur) return cur;
-        const first = llm[0];
-        return first ? provKey(first) : "";
-      });
     }).catch(() => {});
   }, [open, instance.id]);
 
@@ -3516,7 +3501,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
             onChange={(e) => setDefaultProvider(e.target.value)}
             className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
           >
-            <option value="">Auto (first available)</option>
+            <option value="">Auto (server default)</option>
             {providerList.map((p) => (
               <option key={p.id} value={provKey(p)}>{p.name}</option>
             ))}

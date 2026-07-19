@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, memo } from "react";
 import { useTranslation } from "react-i18next";
 import { chat, telemetry, type ChatAttachment, type ChatMessageContext, type ChatMessageRow, type RealtimeAvailability, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
@@ -17,7 +17,8 @@ import { Modal } from "./Modal";
 import { ChatToolActivity } from "./chat/ToolActivity";
 import {
   buildChatTimeline,
-  isChatConversationThread,
+  chatConversationThreadId,
+  isChatConversationTelemetry,
   mergeToolActivityEvents,
   shouldHideChatTool,
   type ToolActivity,
@@ -27,8 +28,13 @@ import { useToolVisualRegistry } from "./chat/toolVisuals";
 import {
   clearThinkingForIteration,
   clearThinkingThroughGeneration,
+  isChatUserTurnEvent,
+  nextChatTurnStartKind,
+  shouldShowChatThinking,
+  terminalToolEndsChatTurn,
   telemetryIteration,
   toolEventReplacesThinking,
+  type ChatTurnStartKind,
   type ChatThinkingPlaceholder,
 } from "../utils/chatThinkingLifecycle";
 import { MicrophoneIcon, useRealtimeVoice } from "../state/RealtimeVoiceContext";
@@ -42,6 +48,12 @@ export interface ChatPanelHeader {
   onOpenContext?: () => void;
   onToggleDesktopContext?: () => void;
   desktopContextOpen?: boolean;
+}
+
+export interface ChatQueuedMessage {
+  id: string;
+  content: string;
+  attachments?: ChatAttachment[];
 }
 
 function readFileAsDataURL(file: File): Promise<string> {
@@ -62,6 +74,7 @@ function formatBytes(bytes?: number): string {
 
 interface Props {
   instanceId: number;
+  conversationId?: string;
   // Telemetry subscribe — used ONLY for the status dot. Chat messages
   // come from the channel-chat app's SSE stream, not telemetry.
   subscribe: SubscribeFn;
@@ -72,10 +85,19 @@ interface Props {
   historyLimit?: number;
   realtime?: RealtimeAvailability;
   agentName?: string;
+  agentNames?: Record<number, string>;
+  participantIds?: number[];
+  queuedMessage?: ChatQueuedMessage;
+  onQueuedMessageHandled?: (id: string) => void;
 }
 
 const MAX_IMAGE_ATTACHMENTS = 4;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+function newClientMessageId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 interface DraftAttachment extends ChatAttachment {
   id: string;
@@ -97,6 +119,7 @@ interface DraftAttachment extends ChatAttachment {
 // dedup logic, no tool-call correlation, no streaming-text extractor.
 export function ChatPanel({
   instanceId,
+  conversationId,
   subscribe,
   autoConnect = false,
   hideHeader = false,
@@ -105,6 +128,10 @@ export function ChatPanel({
   historyLimit,
   realtime,
   agentName = "Agent",
+  agentNames = {},
+  participantIds,
+  queuedMessage,
+  onQueuedMessageHandled,
 }: Props) {
   const { t } = useTranslation();
   // Project context — needed so chat-attached components can scope
@@ -116,6 +143,11 @@ export function ChatPanel({
   const projectId = currentProject?.id ?? "";
   const installedApps = useInstalledApps(projectId || null);
   const toolVisualRegistry = useToolVisualRegistry(projectId || null, installedApps);
+  const telemetryAgentKey = (participantIds?.length ? participantIds : [instanceId]).join(",");
+  const telemetryAgentIds = useMemo(
+    () => telemetryAgentKey.split(",").map(Number).filter((id) => Number.isFinite(id)),
+    [telemetryAgentKey],
+  );
   const voice = useRealtimeVoice();
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const activeVoiceHere = voice.session?.agentId === instanceId ? voice.session : null;
@@ -143,7 +175,7 @@ export function ChatPanel({
   const toolAnimationFrameRef = useRef<number | null>(null);
 
   // Ephemeral streaming bubble — the LLM-args text for an in-progress
-  // `channels_respond` tool call, surfaced as the user's reply arrives
+  // `channels_send` tool call, surfaced as the user's reply arrives
   // character-by-character. Cleared on the next real agent message,
   // on SSE drop, or on chat switch. Sourced from chatConnections's
   // subscribeStream — server flag CHANNELCHAT_STREAMING=0 stops the
@@ -152,51 +184,52 @@ export function ChatPanel({
   const pendingStreamFrameRef = useRef<StreamFrame | null>(null);
   const streamAnimationFrameRef = useRef<number | null>(null);
   const [thinkingPlaceholder, setThinkingPlaceholder] = useState<ChatThinkingPlaceholder | null>(null);
+  const [startingResponse, setStartingResponse] = useState(false);
+  const [startingConversation, setStartingConversation] = useState(false);
   const thinkingGenerationRef = useRef(0);
   const awaitingChatResponseRef = useRef(false);
+  const acceptedChatTurnRef = useRef(false);
+  const afterAgentReplyRef = useRef(false);
+  const activeChatTurnKeyRef = useRef("");
   const awaitingChatResponseTimerRef = useRef<number | null>(null);
-  const suppressNextThinkingRef = useRef(false);
-  const quietFollowupInFlightRef = useRef(false);
-  const suppressNextThinkingTimerRef = useRef<number | null>(null);
+  const queuedMessageInFlightRef = useRef("");
 
-  const armQuietFollowupTurn = useCallback(() => {
-    suppressNextThinkingRef.current = true;
-    quietFollowupInFlightRef.current = false;
-    if (suppressNextThinkingTimerRef.current !== null) {
-      window.clearTimeout(suppressNextThinkingTimerRef.current);
-    }
-    suppressNextThinkingTimerRef.current = window.setTimeout(() => {
-      suppressNextThinkingRef.current = false;
-      quietFollowupInFlightRef.current = false;
-      suppressNextThinkingTimerRef.current = null;
-    }, 15_000);
-  }, []);
-
-  const clearQuietFollowupTurn = useCallback(() => {
-    suppressNextThinkingRef.current = false;
-    quietFollowupInFlightRef.current = false;
-    if (suppressNextThinkingTimerRef.current !== null) {
-      window.clearTimeout(suppressNextThinkingTimerRef.current);
-      suppressNextThinkingTimerRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => () => clearQuietFollowupTurn(), [clearQuietFollowupTurn]);
-
-  const markAwaitingChatResponse = useCallback(() => {
+  const markAwaitingChatResponse = useCallback((
+    turnKey: string,
+    requestedStartKind: ChatTurnStartKind = "response",
+  ) => {
+    const startKind = nextChatTurnStartKind(
+      activeChatTurnKeyRef.current,
+      turnKey,
+      requestedStartKind,
+    );
+    if (!startKind) return;
+    activeChatTurnKeyRef.current = turnKey;
+    acceptedChatTurnRef.current = false;
+    afterAgentReplyRef.current = false;
+    setStartingResponse(true);
+    setStartingConversation(startKind === "conversation");
     awaitingChatResponseRef.current = true;
     if (awaitingChatResponseTimerRef.current !== null) {
       window.clearTimeout(awaitingChatResponseTimerRef.current);
     }
     awaitingChatResponseTimerRef.current = window.setTimeout(() => {
       awaitingChatResponseRef.current = false;
+      acceptedChatTurnRef.current = false;
+      afterAgentReplyRef.current = false;
       awaitingChatResponseTimerRef.current = null;
+      setStartingResponse(false);
+      setStartingConversation(false);
       setThinkingPlaceholder(null);
     }, 5 * 60_000);
   }, []);
 
   const clearAwaitingChatResponse = useCallback(() => {
     awaitingChatResponseRef.current = false;
+    acceptedChatTurnRef.current = false;
+    afterAgentReplyRef.current = false;
+    setStartingResponse(false);
+    setStartingConversation(false);
     if (awaitingChatResponseTimerRef.current !== null) {
       window.clearTimeout(awaitingChatResponseTimerRef.current);
       awaitingChatResponseTimerRef.current = null;
@@ -205,20 +238,21 @@ export function ChatPanel({
 
   useEffect(() => () => clearAwaitingChatResponse(), [clearAwaitingChatResponse]);
 
-  // Explicit connect/disconnect, session-only.
+  // Explicit connect/disconnect, scoped to this browser tab.
   //
   // Why explicit at all? The agent is proactive — when chat is
   // "connected" it may greet, ping, push a status update unprompted.
   // We want the user to own that "I'm available to be poked" signal,
   // not have it toggle silently as browser tabs open and close.
   //
-  // Session-only: every chat starts disconnected on tab open; clicking
-  // Connect opens the SSE for the current session. Closing the tab
-  // releases. The previous design persisted `chat.connected.<id>=1` to
-  // localStorage and resumed on boot, but stale entries (instances
-  // deleted out-of-band) caused unbounded 404 retry loops that ate
-  // the connection budget — see chatConnections.ts header.
-  const [connected, setConnected] = useState<boolean>(() => autoConnect);
+  // The manager owns intent across component remounts and refreshes via
+  // sessionStorage. Unlike the old localStorage design this state disappears
+  // with the tab, and the manager keeps only one per-chat SSE active.
+  const [connected, setConnected] = useState<boolean>(() =>
+    conversationId
+      ? chatConnections.shouldConnect(conversationId, autoConnect)
+      : autoConnect,
+  );
 
   // SSE "is the stream actually open?" — distinct from `connected`,
   // which is the user's INTENT. readyState transitions on retry are
@@ -247,6 +281,17 @@ export function ChatPanel({
     const maxId = rows.reduce((highest, row) => Math.max(highest, row.id), sinceRef.current);
     sinceRef.current = maxId;
     setMessages((current) => mergeChatMessages(current, rows));
+    const latestTurn = rows.reduce<ChatMessageRow | null>((latest, row) => {
+      if (row.role !== "user" && row.role !== "agent") return latest;
+      return !latest || row.id > latest.id ? row : latest;
+    }, null);
+    // User rows can also arrive from another UI over conversation SSE. Arm
+    // the same real llm.start lifecycle; do not manufacture a placeholder.
+    if (latestTurn?.role === "user") {
+      markAwaitingChatResponse(
+        latestTurn.client_message_id || `message:${latestTurn.id}`,
+      );
+    }
     if (rows.some((row) => row.role === "agent")) {
       // The manager performs this swap atomically for normal SSE delivery.
       // Repeating it here covers REST reconciliation after a dropped frame:
@@ -258,7 +303,8 @@ export function ChatPanel({
       }
       setStreamingText(null);
       setThinkingPlaceholder(null);
-      clearAwaitingChatResponse();
+      setStartingResponse(false);
+      if (awaitingChatResponseRef.current) afterAgentReplyRef.current = true;
     }
     if (
       maxId > 0 &&
@@ -267,43 +313,39 @@ export function ChatPanel({
     ) {
       markChatSeen(chatId, maxId);
     }
-  }, [chatId, clearAwaitingChatResponse]);
-
-  useEffect(() => {
-    if (autoConnect && chatId) {
-      setConnected(true);
-    }
-  }, [autoConnect, chatId, instanceId]);
+  }, [chatId, markAwaitingChatResponse]);
 
   // --- 1. Resolve the chat for this instance -----------------------------
   useEffect(() => {
     setChatId(null);
     setMessages([]);
     setThinkingPlaceholder(null);
-    clearQuietFollowupTurn();
+    activeChatTurnKeyRef.current = "";
     clearAwaitingChatResponse();
     setHistoryReady(false);
     setError(null);
     sinceRef.current = 0;
 
     let cancelled = false;
+    if (conversationId) {
+      setChatId(conversationId);
+      return () => { cancelled = true; };
+    }
+
     chat.listChats(instanceId)
       .then((chats) => {
         if (cancelled) return;
         if (chats.length > 0) {
           setChatId(chats[0].id);
         } else {
-          // No chat yet — create one. This is a server-restart / fresh
-          // instance corner case; normally the app auto-creates a
-          // default chat via OnInstanceAttach.
-          chat.createChat(instanceId).then((c) => {
-            if (!cancelled) setChatId(c.id);
-          }).catch((e) => !cancelled && setError(errMsg(e)));
+          // Merely mounting a chat surface must not create a conversation.
+          // Conversation creation belongs to explicit Start/New/Chat actions.
+          setChatId(null);
         }
       })
       .catch((e) => !cancelled && setError(errMsg(e)));
     return () => { cancelled = true; };
-  }, [instanceId, clearQuietFollowupTurn, clearAwaitingChatResponse]);
+  }, [conversationId, instanceId, clearAwaitingChatResponse]);
 
   // --- 2. Load history once chatId is known -----------------------------
   useEffect(() => {
@@ -340,39 +382,45 @@ export function ChatPanel({
   // --- 3. Hook into the global chat-connections manager ----------------
   //
   // The SSE no longer lives inside this component. The Layout-level
-  // chatConnections singleton owns one EventSource per connected chat,
-  // so navigating away from this instance does NOT close the connection
-  // — the agent keeps seeing chat as IsActive and can ping the user
-  // while they're on another page. ChatPanel is a viewer for the
-  // singleton's state.
+  // chatConnections singleton owns one EventSource per connected chat.
+  // Connection lifetime belongs to the tab-level manager, not this component.
+  // Navigation/remount therefore cannot emit a false disconnect. The manager
+  // moves its one active chat stream when another conversation is selected.
   //
   // Three things to wire:
-  //   1. connect/disconnect toggle → manager.connect/disconnect
-  //      (emits the [chat] user connected/disconnected events to the
-  //      agent). Intent is session-only — closing the tab releases.
+  //   1. active conversation / connect toggle → manager.connect/disconnect.
   //   2. Live messages → subscribeMessages, which replays buffered
   //      messages with id > sinceRef so a panel mount that comes
   //      after some messages already arrived doesn't miss them.
   //   3. SSE open state → subscribeState for the presence dot.
   useEffect(() => {
     if (!chatId) return;
-    if (connected) {
-      // Open SSE immediately. History and live delivery are independent;
-      // delaying the EventSource behind REST broke the previously reliable
-      // stream-frame path and made token streaming disappear.
+    const shouldConnect = chatConnections.shouldConnect(chatId, autoConnect);
+    setConnected(shouldConnect);
+    if (shouldConnect) {
       chatConnections.connect(chatId, instanceId);
-    } else {
-      chatConnections.disconnect(chatId, instanceId);
     }
-  }, [chatId, connected, instanceId]);
+  }, [autoConnect, chatId, instanceId]);
 
   useEffect(() => {
     if (!chatId) return;
     setSseOpen(chatConnections.isOpen(chatId));
     return chatConnections.subscribeState(chatId, () => {
+      setConnected(chatConnections.isConnected(chatId));
       setSseOpen(chatConnections.isOpen(chatId));
     });
   }, [chatId]);
+
+  const toggleConnection = useCallback(() => {
+    if (!chatId) return;
+    if (chatConnections.isConnected(chatId)) {
+      chatConnections.disconnect(chatId, instanceId);
+      setConnected(false);
+      return;
+    }
+    chatConnections.connect(chatId, instanceId);
+    setConnected(true);
+  }, [chatId, instanceId]);
 
   useEffect(() => {
     if (!chatId) return;
@@ -460,9 +508,10 @@ export function ChatPanel({
 
   // --- 4. Stick-to-bottom auto-scroll (ChatGPT/Claude-style) -----------
   // Track the user's intent in a ref so scroll events don't re-render the
-  // entire transcript. Timeline updates only schedule one follow operation
-  // per animation frame; a burst of stream/tool/result events therefore
-  // produces one visual adjustment instead of several hard jumps.
+  // entire transcript. Explicit sends still schedule one follow operation,
+  // while transcript replacements pin the bottom in a layout effect. The
+  // latter runs before paint, so swapping Thinking for a tool/message cannot
+  // expose one frame at the old scroll position.
   const atBottomRef = useRef(true);
   const followBottomAnimationFrameRef = useRef<number | null>(null);
   const scheduleFollowBottom = useCallback(() => {
@@ -488,9 +537,11 @@ export function ChatPanel({
     return () => el.removeEventListener("scroll", onScroll);
   }, [chatId]);
 
-  useEffect(() => {
-    scheduleFollowBottom();
-  }, [messages, liveTools, streamingText, thinkingPlaceholder, scheduleFollowBottom]);
+  useLayoutEffect(() => {
+    if (!atBottomRef.current) return;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages, liveTools, streamingText, thinkingPlaceholder, startingResponse]);
 
   useEffect(() => () => {
     if (followBottomAnimationFrameRef.current !== null) {
@@ -501,8 +552,9 @@ export function ChatPanel({
 
   // --- 4b. Live tool activity (interleaved into the timeline) -----------
   //
-  // Subscribe through the project telemetry bus and track every tool
-  // call across every thread. The timeline render below sorts
+  // Subscribe through the project telemetry bus and track tools emitted by
+  // this conversation's participant agents on this conversation's exact
+  // runtime thread. The timeline render below sorts
   // these alongside DB messages by timestamp, so the user sees an
   // accurate "agent said X, then leader-thread did Y, then agent
   // said Z" reading order.
@@ -522,9 +574,8 @@ export function ChatPanel({
   //                    readable "why".
   //   tool.result    → finished. Success/error + duration.
   //
-  // Filter: only the housekeeping set (pace/done/send). Everything
-  // else, on every thread, surfaces — that's the user's "who is
-  // doing what" requirement.
+  // Filter: internal housekeeping (pace/done/send) stays hidden. Other tools
+  // surface only when both the participant agent and selected thread match.
   const flushToolEventFrame = useCallback(function flushToolEventFrame() {
     toolAnimationFrameRef.current = null;
     const { paint, deferred } = splitToolTelemetryPaintFrame(pendingToolEventsRef.current);
@@ -568,19 +619,31 @@ export function ChatPanel({
 
   useEffect(() => cancelPendingToolEvents, [cancelPendingToolEvents]);
 
-  useTelemetryEvents(instanceId, (ev) => {
-    const activeConversation = isChatConversationThread(ev.thread_id, chatId);
+  useTelemetryEvents(telemetryAgentIds.length > 1 ? null : instanceId, (ev) => {
+    const activeConversation = isChatConversationTelemetry(ev, chatId, telemetryAgentIds);
+    if (!activeConversation) return;
+    if (ev.type === "event.received") {
+      if (awaitingChatResponseRef.current && isChatUserTurnEvent(ev.data)) {
+        acceptedChatTurnRef.current = true;
+      }
+      return;
+    }
     if (activeConversation && ev.type === "llm.start") {
       const generation = ++thinkingGenerationRef.current;
       // Telemetry is project-wide and may replay an already-running main
       // iteration when this panel mounts. Only surface a placeholder for a
       // response explicitly initiated from this mounted chat.
-      if (!awaitingChatResponseRef.current) return;
-      if (suppressNextThinkingRef.current) {
-        quietFollowupInFlightRef.current = true;
-        return;
-      }
+      // A new conversation worker can run once before it receives the queued
+      // dashboard event. Do not render that bootstrap work as the user's
+      // response; event.received below accepts the turn before its real
+      // llm.start arrives.
+      if (!shouldShowChatThinking(
+        awaitingChatResponseRef.current,
+        acceptedChatTurnRef.current,
+        afterAgentReplyRef.current,
+      )) return;
       if (streamingText === null) {
+        setStartingResponse(false);
         setThinkingPlaceholder((current) => ({
           since: current?.since ?? (Date.parse(ev.time) || Date.now()),
           threadId: ev.thread_id || "main",
@@ -594,34 +657,39 @@ export function ChatPanel({
       setThinkingPlaceholder((current) =>
         clearThinkingForIteration(current, telemetryIteration(ev.data)),
       );
-      if (quietFollowupInFlightRef.current) clearQuietFollowupTurn();
       return;
     }
     if (activeConversation && (ev.type === "llm.error" || ev.type === "llm.err" || ev.type === "thread.done")) {
       setThinkingPlaceholder(null);
-      clearQuietFollowupTurn();
       clearAwaitingChatResponse();
       return;
     }
     if (ev.type !== "llm.tool_chunk" && ev.type !== "tool.call" && ev.type !== "tool.result") return;
-    if (!activeConversation) return;
     const name = String(ev.data?.name || ev.data?.tool || "");
     const reason = String(ev.data?.reason || "");
-    const isResponseTool = name === "channels_respond" || name === "channels_send";
-    if (isResponseTool && activeConversation) {
-      if (ev.type === "llm.tool_chunk") clearQuietFollowupTurn();
-      if (
-        ev.type === "tool.result" &&
-        ev.data?.success !== false &&
-        ev.data?.is_error !== true
-      ) {
-        armQuietFollowupTurn();
-      }
+    if (terminalToolEndsChatTurn(name, acceptedChatTurnRef.current)) {
+      // A freshly spawned conversation worker performs a bootstrap LLM pass
+      // and may pace before channel-chat delivers the queued user event. Only
+      // let pace/done finish a turn after Core confirms that exact dashboard
+      // event through event.received telemetry.
+      setThinkingPlaceholder(null);
+      clearAwaitingChatResponse();
       return;
     }
-    const replacesThinking =
-      !shouldHideChatTool(name, reason) && toolEventReplacesThinking(ev.type);
-    if (replacesThinking) clearQuietFollowupTurn();
+    const isResponseTool = name === "channels_respond" || name === "channels_send";
+    if (isResponseTool && activeConversation) {
+      return;
+    }
+    const visibleTool = !shouldHideChatTool(name, reason);
+    const beginsVisibleTool = visibleTool && toolEventReplacesThinking(ev.type);
+    if (beginsVisibleTool) {
+      // A visible tool after an acknowledgement proves the prior message was
+      // intermediate. Its next LLM pass is answer preparation, not silent
+      // post-reply housekeeping.
+      afterAgentReplyRef.current = false;
+      setStartingResponse(false);
+    }
+    const replacesThinking = beginsVisibleTool;
     queueToolEvent(ev, replacesThinking);
   });
 
@@ -632,11 +700,11 @@ export function ChatPanel({
     setLiveTools(new Map());
     setExpandedToolGroups(new Set());
     toolHistoryKeyRef.current = "";
+    queuedMessageInFlightRef.current = "";
     setStreamingText(null);
     setThinkingPlaceholder(null);
-    clearQuietFollowupTurn();
     clearAwaitingChatResponse();
-  }, [instanceId, chatId, cancelPendingToolEvents, clearQuietFollowupTurn, clearAwaitingChatResponse]);
+  }, [instanceId, chatId, cancelPendingToolEvents, clearAwaitingChatResponse]);
 
   useEffect(() => {
     if (connected) return;
@@ -652,7 +720,8 @@ export function ChatPanel({
     if (!chatId) return;
     const unsubscribe = chatConnections.subscribeStream(chatId, (f) => {
       if (f && !f.done) {
-        clearQuietFollowupTurn();
+        if (awaitingChatResponseRef.current) afterAgentReplyRef.current = true;
+        setStartingResponse(false);
         pendingStreamFrameRef.current = f;
         if (streamAnimationFrameRef.current === null) {
           streamAnimationFrameRef.current = window.requestAnimationFrame(() => {
@@ -682,7 +751,7 @@ export function ChatPanel({
         streamAnimationFrameRef.current = null;
       }
     };
-  }, [chatId, clearQuietFollowupTurn]);
+  }, [chatId]);
 
   const addImageFiles = useCallback(async (files: FileList | File[]) => {
     const list = Array.from(files).filter((file) => file.type.startsWith("image/"));
@@ -729,48 +798,98 @@ export function ChatPanel({
     }
   }, [activeVoiceHere, agentName, instanceId, realtime, voice]);
 
-  // --- 5. Send handler ---------------------------------------------------
-  const handleSend = useCallback(async () => {
-    const raw = input.trim();
-    if ((!raw && attachments.length === 0) || !chatId || sending || !connected) return;
-    // Plan-mode prompt wrap. Pure prompt engineering — the agent reads
-    // this as a regular user message and is expected to reply with a
-    // plan (no writes) via channels_respond. The Approve button below
-    // sends a follow-up "execute now" message that releases the agent.
-    const text = planMode
-      ? `[Plan mode] Investigate using read-only tools, then reply with a numbered plan to do:\n\n${raw}\n\nDo NOT call write/send/delete/create/update tools yet. I will approve the plan before you execute.`
-      : raw;
-    clearQuietFollowupTurn();
-    markAwaitingChatResponse();
+  // Every surface sends through this path: the composer, plan actions, and
+  // queued initial messages from conversation creators such as Build. It
+  // only arms the response lifecycle; the placeholder itself is driven by
+  // Core's real llm.start telemetry.
+  const sendChatMessage = useCallback(async (
+    content: string,
+    outgoingAttachments: ChatAttachment[] = [],
+    clientMessageId: string = newClientMessageId(),
+    startKind: ChatTurnStartKind = "response",
+  ): Promise<boolean> => {
+    if ((!content.trim() && outgoingAttachments.length === 0) || !chatId || sending || !connected) {
+      return false;
+    }
+    markAwaitingChatResponse(clientMessageId, startKind);
     atBottomRef.current = true;
     scheduleFollowBottom();
     setSending(true);
     setError(null);
     try {
-      const posted = await chat.post(chatId, text, messageContext, attachments);
+      const posted = await chat.post(
+        chatId,
+        content,
+        messageContext,
+        outgoingAttachments,
+        clientMessageId,
+      );
       // Render the server-confirmed row immediately. SSE and REST may deliver
       // it again; the id-based merge above makes those echoes harmless.
       mergeDurableMessages([posted]);
-      setInput("");
-      setAttachments([]);
-      // Reset textarea height + restore focus. The textarea no longer
-      // disables on `sending` so the browser shouldn't have blurred,
-      // but we refocus explicitly here as a defensive measure for
-      // anything else (modal autoFocus, scroll-into-view) that might
-      // steal focus during the round-trip.
-      const el = document.getElementById("chat-input") as HTMLTextAreaElement | null;
-      if (el) {
-        el.style.height = "auto";
-        el.focus();
-      }
+      return true;
     } catch (e) {
       clearAwaitingChatResponse();
       setThinkingPlaceholder(null);
       setError(errMsg(e));
+      return false;
     } finally {
       setSending(false);
     }
-  }, [input, attachments, chatId, sending, connected, planMode, messageContext, mergeDurableMessages, clearQuietFollowupTurn, markAwaitingChatResponse, clearAwaitingChatResponse, scheduleFollowBottom]);
+  }, [chatId, sending, connected, messageContext, markAwaitingChatResponse, scheduleFollowBottom, mergeDurableMessages, clearAwaitingChatResponse]);
+
+  // A newly created conversation may arrive with its first message queued by
+  // its parent. Wait until history and the delivery stream are ready, then use
+  // the exact same sender as a manual composer submission. The stable id is
+  // also the server-side idempotency key, so remounts cannot double-post it.
+  useEffect(() => {
+    if (
+      !queuedMessage ||
+      !historyReady ||
+      !chatId ||
+      !connected ||
+      sending ||
+      queuedMessageInFlightRef.current === queuedMessage.id
+    ) {
+      return;
+    }
+    queuedMessageInFlightRef.current = queuedMessage.id;
+    void sendChatMessage(
+      queuedMessage.content,
+      queuedMessage.attachments || [],
+      queuedMessage.id,
+      "conversation",
+    ).finally(() => {
+      onQueuedMessageHandled?.(queuedMessage.id);
+    });
+  }, [chatId, connected, historyReady, onQueuedMessageHandled, queuedMessage, sendChatMessage, sending]);
+
+  // --- 5. Send handler ---------------------------------------------------
+  const handleSend = useCallback(async () => {
+    const raw = input.trim();
+    if (!raw && attachments.length === 0) return;
+    // Plan-mode prompt wrap. Pure prompt engineering — the agent reads
+    // this as a regular user message and is expected to reply with a
+    // plan (no writes) via channels_send. The Approve button below
+    // sends a follow-up "execute now" message that releases the agent.
+    const text = planMode
+      ? `[Plan mode] Investigate using read-only tools, then reply with a numbered plan to do:\n\n${raw}\n\nDo NOT call write/send/delete/create/update tools yet. I will approve the plan before you execute.`
+      : raw;
+    const sent = await sendChatMessage(text, attachments);
+    if (!sent) return;
+    setInput("");
+    setAttachments([]);
+    // Reset textarea height + restore focus. The textarea no longer
+    // disables on `sending` so the browser shouldn't have blurred,
+    // but we refocus explicitly here as a defensive measure for
+    // anything else (modal autoFocus, scroll-into-view) that might
+    // steal focus during the round-trip.
+    const el = document.getElementById("chat-input") as HTMLTextAreaElement | null;
+    if (el) {
+      el.style.height = "auto";
+      el.focus();
+    }
+  }, [input, attachments, planMode, sendChatMessage]);
 
   // postCanned sends a fixed reply on behalf of the user — used by the
   // plan-mode Approve / Reject / Refine quick-action buttons. Same
@@ -779,25 +898,9 @@ export function ChatPanel({
   // clear it before clicking.
   const postCanned = useCallback(
     async (text: string) => {
-      if (!chatId || sending || !connected) return;
-      clearQuietFollowupTurn();
-      markAwaitingChatResponse();
-      atBottomRef.current = true;
-      scheduleFollowBottom();
-      setSending(true);
-      setError(null);
-      try {
-        const posted = await chat.post(chatId, text, messageContext);
-        mergeDurableMessages([posted]);
-      } catch (e) {
-        clearAwaitingChatResponse();
-        setThinkingPlaceholder(null);
-        setError(errMsg(e));
-      } finally {
-        setSending(false);
-      }
+      await sendChatMessage(text);
     },
-    [chatId, sending, connected, messageContext, mergeDurableMessages, clearQuietFollowupTurn, markAwaitingChatResponse, clearAwaitingChatResponse, scheduleFollowBottom],
+    [sendChatMessage],
   );
 
   // --- 6. Clear history -------------------------------------------------
@@ -815,7 +918,6 @@ export function ChatPanel({
       setLiveTools(new Map());
       setStreamingText(null);
       setThinkingPlaceholder(null);
-      clearQuietFollowupTurn();
       clearAwaitingChatResponse();
       sinceRef.current = 0;
     } catch (e) {
@@ -846,13 +948,13 @@ export function ChatPanel({
     if (toolHistoryKeyRef.current === key) return;
     toolHistoryKeyRef.current = key;
     let cancelled = false;
-    Promise.all([
-      telemetry.query(instanceId, "tool.call", 1000, undefined, since),
-      telemetry.query(instanceId, "tool.result", 1000, undefined, since),
-    ]).then(([calls, results]) => {
+    Promise.all(telemetryAgentIds.flatMap((agentId) => [
+      telemetry.query(agentId, "tool.call", 1000, undefined, since),
+      telemetry.query(agentId, "tool.result", 1000, undefined, since),
+    ])).then((eventSets) => {
       if (cancelled) return;
-      const conversationEvents = [...calls, ...results].filter((event) =>
-        isChatConversationThread(event.thread_id, chatId),
+      const conversationEvents = eventSets.flat().filter((event) =>
+        isChatConversationTelemetry(event, chatId, telemetryAgentIds),
       );
       setLiveTools((previous) => mergeToolActivityEvents(previous, conversationEvents));
     }).catch(() => {
@@ -863,7 +965,7 @@ export function ChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [chatId, historyReady, instanceId, orderedMessages]);
+  }, [chatId, historyReady, instanceId, orderedMessages, telemetryAgentIds]);
 
   // Interleaved timeline of messages + tool bursts.
   //
@@ -887,6 +989,14 @@ export function ChatPanel({
     () => buildChatTimeline(orderedMessages, liveTools.values()),
     [orderedMessages, liveTools],
   );
+  const timelineTail = timeline[timeline.length - 1];
+  // The provisional assistant row must use the same role-transition spacing
+  // as the durable response that replaces it. This keeps the transcript from
+  // shifting when Thinking becomes streaming text or a persisted message.
+  const pendingAssistantMargin =
+    timelineTail?.kind === "message" && timelineTail.message.role === "user"
+      ? "mt-4"
+      : "mt-2";
 
   const toggleToolGroup = useCallback((key: string) => {
     setExpandedToolGroups((prev) => {
@@ -923,6 +1033,7 @@ export function ChatPanel({
       </span>
     </span>
   );
+  const telemetryThreadId = chatConversationThreadId(chatId) || "main";
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
@@ -964,7 +1075,7 @@ export function ChatPanel({
                     <div className="truncate text-[11px] text-text-muted">{header.subtitle}</div>
                   </div>
                   {presenceBadge}
-                  <ChatStatusDot subscribe={subscribe} />
+                  <ChatStatusDot subscribe={subscribe} threadId={telemetryThreadId} />
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <button
@@ -981,7 +1092,7 @@ export function ChatPanel({
                   )}
                   <button
                     type="button"
-                    onClick={() => setConnected((value) => !value)}
+                    onClick={toggleConnection}
                     className={`rounded px-2 py-1 text-[10px] font-bold ${connected ? "text-text-muted hover:bg-bg-hover hover:text-red" : "text-accent hover:bg-accent/10"}`}
                   >
                     {connected ? t("chat.panel.disconnect") : t("chat.panel.connect")}
@@ -1008,7 +1119,7 @@ export function ChatPanel({
           <div className="border-b border-border px-4 py-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
               {presenceBadge}
-              <ChatStatusDot subscribe={subscribe} />
+              <ChatStatusDot subscribe={subscribe} threadId={telemetryThreadId} />
             </div>
             <div className="flex items-center gap-3 shrink-0">
               <button
@@ -1035,7 +1146,7 @@ export function ChatPanel({
               )}
               {connected ? (
                 <button
-                  onClick={() => setConnected(false)}
+                  onClick={toggleConnection}
                   className="text-[10px] text-text-muted hover:text-red transition-colors"
                   title={t("chat.panel.disconnectTitle")}
                 >
@@ -1043,7 +1154,7 @@ export function ChatPanel({
                 </button>
               ) : (
                 <button
-                  onClick={() => setConnected(true)}
+                  onClick={toggleConnection}
                   className="text-[10px] text-accent hover:text-accent-hover transition-colors font-bold"
                   title={t("chat.panel.connectTitle")}
                 >
@@ -1077,7 +1188,7 @@ export function ChatPanel({
             <button type="button" onClick={() => { setPlanMode((value) => !value); setShowMobileActions(false); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text hover:bg-bg-hover">
               {planMode ? "Turn off plan mode" : "Turn on plan mode"}
             </button>
-            <button type="button" onClick={() => { setConnected((value) => !value); setShowMobileActions(false); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text hover:bg-bg-hover">
+            <button type="button" onClick={() => { toggleConnection(); setShowMobileActions(false); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text hover:bg-bg-hover">
               {connected ? t("chat.panel.disconnect") : t("chat.panel.connect")}
             </button>
             {chatId && messages.length > 0 && (
@@ -1114,7 +1225,7 @@ export function ChatPanel({
         {!chatId && (
           <p className="text-text-muted text-xs text-center py-8">{t("chat.panel.loading")}</p>
         )}
-        {chatId && timeline.length === 0 && streamingText === null && thinkingPlaceholder === null && (
+        {chatId && timeline.length === 0 && streamingText === null && thinkingPlaceholder === null && !startingResponse && (
           <p className="text-text-muted text-xs text-center py-8">
             {t("chat.panel.empty")}
           </p>
@@ -1138,14 +1249,17 @@ export function ChatPanel({
                   msg={item.message}
                   projectId={projectId}
                   apps={installedApps}
+                  agentName={item.message.agent_id ? agentNames[item.message.agent_id] : undefined}
+                  showAgentName={Object.keys(agentNames).length > 1}
                   onMessageUpdated={handleMessageUpdated}
                 />
               </div>
             );
           }
           if (item.kind === "toolGroup") {
+            const followsUser = previousItem?.kind === "message" && previousItem.message.role === "user";
             return (
-              <div key={item.key} className="mt-2 first:mt-0" title={formatExactTimestamp(item.ts)}>
+              <div key={item.key} className={`${followsUser ? "mt-4" : "mt-2"} first:mt-0`} title={formatExactTimestamp(item.ts)}>
                 <ChatToolActivity
                   tools={item.tools}
                   parallel={item.parallel}
@@ -1157,16 +1271,22 @@ export function ChatPanel({
               </div>
             );
           }
+          const followsUser = previousItem?.kind === "message" && previousItem.message.role === "user";
           return (
-            <div key={item.key} className="mt-2 first:mt-0" title={formatExactTimestamp(item.ts)}>
+            <div key={item.key} className={`${followsUser ? "mt-4" : "mt-2"} first:mt-0`} title={formatExactTimestamp(item.ts)}>
               <ChatToolActivity tools={[item.tool]} registry={toolVisualRegistry} />
             </div>
           );
         })}
-        {streamingText !== null && <div className="mt-2 first:mt-0"><StreamingBubble text={streamingText} /></div>}
+        {streamingText !== null && <div className={`${pendingAssistantMargin} first:mt-0`}><StreamingBubble text={streamingText} /></div>}
+        {startingResponse && streamingText === null && thinkingPlaceholder === null && (
+          <div className={`${pendingAssistantMargin} first:mt-0`}>
+            <StartingResponsePlaceholder conversation={startingConversation} />
+          </div>
+        )}
         {thinkingPlaceholder !== null && streamingText === null && (
           <div
-            className="mt-2 first:mt-0"
+            className={`${pendingAssistantMargin} first:mt-0`}
             title={formatExactTimestamp(thinkingPlaceholder.since)}
           >
             <ThinkingMessagePlaceholder />
@@ -1479,11 +1599,15 @@ const MessageRow = memo(function MessageRow({
   msg,
   projectId,
   apps,
+  agentName,
+  showAgentName,
   onMessageUpdated,
 }: {
   msg: ChatMessageRow;
   projectId: string;
   apps: ReturnType<typeof useInstalledApps>;
+  agentName?: string;
+  showAgentName?: boolean;
   onMessageUpdated?: (message: ChatMessageRow) => void;
 }) {
   // Memoize the parsed HTML against the message content so the
@@ -1531,7 +1655,10 @@ const MessageRow = memo(function MessageRow({
   }
   // Agent — markdown + optional rich attachments.
   return (
-    <div className="min-w-0">
+    <div className="flex min-h-[42px] min-w-0 flex-col justify-center">
+      {showAgentName && agentName && (
+        <div className="mb-1 text-[10px] font-semibold uppercase text-text-muted">{agentName}</div>
+      )}
       <div
         className="chat-md text-text text-[15px] sm:text-sm break-words leading-relaxed"
         dangerouslySetInnerHTML={{ __html: html }}
@@ -1613,7 +1740,7 @@ function StreamingBubble({ text }: { text: string }) {
     [text],
   );
   return (
-    <div className="min-w-0">
+    <div className="flex min-h-[42px] min-w-0 flex-col justify-center">
       <div
         className="chat-md text-text text-[15px] sm:text-sm break-words leading-relaxed"
         dangerouslySetInnerHTML={{ __html: html }}
@@ -1630,19 +1757,39 @@ function ThinkingMessagePlaceholder() {
   const { t } = useTranslation();
   return (
     <div
-      className="min-w-0"
+      className="grid min-h-[42px] min-w-0 grid-cols-[1.9rem_minmax(0,1fr)_auto] items-center gap-2 px-1 py-0.5"
       role="status"
       aria-live="polite"
       aria-label={t("chat.panel.thinking")}
     >
-      <div className="flex min-h-6 items-center gap-2 text-[15px] leading-relaxed text-text-muted sm:text-sm">
-        <span className="chat-thinking-dots inline-flex h-5 w-6 shrink-0 items-center justify-center gap-1" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </span>
-        <span>{t("chat.panel.thinking")}</span>
-      </div>
+      <span className="chat-thinking-dots inline-flex h-7 w-7 shrink-0 items-center justify-center gap-1" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+      <span className="text-[13px] leading-5 text-text-muted">{t("chat.panel.thinking")}</span>
+      <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+    </div>
+  );
+}
+
+function StartingResponsePlaceholder({ conversation }: { conversation: boolean }) {
+  const { t } = useTranslation();
+  const label = conversation
+    ? t("chat.panel.startingConversation")
+    : t("chat.panel.startingResponse");
+  return (
+    <div
+      className="grid min-h-[42px] min-w-0 grid-cols-[1.9rem_minmax(0,1fr)_auto] items-center gap-2 px-1 py-0.5"
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+    >
+      <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center" aria-hidden="true">
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-text-dim" />
+      </span>
+      <span className="text-[13px] leading-5 text-text-muted">{label}</span>
+      <span className="h-4 w-4 shrink-0" aria-hidden="true" />
     </div>
   );
 }

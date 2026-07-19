@@ -7,6 +7,7 @@ import { Modal } from "../components/Modal";
 import { sleepClassName, sleepLabel, sleepTitle, type SleepLike } from "../utils/sleepStatus";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
 import { AgentCurrentStatus, useCurrentStatuses } from "../components/dashboard/CurrentStatuses";
+import { openAgentConversation } from "../utils/agentConversations";
 
 type AgentLiveStatus = { threads: number; iter: number; rate: string } & SleepLike;
 type AgentsViewMode = "cards" | "list";
@@ -78,6 +79,16 @@ export function Agents() {
     }
   });
   const [now, setNow] = useState(Date.now());
+
+  const openChat = async (agent: Agent) => {
+    if (!projectId) return;
+    try {
+      const conversation = await openAgentConversation(projectId, agent);
+      navigate(`/chat/${conversation.id}`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
   const currentStatuses = useCurrentStatuses(projectId);
   const currentStatusByAgent = useMemo(
     () => Object.fromEntries(currentStatuses.map((status) => [status.instance_id, status])),
@@ -118,6 +129,9 @@ export function Agents() {
   const [editDirective, setEditDirective] = useState("");
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   const openEditModal = (inst: Agent) => {
     setEditTarget(inst);
@@ -153,6 +167,33 @@ export function Agents() {
     } catch (err: any) {
       setEditError(err?.message || "Save failed");
       setEditSaving(false);
+    }
+  };
+  const openDeleteModal = (inst: Agent) => {
+    setDeleteTarget(inst);
+    setDeleteError("");
+  };
+  const closeDeleteModal = () => {
+    if (deleteBusy) return;
+    setDeleteTarget(null);
+    setDeleteError("");
+  };
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleteBusy) return;
+    const id = deleteTarget.id;
+    setDeleteBusy(true);
+    setDeleteError("");
+    try {
+      await instances.delete(id);
+      // Remove the row immediately instead of waiting for the next five-second
+      // fleet refresh. load() then reconciles the rest of the page state.
+      setList((current) => current.filter((agent) => agent.id !== id));
+      setDeleteTarget(null);
+      load();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Failed to delete agent");
+    } finally {
+      setDeleteBusy(false);
     }
   };
   // load() is also called by imperative callsites below (start/stop)
@@ -491,10 +532,12 @@ export function Agents() {
                       agent={inst}
                       rolloutRunning={rollout?.state === "running"}
                       onOpen={() => navigate(`/agents/${inst.id}`)}
+                      onChat={() => void openChat(inst)}
                       onEdit={() => openEditModal(inst)}
                       onStart={() => handleStart(inst.id)}
                       onStop={() => handleStop(inst.id)}
                       onUpdateCore={() => void handleAgentCoreUpdate(inst.id)}
+                      onDelete={() => openDeleteModal(inst)}
                     />
                   </div>
                 </article>
@@ -553,10 +596,12 @@ export function Agents() {
                         agent={inst}
                         rolloutRunning={rollout?.state === "running"}
                         onOpen={() => navigate(`/agents/${inst.id}`)}
+                        onChat={() => void openChat(inst)}
                         onEdit={() => openEditModal(inst)}
                         onStart={() => handleStart(inst.id)}
                         onStop={() => handleStop(inst.id)}
                         onUpdateCore={() => void handleAgentCoreUpdate(inst.id)}
+                        onDelete={() => openDeleteModal(inst)}
                       />
                     </div>
                   </article>
@@ -668,6 +713,47 @@ export function Agents() {
               </button>
             </div>
           </form>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!deleteTarget}
+        onClose={closeDeleteModal}
+        width="max-w-md"
+        ariaLabel="Delete agent confirmation"
+      >
+        {deleteTarget && (
+          <div className="p-4 sm:p-6">
+            <h2 className="text-base font-bold text-text">Delete agent?</h2>
+            <p className="mt-2 text-sm leading-6 text-text-muted">
+              Delete <span className="font-bold text-text">{deleteTarget.name}</span>? All
+              conversation history, telemetry, files, and chat messages for this agent
+              will be removed. This cannot be undone.
+            </p>
+            {deleteError && (
+              <p className="mt-3 break-words rounded-md border border-red/30 bg-red/10 px-3 py-2 text-xs text-red">
+                {deleteError}
+              </p>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeDeleteModal}
+                disabled={deleteBusy}
+                className="h-10 rounded-lg border border-border px-4 text-sm text-text-muted transition-colors hover:bg-bg-hover hover:text-text disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmDelete()}
+                disabled={deleteBusy}
+                className="h-10 rounded-lg bg-red px-4 text-sm font-bold text-bg transition-opacity hover:opacity-85 disabled:opacity-50"
+              >
+                {deleteBusy ? "Deleting…" : "Delete agent"}
+              </button>
+            </div>
+          </div>
         )}
       </Modal>
 
@@ -907,18 +993,22 @@ function AgentActionsMenu({
   agent,
   rolloutRunning,
   onOpen,
+  onChat,
   onEdit,
   onStart,
   onStop,
   onUpdateCore,
+  onDelete,
 }: {
   agent: Agent;
   rolloutRunning: boolean;
   onOpen: () => void;
+  onChat: () => void;
   onEdit: () => void;
   onStart: () => void;
   onStop: () => void;
   onUpdateCore: () => void;
+  onDelete: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -976,6 +1066,14 @@ function AgentActionsMenu({
           <button
             type="button"
             role="menuitem"
+            onClick={() => choose(onChat)}
+            className="flex min-h-10 w-full items-center px-3 text-left text-xs text-text transition-colors hover:bg-bg-hover"
+          >
+            Open chat
+          </button>
+          <button
+            type="button"
+            role="menuitem"
             onClick={() => choose(onEdit)}
             className="flex min-h-10 w-full items-center px-3 text-left text-xs text-text transition-colors hover:bg-bg-hover"
           >
@@ -1002,6 +1100,15 @@ function AgentActionsMenu({
             }`}
           >
             {running ? "Stop agent" : "Start agent"}
+          </button>
+          <div className="my-1 border-t border-border" />
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => choose(onDelete)}
+            className="flex min-h-10 w-full items-center px-3 text-left text-xs font-semibold text-red transition-colors hover:bg-red/10"
+          >
+            Delete agent
           </button>
         </div>
       )}

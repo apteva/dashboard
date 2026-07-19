@@ -7,24 +7,35 @@ import { useTranslation } from "react-i18next";
 import { ChatPanel } from "../ChatPanel";
 import { Modal } from "../Modal";
 import { AgentContextCard } from "./AgentContextCard";
-import type { Agent } from "../../api";
+import { ConversationDetails } from "./ConversationDetails";
+import type { Agent, ChatRow } from "../../api";
 import type { SubscribeFn } from "../AgentView";
 import { useRealtimeAvailability } from "../../hooks/useRealtimeAvailability";
 
 interface Props {
   chatId: string | null;
+  conversation: ChatRow | null;
+  participants: Agent[];
+  agents: Agent[];
   instance: Agent | null;
   onBack: () => void;
   onToggleRightPane: () => void;
   rightPaneOpen: boolean;
+  onConversationChanged: (conversation: ChatRow) => void;
+  onConversationRemoved: (conversationId: string) => void;
 }
 
 export function ChatMain({
   chatId,
+  conversation,
+  participants,
+  agents,
   instance,
   onBack,
   onToggleRightPane,
   rightPaneOpen,
+  onConversationChanged,
+  onConversationRemoved,
 }: Props) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -38,8 +49,15 @@ export function ChatMain({
     },
     [instanceId],
   );
+  const handleConversationRemoved = useCallback((conversationId: string) => {
+    // Close the owning context sheet before selection moves. Otherwise its
+    // local dialog state can be reused for whichever conversation is selected
+    // next, making a completed delete appear to target the wrong chat.
+    setContextOpen(false);
+    onConversationRemoved(conversationId);
+  }, [onConversationRemoved]);
 
-  if (!chatId || !instance) {
+  if (!chatId || !instance || !conversation) {
     return (
       <div className="flex h-full items-center justify-center p-6">
         <div className="text-center">
@@ -59,13 +77,16 @@ export function ChatMain({
         <ChatPanel
           key={chatId}
           instanceId={instance.id}
+          conversationId={chatId}
           agentName={instance.name}
+          agentNames={Object.fromEntries(participants.map((agent) => [agent.id, agent.name]))}
+          participantIds={participants.map((agent) => agent.id)}
           realtime={realtime}
           subscribe={subscribe}
           autoConnect
           header={{
-            title: instance.name,
-            subtitle: `#${instance.id} · ${instance.mode} · ${instance.status}`,
+            title: conversation.title,
+            subtitle: participants.map((agent) => agent.name).join(" · "),
             running: instance.status === "running",
             onBack,
             onOpenAgent: () => navigate(`/agents/${instance.id}`),
@@ -87,6 +108,7 @@ export function ChatMain({
           </button>
         </div>
         <div className="page-safe-bottom min-h-0 overflow-y-auto">
+          <ConversationDetails key={conversation.id} conversation={conversation} agents={agents} onChanged={onConversationChanged} onRemoved={handleConversationRemoved} />
           <AgentContextCard instance={instance} chatId={chatId} />
         </div>
       </Modal>

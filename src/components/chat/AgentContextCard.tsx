@@ -25,7 +25,7 @@ const REFRESH_MS = 8000;
 
 interface Props {
   instance: Agent;
-  // Focused chat id (e.g. "default-42"). When CHANNELCHAT_PER_THREAD
+  // Focused explicit conversation id (e.g. "conv-..."). When CHANNELCHAT_PER_THREAD
   // is on, channelchat routes this chat's events to thread "chat-<id>"
   // rather than "main"; we surface that with a small badge on the
   // matching row in the threads list so the operator can see which

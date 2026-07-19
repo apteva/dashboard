@@ -6,6 +6,10 @@ interface Props {
   threadId?: string; // defaults to "main"
 }
 
+export function telemetryEventMatchesThread(eventThreadId: string, selectedThreadId: string): boolean {
+  return (eventThreadId || "main") === selectedThreadId;
+}
+
 // ChatStatusDot replaces the old multi-line "Thinking… <live reasoning
 // preview>" block that used to live inside ChatPanel. It consumes the
 // same telemetry events (llm.start / llm.done / llm.error / tool.call
@@ -32,9 +36,9 @@ export function ChatStatusDot({ subscribe, threadId = "main" }: Props) {
     setState({ kind: "idle" });
     activeToolsRef.current = new Map();
     return subscribe((event) => {
-      // Only main-thread activity feeds the chat status by default;
-      // sub-thread activity is visible in the fleet view.
-      if (event.thread_id !== threadId && event.thread_id !== "") return;
+      // Empty telemetry thread ids are the legacy spelling of main. They
+      // must not light up a selected room/sub-thread status indicator.
+      if (!telemetryEventMatchesThread(event.thread_id, threadId)) return;
       const data = event.data || {};
 
       switch (event.type) {

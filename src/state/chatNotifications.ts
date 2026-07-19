@@ -16,6 +16,7 @@ import {
   type ReportMessageRow,
   type UnreadSummaryRow,
 } from "../api";
+import { chatPreviewText } from "../utils/chatPreview";
 import { notifications, type Notification } from "./notifications";
 
 const WATERMARK_KEY = (chatId: string) => `apteva.chat.lastSeen.${chatId}`;
@@ -95,10 +96,11 @@ function previewFor(role: string, content: string): string {
   // shows the human-readable body.
   if (role === "system") {
     const m = content.match(/^\[(info|warn|alert|error)\]\s*(.*)$/);
-    if (m) return m[2];
+    if (m) return chatPreviewText(m[2]);
   }
-  if (role === "user") return `you: ${content}`;
-  return content;
+  const preview = chatPreviewText(content);
+  if (role === "user") return `you: ${preview}`;
+  return preview;
 }
 
 function titleFor(instanceName: string): string {

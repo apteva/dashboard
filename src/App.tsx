@@ -22,6 +22,7 @@ import { Login } from "./pages/Login";
 const Connect = lazy(() => import("./pages/Connect").then((m) => ({ default: m.Connect })));
 const Onboarding = lazy(() => import("./pages/Onboarding").then((m) => ({ default: m.Onboarding })));
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
+const Build = lazy(() => import("./pages/Build").then((m) => ({ default: m.Build })));
 const Chat = lazy(() => import("./pages/Chat").then((m) => ({ default: m.Chat })));
 const Monitor = lazy(() => import("./pages/Monitor").then((m) => ({ default: m.Monitor })));
 const Agents = lazy(() => import("./pages/Agents").then((m) => ({ default: m.Agents })));
@@ -36,16 +37,12 @@ const AppProjectPage = lazy(() => import("./pages/AppProjectPage").then((m) => (
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { authenticated } = useAuth();
-  console.log("[auth] ProtectedRoute render, authenticated=", authenticated, "path=", window.location.pathname);
   if (authenticated === null) {
-    console.log("[auth] ProtectedRoute: loading (null)");
     return null;
   }
   if (!authenticated) {
-    console.log("[auth] ProtectedRoute: not authenticated → redirect /login");
     return <Navigate to="/login" replace />;
   }
-  console.log("[auth] ProtectedRoute: authenticated → render children");
   return <>{children}</>;
 }
 
@@ -94,10 +91,7 @@ export default function App() {
             }
           >
             <Route path="/" element={<Dashboard />} />
-            {/* Build used to duplicate the shared ChatPanel in a dedicated
-                page. Keep old links working, but open the platform helper
-                over the Agents page where its proposals can be acted on. */}
-            <Route path="/build" element={<Navigate to="/agents?helper=build" replace />} />
+            <Route path="/build" element={<Build />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/activity" element={<Navigate to="/monitor?view=activity" replace />} />
             <Route path="/monitor" element={<Monitor />} />

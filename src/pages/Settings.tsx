@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { auth, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, type Provider, type ProviderTypeInfo, type ProviderAuthStart, type ProviderAuthStatus, type ProviderUsageSnapshot, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser } from "../api";
+import { auth, core, platformHelper, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, type Provider, type ProviderTypeInfo, type ProviderAuthStart, type ProviderAuthStatus, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser } from "../api";
 import { Modal } from "../components/Modal";
 import { ProviderUsageDetails, ProviderUsageSummary } from "../components/ProviderUsage";
 import { useProjects } from "../hooks/useProjects";
@@ -8,6 +8,7 @@ import { useTheme, type ThemeName, type ThemeMode } from "../hooks/useTheme";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { useTranslation } from "react-i18next";
 import { DASHBOARD_LANGUAGES, normalizeDashboardLanguage, setDashboardLanguage, type DashboardLanguage } from "../i18n";
+import { resolveEffectiveAgentProvider } from "../utils/providerSelection";
 
 interface Key {
   id: number;
@@ -26,7 +27,7 @@ interface Key {
 }
 
 
-type Tab = "projects" | "appearance" | "channels" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
+type Tab = "projects" | "helper" | "appearance" | "channels" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
 
 // GlobeIcon — Lucide-style outline glyph used for "global" provider
 // scope. Inherits color via currentColor; sized to sit inline next to
@@ -61,6 +62,7 @@ export function Settings() {
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "projects", label: t("settings.tabs.projects") },
+    { id: "helper", label: t("settings.tabs.helper") },
     { id: "appearance", label: t("settings.tabs.appearance") },
     { id: "channels", label: t("settings.tabs.channels") },
     { id: "providers", label: t("settings.tabs.providers") },
@@ -95,12 +97,12 @@ export function Settings() {
           </select>
         </label>
       </div>
-      <div className="hidden border-b border-border px-6 sm:flex gap-0">
+      <div className="settings-tabs-scroll hidden overflow-x-auto border-b border-border px-6 sm:flex gap-0">
         {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
-            className={`px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
+            className={`whitespace-nowrap px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
               tab === t.id
                 ? "text-accent border-accent"
                 : "text-text-muted border-transparent hover:text-text"
@@ -113,6 +115,7 @@ export function Settings() {
 
       <div className="page-safe-bottom flex-1 overflow-y-auto p-4 sm:p-6">
         {tab === "projects" && <ProjectsTab />}
+        {tab === "helper" && <HelperTab />}
         {tab === "appearance" && <AppearanceTab />}
         {tab === "channels" && <ChannelsTab />}
         {tab === "providers" && <ProvidersTab />}
@@ -611,6 +614,222 @@ function ChannelsTab() {
 
 
 // ─── Providers Tab ───
+
+type HelperModelTier = "large" | "medium" | "small";
+type HelperModelMapping = Record<HelperModelTier, string>;
+
+const EMPTY_HELPER_MODELS: HelperModelMapping = { large: "", medium: "", small: "" };
+const TEXT_PROVIDER_KEYS = new Set(["fireworks", "openai", "openai-codex", "anthropic", "google", "ollama", "nvidia", "opencode-go", "venice", "xai"]);
+
+function runtimeProviderKey(provider: Pick<Provider, "type" | "name">): string {
+  const raw = provider.type === "llm" ? provider.name : provider.type;
+  return raw.toLowerCase().trim().replace(/\s+/g, "-");
+}
+
+function isTextProvider(provider: Provider): boolean {
+  return provider.type === "llm" || TEXT_PROVIDER_KEYS.has(runtimeProviderKey(provider));
+}
+
+function HelperTab() {
+  const [providerList, setProviderList] = useState<Provider[]>([]);
+  const textProviders = providerList
+    .filter(isTextProvider)
+    .filter((provider, index, rows) => rows.findIndex((row) => runtimeProviderKey(row) === runtimeProviderKey(provider)) === index);
+  const [helper, setHelper] = useState<Agent | null>(null);
+  const [runtimeProvider, setRuntimeProvider] = useState("");
+  const [runtimeModels, setRuntimeModels] = useState<HelperModelMapping>(EMPTY_HELPER_MODELS);
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const [catalog, setCatalog] = useState<ModelInfo[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const providerSignature = textProviders
+    .map((provider) => `${provider.id}:${runtimeProviderKey(provider)}`)
+    .join("|");
+
+  useEffect(() => {
+    providers.list().then(setProviderList).catch((err: any) => setError(err?.message || "Unable to load text providers."));
+  }, []);
+
+  const savedModelOverride = useCallback((agent: Agent, providerName: string) => {
+    try {
+      const parsed = JSON.parse(agent.config || "{}");
+      const override = parsed?.model_override;
+      return runtimeProviderKey({ type: String(override?.provider || ""), name: "" }) === providerName
+        ? String(override?.model || "")
+        : "";
+    } catch {
+      return "";
+    }
+  }, []);
+
+  const applyRuntimeConfig = useCallback((agent: Agent, config: Awaited<ReturnType<typeof core.config>>) => {
+    const effectiveProvider = resolveEffectiveAgentProvider(agent.config || "{}", config.providers);
+    const effectiveModels = config.provider?.models || {};
+    setRuntimeProvider(config.provider?.name || effectiveProvider);
+    setRuntimeModels({
+      large: effectiveModels.large || "",
+      medium: effectiveModels.medium || "",
+      small: effectiveModels.small || "",
+    });
+    setSelectedProvider((current) => current || effectiveProvider);
+    setSelectedModel((current) => current || savedModelOverride(agent, effectiveProvider));
+  }, [savedModelOverride]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    platformHelper.get()
+      .then(async (agent) => {
+        const config = await core.config(agent.id);
+        if (cancelled) return;
+        setHelper(agent);
+        applyRuntimeConfig(agent, config);
+      })
+      .catch((err: any) => {
+        if (!cancelled) setError(err?.message || "Unable to load Apteva Helper settings.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [providerSignature, applyRuntimeConfig]);
+
+  const selectedProviderRow = textProviders.find((provider) => runtimeProviderKey(provider) === selectedProvider) || null;
+
+  useEffect(() => {
+    let cancelled = false;
+    setCatalog([]);
+    if (!selectedProviderRow) return () => { cancelled = true; };
+    setLoadingModels(true);
+    const loadModels = async () => {
+      try {
+        const nextCatalog = await providers.models(selectedProviderRow.id);
+        if (!cancelled) setCatalog(nextCatalog);
+      } catch {
+        // A provider without model discovery can still accept a model ID.
+      }
+    };
+    void loadModels()
+      .catch((err: any) => {
+        if (!cancelled) setError(err?.message || "Unable to load provider models.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingModels(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedProviderRow?.id]);
+
+  const uniqueCatalog = catalog.filter((model, index, rows) => rows.findIndex((row) => row.id === model.id) === index);
+  const runtimeModelSummary = runtimeModels.large || "provider default";
+
+  const save = async () => {
+    if (!helper || !selectedProvider || !selectedProviderRow) return;
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      await instancesAPI.updateConfig(helper.id, {
+        providers: textProviders.map((provider) => ({
+          name: runtimeProviderKey(provider),
+          default: runtimeProviderKey(provider) === selectedProvider,
+        })),
+        modelOverride: selectedModel,
+      });
+      const refreshedHelper = await platformHelper.get();
+      const config = await core.config(refreshedHelper.id);
+      setHelper(refreshedHelper);
+      applyRuntimeConfig(refreshedHelper, config);
+      setNotice("Helper settings updated.");
+    } catch (err: any) {
+      setError(err?.message || "Unable to update Apteva Helper.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mx-auto max-w-4xl space-y-5">
+      <div>
+        <h2 className="text-base font-bold text-text">Helper</h2>
+        <p className="mt-1 text-sm text-text-muted">Configure the Apteva Helper used for Build conversations and dashboard assistance.</p>
+      </div>
+
+      <section className="rounded-lg border border-border bg-bg-card">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border-subtle p-4 sm:p-5">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-bold text-text">Apteva Helper</h3>
+              {helper && <span className={`inline-flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wide ${helper.status === "running" ? "text-green" : "text-text-dim"}`}><span className={`h-1.5 w-1.5 rounded-full ${helper.status === "running" ? "bg-green" : "bg-text-dim"}`} />{helper.status}</span>}
+            </div>
+            <p className="mt-1 text-xs text-text-muted">Provider and model choices here apply only to the Helper.</p>
+          </div>
+          {!loading && helper && <div className="rounded-md bg-bg-hover px-2.5 py-1.5 text-[10px] text-text-muted">Current: <span className="font-semibold text-text">{runtimeProvider || "unknown"}</span> · {runtimeModelSummary}</div>}
+        </div>
+
+        <div className="p-4 sm:p-5">
+          {loading ? (
+            <div className="text-xs text-text-dim">Loading Helper settings…</div>
+          ) : textProviders.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border p-3 text-xs text-text-muted">Connect a text provider in Providers before configuring the Helper.</div>
+          ) : (
+            <div className="grid max-w-2xl gap-5">
+              <label className="grid gap-1.5">
+                <span className="text-[10px] font-bold uppercase tracking-wide text-text-dim">Provider</span>
+                <select
+                  value={selectedProvider}
+                  onChange={(event) => {
+                    setSelectedProvider(event.target.value);
+                    setSelectedModel(helper ? savedModelOverride(helper, event.target.value) : "");
+                    setNotice("");
+                  }}
+                  className="h-10 rounded-md border border-border bg-bg-input px-3 text-sm text-text focus:border-accent focus:outline-none"
+                >
+                  {textProviders.map((provider) => <option key={provider.id} value={runtimeProviderKey(provider)}>{provider.name}{provider.project_id ? " · project" : " · global"}</option>)}
+                </select>
+              </label>
+
+              <label className="grid gap-1.5">
+                <span className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-text-dim">Main model {loadingModels && <span className="font-normal normal-case">Loading…</span>}</span>
+                {uniqueCatalog.length > 0 ? (
+                  <select
+                    value={selectedModel}
+                    onChange={(event) => { setSelectedModel(event.target.value); setNotice(""); }}
+                    className="h-10 rounded-md border border-border bg-bg-input px-3 text-sm text-text focus:border-accent focus:outline-none"
+                  >
+                    <option value="">Provider default{selectedProvider === runtimeProvider && runtimeModels.large ? ` (${runtimeModels.large})` : ""}</option>
+                    {selectedModel && !uniqueCatalog.some((model) => model.id === selectedModel) && <option value={selectedModel}>{selectedModel}</option>}
+                    {uniqueCatalog.map((model) => <option key={model.id} value={model.id}>{model.name && model.name !== model.id ? `${model.name} (${model.id})` : model.id}</option>)}
+                  </select>
+                ) : (
+                  <input
+                    value={selectedModel}
+                    onChange={(event) => { setSelectedModel(event.target.value); setNotice(""); }}
+                    placeholder="Provider default"
+                    className="h-10 rounded-md border border-border bg-bg-input px-3 text-sm text-text outline-none placeholder:text-text-dim focus:border-accent"
+                  />
+                )}
+                <span className="text-[10px] leading-relaxed text-text-dim">Use the provider default or pin one model for all Helper work. Other agents are unaffected.</span>
+              </label>
+
+              <div className="flex flex-wrap items-center gap-3 border-t border-border-subtle pt-4">
+                <button type="button" onClick={() => void save()} disabled={saving || loadingModels || !selectedProviderRow} className="h-9 rounded-md bg-accent px-4 text-xs font-bold text-bg hover:bg-accent-hover disabled:opacity-50">{saving ? "Saving…" : "Save Helper settings"}</button>
+                <span className="text-[10px] text-text-dim">Credentials and provider-wide defaults remain in Providers.</span>
+                {notice && <span className="text-xs text-green">{notice}</span>}
+                {error && <span className="text-xs text-danger">{error}</span>}
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
 
 function ProvidersTab() {
   const { currentProject } = useProjects();

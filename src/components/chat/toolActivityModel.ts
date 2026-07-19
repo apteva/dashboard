@@ -8,6 +8,9 @@ export interface ToolActivity {
   id: string;
   /** Provider/core correlation id, when available. */
   callId?: string;
+  /** Agent/core that emitted the event. Required because room participants
+   * can use the same thread name and provider call ID independently. */
+  agentId: number;
   threadId: string;
   name: string;
   reason: string;
@@ -34,25 +37,32 @@ export const TOOL_GROUP_IDLE_GAP_MS = 30_000;
 export const MESSAGE_GROUP_GAP_MS = 5 * 60_000;
 export const TIME_MARKER_GAP_MS = 15 * 60_000;
 
-export function isChatConversationThread(threadId: string, chatId: string | null): boolean {
-  const normalized = threadId || "main";
-  if (normalized === "main") return true;
-  if (!chatId) return false;
-  return normalized === chatId || normalized === `chat-${chatId}`;
+export function chatConversationThreadId(chatId: string | null): string | null {
+  if (!chatId) return null;
+  return `chat-${chatId}`;
 }
 
-export function shouldHideChatTool(name: string, reason = ""): boolean {
+export function isChatConversationThread(threadId: string, chatId: string | null): boolean {
+  const normalized = threadId || "main";
+  // Match the one runtime thread this conversation actually uses. Accepting
+  // aliases here would make a room vulnerable to unrelated main/worker tools.
+  if (!chatId) return normalized === "main";
+  return normalized === chatConversationThreadId(chatId);
+}
+
+export function isChatConversationTelemetry(
+  event: TelemetryEvent,
+  chatId: string | null,
+  participantIds: readonly number[],
+): boolean {
+  return participantIds.includes(event.instance_id)
+    && isChatConversationThread(event.thread_id, chatId);
+}
+
+export function shouldHideChatTool(name: string, _reason = ""): boolean {
   const normalizedName = name.trim().toLowerCase();
   if (!normalizedName || HIDDEN_CHAT_TOOLS.has(normalizedName)) return true;
-  if (normalizedName !== "send") return false;
-  const normalizedReason = reason.trim().toLowerCase();
-  if (!normalizedReason) return true;
-  return (
-    normalizedReason === "report completion" ||
-    normalizedReason === "report back" ||
-    normalizedReason === "report result" ||
-    normalizedReason.includes("completion")
-  );
+  return false;
 }
 
 function eventTime(event: TelemetryEvent): number {
@@ -73,7 +83,11 @@ function explicitCallId(event: TelemetryEvent): string {
 }
 
 function fallbackCallId(event: TelemetryEvent, name: string): string {
-  return `fallback:${event.thread_id || "main"}:${name}:${event.id || event.time}`;
+  return `fallback:${event.instance_id}:${event.thread_id || "main"}:${name}:${event.id || event.time}`;
+}
+
+function scopedCallId(event: TelemetryEvent, callId: string): string {
+  return `${event.instance_id}:${event.thread_id || "main"}:${callId}`;
 }
 
 function matchingActivityKey(
@@ -84,17 +98,29 @@ function matchingActivityKey(
 ): string | undefined {
   const threadId = event.thread_id || "main";
   return [...activities.entries()]
-    .filter(([, tool]) => tool.threadId === threadId && tool.name === name && states.includes(tool.state))
+    .filter(([, tool]) =>
+      tool.agentId === event.instance_id
+      && tool.threadId === threadId
+      && tool.name === name
+      && states.includes(tool.state),
+    )
     .sort((a, b) => a[1].startedAt - b[1].startedAt)[0]?.[0];
 }
 
 function explicitActivityKey(
   activities: ReadonlyMap<string, ToolActivity>,
+  event: TelemetryEvent,
   explicitId: string,
 ): string | undefined {
   if (!explicitId) return undefined;
-  if (activities.has(explicitId)) return explicitId;
-  return [...activities.entries()].find(([, tool]) => tool.callId === explicitId)?.[0];
+  const key = scopedCallId(event, explicitId);
+  if (activities.has(key)) return key;
+  const threadId = event.thread_id || "main";
+  return [...activities.entries()].find(([, tool]) =>
+    tool.agentId === event.instance_id
+    && tool.threadId === threadId
+    && tool.callId === explicitId,
+  )?.[0];
 }
 
 function resultSucceeded(data: Record<string, unknown>): boolean {
@@ -134,16 +160,16 @@ export function reduceToolActivity(
 
   if (event.type === "llm.tool_chunk") {
     if (shouldHideChatTool(name)) return previous instanceof Map ? previous : new Map(previous);
-    const existingKey = explicitActivityKey(previous, explicitId) || matchingActivityKey(previous, event, name, ["preparing"]);
-    const id = existingKey || explicitId || fallbackCallId(event, name);
+    const existingKey = explicitActivityKey(previous, event, explicitId) || matchingActivityKey(previous, event, name, ["preparing"]);
+    const id = existingKey || (explicitId ? scopedCallId(event, explicitId) : fallbackCallId(event, name));
     if (previous.has(id)) return previous instanceof Map ? previous : new Map(previous);
     const next = new Map(previous);
-    next.set(id, { id, callId: explicitId || undefined, threadId, name, reason: "", state: "preparing", startedAt: time });
+    next.set(id, { id, callId: explicitId || undefined, agentId: event.instance_id, threadId, name, reason: "", state: "preparing", startedAt: time });
     return enforceToolCap(next);
   }
 
   if (event.type === "tool.call") {
-    const matchedKey = explicitActivityKey(previous, explicitId)
+    const matchedKey = explicitActivityKey(previous, event, explicitId)
       || matchingActivityKey(previous, event, name, ["preparing"]);
     if (shouldHideChatTool(name, reason)) {
       if (!matchedKey) return previous instanceof Map ? previous : new Map(previous);
@@ -152,11 +178,12 @@ export function reduceToolActivity(
       return next;
     }
     const existing = matchedKey ? previous.get(matchedKey) : undefined;
-    const id = matchedKey || explicitId || fallbackCallId(event, name);
+    const id = matchedKey || (explicitId ? scopedCallId(event, explicitId) : fallbackCallId(event, name));
     const next = new Map(previous);
     next.set(id, {
       id,
       callId: explicitId || existing?.callId,
+      agentId: existing?.agentId ?? event.instance_id,
       threadId: existing?.threadId || threadId,
       name,
       reason: reason || existing?.reason || "",
@@ -172,18 +199,19 @@ export function reduceToolActivity(
   if (!name || HIDDEN_CHAT_TOOLS.has(name.toLowerCase())) {
     return previous instanceof Map ? previous : new Map(previous);
   }
-  const matchedKey = explicitActivityKey(previous, explicitId)
+  const matchedKey = explicitActivityKey(previous, event, explicitId)
     || matchingActivityKey(previous, event, name, ["running", "preparing"]);
   if (name.toLowerCase() === "send" && !matchedKey) {
     return previous instanceof Map ? previous : new Map(previous);
   }
   const existing = matchedKey ? previous.get(matchedKey) : undefined;
-  const id = matchedKey || explicitId || fallbackCallId(event, name);
+  const id = matchedKey || (explicitId ? scopedCallId(event, explicitId) : fallbackCallId(event, name));
   const next = new Map(previous);
   const rawDuration = event.data?.duration_ms;
   next.set(id, {
     id,
     callId: explicitId || existing?.callId,
+    agentId: existing?.agentId ?? event.instance_id,
     threadId: existing?.threadId || threadId,
     name,
     reason: existing?.reason || reason,

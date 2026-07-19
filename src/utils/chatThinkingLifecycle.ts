@@ -12,6 +12,46 @@ export function telemetryIteration(data: Record<string, any> | undefined): numbe
   return Number.isFinite(value) ? value : null;
 }
 
+export function isTerminalChatTurnTool(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  return normalized === "pace" || normalized === "done";
+}
+
+export function isChatUserTurnEvent(data: Record<string, any> | undefined): boolean {
+  if (String(data?.source || "") !== "bus") return false;
+  // Core stores only a short preview in event.received telemetry. The real
+  // dashboard turn produced by channel-chat always begins "[chat]\n";
+  // presence events begin "[chat] user ..." and session shutdown uses
+  // "[chat.session_closing]", so neither can accidentally accept a turn.
+  return String(data?.message || "").startsWith("[chat]\n");
+}
+
+export function terminalToolEndsChatTurn(name: string, userTurnAccepted: boolean): boolean {
+  return userTurnAccepted && isTerminalChatTurnTool(name);
+}
+
+export function shouldShowChatThinking(
+  awaitingResponse: boolean,
+  userTurnAccepted: boolean,
+  afterAgentReply: boolean,
+): boolean {
+  return awaitingResponse && userTurnAccepted && !afterAgentReply;
+}
+
+export function shouldBeginChatTurn(activeTurnKey: string, nextTurnKey: string): boolean {
+  return nextTurnKey.length > 0 && nextTurnKey !== activeTurnKey;
+}
+
+export type ChatTurnStartKind = "conversation" | "response";
+
+export function nextChatTurnStartKind(
+  activeTurnKey: string,
+  nextTurnKey: string,
+  requestedKind: ChatTurnStartKind,
+): ChatTurnStartKind | null {
+  return shouldBeginChatTurn(activeTurnKey, nextTurnKey) ? requestedKind : null;
+}
+
 /**
  * Only the beginning of visible tool work replaces the current reasoning
  * placeholder. A result can arrive after core has already started a newer LLM

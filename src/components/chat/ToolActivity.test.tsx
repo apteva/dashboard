@@ -19,6 +19,7 @@ const registry = buildToolVisualRegistry([
 const tools: ToolActivity[] = [
   {
     id: "a",
+	agentId: 1,
     threadId: "main",
     name: "crm_contacts",
     reason: "Refreshing pipeline records",
@@ -30,6 +31,7 @@ const tools: ToolActivity[] = [
   },
   {
     id: "b",
+	agentId: 1,
     threadId: "main",
     name: "evolve",
     reason: "Updating weekly report scope",
@@ -38,6 +40,7 @@ const tools: ToolActivity[] = [
   },
   {
     id: "c",
+	agentId: 1,
     threadId: "main",
     name: "reports_publish",
     reason: "Publishing the refreshed report",
@@ -102,6 +105,19 @@ describe("ChatToolActivity", () => {
     expect(html.match(/src="\/api\/apps\/crm\/icon\.png"/g)?.length).toBe(1);
     expect(html).toContain("Checking associated companies");
     expect(html).toContain("+1");
+  });
+
+  test("shows one summary icon for grouped Apteva Server MCP calls", () => {
+    const platformTools: ToolActivity[] = [
+      { ...tools[0]!, id: "platform-a", name: "apteva-server_apps_list" },
+      { ...tools[0]!, id: "platform-b", name: "apteva-server_apps_uninstall" },
+      { ...tools[0]!, id: "platform-c", name: "apteva-server_list_mcp_servers" },
+    ];
+    const html = renderToStaticMarkup(
+      <ChatToolActivity tools={platformTools} parallel registry={buildToolVisualRegistry([], [])} />,
+    );
+    expect(html.match(/title="Apteva"/g)?.length).toBe(1);
+    expect(html).toContain("+2");
   });
 
   test("renders one reason per expanded call without raw internal tool names", () => {

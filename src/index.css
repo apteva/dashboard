@@ -582,6 +582,19 @@ select {
   border-radius: 4px;
 }
 
+.settings-tabs-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-subtle) transparent;
+}
+
+.settings-tabs-scroll::-webkit-scrollbar {
+  height: 5px;
+}
+
+.settings-tabs-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 /* Chat markdown rendering — tight spacing to match text-xs density */
 .chat-md > *:first-child { margin-top: 0; }
 .chat-md > *:last-child { margin-bottom: 0; }

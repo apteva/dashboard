@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { integrations, type ConnectionInfo } from "../../api";
+import {
+  integrations,
+  mcpServers as mcpServersAPI,
+  type ConnectionInfo,
+  type MCPServer,
+} from "../../api";
 import type { InstalledAppRow } from "../apps/chatComponents";
 
 export type ToolGlyph =
@@ -92,11 +97,41 @@ function connectionSources(connections: ConnectionInfo[]): ToolVisualSource[] {
   return [...bySlug.values()];
 }
 
+function mcpSources(servers: MCPServer[]): ToolVisualSource[] {
+  return servers.map((server) => {
+    const slug = normalizeToolToken(server.name);
+    return {
+      key: `mcp:${server.id || slug}`,
+      label: server.description || server.name || "MCP server",
+      glyph: visualGlyphForName(`${server.name} ${server.description}`),
+      aliases: uniqueTokens([server.name, server.description]),
+      exactTools: uniqueTokens(server.allowed_tools || []),
+    };
+  }).filter((source) => source.aliases.length > 0);
+}
+
+// The platform-management MCP is injected directly into the Helper Core, so
+// it does not appear in the project's persisted MCP inventory. Keep one
+// explicit source identity so every apteva-server_* call shares one icon.
+const platformSource: ToolVisualSource = {
+  key: "mcp:apteva-server",
+  label: "Apteva",
+  glyph: "tool",
+  aliases: ["apteva_server"],
+  exactTools: [],
+};
+
 export function buildToolVisualRegistry(
   apps: InstalledAppRow[],
   connections: ConnectionInfo[],
+  mcpServers: MCPServer[] = [],
 ): ToolVisualRegistry {
-  const sources = [...apps.map(appSource), ...connectionSources(connections)];
+  const sources = [
+    ...apps.map(appSource),
+    ...connectionSources(connections),
+    ...mcpSources(mcpServers),
+    platformSource,
+  ];
   const exact = new Map<string, ToolVisualSource>();
   for (const source of sources) {
     for (const tool of source.exactTools) exact.set(tool, source);
@@ -129,23 +164,30 @@ export function useToolVisualRegistry(
   apps: InstalledAppRow[],
 ): ToolVisualRegistry {
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
+  const [mcpServers, setMCPServers] = useState<MCPServer[]>([]);
   useEffect(() => {
     if (!projectId) {
       setConnections([]);
+      setMCPServers([]);
       return;
     }
     let cancelled = false;
-    integrations.connections(projectId, { includeAppOwned: true })
-      .then((rows) => {
-        if (!cancelled) setConnections(rows || []);
+    Promise.all([
+      integrations.connections(projectId, { includeAppOwned: true }).catch(() => []),
+      mcpServersAPI.list(projectId, { includeAppOwned: true }).catch(() => []),
+    ])
+      .then(([nextConnections, nextMCPServers]) => {
+        if (cancelled) return;
+        setConnections(nextConnections || []);
+        setMCPServers(nextMCPServers || []);
       })
-      .catch(() => {
-        if (!cancelled) setConnections([]);
-      });
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, [projectId]);
-  return useMemo(() => buildToolVisualRegistry(apps, connections), [apps, connections]);
+  return useMemo(
+    () => buildToolVisualRegistry(apps, connections, mcpServers),
+    [apps, connections, mcpServers],
+  );
 }
-

@@ -1,67 +1,82 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import {
+  chat,
   instances,
   platformHelper,
   type Agent,
   type ChatMessageContext,
+  type ChatRow,
 } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { useRealtimeAvailability } from "../hooks/useRealtimeAvailability";
 import { ChatPanel } from "./ChatPanel";
 import type { EventListener, SubscribeFn } from "./AgentView";
+import {
+  helperConversationStorageKey,
+  helperDirectConversations,
+  selectHelperConversation,
+} from "./chat/helperConversationModel";
 
 const STORAGE_OPEN = "context-agent-chat:open";
-const STORAGE_AGENT = "context-agent-chat:agent-id";
+const REFRESH_MS = 8000;
+
+// React development remounts can run the ensure effect twice. Share an
+// in-flight project/helper creation briefly so opening an empty helper does not
+// manufacture duplicate conversations.
+const helperConversationCreates = new Map<string, Promise<ChatRow>>();
 
 export function ContextAgentChatWidget({
   open,
   onOpen,
   onClose,
-  selectHelperRequest = 0,
 }: {
   open: boolean;
   onOpen: () => void;
   onClose: () => void;
-  selectHelperRequest?: number;
 }) {
   const location = useLocation();
-  const navigate = useNavigate();
   const { currentProject } = useProjects();
   const context = useMemo(
     () => describeContext(location.pathname, currentProject?.id, currentProject?.name),
     [location.pathname, currentProject?.id, currentProject?.name],
   );
   const isChatRoute = location.pathname === "/chat" || location.pathname.startsWith("/chat/");
+  const projectId = currentProject?.id || "";
 
-  const [agents, setAgents] = useState<Agent[]>([]);
+  const [helper, setHelper] = useState<Agent | null>(null);
+  const [conversations, setConversations] = useState<ChatRow[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
-  const [agentsLoading, setAgentsLoading] = useState(false);
-  const [selectedAgentId, setSelectedAgentId] = useState<number | null>(() => {
-    try {
-      const raw = sessionStorage.getItem(STORAGE_AGENT);
-      return raw ? Number(raw) || null : null;
-    } catch {
-      return null;
-    }
-  });
-  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [starting, setStarting] = useState(false);
-  const handledHelperRequest = useRef(0);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const projectId = currentProject?.id ?? null;
-  const activeAgents = loadedProjectId === projectId ? agents : [];
-  const selectedAgent = activeAgents.find((a) => a.id === selectedAgentId) || null;
-  const selectedIsHelper = selectedAgent?.kind === "platform_helper";
-  const realtime = useRealtimeAvailability(selectedAgent?.id, selectedAgent?.status === "running");
+  const projectConversations = loadedProjectId === projectId && helper
+    ? helperDirectConversations(conversations, helper.id)
+    : [];
+  const selectedConversation = projectConversations.find((conversation) => conversation.id === selectedConversationId)
+    || projectConversations[0]
+    || null;
+  const realtime = useRealtimeAvailability(helper?.id, helper?.status === "running");
 
-  const subscribeSelectedAgent = useCallback<SubscribeFn>(
+  const subscribeHelper = useCallback<SubscribeFn>(
     (listener: EventListener) => {
-      if (typeof window === "undefined" || !selectedAgentId) return () => {};
-      return window.__aptevaTelemetryBus?.subscribe(selectedAgentId, listener) ?? (() => {});
+      if (typeof window === "undefined" || !helper?.id) return () => {};
+      return window.__aptevaTelemetryBus?.subscribe(helper.id, listener) ?? (() => {});
     },
-    [selectedAgentId],
+    [helper?.id],
   );
+
+  const rememberSelection = useCallback((conversationId: string) => {
+    if (!projectId) return;
+    setSelectedConversationId(conversationId);
+    try {
+      sessionStorage.setItem(helperConversationStorageKey(projectId), conversationId);
+    } catch {}
+  }, [projectId]);
 
   useEffect(() => {
     try {
@@ -74,83 +89,95 @@ export function ContextAgentChatWidget({
   }, [isChatRoute, onClose, open]);
 
   useEffect(() => {
+    setHelper(null);
+    setConversations([]);
+    setSelectedConversationId(null);
+    setLoadedProjectId(null);
+    setHistoryOpen(false);
+    setError(null);
+  }, [projectId]);
+
+  useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        if (historyOpen) setHistoryOpen(false);
+        else onClose();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [historyOpen, onClose, open]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !projectId) return;
     let cancelled = false;
-    setAgents([]);
-    setLoadedProjectId(null);
-    setAgentsLoading(true);
-    Promise.allSettled([platformHelper.get(), instances.list(currentProject?.id)])
-      .then((results) => {
+    setLoading(true);
+    setError(null);
+    setHistoryOpen(false);
+
+    const load = async () => {
+      try {
+        const [nextHelper, rows] = await Promise.all([
+          platformHelper.get(),
+          chat.listConversations(projectId),
+        ]);
+        let helperRows = helperDirectConversations(rows, nextHelper.id);
+        let storedId: string | null = null;
+        try {
+          storedId = sessionStorage.getItem(helperConversationStorageKey(projectId));
+        } catch {}
+        let selected = selectHelperConversation(helperRows, nextHelper.id, storedId);
+        if (!selected) {
+          selected = await ensureHelperConversation(projectId, nextHelper);
+          helperRows = [selected];
+        }
         if (cancelled) return;
-        const helper =
-          results[0].status === "fulfilled" ? results[0].value : null;
-        const rows =
-          results[1].status === "fulfilled" ? results[1].value : [];
-        const sorted = [...rows].sort((a, b) => {
-          if (a.status === "running" && b.status !== "running") return -1;
-          if (a.status !== "running" && b.status === "running") return 1;
-          return a.name.localeCompare(b.name);
-        });
-        const next = helper ? [helper, ...sorted.filter((a) => a.id !== helper.id)] : sorted;
-        setAgents(next);
+        setHelper(nextHelper);
+        setConversations(mergeConversations(rows, helperRows));
         setLoadedProjectId(projectId);
-        const routeAgentId = context.agent_id;
-        setSelectedAgentId((prev) => {
-          if (routeAgentId && next.some((a) => a.id === routeAgentId)) return prev ?? routeAgentId;
-          if (prev && !next.some((a) => a.id === prev)) return null;
-          return prev;
-        });
-      })
-      .catch((e) => !cancelled && setError(errorMessage(e)))
-      .finally(() => !cancelled && setAgentsLoading(false));
+        rememberSelection(selected.id);
+        setError(null);
+      } catch (reason) {
+        if (!cancelled) setError(errorMessage(reason));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    void load();
+    const timer = window.setInterval(() => { void load(); }, REFRESH_MS);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
-  }, [open, projectId, context.agent_id]);
+  }, [open, projectId, rememberSelection]);
 
-  useEffect(() => {
+  const createConversation = async () => {
+    if (!helper || !projectId || creating) return;
+    setCreating(true);
+    setError(null);
     try {
-      if (selectedAgentId) sessionStorage.setItem(STORAGE_AGENT, String(selectedAgentId));
-      else sessionStorage.removeItem(STORAGE_AGENT);
-    } catch {}
-  }, [selectedAgentId]);
+      const created = await chat.createConversation(projectId, [helper.id], "Apteva Helper", helper.id);
+      setConversations((current) => [created, ...current.filter((row) => row.id !== created.id)]);
+      rememberSelection(created.id);
+      setHistoryOpen(false);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setCreating(false);
+    }
+  };
 
-  // The global launcher and legacy /build route target the one platform
-  // helper explicitly. The request may arrive before its async agent row, so
-  // consume it only after the current project's list is ready.
-  useEffect(() => {
-    if (!selectHelperRequest || handledHelperRequest.current === selectHelperRequest) return;
-    const helper = activeAgents.find((agent) => agent.kind === "platform_helper");
-    if (!helper) return;
-    handledHelperRequest.current = selectHelperRequest;
-    setSelectedAgentId(helper.id);
-  }, [activeAgents, selectHelperRequest]);
-
-  const startSelectedAgent = async () => {
-    if (!selectedAgent) return;
+  const startHelper = async () => {
+    if (!helper || starting) return;
     setStarting(true);
     setError(null);
     try {
-      await instances.start(selectedAgent.id);
-      const [helperResult, rows] = await Promise.allSettled([
-        platformHelper.get(),
-        instances.list(currentProject?.id),
-      ]);
-      const helper = helperResult.status === "fulfilled" ? helperResult.value : null;
-      const normal = rows.status === "fulfilled" ? rows.value : [];
-      setAgents(helper ? [helper, ...normal.filter((a) => a.id !== helper.id)] : normal);
-      setLoadedProjectId(projectId);
-    } catch (e) {
-      setError(errorMessage(e));
+      await instances.start(helper.id);
+      setHelper(await platformHelper.get());
+    } catch (reason) {
+      setError(errorMessage(reason));
     } finally {
       setStarting(false);
     }
@@ -164,8 +191,8 @@ export function ContextAgentChatWidget({
         <button
           type="button"
           onClick={onOpen}
-          className="floating-chat-launcher-safe touch-target fixed z-40 flex h-12 w-12 items-center justify-center rounded-full border border-accent/50 bg-accent text-bg shadow-xl shadow-black/25 hover:bg-accent-hover transition-colors"
-          title="Build or ask with Apteva Helper"
+          className="floating-chat-launcher-safe touch-target fixed z-40 flex h-12 w-12 items-center justify-center rounded-full border border-accent/50 bg-accent text-bg shadow-xl shadow-black/25 transition-colors hover:bg-accent-hover"
+          title="Ask Apteva Helper"
           aria-label="Open Apteva Helper"
         >
           <ChatIcon />
@@ -174,151 +201,113 @@ export function ContextAgentChatWidget({
 
       {open && (
         <>
-        <button type="button" className="fixed inset-0 z-40 bg-black/45 sm:hidden" onClick={onClose} aria-label="Close agent chat" />
-        <section
-          className="fixed inset-x-0 bottom-0 z-50 flex h-[calc(100dvh-var(--safe-area-top))] flex-col overflow-hidden rounded-t-xl border border-border bg-bg shadow-2xl shadow-black/30 sm:inset-auto sm:bottom-4 sm:right-4 sm:h-[min(700px,calc(100dvh-5rem))] sm:w-[440px] sm:max-w-[calc(100vw-2rem)] sm:rounded-lg"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Ask an agent"
-        >
-          <div className="min-h-14 border-b border-border px-2 py-2 sm:px-4 sm:py-3 flex items-center gap-2 sm:gap-3">
-            <div className="hidden sm:flex mt-0.5 h-9 w-9 shrink-0 items-center justify-center rounded bg-accent text-bg">
-              <BotIcon />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <h2 className="truncate text-sm font-semibold text-text">
-                  {selectedAgent ? selectedAgent.name : "Ask an agent"}
-                </h2>
-                {selectedAgent && <StatusDot status={selectedAgent.status} />}
-                {selectedIsHelper && (
+          <button type="button" className="fixed inset-0 z-40 bg-black/45 sm:hidden" onClick={onClose} aria-label="Close Apteva Helper" />
+          <section
+            className="fixed inset-x-0 bottom-0 z-50 flex h-[calc(100dvh-var(--safe-area-top))] flex-col overflow-hidden rounded-t-xl border border-border bg-bg shadow-2xl shadow-black/30 sm:inset-auto sm:bottom-4 sm:right-4 sm:h-[min(700px,calc(100dvh-5rem))] sm:w-[440px] sm:max-w-[calc(100vw-2rem)] sm:rounded-lg"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Apteva Helper"
+          >
+            <div className="relative flex min-h-14 items-center gap-2 border-b border-border px-2 py-2 sm:gap-3 sm:px-3">
+              <div className="hidden h-9 w-9 shrink-0 items-center justify-center rounded bg-accent text-bg sm:flex">
+                <BotIcon />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <h2 className="truncate text-sm font-semibold text-text">Apteva Helper</h2>
+                  {helper && <StatusDot status={helper.status} />}
                   <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">helper</span>
-                )}
-              </div>
-              <p className="mt-0.5 text-xs text-text-muted truncate">
-                {selectedAgent
-                  ? `#${selectedAgent.id} · ${selectedIsHelper ? "platform" : selectedAgent.mode} · ${selectedAgent.status}`
-                  : `${context.title} · ${currentProject?.name || "Current project"}`}
-              </p>
-            </div>
-            {selectedAgent && (
-              <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+                </div>
                 <button
                   type="button"
-                  onClick={() => setSelectedAgentId(null)}
-                  className="touch-target rounded border border-border px-2 text-xs text-text-muted hover:text-text hover:bg-bg-hover"
-                  aria-label="Back to agents"
+                  onClick={() => setHistoryOpen((value) => !value)}
+                  disabled={!selectedConversation}
+                  className="mt-0.5 flex max-w-full items-center gap-1 text-left text-xs text-text-muted hover:text-text disabled:opacity-50"
+                  aria-expanded={historyOpen}
+                  aria-haspopup="menu"
                 >
-                  <span className="sm:hidden">‹</span><span className="hidden sm:inline">Agents</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => navigate(`/agents/${selectedAgent.id}`)}
-                  className="touch-target inline-flex h-11 w-11 items-center justify-center rounded text-text-muted hover:text-text hover:bg-bg-hover sm:h-auto sm:w-auto sm:border sm:border-border sm:px-2 sm:py-1 sm:text-xs"
-                  aria-label="Open agent details"
-                >
-                  <span className="sm:hidden">↗</span><span className="hidden sm:inline">Open</span>
+                  <span className="truncate">{selectedConversation?.title || (loading ? "Loading conversation…" : currentProject?.name || "Current project")}</span>
+                  <span aria-hidden="true">⌄</span>
                 </button>
               </div>
-            )}
-            <button
-              type="button"
-              onClick={onClose}
-              className="touch-target inline-flex h-11 w-11 items-center justify-center rounded text-xl text-text-muted hover:text-text hover:bg-bg-hover sm:h-auto sm:w-auto sm:border sm:border-border sm:px-2 sm:py-1 sm:text-xs"
-              title="Close"
-            >
-              ×
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={() => void createConversation()}
+                disabled={!helper || creating}
+                className="touch-target inline-flex h-10 w-10 items-center justify-center rounded text-xl text-accent hover:bg-accent/10 disabled:opacity-40"
+                title="New helper conversation"
+                aria-label="New helper conversation"
+              >
+                {creating ? "…" : "+"}
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="touch-target inline-flex h-10 w-10 items-center justify-center rounded text-xl text-text-muted hover:bg-bg-hover hover:text-text"
+                title="Close"
+                aria-label="Close Apteva Helper"
+              >
+                ×
+              </button>
 
-          {selectedAgent ? (
-            <>
-              {error && (
-                <div className="border-b border-red/40 bg-red/10 px-3 py-2 text-xs text-red break-words">
-                  {error}
-                </div>
-              )}
-
-              {selectedAgent.status !== "running" ? (
-                <div className="flex flex-1 items-center justify-center p-4">
-                  <div className="flex w-full items-center justify-between gap-3 rounded border border-border bg-bg-card p-3">
-                    <span className="text-xs text-text-muted">Start this agent to chat from here.</span>
+              {historyOpen && (
+                <div role="menu" aria-label="Helper conversations" className="absolute left-2 right-2 top-[calc(100%-2px)] z-20 max-h-72 overflow-y-auto rounded-lg border border-border bg-bg-card py-1 shadow-2xl shadow-black/60 sm:left-12">
+                  <div className="px-3 py-2 text-[9px] font-bold uppercase tracking-wide text-text-dim">Helper conversations</div>
+                  {projectConversations.map((conversation) => (
                     <button
+                      key={conversation.id}
                       type="button"
-                      onClick={startSelectedAgent}
-                      disabled={starting}
-                      className="touch-target rounded border border-accent px-4 text-xs font-semibold text-accent hover:bg-accent hover:text-bg disabled:opacity-50"
+                      role="menuitem"
+                      onClick={() => { rememberSelection(conversation.id); setHistoryOpen(false); }}
+                      className={`flex min-h-12 w-full items-center gap-2 px-3 py-2 text-left hover:bg-bg-hover ${conversation.id === selectedConversation?.id ? "bg-bg-hover" : ""}`}
                     >
-                      {starting ? "Starting…" : "Start"}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="min-h-0 flex-1">
-                  <ChatPanel
-                    key={selectedAgent.id}
-                    instanceId={selectedAgent.id}
-                    agentName={selectedAgent.name}
-                    realtime={realtime}
-                    subscribe={subscribeSelectedAgent}
-                    autoConnect
-                    hideHeader
-                    messageContext={context}
-                  />
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="page-safe-bottom flex-1 overflow-y-auto p-3">
-              {agentsLoading && (
-                <div className="mb-2 text-right text-[10px] text-text-muted">loading…</div>
-              )}
-              <div>
-                <div className="space-y-2">
-                  {activeAgents.map((agent) => (
-                    <button
-                      key={agent.id}
-                      type="button"
-                      onClick={() => setSelectedAgentId(agent.id)}
-                      className="w-full min-h-16 rounded-lg border border-border bg-bg-card p-3 text-left hover:border-accent/60 hover:bg-bg-hover transition-colors"
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded bg-bg-input text-xs font-semibold text-text">
-                          {initials(agent.name)}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <StatusDot status={agent.status} />
-                            <span className="truncate text-sm font-medium text-text">{agent.name}</span>
-                            {agent.kind === "platform_helper" && (
-                              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">helper</span>
-                            )}
-                            {context.agent_id === agent.id && (
-                              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">this page</span>
-                            )}
-                          </div>
-                          <div className="mt-0.5 truncate text-xs text-text-muted">
-                            #{agent.id} · {agent.kind === "platform_helper" ? "platform" : agent.mode} · {agent.status}
-                          </div>
-                          {agent.directive && (
-                            <div className="mt-2 line-clamp-2 text-[11px] text-text-dim">
-                              {agent.directive}
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${helper?.status === "running" ? "bg-green" : "bg-text-dim"}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-xs font-medium text-text">{conversation.title}</span>
+                        <span className="block text-[10px] text-text-dim">{formatRelative(conversation.updated_at)}</span>
+                      </span>
+                      {conversation.id === selectedConversation?.id && <span className="text-xs text-accent">✓</span>}
                     </button>
                   ))}
-                  {!agentsLoading && activeAgents.length === 0 && (
-                    <div className="rounded border border-border bg-bg-card p-4 text-sm text-text-muted">
-                      No agents in this project yet.
-                    </div>
-                  )}
+                </div>
+              )}
+            </div>
+
+            {error && <div className="border-b border-red/40 bg-red/10 px-3 py-2 text-xs text-red break-words">{error}</div>}
+
+            {!projectId ? (
+              <EmptyState title="Choose a project" detail="Apteva Helper conversations are scoped to the current project." />
+            ) : loading && !selectedConversation ? (
+              <EmptyState title="Loading Apteva Helper" detail="Opening your project helper conversation…" />
+            ) : helper && helper.status !== "running" ? (
+              <div className="flex flex-1 items-center justify-center p-4">
+                <div className="flex w-full items-center justify-between gap-3 rounded border border-border bg-bg-card p-3">
+                  <span className="text-xs text-text-muted">Start Apteva Helper to continue this conversation.</span>
+                  <button type="button" onClick={() => void startHelper()} disabled={starting} className="touch-target rounded border border-accent px-4 text-xs font-semibold text-accent hover:bg-accent hover:text-bg disabled:opacity-50">
+                    {starting ? "Starting…" : "Start"}
+                  </button>
                 </div>
               </div>
-            </div>
-          )}
-        </section>
+            ) : helper && selectedConversation ? (
+              <div className="min-h-0 flex-1">
+                <ChatPanel
+                  key={selectedConversation.id}
+                  instanceId={helper.id}
+                  conversationId={selectedConversation.id}
+                  agentName={helper.name}
+                  agentNames={{ [helper.id]: helper.name }}
+                  participantIds={[helper.id]}
+                  realtime={realtime}
+                  subscribe={subscribeHelper}
+                  autoConnect
+                  hideHeader
+                  messageContext={context}
+                />
+              </div>
+            ) : (
+              <EmptyState title="Helper unavailable" detail="Close and reopen Apteva Helper to try again." />
+            )}
+          </section>
         </>
       )}
     </>
@@ -333,13 +322,40 @@ export function readContextAgentChatOpenDefault(): boolean {
   }
 }
 
+function ensureHelperConversation(projectId: string, helper: Agent): Promise<ChatRow> {
+  const key = `${projectId}:${helper.id}`;
+  const existing = helperConversationCreates.get(key);
+  if (existing) return existing;
+  const created = chat.createConversation(projectId, [helper.id], "Apteva Helper", helper.id);
+  helperConversationCreates.set(key, created);
+  const clearCreation = () => {
+    window.setTimeout(() => {
+      if (helperConversationCreates.get(key) === created) helperConversationCreates.delete(key);
+    }, 2000);
+  };
+  void created.then(clearCreation, clearCreation);
+  return created;
+}
+
+function mergeConversations(rows: ChatRow[], additions: ChatRow[]): ChatRow[] {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  for (const row of additions) byId.set(row.id, row);
+  return [...byId.values()];
+}
+
+function EmptyState({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="flex flex-1 items-center justify-center p-6 text-center">
+      <div>
+        <div className="text-sm font-medium text-text">{title}</div>
+        <div className="mt-1 text-xs leading-5 text-text-muted">{detail}</div>
+      </div>
+    </div>
+  );
+}
+
 function StatusDot({ status }: { status: string }) {
-  const cls =
-    status === "running"
-      ? "bg-green"
-      : status === "stopped"
-        ? "bg-text-dim"
-        : "bg-yellow";
+  const cls = status === "running" ? "bg-green" : status === "stopped" ? "bg-text-dim" : "bg-yellow";
   return <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${cls}`} title={status} />;
 }
 
@@ -432,20 +448,22 @@ function titleFromSlug(slug: string) {
     .join(" ");
 }
 
-function initials(name: string) {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join("");
+function formatRelative(iso: string): string {
+  const timestamp = Date.parse(iso);
+  if (!timestamp) return "";
+  const elapsed = Date.now() - timestamp;
+  if (elapsed < 60_000) return "now";
+  if (elapsed < 60 * 60_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+  if (elapsed < 24 * 60 * 60_000) return `${Math.floor(elapsed / (60 * 60_000))}h ago`;
+  if (elapsed < 7 * 24 * 60 * 60_000) return `${Math.floor(elapsed / (24 * 60 * 60_000))}d ago`;
+  return new Date(timestamp).toLocaleDateString();
 }
 
-function errorMessage(e: unknown): string {
-  if (e instanceof Error) return e.message;
+function errorMessage(reason: unknown): string {
+  if (reason instanceof Error) return reason.message;
   try {
-    return JSON.stringify(e);
+    return JSON.stringify(reason);
   } catch {
-    return String(e);
+    return String(reason);
   }
 }

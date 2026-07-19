@@ -20,6 +20,10 @@
   },
   "chat": {
     "title": "Chat",
+    "chooseConversation": "Choose a conversation",
+    "newConversation": "New conversation",
+    "participants": "Participants",
+    "lead": "Lead",
     "showAgents": "Show agents",
     "agentsButton": "agents",
     "switchChatTitle": "Switch chat (⌘K)",
@@ -27,10 +31,43 @@
     "selectAgentForContext": "Select an agent to see context",
     "sidebar": {
       "filterAgents": "Filter agents…",
+      "filterConversations": "Filter conversations…",
+      "newConversation": "New conversation",
+      "conversations": "Conversations",
+      "noConversations": "No conversations",
+      "room": "room",
       "directMessages": "Direct messages",
       "noAgents": "No agents",
       "youPrefix": "you: ",
       "now": "now"
+    },
+    "new": {
+      "title": "New conversation",
+      "close": "Close",
+      "conversationTitle": "Title",
+      "optionalTitle": "Optional conversation title",
+      "agents": "Agents",
+      "searchAgents": "Search agents…",
+      "lead": "Lead",
+      "cancel": "Cancel",
+      "creating": "Creating…",
+      "create": "Create"
+    },
+    "details": {
+      "title": "Conversation title",
+      "save": "Save",
+      "remove": "Remove",
+      "addAgent": "Add an agent…",
+      "add": "Add",
+      "archive": "Archive",
+      "delete": "Delete",
+      "archiveTitle": "Archive conversation",
+      "deleteTitle": "Delete conversation",
+      "archiveConfirm": "Archive this conversation? It will be removed from your active conversation list.",
+      "deleteConfirm": "Permanently delete this conversation and all of its messages? This cannot be undone.",
+      "cancel": "Cancel",
+      "archiving": "Archiving…",
+      "deleting": "Deleting…"
     },
     "main": {
       "noChatSelected": "No chat selected",
@@ -139,13 +176,16 @@
       "toolsCompleted": "Completed",
       "today": "Today",
       "yesterday": "Yesterday",
-      "thinking": "Thinking…"
+      "thinking": "Thinking…",
+      "startingConversation": "Starting conversation…",
+      "startingResponse": "Preparing response…"
     }
   },
   "settings": {
     "title": "Settings",
     "tabs": {
       "projects": "Projects",
+      "helper": "Helper",
       "appearance": "Appearance",
       "channels": "Channels",
       "providers": "Providers",

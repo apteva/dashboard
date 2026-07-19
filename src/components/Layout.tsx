@@ -53,11 +53,9 @@ export function Layout() {
   const isMobileChatConversation = /^\/chat\/[^/]+/.test(location.pathname);
   const { user, logout } = useAuth();
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(readContextAgentChatOpenDefault);
-  const [helperSelectionRequest, setHelperSelectionRequest] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const openPlatformHelper = useCallback(() => {
-    setHelperSelectionRequest((request) => request + 1);
     setAgentDrawerOpen(true);
   }, []);
 
@@ -108,10 +106,9 @@ export function Layout() {
   // closes; explicit logout calls chatConnections.stopAll() directly
   // (see the logout button below).
   //
-  // Chat-connection intent is session-only now — no resume from disk
-  // (see chatConnections.ts header). We do, however, purge legacy
-  // `chat.connected.<id>` localStorage keys from the old persistent
-  // design once per boot so they don't sit around forever.
+  // Chat-connection intent is tab-scoped in sessionStorage. Restore its one
+  // active stream after refresh; SPA navigation keeps the singleton alive and
+  // needs no reconnect. Legacy localStorage keys are still purged once.
   //
   // The notifications driver (startChatNotifications) is safe to bounce
   // — its cleanup is just an SSE close + localStorage listener removal,
@@ -119,6 +116,7 @@ export function Layout() {
   useEffect(() => {
     if (!user) return;
     purgeLegacyChatConnectedKeys();
+    chatConnections.resumeSession();
     const stopNotifs = startChatNotifications();
     return () => {
       stopNotifs();
@@ -216,6 +214,7 @@ export function Layout() {
   //                Things you do TO the platform, not WITH it.
   const primaryNav = [
     { to: "/", label: t("nav.dashboard") },
+    { to: "/build", label: t("nav.build") },
     { to: "/agents", label: t("nav.agents") },
     { to: "/monitor", label: t("nav.monitor") },
     { to: "/chat", label: t("nav.chat") },
@@ -519,12 +518,13 @@ export function Layout() {
         </div>
       </main>
 
-      <ContextAgentChatWidget
-        open={agentDrawerOpen}
-        onOpen={openPlatformHelper}
-        onClose={() => setAgentDrawerOpen(false)}
-        selectHelperRequest={helperSelectionRequest}
-      />
+      {location.pathname !== "/build" && (
+        <ContextAgentChatWidget
+          open={agentDrawerOpen}
+          onOpen={openPlatformHelper}
+          onClose={() => setAgentDrawerOpen(false)}
+        />
+      )}
       <RealtimeVoiceDock />
     </div>
   );

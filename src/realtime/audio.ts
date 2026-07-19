@@ -9,6 +9,13 @@ export interface RealtimeAudioCallbacks {
 const TARGET_SAMPLE_RATE = 24_000;
 const CAPTURE_WORKLET_URL = "/realtime-capture-worklet.js?v=20260716a";
 
+interface RealtimeAudioFrameControl {
+  type: "audio.frame";
+  response_id?: string;
+  item_id: string;
+  audio_end_ms: number;
+}
+
 export class RealtimeAudioClient {
   private readonly callbacks: RealtimeAudioCallbacks;
   private stream: MediaStream | null = null;
@@ -19,7 +26,8 @@ export class RealtimeAudioClient {
   private muted = false;
   private intentionalClose = false;
   private playbackCursor = 0;
-  private playbackSources = new Set<AudioBufferSourceNode>();
+  private pendingFrame: RealtimeAudioFrameControl | null = null;
+  private playbackSources = new Map<AudioBufferSourceNode, RealtimeAudioFrameControl | null>();
 
   constructor(callbacks: RealtimeAudioCallbacks = {}) {
     this.callbacks = callbacks;
@@ -66,6 +74,7 @@ export class RealtimeAudioClient {
     this.intentionalClose = false;
     this.callbacks.onState?.("connecting");
     if (this.socket && this.socket.readyState < WebSocket.CLOSING) this.socket.close(1000, "reconnect");
+    this.pendingFrame = null;
     const socket = new WebSocket(url);
     socket.binaryType = "arraybuffer";
     this.socket = socket;
@@ -82,15 +91,26 @@ export class RealtimeAudioClient {
         try {
           const control = JSON.parse(event.data);
           if (control?.type === "interrupt") {
+            this.pendingFrame = null;
             this.clearPlayback();
             this.callbacks.onState?.("listening");
+          } else if (
+            control?.type === "audio.frame" &&
+            typeof control.item_id === "string" &&
+            Number.isFinite(control.audio_end_ms)
+          ) {
+            this.pendingFrame = control as RealtimeAudioFrameControl;
           }
         } catch {
           // Unknown text controls are intentionally ignored for forwards compatibility.
         }
         return;
       }
-      if (event.data instanceof ArrayBuffer) this.playPCM(event.data);
+      if (event.data instanceof ArrayBuffer) {
+        const frame = this.pendingFrame;
+        this.pendingFrame = null;
+        this.playPCM(event.data, frame);
+      }
     };
     socket.onerror = () => this.callbacks.onError?.("Realtime audio connection failed.");
     socket.onclose = (event) => {
@@ -113,6 +133,7 @@ export class RealtimeAudioClient {
     this.intentionalClose = true;
     this.socket?.close(1000, "session ended");
     this.socket = null;
+    this.pendingFrame = null;
     this.clearPlayback();
     this.capture?.disconnect();
     this.source?.disconnect();
@@ -125,7 +146,7 @@ export class RealtimeAudioClient {
     this.callbacks.onState?.("closed");
   }
 
-  private playPCM(buffer: ArrayBuffer): void {
+  private playPCM(buffer: ArrayBuffer, frame: RealtimeAudioFrameControl | null): void {
     const context = this.context;
     if (!context || context.state === "closed") return;
     const pcm = new Int16Array(buffer);
@@ -138,9 +159,17 @@ export class RealtimeAudioClient {
     source.connect(context.destination);
     const startAt = Math.max(context.currentTime + 0.015, this.playbackCursor);
     this.playbackCursor = startAt + audio.duration;
-    this.playbackSources.add(source);
+    this.playbackSources.set(source, frame);
     source.onended = () => {
+      const played = this.playbackSources.get(source);
       this.playbackSources.delete(source);
+      if (played && this.socket?.readyState === WebSocket.OPEN) {
+        this.socket.send(JSON.stringify({
+          type: "playback.progress",
+          item_id: played.item_id,
+          audio_end_ms: played.audio_end_ms,
+        }));
+      }
       if (this.playbackSources.size === 0) this.callbacks.onState?.("listening");
     };
     this.callbacks.onState?.("speaking");
@@ -148,10 +177,11 @@ export class RealtimeAudioClient {
   }
 
   private clearPlayback(): void {
-    for (const source of this.playbackSources) {
+    const sources = Array.from(this.playbackSources.keys());
+    this.playbackSources.clear();
+    for (const source of sources) {
       try { source.stop(); } catch {}
     }
-    this.playbackSources.clear();
     this.playbackCursor = this.context?.currentTime || 0;
   }
 }

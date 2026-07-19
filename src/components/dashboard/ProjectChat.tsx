@@ -23,8 +23,10 @@ import { useProjects } from "../../hooks/useProjects";
 import { ChatPanel } from "../ChatPanel";
 import type { SubscribeFn } from "../AgentView";
 import { notifications } from "../../state/notifications";
+import { chatPreviewText } from "../../utils/chatPreview";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useRealtimeAvailability } from "../../hooks/useRealtimeAvailability";
+import { openAgentConversation } from "../../utils/agentConversations";
 
 const FOCUSED_KEY = "apteva.dashboard.projectChat.focused";
 const REFRESH_MS = 8000;
@@ -46,6 +48,15 @@ export function ProjectChat() {
   const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
   const [summary, setSummary] = useState<UnreadSummaryRow[]>([]);
   const [focused, setFocused] = useState<number | null>(null);
+  const openChat = async (agent: Agent) => {
+    if (!projectId) return;
+    try {
+      const conversation = await openAgentConversation(projectId, agent);
+      navigate(`/chat/${conversation.id}`);
+    } catch {
+      navigate("/chat");
+    }
+  };
   // Render-time gating closes the window before the project-change effect
   // clears state, so an old ChatPanel is never actionable under a new label.
   const projectList = useMemo(
@@ -182,14 +193,14 @@ export function ProjectChat() {
           const unread = unreadByInstance.get(agent.id) || 0;
           const row = summaryByAgent.get(agent.id);
           return (
-            <button key={agent.id} type="button" onClick={() => navigate(`/chat/default-${agent.id}`)} className="flex min-h-[72px] w-full items-center gap-3 px-4 py-3 text-left hover:bg-bg-hover">
+            <button key={agent.id} type="button" onClick={() => void openChat(agent)} className="flex min-h-[72px] w-full items-center gap-3 px-4 py-3 text-left hover:bg-bg-hover">
               <span className={`h-2 w-2 shrink-0 rounded-full ${agent.status === "running" ? "bg-green" : "bg-text-dim"}`} />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-2">
                   <span className="flex-1 truncate text-[15px] font-medium text-text">{agent.name}</span>
                   {row?.latest_at && <span className="shrink-0 text-[10px] text-text-dim">{formatRelative(row.latest_at)}</span>}
                 </span>
-                <span className="mt-1 block truncate text-xs text-text-muted">{row?.latest_preview || "No messages yet"}</span>
+                <span className="mt-1 block truncate text-xs text-text-muted">{chatPreviewText(row?.latest_preview || "") || "No messages yet"}</span>
               </span>
               {unread > 0 ? (
                 <span className="inline-flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-accent px-1.5 text-[11px] font-bold text-bg">{unread > 99 ? "99+" : unread}</span>

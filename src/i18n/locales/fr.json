@@ -20,6 +20,10 @@
   },
   "chat": {
     "title": "Chat",
+    "chooseConversation": "Choisir une conversation",
+    "newConversation": "Nouvelle conversation",
+    "participants": "Participants",
+    "lead": "Responsable",
     "showAgents": "Afficher les agents",
     "agentsButton": "agents",
     "switchChatTitle": "Changer de chat (⌘K)",
@@ -27,10 +31,43 @@
     "selectAgentForContext": "Sélectionnez un agent pour voir le contexte",
     "sidebar": {
       "filterAgents": "Filtrer les agents…",
+      "filterConversations": "Filtrer les conversations…",
+      "newConversation": "Nouvelle conversation",
+      "conversations": "Conversations",
+      "noConversations": "Aucune conversation",
+      "room": "salon",
       "directMessages": "Messages directs",
       "noAgents": "Aucun agent",
       "youPrefix": "vous : ",
       "now": "maintenant"
+    },
+    "new": {
+      "title": "Nouvelle conversation",
+      "close": "Fermer",
+      "conversationTitle": "Titre",
+      "optionalTitle": "Titre facultatif",
+      "agents": "Agents",
+      "searchAgents": "Rechercher des agents…",
+      "lead": "Responsable",
+      "cancel": "Annuler",
+      "creating": "Création…",
+      "create": "Créer"
+    },
+    "details": {
+      "title": "Titre de la conversation",
+      "save": "Enregistrer",
+      "remove": "Retirer",
+      "addAgent": "Ajouter un agent…",
+      "add": "Ajouter",
+      "archive": "Archiver",
+      "delete": "Supprimer",
+      "archiveTitle": "Archiver la conversation",
+      "deleteTitle": "Supprimer la conversation",
+      "archiveConfirm": "Archiver cette conversation ? Elle sera retirée de la liste des conversations actives.",
+      "deleteConfirm": "Supprimer définitivement cette conversation et tous ses messages ? Cette action est irréversible.",
+      "cancel": "Annuler",
+      "archiving": "Archivage…",
+      "deleting": "Suppression…"
     },
     "main": {
       "noChatSelected": "Aucun chat sélectionné",
@@ -139,13 +176,16 @@
       "toolsCompleted": "Terminés",
       "today": "Aujourd’hui",
       "yesterday": "Hier",
-      "thinking": "Réflexion…"
+      "thinking": "Réflexion…",
+      "startingConversation": "Démarrage de la conversation…",
+      "startingResponse": "Préparation de la réponse…"
     }
   },
   "settings": {
     "title": "Parametres",
     "tabs": {
       "projects": "Projets",
+      "helper": "Assistant",
       "appearance": "Apparence",
       "channels": "Canaux",
       "providers": "Fournisseurs",

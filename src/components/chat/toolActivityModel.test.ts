@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatMessageRow, TelemetryEvent } from "../../api";
+import { telemetryEventMatchesThread } from "../ChatStatusDot";
 import {
   buildChatTimeline,
+	chatConversationThreadId,
+	isChatConversationTelemetry,
   isChatConversationThread,
   mergeToolActivityEvents,
   reduceToolActivity,
+  shouldHideChatTool,
   type ToolActivity,
 } from "./toolActivityModel";
 
@@ -37,30 +41,49 @@ function message(id: number, role: ChatMessageRow["role"], createdAt: string): C
 }
 
 describe("tool activity reducer", () => {
+	test("renders one completed thread handoff with the model's user-facing reason", () => {
+		let calls = reduceToolActivity(new Map(), event("tool.call", "2026-07-19T10:56:11Z", {
+			id: "handoff",
+			name: "send",
+			reason: "Handing off daily schedule",
+		}, { thread_id: "chat-conv-a" }));
+		calls = reduceToolActivity(calls, event("tool.result", "2026-07-19T10:56:12Z", {
+			id: "handoff",
+			name: "send",
+			success: true,
+		}, { thread_id: "chat-conv-a" }));
+
+		expect(calls.size).toBe(1);
+		const handoff = [...calls.values()][0];
+		expect(handoff?.reason).toBe("Handing off daily schedule");
+		expect(handoff?.state).toBe("done");
+	});
+
   test("keeps parallel calls to the same tool separate by call id", () => {
     const calls = mergeToolActivityEvents(new Map(), [
       event("tool.call", "2026-07-14T10:00:00.000Z", { id: "a", name: "crm_search", reason: "Searching Acme" }),
       event("tool.call", "2026-07-14T10:00:00.100Z", { id: "b", name: "crm_search", reason: "Searching Globex" }),
     ]);
     expect(calls.size).toBe(2);
-    expect(calls.get("a")?.reason).toBe("Searching Acme");
-    expect(calls.get("b")?.reason).toBe("Searching Globex");
+		expect([...calls.values()].find((call) => call.callId === "a")?.reason).toBe("Searching Acme");
+		expect([...calls.values()].find((call) => call.callId === "b")?.reason).toBe("Searching Globex");
   });
 
   test("normalizes core success and legacy is_error result payloads", () => {
     let calls = reduceToolActivity(new Map(), event("tool.call", "2026-07-14T10:00:00Z", { id: "a", name: "crm_search", reason: "Searching" }));
     calls = reduceToolActivity(calls, event("tool.result", "2026-07-14T10:00:01Z", { id: "a", name: "crm_search", success: false, duration_ms: 1000 }));
-    expect(calls.get("a")?.success).toBe(false);
+		expect([...calls.values()].find((call) => call.callId === "a")?.success).toBe(false);
     calls = reduceToolActivity(calls, event("tool.call", "2026-07-14T10:00:02Z", { id: "b", name: "crm_search", reason: "Searching" }));
     calls = reduceToolActivity(calls, event("tool.result", "2026-07-14T10:00:03Z", { id: "b", name: "crm_search", is_error: true }));
-    expect(calls.get("b")?.success).toBe(false);
+		expect([...calls.values()].find((call) => call.callId === "b")?.success).toBe(false);
   });
 
   test("does not regress a completed call when an older call event arrives late", () => {
     let calls = reduceToolActivity(new Map(), event("tool.result", "2026-07-14T10:00:02Z", { id: "a", name: "crm_search", success: true }));
     calls = reduceToolActivity(calls, event("tool.call", "2026-07-14T10:00:01Z", { id: "a", name: "crm_search", reason: "Searching" }));
-    expect(calls.get("a")?.state).toBe("done");
-    expect(calls.get("a")?.reason).toBe("Searching");
+		const completed = [...calls.values()].find((call) => call.callId === "a");
+		expect(completed?.state).toBe("done");
+		expect(completed?.reason).toBe("Searching");
   });
 
   test("preserves the first-seen UI identity when a provider call id arrives", () => {
@@ -91,16 +114,57 @@ describe("tool activity reducer", () => {
     expect(calls.get(provisionalId)?.callId).toBe("provider-call-a");
     expect(calls.get(provisionalId)?.state).toBe("done");
   });
+
+	test("never correlates identical provider call ids across agents or threads", () => {
+		const calls = mergeToolActivityEvents(new Map(), [
+			event("tool.call", "2026-07-14T10:00:00Z", { id: "shared", name: "crm_search", reason: "Agent one" }, { instance_id: 1, thread_id: "chat-conv-a" }),
+			event("tool.call", "2026-07-14T10:00:00.100Z", { id: "shared", name: "crm_search", reason: "Agent two" }, { instance_id: 2, thread_id: "chat-conv-a" }),
+			event("tool.call", "2026-07-14T10:00:00.200Z", { id: "shared", name: "crm_search", reason: "Other thread" }, { instance_id: 1, thread_id: "worker" }),
+			event("tool.result", "2026-07-14T10:00:01Z", { id: "shared", name: "crm_search", success: true }, { instance_id: 2, thread_id: "chat-conv-a" }),
+		]);
+		expect(calls.size).toBe(3);
+		expect([...calls.values()].find((call) => call.agentId === 2 && call.threadId === "chat-conv-a")?.state).toBe("done");
+		expect([...calls.values()].find((call) => call.agentId === 1 && call.threadId === "chat-conv-a")?.state).toBe("running");
+		expect([...calls.values()].find((call) => call.threadId === "worker")?.reason).toBe("Other thread");
+	});
 });
 
 describe("chat tool thread scope", () => {
-  test("accepts main and the chat-routed thread but rejects unrelated workers", () => {
-    expect(isChatConversationThread("main", "default-286")).toBe(true);
-    expect(isChatConversationThread("", "default-286")).toBe(true);
-    expect(isChatConversationThread("default-286", "default-286")).toBe(true);
-    expect(isChatConversationThread("chat-default-286", "default-286")).toBe(true);
+	test("derives the exact runtime thread used by the status indicator", () => {
+		expect(chatConversationThreadId("default-286")).toBe("chat-default-286");
+		expect(chatConversationThreadId("conv-room-1")).toBe("chat-conv-room-1");
+		expect(chatConversationThreadId(null)).toBeNull();
+		expect(telemetryEventMatchesThread("", "main")).toBe(true);
+		expect(telemetryEventMatchesThread("", "chat-conv-room-1")).toBe(false);
+		expect(telemetryEventMatchesThread("chat-conv-room-1", "chat-conv-room-1")).toBe(true);
+	});
+
+  test("accepts only the chat-routed thread and rejects main or unrelated workers", () => {
+    expect(isChatConversationThread("main", "default-286")).toBe(false);
+    expect(isChatConversationThread("", "default-286")).toBe(false);
+		expect(isChatConversationThread("default-286", "default-286")).toBe(false);
+		expect(isChatConversationThread("chat-default-286", "default-286")).toBe(true);
     expect(isChatConversationThread("worker-research", "default-286")).toBe(false);
     expect(isChatConversationThread("chat-default-999", "default-286")).toBe(false);
+    expect(isChatConversationThread("main", "conv-room-1")).toBe(false);
+    expect(isChatConversationThread("chat-conv-room-1", "conv-room-1")).toBe(true);
+  });
+
+	test("requires both a participant agent and the selected conversation thread", () => {
+		const selected = event("tool.call", "2026-07-14T10:00:00Z", { id: "a", name: "crm" }, { instance_id: 286, thread_id: "chat-conv-room-1" });
+		const otherAgent = { ...selected, instance_id: 999 };
+		const otherThread = { ...selected, thread_id: "chat-conv-room-2" };
+		expect(isChatConversationTelemetry(selected, "conv-room-1", [285, 286])).toBe(true);
+		expect(isChatConversationTelemetry(otherAgent, "conv-room-1", [285, 286])).toBe(false);
+		expect(isChatConversationTelemetry(otherThread, "conv-room-1", [285, 286])).toBe(false);
+	});
+});
+
+describe("chat tool visibility", () => {
+  test("shows thread handoffs while hiding channel delivery tools", () => {
+    expect(shouldHideChatTool("send", "Handing off recurring request")).toBe(false);
+    expect(shouldHideChatTool("channels_send", "Replying to user")).toBe(true);
+    expect(shouldHideChatTool("crm_search", "Searching CRM")).toBe(false);
   });
 });
 
@@ -108,6 +172,7 @@ describe("chat timeline", () => {
   test("keeps one stable burst key as a second parallel tool joins", () => {
     const first: ToolActivity = {
       id: "a",
+		agentId: 1,
       threadId: "main",
       name: "crm",
       reason: "Reading CRM",
@@ -116,6 +181,7 @@ describe("chat timeline", () => {
     };
     const second: ToolActivity = {
       id: "b",
+		agentId: 1,
       threadId: "main",
       name: "sheets",
       reason: "Reading sheets",
@@ -131,8 +197,8 @@ describe("chat timeline", () => {
 
   test("groups overlapping calls as parallel with a stable first-call key", () => {
     const tools: ToolActivity[] = [
-      { id: "a", threadId: "main", name: "crm", reason: "Reading CRM", state: "done", success: true, startedAt: 1_000, finishedAt: 4_000 },
-      { id: "b", threadId: "main", name: "sheets", reason: "Reading sheets", state: "running", startedAt: 2_000 },
+      { id: "a", agentId: 1, threadId: "main", name: "crm", reason: "Reading CRM", state: "done", success: true, startedAt: 1_000, finishedAt: 4_000 },
+      { id: "b", agentId: 1, threadId: "main", name: "sheets", reason: "Reading sheets", state: "running", startedAt: 2_000 },
     ];
     const timeline = buildChatTimeline([], tools, 2_000);
     const group = timeline.find((item) => item.kind === "toolGroup");
@@ -144,8 +210,8 @@ describe("chat timeline", () => {
 
   test("does not call sequential activity parallel", () => {
     const tools: ToolActivity[] = [
-      { id: "a", threadId: "main", name: "crm", reason: "Reading CRM", state: "done", success: true, startedAt: 1_000, finishedAt: 1_500 },
-      { id: "b", threadId: "main", name: "sheets", reason: "Writing sheets", state: "done", success: true, startedAt: 2_000, finishedAt: 3_000 },
+      { id: "a", agentId: 1, threadId: "main", name: "crm", reason: "Reading CRM", state: "done", success: true, startedAt: 1_000, finishedAt: 1_500 },
+      { id: "b", agentId: 1, threadId: "main", name: "sheets", reason: "Writing sheets", state: "done", success: true, startedAt: 2_000, finishedAt: 3_000 },
     ];
     const group = buildChatTimeline([], tools, 3_000).find((item) => item.kind === "toolGroup");
     expect(group?.kind === "toolGroup" && group.parallel).toBe(false);

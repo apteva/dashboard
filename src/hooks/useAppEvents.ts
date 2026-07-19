@@ -1,20 +1,21 @@
 // useAppEvents — shared SDK-level event subscription for the dashboard.
 //
-// Every Apteva app emits onto a per-(app, project_id) bus via
-// ctx.Emit(); this hook is the dashboard side of that pipe. Pass
-// the app name + project id + a handler; the hook joins a SHARED
-// EventSource for that (app, project_id) pair so 30 chat components
-// + 1 panel all subscribed to "storage" share one network connection.
+// Every Apteva app emits onto the project event bus via ctx.Emit();
+// this hook is the dashboard side of that pipe. Pass the app name +
+// project id + a handler; the hook joins one SHARED EventSource for
+// the whole project and filters envelopes by app in memory.
 //
 // Why shared: components attached to chat messages can pile up
 // (long conversation = many components), and per-component
 // EventSources would blow past per-domain connection limits and
-// chew memory. Hoisting to one connection per (app, project_id)
-// pair keeps cost bounded regardless of how many subscribers
-// the dashboard has open at once.
+// chew memory. Hoisting to one connection per project keeps cost
+// bounded regardless of how many apps or
+// subscribers the dashboard has open at once. This matters because
+// HTTP/1.1 browsers allow only about six connections per origin;
+// filling them with SSE causes ordinary fetch/POST calls to hang.
 //
 // Dedup is on `seq`. The platform's ring buffer holds the last 256
-// events per (app, project) for replay; longer gaps are the app's
+// events per project-wide lane for replay; longer gaps are the app's
 // responsibility to backfill (it owns the durable list anyway).
 
 import { useEffect, useRef } from "react";
@@ -41,7 +42,7 @@ type Listener = (ev: AppEventEnvelope) => void;
 
 interface Channel {
   es: EventSource | null;
-  listeners: Set<Listener>;
+  listeners: Map<string, Set<Listener>>;
   lastSeq: number;
   reconnectTimer: number | null;
   closing: boolean;
@@ -58,49 +59,72 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 
 const channels = new Map<string, Channel>();
 
-function channelKey(app: string, projectId: string): string {
-  return `${app}::${projectId}`;
+function channelKey(projectId: string): string {
+  return projectId;
 }
 
-function ensureChannel(app: string, projectId: string): Channel {
-  const key = channelKey(app, projectId);
+function ensureChannel(projectId: string): Channel {
+  const key = channelKey(projectId);
   let ch = channels.get(key);
   if (ch) return ch;
   ch = {
     es: null,
-    listeners: new Set(),
+    listeners: new Map(),
     lastSeq: 0,
     reconnectTimer: null,
     closing: false,
     reconnectAttempts: 0,
   };
   channels.set(key, ch);
-  openConnection(app, projectId, ch);
+  openConnection(projectId, ch);
   return ch;
 }
 
-function openConnection(app: string, projectId: string, ch: Channel): void {
+function listenerCount(ch: Channel): number {
+  let count = 0;
+  for (const listeners of ch.listeners.values()) count += listeners.size;
+  return count;
+}
+
+function addListener(ch: Channel, app: string, listener: Listener): void {
+  let listeners = ch.listeners.get(app);
+  if (!listeners) {
+    listeners = new Set();
+    ch.listeners.set(app, listeners);
+  }
+  listeners.add(listener);
+}
+
+function removeListener(ch: Channel, app: string, listener: Listener): void {
+  const listeners = ch.listeners.get(app);
+  if (!listeners) return;
+  listeners.delete(listener);
+  if (listeners.size === 0) ch.listeners.delete(app);
+}
+
+function openConnection(projectId: string, ch: Channel): void {
   if (ch.closing) return;
   const url =
-    `/api/app-events/${encodeURIComponent(app)}` +
+    "/api/app-events/_all" +
     `?project_id=${encodeURIComponent(projectId)}` +
     (ch.lastSeq > 0 ? `&since=${ch.lastSeq}` : "");
-  dbg("openConnection", { app, projectId, since: ch.lastSeq });
+  dbg("openConnection", { projectId, since: ch.lastSeq });
   const es = new EventSource(url, { withCredentials: true });
   ch.es = es;
   es.onopen = () => {
     ch.reconnectAttempts = 0; // successful connect resets the budget
-    dbg("EventSource open", { app, projectId });
+    dbg("EventSource open", { projectId });
   };
   es.onmessage = (e) => {
     try {
       const ev = JSON.parse(e.data) as AppEventEnvelope;
       if (ev.seq <= ch.lastSeq) return; // dedup across reconnects
       ch.lastSeq = ev.seq;
-      dbg("event", { app, projectId, topic: ev.topic, seq: ev.seq, listeners: ch.listeners.size });
+      const listeners = ch.listeners.get(ev.app);
+      dbg("event", { app: ev.app, projectId, topic: ev.topic, seq: ev.seq, listeners: listeners?.size ?? 0 });
       // Snapshot the listeners so a listener that removes itself
       // mid-iteration doesn't skip its sibling.
-      for (const fn of [...ch.listeners]) {
+      for (const fn of [...(listeners ?? [])]) {
         try {
           fn(ev);
         } catch {
@@ -112,7 +136,7 @@ function openConnection(app: string, projectId: string, ch: Channel): void {
     }
   };
   es.onerror = () => {
-    dbg("EventSource error", { app, projectId, readyState: es.readyState });
+    dbg("EventSource error", { projectId, readyState: es.readyState });
     if (ch.es !== es) return;
     // Disable EventSource's unbounded native reconnect loop before applying
     // our own retry budget. Most browsers report CONNECTING, not CLOSED, from
@@ -122,27 +146,27 @@ function openConnection(app: string, projectId: string, ch: Channel): void {
     if (ch.closing) return;
     ch.reconnectAttempts += 1;
     if (ch.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      dbg("EventSource giving up after max reconnect attempts", { app, projectId });
+      dbg("EventSource giving up after max reconnect attempts", { projectId });
       return;
     }
     if (ch.reconnectTimer) window.clearTimeout(ch.reconnectTimer);
     ch.reconnectTimer = window.setTimeout(() => {
       ch.reconnectTimer = null;
-      openConnection(app, projectId, ch);
+      openConnection(projectId, ch);
     }, RECONNECT_DELAY_MS);
   };
 }
 
-function maybeCloseChannel(app: string, projectId: string): void {
-  const key = channelKey(app, projectId);
+function maybeCloseChannel(projectId: string): void {
+  const key = channelKey(projectId);
   const ch = channels.get(key);
   if (!ch) return;
-  if (ch.listeners.size > 0) return;
+  if (listenerCount(ch) > 0) return;
   ch.closing = true;
   if (ch.reconnectTimer) window.clearTimeout(ch.reconnectTimer);
   if (ch.es) ch.es.close();
   channels.delete(key);
-  dbg("channel closed (no listeners left)", { app, projectId });
+  dbg("channel closed (no listeners left)", { projectId });
 }
 
 // ─── Cross-bundle multiplexer ────────────────────────────────────────
@@ -153,7 +177,7 @@ function maybeCloseChannel(app: string, projectId: string): void {
 // nearby). At runtime, though, every panel + the dashboard share one
 // `window`, so we publish a tiny subscribe/unsubscribe handle that
 // panels detect and reuse. Net effect: 17+ inline EventSources across
-// the panel set collapse into one shared channel per (app, project).
+// the panel set collapse into one shared channel per project.
 // Without this, opening a few panels in the agent detail page burns
 // the browser's per-origin HTTP/1.1 connection budget and stuck POSTs
 // follow.
@@ -185,14 +209,14 @@ function dbg(..._args: unknown[]) {
 if (typeof window !== "undefined") {
   const bridge: AppEventsBridge = {
     subscribe(app, projectId, fn) {
-      const key = channelKey(app, projectId);
-      const ch = ensureChannel(app, projectId);
-      ch.listeners.add(fn);
-      dbg("bridge.subscribe", { app, projectId, listeners: ch.listeners.size, key });
+      const key = channelKey(projectId);
+      const ch = ensureChannel(projectId);
+      addListener(ch, app, fn);
+      dbg("bridge.subscribe", { app, projectId, listeners: listenerCount(ch), key });
       return () => {
-        ch.listeners.delete(fn);
-        const n = ch.listeners.size;
-        maybeCloseChannel(app, projectId);
+        removeListener(ch, app, fn);
+        const n = listenerCount(ch);
+        maybeCloseChannel(projectId);
         dbg("bridge.unsubscribe", { app, projectId, listenersAfter: n, key });
       };
     },
@@ -224,12 +248,12 @@ export function useAppEvents<T = unknown>(
 
   useEffect(() => {
     if (!enabled || !app || !projectId) return;
-    const ch = ensureChannel(app, projectId);
+    const ch = ensureChannel(projectId);
     const listener: Listener = (ev) => handlerRef.current(ev as AppEventEnvelope<T>);
-    ch.listeners.add(listener);
+    addListener(ch, app, listener);
     return () => {
-      ch.listeners.delete(listener);
-      maybeCloseChannel(app, projectId);
+      removeListener(ch, app, listener);
+      maybeCloseChannel(projectId);
     };
   }, [app, projectId, enabled]);
 }

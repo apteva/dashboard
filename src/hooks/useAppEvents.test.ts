@@ -104,11 +104,11 @@ function envelope(seq: number, topic = "file.added", data: unknown = { id: seq }
 }
 
 describe("useAppEvents", () => {
-  test("opens EventSource with correct URL and project_id encoded", () => {
+  test("opens the project multiplexer with project_id encoded", () => {
     const handler = mock(() => {});
     renderHook(() => useAppEvents("storage", "proj 1", handler));
     expect(lastES).not.toBeNull();
-    expect(lastES!.url).toBe("/api/app-events/storage?project_id=proj%201");
+    expect(lastES!.url).toBe("/api/app-events/_all?project_id=proj%201");
     expect(lastES!.withCredentials).toBe(true);
   });
 
@@ -134,6 +134,20 @@ describe("useAppEvents", () => {
     expect(calls[0].seq).toBe(1);
     expect(calls[1].topic).toBe("file.deleted");
     expect(calls[1].seq).toBe(2);
+  });
+
+  test("shares one project connection across apps and filters events", () => {
+    const storageCalls: AppEventEnvelope[] = [];
+    const socialCalls: AppEventEnvelope[] = [];
+    renderHook(() => useAppEvents("storage", "p1", (ev) => storageCalls.push(ev)));
+    renderHook(() => useAppEvents("social", "p1", (ev) => socialCalls.push(ev)));
+
+    expect(allESes).toHaveLength(1);
+    act(() => lastES!.fire(envelope(1)));
+    act(() => lastES!.fire({ ...envelope(2, "post.added"), app: "social" }));
+
+    expect(storageCalls.map((ev) => ev.seq)).toEqual([1]);
+    expect(socialCalls.map((ev) => ev.seq)).toEqual([2]);
   });
 
   test("dedups on seq — same event twice fires handler once", () => {

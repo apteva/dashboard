@@ -27,6 +27,7 @@ function request<T>(
   path: string,
   body?: any,
   extraHeaders?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<T> {
   const headers: Record<string, string> = { ...(extraHeaders || {}) };
   if (body) headers["Content-Type"] = "application/json";
@@ -39,6 +40,7 @@ function request<T>(
       headers,
       credentials: "same-origin",
       body: body ? JSON.stringify(body) : undefined,
+      signal,
     });
     if (API_DEBUG) console.debug(`[api] ← ${res.status} ${method} ${url}`);
     if (res.status === 401) {
@@ -660,6 +662,7 @@ export const instances = {
     directive?: string;
     mode?: string;
     providers?: Array<{ name: string; default: boolean }>;
+    modelOverride?: string;
     realtimeEnabled?: boolean;
     realtimeVoice?: string;
     realtimeVoiceMCP?: string[];
@@ -668,6 +671,7 @@ export const instances = {
       ...(opts.directive ? { directive: opts.directive } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
       ...(opts.providers ? { providers: opts.providers } : {}),
+      ...(opts.modelOverride !== undefined ? { model_override: opts.modelOverride } : {}),
       ...(opts.realtimeEnabled !== undefined ? { realtime_enabled: opts.realtimeEnabled } : {}),
       ...(opts.realtimeVoice !== undefined ? { realtime_voice: opts.realtimeVoice } : {}),
       ...(opts.realtimeVoiceMCP !== undefined ? { realtime_voice_mcp: opts.realtimeVoiceMCP } : {}),
@@ -1923,11 +1927,20 @@ export const core = {
     request<{
       directive: string;
       mode: string;
+      provider?: {
+        name: string;
+        models?: Partial<Record<"large" | "medium" | "small", string>>;
+      };
       execution_control?: ExecutionControlStatus;
       execution_checkpoints?: ExecutionCheckpointMeta[];
       auto_approve?: string[];
       mcp_servers?: MCPServerConfig[];
-      providers?: Array<{ name: string; default?: boolean; realtime_voice?: string }>;
+      providers?: Array<{
+        name: string;
+        default?: boolean;
+        models?: Partial<Record<"large" | "medium" | "small", string>>;
+        realtime_voice?: string;
+      }>;
       realtime_enabled?: boolean;
       realtime_voice?: string;
       realtime_voice_mcp?: string[];
@@ -2705,9 +2718,15 @@ export interface AppPreflight {
 export interface ChatRow {
   id: string;
   instance_id: number;
+  agent_ids: number[];
+  project_id: string;
+  owner_user_id?: number;
+  kind: "direct" | "room";
   title: string;
   created_at: string;
   updated_at: string;
+  archived_at?: string;
+  thread_id?: string;
 }
 
 // ChatComponent — a render hint the agent attached via the
@@ -2735,11 +2754,14 @@ export interface ChatMessageRow {
   role: "user" | "agent" | "system";
   content: string;
   user_id?: number;
+  agent_id?: number;
   thread_id?: string;
   status: "streaming" | "final";
   created_at: string;
   components?: ChatComponent[];
   attachments?: ChatAttachment[];
+  metadata?: Record<string, unknown>;
+  client_message_id?: string;
 }
 
 export interface ApprovalMessageRow {
@@ -2800,6 +2822,10 @@ export interface ChatMessageContext {
   chips?: string[];
 }
 
+export function chatConversationListPath(projectId: string, archived: boolean = false): string {
+  return `/apps/channel-chat/conversations?project_id=${encodeURIComponent(projectId)}${archived ? "&archived=1" : ""}`;
+}
+
 export const chat = {
   // APP_PATH is the HTTP prefix the Apteva Apps framework uses for
   // this app. Keeping it as a constant here means if the slug changes
@@ -2812,13 +2838,48 @@ export const chat = {
   createChat: (instanceId: number, title?: string) =>
     request<ChatRow>("POST", "/apps/channel-chat/chats", { agent_id: instanceId, title }),
 
+  listConversations: (projectId: string, archived: boolean = false) =>
+    request<ChatRow[]>("GET", chatConversationListPath(projectId, archived)),
+
+  createConversation: async (projectId: string, agentIds: number[], title?: string, leadAgentId?: number) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    try {
+      return await request<ChatRow>("POST", "/apps/channel-chat/conversations", {
+        project_id: projectId,
+        agent_ids: agentIds,
+        ...(title ? { title } : {}),
+        ...(leadAgentId ? { lead_agent_id: leadAgentId } : {}),
+      }, undefined, controller.signal);
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error("Conversation creation timed out. Refresh the conversation list before trying again.");
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  },
+
+  updateConversation: (chatId: string, update: { title?: string; archived?: boolean }) =>
+    request<ChatRow>("PATCH", `/apps/channel-chat/conversation?id=${encodeURIComponent(chatId)}`, update),
+
+  deleteConversation: (chatId: string) =>
+    request<{ deleted: boolean }>("DELETE", `/apps/channel-chat/conversation?id=${encodeURIComponent(chatId)}`),
+
+  addParticipant: (chatId: string, agentId: number) =>
+    request<ChatRow>("POST", `/apps/channel-chat/participants?id=${encodeURIComponent(chatId)}`, { agent_id: agentId }),
+
+  removeParticipant: (chatId: string, agentId: number) =>
+    request<ChatRow>("DELETE", `/apps/channel-chat/participants?id=${encodeURIComponent(chatId)}&agent_id=${agentId}`),
+
   messages: (chatId: string, since: number = 0, limit: number = 500) =>
     request<ChatMessageRow[]>(
       "GET",
       `/apps/channel-chat/messages?chat_id=${encodeURIComponent(chatId)}&since=${since}&limit=${limit}`,
     ),
 
-  post: (chatId: string, content: string, context?: ChatMessageContext, attachments?: ChatAttachment[]) =>
+  post: (chatId: string, content: string, context?: ChatMessageContext, attachments?: ChatAttachment[], clientMessageId?: string) =>
     request<ChatMessageRow>(
       "POST",
       `/apps/channel-chat/messages?chat_id=${encodeURIComponent(chatId)}`,
@@ -2826,6 +2887,7 @@ export const chat = {
         content,
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
         ...(context ? { context } : {}),
+        ...(clientMessageId ? { client_message_id: clientMessageId } : {}),
       },
     ),
 

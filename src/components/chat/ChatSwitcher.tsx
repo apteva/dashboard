@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Agent, UnreadSummaryRow } from "../../api";
+import { chatPreviewText } from "../../utils/chatPreview";
 
 interface Props {
   instances: Agent[];
@@ -83,7 +84,8 @@ export function ChatSwitcher({
     } else if (e.key === "Enter") {
       e.preventDefault();
       const target = filtered[cursor];
-      if (target) onSelect(`default-${target.id}`);
+      const chatId = target ? summaryByInstance.get(target.id)?.chat_id : undefined;
+      if (chatId) onSelect(chatId);
     } else if (e.key === "Escape") {
       e.preventDefault();
       onClose();
@@ -134,7 +136,10 @@ export function ChatSwitcher({
                 <li key={inst.id}>
                   <button
                     onMouseEnter={() => setCursor(i)}
-                    onClick={() => onSelect(`default-${inst.id}`)}
+                    onClick={() => {
+                      const chatId = summaryByInstance.get(inst.id)?.chat_id;
+                      if (chatId) onSelect(chatId);
+                    }}
                     className={`w-full min-h-16 px-4 py-3 text-left flex items-center gap-3 sm:min-h-0 sm:px-3 sm:py-2 sm:gap-2 ${
                       active ? "bg-bg-hover" : ""
                     }`}
@@ -148,7 +153,7 @@ export function ChatSwitcher({
                       <span className="text-[15px] text-text truncate sm:text-sm">{inst.name}</span>
                       {s?.latest_preview && (
                         <span className="mt-0.5 block truncate text-xs text-text-muted sm:text-[11px]">
-                          {s.latest_preview}
+                          {chatPreviewText(s.latest_preview)}
                         </span>
                       )}
                     </span>

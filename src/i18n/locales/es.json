@@ -20,6 +20,10 @@
   },
   "chat": {
     "title": "Chat",
+    "chooseConversation": "Elige una conversación",
+    "newConversation": "Nueva conversación",
+    "participants": "Participantes",
+    "lead": "Responsable",
     "showAgents": "Mostrar agentes",
     "agentsButton": "agentes",
     "switchChatTitle": "Cambiar chat (⌘K)",
@@ -27,10 +31,43 @@
     "selectAgentForContext": "Selecciona un agente para ver el contexto",
     "sidebar": {
       "filterAgents": "Filtrar agentes…",
+      "filterConversations": "Filtrar conversaciones…",
+      "newConversation": "Nueva conversación",
+      "conversations": "Conversaciones",
+      "noConversations": "No hay conversaciones",
+      "room": "sala",
       "directMessages": "Mensajes directos",
       "noAgents": "No hay agentes",
       "youPrefix": "tú: ",
       "now": "ahora"
+    },
+    "new": {
+      "title": "Nueva conversación",
+      "close": "Cerrar",
+      "conversationTitle": "Título",
+      "optionalTitle": "Título opcional",
+      "agents": "Agentes",
+      "searchAgents": "Buscar agentes…",
+      "lead": "Responsable",
+      "cancel": "Cancelar",
+      "creating": "Creando…",
+      "create": "Crear"
+    },
+    "details": {
+      "title": "Título de la conversación",
+      "save": "Guardar",
+      "remove": "Quitar",
+      "addAgent": "Añadir un agente…",
+      "add": "Añadir",
+      "archive": "Archivar",
+      "delete": "Eliminar",
+      "archiveTitle": "Archivar conversación",
+      "deleteTitle": "Eliminar conversación",
+      "archiveConfirm": "¿Archivar esta conversación? Se quitará de la lista de conversaciones activas.",
+      "deleteConfirm": "¿Eliminar permanentemente esta conversación y todos sus mensajes? Esta acción no se puede deshacer.",
+      "cancel": "Cancelar",
+      "archiving": "Archivando…",
+      "deleting": "Eliminando…"
     },
     "main": {
       "noChatSelected": "No hay chat seleccionado",
@@ -139,13 +176,16 @@
       "toolsCompleted": "Completadas",
       "today": "Hoy",
       "yesterday": "Ayer",
-      "thinking": "Pensando…"
+      "thinking": "Pensando…",
+      "startingConversation": "Iniciando conversación…",
+      "startingResponse": "Preparando respuesta…"
     }
   },
   "settings": {
     "title": "Configuracion",
     "tabs": {
       "projects": "Proyectos",
+      "helper": "Asistente",
       "appearance": "Apariencia",
       "channels": "Canales",
       "providers": "Proveedores",
