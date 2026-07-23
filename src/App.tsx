@@ -33,6 +33,7 @@ const Analytics = lazy(() => import("./pages/Analytics").then((m) => ({ default:
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 const Apps = lazy(() => import("./pages/Apps").then((m) => ({ default: m.Apps })));
 const Skills = lazy(() => import("./pages/Skills").then((m) => ({ default: m.Skills })));
+const MCPServer = lazy(() => import("./pages/MCPServer").then((m) => ({ default: m.MCPServerPage })));
 const AppProjectPage = lazy(() => import("./pages/AppProjectPage").then((m) => ({ default: m.AppProjectPage })));
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -109,6 +110,7 @@ export default function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/apps" element={<Apps />} />
             <Route path="/skills" element={<Skills />} />
+            <Route path="/mcp-servers/:id" element={<MCPServer />} />
             {/* Generic per-app project-level page. The project.page
                 slot of any installed app's manifest gets rendered here.
                 One route serves every app — :name in the URL picks

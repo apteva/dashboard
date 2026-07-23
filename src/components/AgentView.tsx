@@ -2219,10 +2219,10 @@ function CapabilitiesManager({
       .filter((id): id is number => typeof id === "number"),
   );
   const integrationRows = inventoryProp
-    .filter((row) => row.source !== "app" && row.source !== "custom")
+    .filter((row) => row.source !== "app" && row.source !== "custom" && row.source !== "managed")
     .sort((a, b) => compareMCPRowsByAttachment(a, b, attachedKeys));
   const customRows = inventoryProp
-    .filter((row) => row.source === "custom")
+    .filter((row) => row.source === "custom" || row.source === "managed")
     .sort((a, b) => compareMCPRowsByAttachment(a, b, attachedKeys));
   const orphanAppRows = inventoryProp
     .filter((row) => row.source === "app" && !matchedAppInventoryIDs.has(row.id))

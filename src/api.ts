@@ -576,8 +576,20 @@ export interface BackgroundMemoryState {
   memory_preserved?: boolean;
 }
 
+export interface PlatformHelperCapabilities {
+  selected_mcp_server_ids: number[];
+  applied: boolean;
+  reset_threads?: number;
+}
+
 export const platformHelper = {
   get: () => request<Agent>("GET", "/platform/helper"),
+  capabilities: () =>
+    request<PlatformHelperCapabilities>("GET", "/platform/helper/capabilities"),
+  updateCapabilities: (mcpServerIds: number[]) =>
+    request<PlatformHelperCapabilities>("PUT", "/platform/helper/capabilities", {
+      mcp_server_ids: mcpServerIds,
+    }),
 };
 
 export const instances = {
@@ -1414,13 +1426,14 @@ export interface MCPServer {
   status: string;          // 'running' | 'stopped' | 'reachable' | 'unprobed'
   tool_count: number;
   pid: number;
-  source: string;          // 'custom' | 'local' | 'remote' | 'app'
+  source: string;          // 'custom' | 'managed' | 'local' | 'remote' | 'app'
   transport?: string;      // 'stdio' | 'http'
   url?: string;
   provider_id?: number;
   connection_id: number;
   created_via?: "integration" | "app_install" | string;
   owner_app_install_id?: number;
+  upstream_id?: string;
   // allowed_tools is the persisted tool filter. Empty/null means "all tools
   // exposed" (legacy). A populated array means only those tools are served
   // by this MCP server row — enforced server-side for local rows and
@@ -1445,6 +1458,51 @@ export interface MCPServerToolsResponse {
   allowed_tools: string[] | null;
 }
 
+export interface ManagedMCPTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, any>;
+  outputSchema?: Record<string, any>;
+  handler: string;
+  code: string;
+}
+
+export interface ManagedMCPDefinition {
+  version: number;
+  tools: ManagedMCPTool[];
+}
+
+export interface ManagedMCPBindings {
+  integrations: Record<string, number>;
+  apps: Record<string, number>;
+}
+
+export interface ManagedMCPDetails {
+  server: MCPServer;
+  definition: ManagedMCPDefinition;
+  bindings: ManagedMCPBindings;
+  env_keys: string[];
+  warning?: string;
+}
+
+export interface ManagedMCPCreateInput {
+  name: string;
+  description: string;
+  project_id: string;
+  definition: ManagedMCPDefinition;
+  bindings: ManagedMCPBindings;
+  env?: Record<string, string>;
+  start?: boolean;
+}
+
+export interface ManagedMCPUpdateInput {
+  description?: string;
+  definition?: ManagedMCPDefinition;
+  bindings?: ManagedMCPBindings;
+  env?: Record<string, string>;
+  delete_env?: string[];
+}
+
 export const mcpServers = {
   list: (projectId?: string, opts?: { includeAppOwned?: boolean }) => {
     const params = new URLSearchParams();
@@ -1456,6 +1514,25 @@ export const mcpServers = {
 
   create: (name: string, command: string, args: string[], env: Record<string, string>, description: string, projectId?: string) =>
     request<MCPServer>("POST", "/mcp-servers", { name, command, args, env, description, project_id: projectId || "" }),
+
+  createManaged: (input: ManagedMCPCreateInput) =>
+    request<ManagedMCPDetails>("POST", "/mcp-servers/managed", input),
+
+  managed: (id: number) =>
+    request<ManagedMCPDetails>("GET", `/mcp-servers/${id}/managed`),
+
+  updateManaged: (id: number, input: ManagedMCPUpdateInput) =>
+    request<ManagedMCPDetails>("PUT", `/mcp-servers/${id}/managed`, input),
+
+  validateManaged: (id: number, definition: ManagedMCPDefinition, bindings?: ManagedMCPBindings) =>
+    request<{ valid: boolean; tool_count?: number; error?: string }>(
+      "POST",
+      `/mcp-servers/${id}/validate`,
+      { definition, ...(bindings ? { bindings } : {}) },
+    ),
+
+  managedLogs: (id: number) =>
+    request<{ logs: string }>("GET", `/mcp-servers/${id}/logs`),
 
   delete: (id: number) => request<any>("DELETE", `/mcp-servers/${id}`),
 

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { auth, core, platformHelper, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, type Provider, type ProviderTypeInfo, type ProviderAuthStart, type ProviderAuthStatus, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser } from "../api";
 import { Modal } from "../components/Modal";
 import { ProviderUsageDetails, ProviderUsageSummary } from "../components/ProviderUsage";
@@ -9,6 +10,11 @@ import { usePageTitle } from "../hooks/usePageTitle";
 import { useTranslation } from "react-i18next";
 import { DASHBOARD_LANGUAGES, normalizeDashboardLanguage, setDashboardLanguage, type DashboardLanguage } from "../i18n";
 import { resolveEffectiveAgentProvider } from "../utils/providerSelection";
+import {
+  globalHelperCapabilityInventory,
+  helperCapabilityKind,
+  helperCapabilityLabel,
+} from "../utils/helperCapabilities";
 
 interface Key {
   id: number;
@@ -53,7 +59,13 @@ function GlobeIcon({ size = 11 }: { size?: number }) {
 }
 
 export function Settings() {
-  const [tab, setTab] = useState<Tab>("projects");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get("tab") as Tab | null;
+  const [tab, setTab] = useState<Tab>(
+    requestedTab && ["projects", "helper", "appearance", "channels", "providers", "mcp", "subscriptions", "api-keys", "data", "account", "server", "users"].includes(requestedTab)
+      ? requestedTab
+      : "projects",
+  );
   const { user } = useAuth();
   const { t } = useTranslation();
   // Multi-user: Users tab is admin-only. Non-admins still get every
@@ -76,6 +88,10 @@ export function Settings() {
   ];
   const activeTab = tabs.find((t) => t.id === tab);
   usePageTitle([t("settings.title"), activeTab?.label || t("settings.tabs.projects")]);
+  const selectTab = (next: Tab) => {
+    setTab(next);
+    setSearchParams(next === "projects" ? {} : { tab: next }, { replace: true });
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -89,7 +105,7 @@ export function Settings() {
           <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-text-dim">Section</span>
           <select
             value={tab}
-            onChange={(event) => setTab(event.target.value as Tab)}
+            onChange={(event) => selectTab(event.target.value as Tab)}
             className="min-h-11 w-full rounded-lg border border-border bg-bg-input px-3 text-base text-text focus:border-accent focus:outline-none"
             aria-label="Settings section"
           >
@@ -101,7 +117,7 @@ export function Settings() {
         {tabs.map((t) => (
           <button
             key={t.id}
-            onClick={() => setTab(t.id)}
+            onClick={() => selectTab(t.id)}
             className={`whitespace-nowrap px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
               tab === t.id
                 ? "text-accent border-accent"
@@ -646,6 +662,12 @@ function HelperTab() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [capabilityInventory, setCapabilityInventory] = useState<MCPServer[]>([]);
+  const [selectedCapabilityIDs, setSelectedCapabilityIDs] = useState<number[]>([]);
+  const [capabilitiesLoading, setCapabilitiesLoading] = useState(true);
+  const [capabilitiesSaving, setCapabilitiesSaving] = useState(false);
+  const [capabilitiesError, setCapabilitiesError] = useState("");
+  const [capabilitiesNotice, setCapabilitiesNotice] = useState("");
 
   const providerSignature = textProviders
     .map((provider) => `${provider.id}:${runtimeProviderKey(provider)}`)
@@ -653,6 +675,31 @@ function HelperTab() {
 
   useEffect(() => {
     providers.list().then(setProviderList).catch((err: any) => setError(err?.message || "Unable to load text providers."));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCapabilitiesLoading(true);
+    setCapabilitiesError("");
+    Promise.all([
+      mcpServers.list(undefined, { includeAppOwned: true }),
+      platformHelper.capabilities(),
+    ])
+      .then(([rows, state]) => {
+        if (cancelled) return;
+        setCapabilityInventory(globalHelperCapabilityInventory(rows || []));
+        setSelectedCapabilityIDs(state.selected_mcp_server_ids || []);
+        if (!state.applied) {
+          setCapabilitiesNotice("Saved, but the running Helper will apply these capabilities on its next restart.");
+        }
+      })
+      .catch((err: any) => {
+        if (!cancelled) setCapabilitiesError(err?.message || "Unable to load Helper capabilities.");
+      })
+      .finally(() => {
+        if (!cancelled) setCapabilitiesLoading(false);
+      });
+    return () => { cancelled = true; };
   }, []);
 
   const savedModelOverride = useCallback((agent: Agent, providerName: string) => {
@@ -753,6 +800,38 @@ function HelperTab() {
     }
   };
 
+  const saveCapabilities = async () => {
+    setCapabilitiesSaving(true);
+    setCapabilitiesError("");
+    setCapabilitiesNotice("");
+    try {
+      const result = await platformHelper.updateCapabilities(selectedCapabilityIDs);
+      setSelectedCapabilityIDs(result.selected_mcp_server_ids || []);
+      if (result.applied) {
+        setCapabilitiesNotice(
+          result.reset_threads
+            ? "Global capabilities updated. Active Helper conversations will reconnect with the new tool set on their next message."
+            : "Global capabilities updated.",
+        );
+      } else {
+        setCapabilitiesNotice("Saved, but the running Helper will apply these capabilities on its next restart.");
+      }
+    } catch (err: any) {
+      setCapabilitiesError(err?.message || "Unable to update Helper capabilities.");
+    } finally {
+      setCapabilitiesSaving(false);
+    }
+  };
+
+  const toggleCapability = (id: number) => {
+    setSelectedCapabilityIDs((current) =>
+      current.includes(id)
+        ? current.filter((candidate) => candidate !== id)
+        : [...current, id],
+    );
+    setCapabilitiesNotice("");
+  };
+
   return (
     <div className="mx-auto max-w-4xl space-y-5">
       <div>
@@ -825,6 +904,84 @@ function HelperTab() {
               </div>
             </div>
           )}
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-border bg-bg-card">
+        <div className="border-b border-border-subtle p-4 sm:p-5">
+          <h3 className="text-sm font-bold text-text">Global capabilities</h3>
+          <p className="mt-1 max-w-2xl text-xs leading-relaxed text-text-muted">
+            Allow Apteva Helper to use selected global apps and integrations. Project-scoped
+            capabilities stay unavailable so one project cannot leak tools into another.
+          </p>
+        </div>
+
+        <div className="p-4 sm:p-5">
+          <div className="mb-4 grid gap-2 sm:grid-cols-3">
+            {["Apteva control", "Channels", "Environments"].map((name) => (
+              <div key={name} className="flex items-center justify-between rounded-md border border-border-subtle bg-bg-hover px-3 py-2">
+                <span className="text-xs font-medium text-text">{name}</span>
+                <span className="text-[9px] font-bold uppercase tracking-wide text-text-dim">required</span>
+              </div>
+            ))}
+          </div>
+
+          {capabilitiesLoading ? (
+            <div className="text-xs text-text-dim">Loading global capabilities…</div>
+          ) : capabilityInventory.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border p-3 text-xs text-text-muted">
+              No global app or integration MCPs are available. Install or connect one globally,
+              then return here to enable it for the Helper.
+            </div>
+          ) : (
+            <div className="grid gap-2">
+              {capabilityInventory.map((capability) => {
+                const checked = selectedCapabilityIDs.includes(capability.id);
+                return (
+                  <label
+                    key={capability.id}
+                    className={`flex cursor-pointer items-center gap-3 rounded-md border px-3 py-3 transition-colors ${
+                      checked ? "border-accent/60 bg-accent/5" : "border-border bg-bg hover:border-accent/40"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleCapability(capability.id)}
+                      className="h-4 w-4 accent-[var(--color-accent)]"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-semibold text-text">
+                        {helperCapabilityLabel(capability)}
+                      </span>
+                      <span className="mt-0.5 block truncate text-[10px] text-text-dim">
+                        {capability.name} · {capability.tool_count || 0} tools
+                      </span>
+                    </span>
+                    <span className="rounded bg-bg-hover px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-text-dim">
+                      {helperCapabilityKind(capability)}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border-subtle pt-4">
+            <button
+              type="button"
+              onClick={() => void saveCapabilities()}
+              disabled={capabilitiesLoading || capabilitiesSaving}
+              className="h-9 rounded-md bg-accent px-4 text-xs font-bold text-bg hover:bg-accent-hover disabled:opacity-50"
+            >
+              {capabilitiesSaving ? "Saving…" : "Save global capabilities"}
+            </button>
+            <span className="text-[10px] text-text-dim">
+              Changes affect Helper only; ordinary agents keep their existing capabilities.
+            </span>
+            {capabilitiesNotice && <span className="text-xs text-green">{capabilitiesNotice}</span>}
+            {capabilitiesError && <span className="text-xs text-danger">{capabilitiesError}</span>}
+          </div>
         </div>
       </section>
     </div>
@@ -1480,7 +1637,7 @@ function MCPServersTab() {
   // Add-MCP form tab: either build a custom stdio server from scratch,
   // or create another MCP row over an existing connection on this project
   // (different name + tool subset).
-  const [addTab, setAddTab] = useState<"scratch" | "connection">("scratch");
+  const [addTab, setAddTab] = useState<"managed" | "scratch" | "connection">("managed");
   const [addConnList, setAddConnList] = useState<import("../api").ConnectionInfo[]>([]);
   const [addConnId, setAddConnId] = useState<number | 0>(0);
   const [addConnName, setAddConnName] = useState("");
@@ -1789,7 +1946,7 @@ function MCPServersTab() {
         <button
           onClick={() => {
             setShowAdd(true);
-            setAddTab("scratch");
+            setAddTab("managed");
             setError("");
             setAddConnId(0);
             setAddConnName("");
@@ -1808,8 +1965,19 @@ function MCPServersTab() {
 
       {showAdd && (
         <div className="border border-border rounded-lg p-5 bg-bg-card space-y-4">
-          {/* Tabs: scratch vs. from existing connection */}
+          {/* Tabs: managed code, legacy local command, or an existing connection */}
           <div className="flex gap-0 border-b border-border -mx-5 px-5">
+            <button
+              type="button"
+              onClick={() => { setAddTab("managed"); setError(""); }}
+              className={`px-4 py-2 text-sm transition-colors border-b-2 -mb-px ${
+                addTab === "managed"
+                  ? "text-accent border-accent"
+                  : "text-text-muted border-transparent hover:text-text"
+              }`}
+            >
+              Custom code
+            </button>
             <button
               type="button"
               onClick={() => { setAddTab("scratch"); setError(""); }}
@@ -1819,7 +1987,7 @@ function MCPServersTab() {
                   : "text-text-muted border-transparent hover:text-text"
               }`}
             >
-              From scratch
+              Local command
             </button>
             <button
               type="button"
@@ -1833,6 +2001,34 @@ function MCPServersTab() {
               From existing connection
             </button>
           </div>
+
+          {addTab === "managed" && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-border bg-bg-input p-4">
+                <div className="text-sm text-text font-bold">Managed custom MCP</div>
+                <p className="text-xs text-text-muted mt-1 leading-relaxed">
+                  Define tool schemas and JavaScript handlers in the dashboard. Each server runs in a separate process and can call only the project apps and integrations you explicitly bind.
+                </p>
+              </div>
+              {!currentProject?.id ? (
+                <p className="text-sm text-red">Select a project before creating a custom MCP server.</p>
+              ) : (
+                <Link
+                  to="/mcp-servers/new"
+                  className="inline-flex px-5 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
+                >
+                  Open MCP builder
+                </Link>
+              )}
+              <button
+                type="button"
+                onClick={() => { setShowAdd(false); setError(""); }}
+                className="ml-3 px-5 py-2.5 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
 
           {addTab === "connection" && (
             <div className="space-y-4">
@@ -2082,6 +2278,9 @@ function MCPServersTab() {
                 {s.source === "app" && (
                   <span className="text-xs px-2 py-0.5 rounded bg-bg-hover text-text-dim">app</span>
                 )}
+                {s.source === "managed" && (
+                  <span className="text-xs px-2 py-0.5 rounded bg-accent/15 text-accent">custom code</span>
+                )}
                 <span className="text-xs px-2 py-0.5 rounded bg-bg-hover text-text-dim">
                   {s.project_id ? "project" : "global"}
                 </span>
@@ -2125,7 +2324,9 @@ function MCPServersTab() {
                   </button>
                 )}
                 {((s.source === "local" && s.connection_id > 0) ||
-                  s.source === "remote") && (
+                  s.source === "remote" ||
+                  s.source === "custom" ||
+                  s.source === "managed") && (
                     <button
                       onClick={() => openScopeModal(s)}
                       className="text-sm text-text-muted hover:text-accent transition-colors"
@@ -2134,17 +2335,25 @@ function MCPServersTab() {
                       Scope
                     </button>
                   )}
-                {s.source === "custom" && s.status === "running" && (
+                {(s.source === "custom" || s.source === "managed") && s.status === "running" && (
                   <button onClick={() => handleStop(s.id)}
                     className="text-sm text-text-muted hover:text-red transition-colors">
                     Stop
                   </button>
                 )}
-                {s.source === "custom" && s.status !== "running" && (
+                {(s.source === "custom" || s.source === "managed") && s.status !== "running" && (
                   <button onClick={() => handleStart(s.id)}
                     className="text-sm text-accent hover:text-accent-hover transition-colors">
                     Start
                   </button>
+                )}
+                {s.source === "managed" && (
+                  <Link
+                    to={`/mcp-servers/${s.id}`}
+                    className="text-sm text-accent hover:text-accent-hover transition-colors"
+                  >
+                    Edit
+                  </Link>
                 )}
                 <button onClick={() => openRenameMCP(s)}
                   className="text-sm text-text-muted hover:text-text transition-colors"
@@ -2157,7 +2366,7 @@ function MCPServersTab() {
                 </button>
               </div>
             </div>
-            {s.command && (
+            {s.command && s.source !== "managed" && (
               <div className="px-4 pb-3 text-text-dim text-sm">{s.command}</div>
             )}
             {s.source === "remote" && s.url && (
@@ -2287,7 +2496,7 @@ function MCPServersTab() {
                       (s.source === "local" && s.connection_id > 0) ||
                       s.source === "remote" ||
                       s.source === "app" ||
-                      (s.source === "custom" && s.status === "running");
+                      ((s.source === "custom" || s.source === "managed") && s.status === "running");
                     return (
                       <div
                         key={tool.name}
