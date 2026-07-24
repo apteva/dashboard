@@ -723,7 +723,7 @@ export function SuiteConnect({ group, projectId, onClose, onConnectionsChanged }
                 <button
                   onClick={submitKey}
                   disabled={credsBusy || Object.values(creds).every((v) => !v)}
-                  className="px-3 py-1.5 text-sm bg-accent text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110"
+                  className="px-3 py-1.5 text-sm bg-accent text-bg rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110"
                 >
                   {credsBusy
                     ? scope === "account"
@@ -756,7 +756,7 @@ export function SuiteConnect({ group, projectId, onClose, onConnectionsChanged }
                 <button
                   onClick={save}
                   disabled={saveBusy}
-                  className="px-3 py-1.5 text-sm bg-accent text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110"
+                  className="px-3 py-1.5 text-sm bg-accent text-bg rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110"
                 >
                   {saveBusy ? "Saving…" : `Save ${selected.size}`}
                 </button>

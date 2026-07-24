@@ -900,7 +900,7 @@ function HelperTab() {
                 <button type="button" onClick={() => void save()} disabled={saving || loadingModels || !selectedProviderRow} className="h-9 rounded-md bg-accent px-4 text-xs font-bold text-bg hover:bg-accent-hover disabled:opacity-50">{saving ? "Saving…" : "Save Helper settings"}</button>
                 <span className="text-[10px] text-text-dim">Credentials and provider-wide defaults remain in Providers.</span>
                 {notice && <span className="text-xs text-green">{notice}</span>}
-                {error && <span className="text-xs text-danger">{error}</span>}
+                {error && <span className="text-xs text-red">{error}</span>}
               </div>
             </div>
           )}
@@ -980,7 +980,7 @@ function HelperTab() {
               Changes affect Helper only; ordinary agents keep their existing capabilities.
             </span>
             {capabilitiesNotice && <span className="text-xs text-green">{capabilitiesNotice}</span>}
-            {capabilitiesError && <span className="text-xs text-danger">{capabilitiesError}</span>}
+            {capabilitiesError && <span className="text-xs text-red">{capabilitiesError}</span>}
           </div>
         </div>
       </section>

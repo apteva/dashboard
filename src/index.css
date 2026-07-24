@@ -77,7 +77,7 @@
  * swapped without touching component code.
  *
  * Naming:
- *   bg / bg-card / bg-hover / bg-input / bg-overlay  — surfaces
+ *   bg / bg-card / bg-subtle / bg-hover / bg-input / bg-overlay — surfaces
  *   text / text-muted / text-dim                      — type tones
  *   border / border-subtle / border-strong            — separators
  *   accent / accent-hover / accent-muted              — brand
@@ -91,6 +91,7 @@
 [data-theme="terminal"][data-mode="dark"] {
   --bg: #0a0a0a;
   --bg-card: #141414;
+  --bg-subtle: #101010;
   --bg-hover: #1c1c1c;
   --bg-input: #111111;
   --bg-overlay: rgb(0 0 0 / 0.6);
@@ -112,6 +113,7 @@
 [data-theme="terminal"][data-mode="light"] {
   --bg: #faf8f3;
   --bg-card: #f1ede4;
+  --bg-subtle: #f7f4ed;
   --bg-hover: #e8e3d6;
   --bg-input: #f6f2e9;
   --bg-overlay: rgb(0 0 0 / 0.5);
@@ -133,6 +135,7 @@
 [data-theme="clean"][data-mode="dark"] {
   --bg: #0f1419;              /* slightly cooler than terminal-dark */
   --bg-card: #1a2128;
+  --bg-subtle: #151b22;
   --bg-hover: #232b34;
   --bg-input: #131920;
   --bg-overlay: rgb(0 0 0 / 0.6);
@@ -154,6 +157,7 @@
 [data-theme="clean"][data-mode="light"] {
   --bg: #ffffff;
   --bg-card: #f7f8fa;
+  --bg-subtle: #fafbfc;
   --bg-hover: #eef0f4;
   --bg-input: #ffffff;
   --bg-overlay: rgb(0 0 0 / 0.4);
@@ -182,6 +186,7 @@
 @theme {
   --color-bg: var(--bg);
   --color-bg-card: var(--bg-card);
+  --color-bg-subtle: var(--bg-subtle);
   --color-bg-hover: var(--bg-hover);
   --color-bg-input: var(--bg-input);
   --color-bg-overlay: var(--bg-overlay);

@@ -314,7 +314,7 @@ export function Build() {
       />
 
       {pageError && (
-        <div className="shrink-0 border-b border-danger/25 bg-danger/10 px-4 py-2 text-xs text-danger">
+        <div className="shrink-0 border-b border-red/25 bg-red/10 px-4 py-2 text-xs text-red">
           {pageError}
         </div>
       )}
@@ -482,7 +482,7 @@ function BuildHeader(props: {
           {props.menuOpen && (
             <div className="absolute right-0 top-11 z-50 w-44 rounded-md border border-border bg-bg-card p-1.5 shadow-[var(--shadow-popover)]">
               <button type="button" onClick={props.onArchive} className="flex h-9 w-full items-center rounded px-2.5 text-left text-xs text-text-muted hover:bg-bg-hover hover:text-text">Archive conversation</button>
-              <button type="button" onClick={props.onDelete} className="flex h-9 w-full items-center rounded px-2.5 text-left text-xs text-danger hover:bg-danger/10">Delete conversation</button>
+              <button type="button" onClick={props.onDelete} className="flex h-9 w-full items-center rounded px-2.5 text-left text-xs text-red hover:bg-red/10">Delete conversation</button>
             </div>
           )}
         </div>
@@ -510,7 +510,7 @@ function SessionsPanel(props: {
             <h2 className="text-sm font-bold text-text">Conversations</h2>
             <p className="mt-0.5 text-[10px] text-text-dim">With Apteva Helper</p>
           </div>
-          <button type="button" onClick={props.onNew} className="inline-flex h-8 items-center gap-1 rounded-md bg-accent px-2.5 text-[11px] font-bold text-black hover:bg-accent-hover">
+          <button type="button" onClick={props.onNew} className="inline-flex h-8 items-center gap-1 rounded-md bg-accent px-2.5 text-[11px] font-bold text-bg hover:bg-accent-hover">
             <PlusIcon /> New
           </button>
         </div>
@@ -679,7 +679,7 @@ function NewConversationDialog(props: { busy: boolean; onClose: () => void; onCr
         </div>
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" onClick={props.onClose} disabled={props.busy} className="inline-flex h-9 items-center rounded-md border border-border px-3 text-xs font-bold text-text-muted hover:bg-bg-hover hover:text-text disabled:opacity-40">Cancel</button>
-          <button type="submit" disabled={!request.trim() || props.busy} className="h-9 rounded-md bg-accent px-4 text-xs font-bold text-black hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40">{props.busy ? "Starting…" : "Start conversation"}</button>
+          <button type="submit" disabled={!request.trim() || props.busy} className="h-9 rounded-md bg-accent px-4 text-xs font-bold text-bg hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40">{props.busy ? "Starting…" : "Start conversation"}</button>
         </div>
       </form>
     </div>
@@ -695,7 +695,7 @@ function ConfirmDialog(props: { title: string; detail: string; confirm: string; 
         <p className="mt-2 text-xs leading-5 text-text-muted">{props.detail}</p>
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" onClick={props.onClose} className="h-9 rounded-md border border-border px-3 text-xs font-bold text-text-muted hover:bg-bg-hover hover:text-text">Cancel</button>
-          <button type="button" onClick={props.onConfirm} className="h-9 rounded-md border border-danger/50 bg-danger/10 px-3 text-xs font-bold text-danger hover:bg-danger/20">{props.confirm}</button>
+          <button type="button" onClick={props.onConfirm} className="h-9 rounded-md border border-red/50 bg-red/10 px-3 text-xs font-bold text-red hover:bg-red/20">{props.confirm}</button>
         </div>
       </div>
     </div>
@@ -724,7 +724,7 @@ function CenteredState(props: { title: string; detail: string; action?: string; 
         <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-md bg-accent/10 text-accent"><BuildIcon /></span>
         <h2 className="mt-4 text-base font-bold text-text">{props.title}</h2>
         <p className="mt-2 text-xs leading-5 text-text-muted">{props.detail}</p>
-        {props.action && props.onAction && <button type="button" onClick={props.onAction} className="mt-5 h-9 rounded-md bg-accent px-4 text-xs font-bold text-black hover:bg-accent-hover">{props.action}</button>}
+        {props.action && props.onAction && <button type="button" onClick={props.onAction} className="mt-5 h-9 rounded-md bg-accent px-4 text-xs font-bold text-bg hover:bg-accent-hover">{props.action}</button>}
       </div>
     </div>
   );
@@ -832,7 +832,7 @@ function activitySummary(event: TelemetryEvent): string {
 }
 
 function activityTone(type: string): string {
-  if (type.includes("error") || type.includes("failed")) return "text-danger";
+  if (type.includes("error") || type.includes("failed")) return "text-red";
   if (type === "tool.result" || type === "thread.done") return "text-green";
   if (type.startsWith("tool.")) return "text-accent";
   return "text-text-dim";
@@ -849,7 +849,7 @@ function addHref(kind: WorkspaceItemKind): string {
 function workspaceStatusTone(status: string): string {
   const value = status.toLowerCase();
   if (["running", "enabled"].includes(value)) return "text-green";
-  if (["error", "failed"].includes(value)) return "text-danger";
+  if (["error", "failed"].includes(value)) return "text-red";
   if (["pending"].includes(value)) return "text-accent";
   return "text-text-dim";
 }

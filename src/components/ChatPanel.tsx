@@ -15,6 +15,7 @@ import { renderSafeMarkdown } from "../utils/safeMarkdown";
 import { mergeChatMessages } from "../utils/chatMessages";
 import { Modal } from "./Modal";
 import { ChatToolActivity } from "./chat/ToolActivity";
+import { chatTimelineMarginClass } from "./chat/chatTimelineSpacing";
 import {
   buildChatTimeline,
   chatConversationThreadId,
@@ -1235,11 +1236,10 @@ export function ChatPanel({
           if (item.kind === "day") return <TimelineDayMarker key={item.key} timestamp={item.ts} />;
           if (item.kind === "time") return <TimelineTimeMarker key={item.key} timestamp={item.ts} />;
           if (item.kind === "message") {
-            const followsTool = previousItem?.kind === "tool" || previousItem?.kind === "toolGroup";
             return (
               <div
                 key={item.key}
-                className={`${item.compactBefore ? "mt-1.5" : followsTool ? "mt-2" : "mt-4"} first:mt-0`}
+                className={chatTimelineMarginClass(item, previousItem)}
                 title={formatExactTimestamp(item.ts)}
               >
                 <time dateTime={new Date(item.ts).toISOString()} className="sr-only">
@@ -1257,9 +1257,8 @@ export function ChatPanel({
             );
           }
           if (item.kind === "toolGroup") {
-            const followsUser = previousItem?.kind === "message" && previousItem.message.role === "user";
             return (
-              <div key={item.key} className={`${followsUser ? "mt-4" : "mt-2"} first:mt-0`} title={formatExactTimestamp(item.ts)}>
+              <div key={item.key} className={chatTimelineMarginClass(item, previousItem)} title={formatExactTimestamp(item.ts)}>
                 <ChatToolActivity
                   tools={item.tools}
                   parallel={item.parallel}
@@ -1271,9 +1270,8 @@ export function ChatPanel({
               </div>
             );
           }
-          const followsUser = previousItem?.kind === "message" && previousItem.message.role === "user";
           return (
-            <div key={item.key} className={`${followsUser ? "mt-4" : "mt-2"} first:mt-0`} title={formatExactTimestamp(item.ts)}>
+            <div key={item.key} className={chatTimelineMarginClass(item, previousItem)} title={formatExactTimestamp(item.ts)}>
               <ChatToolActivity tools={[item.tool]} registry={toolVisualRegistry} />
             </div>
           );
