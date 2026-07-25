@@ -10,6 +10,7 @@
 // stays readable so the user keeps context.
 
 import { useEffect, useMemo, useState } from "react";
+import { AppIcon } from "@apteva/ui-kit";
 import type { AppBindingValue, AppImports, AppRow, AppSurfaces, AppUIComponent, ConnectionInfo, MarketplaceEntry } from "../../api";
 import { apps, integrations } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
@@ -38,6 +39,7 @@ interface View {
   description: string;
   version: string;
   icon: string;
+  iconStyle?: "image" | "monochrome";
   repo: string;
   manifestUrl?: string;
   surfaces?: AppSurfaces;
@@ -62,6 +64,7 @@ function viewFromProps(p: Props): View | null {
       description: e.description,
       version: e.version,
       icon: e.icon,
+      iconStyle: e.icon_style,
       repo: e.repo,
       manifestUrl: e.manifest_url,
       surfaces: e.surfaces,
@@ -81,6 +84,7 @@ function viewFromProps(p: Props): View | null {
       description: i.description,
       version: i.version,
       icon: i.icon,
+      iconStyle: i.icon_style,
       repo: "",
       surfaces: i.surfaces,
       installed: true,
@@ -125,14 +129,13 @@ export function AppDetailPanel(props: Props) {
       >
         {/* Header — pinned, always visible. */}
         <div className="flex items-start gap-3 px-6 py-5 border-b border-border flex-shrink-0">
-          {view.icon && (
-            <img
-              src={view.icon}
-              alt=""
-              className="w-10 h-10 rounded bg-bg-input p-0.5 flex-shrink-0"
-              onError={(e) => ((e.target as HTMLImageElement).style.display = "none")}
-            />
-          )}
+          <AppIcon
+            src={view.icon}
+            iconStyle={view.iconStyle}
+            name={view.display_name}
+            size="md"
+            className="text-accent"
+          />
           <div className="flex-1 min-w-0">
             <h2 className="text-text text-base font-bold truncate">
               {view.display_name}
@@ -204,11 +207,15 @@ function ComponentsSection({
   appName,
   version,
   installId,
+  icon,
+  iconStyle,
   components,
 }: {
   appName: string;
   version: string;
   installId: number;
+  icon?: string;
+  iconStyle?: "image" | "monochrome";
   components: AppUIComponent[];
 }) {
   const { currentProject } = useProjects();
@@ -219,8 +226,16 @@ function ComponentsSection({
   // current app — enough for the mount to resolve our component
   // entries correctly.
   const apps: InstalledAppRow[] = useMemo(
-    () => [{ install_id: installId, name: appName, version, ui_components: components }],
-    [installId, appName, version, components],
+    () => [{
+      install_id: installId,
+      name: appName,
+      display_name: appName,
+      version,
+      icon,
+      icon_style: iconStyle,
+      ui_components: components,
+    }],
+    [installId, appName, version, icon, iconStyle, components],
   );
 
   return (
@@ -678,6 +693,8 @@ function ToolsTab({ view }: { view: View }) {
           appName={view.name}
           version={view.version}
           installId={view.installId}
+          icon={view.icon}
+          iconStyle={view.iconStyle}
           components={view.components}
         />
       )}

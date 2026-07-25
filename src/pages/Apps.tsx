@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { Link } from "react-router-dom";
+import { AppIcon as SharedAppIcon } from "@apteva/ui-kit";
 import {
   apps,
   integrations,
@@ -29,21 +30,22 @@ const MARKETPLACE_PAGE_SIZE = 24;
 // avatar when the URL is missing or 404s. Both the marketplace card
 // and the installed-app card share this so we don't end up with the
 // browser's default broken-image glyph.
-function AppIcon({ url, name }: { url?: string; name: string }) {
-  const [broken, setBroken] = useState(false);
-  if (!url || broken) {
-    return (
-      <div className="w-10 h-10 rounded bg-bg-input text-text-dim flex items-center justify-center flex-shrink-0">
-        {name.charAt(0).toUpperCase()}
-      </div>
-    );
-  }
+function AppIcon({
+  url,
+  name,
+  iconStyle,
+}: {
+  url?: string;
+  name: string;
+  iconStyle?: "image" | "monochrome";
+}) {
   return (
-    <img
+    <SharedAppIcon
       src={url}
-      alt=""
-      className="w-10 h-10 rounded bg-bg-input p-1 flex-shrink-0"
-      onError={() => setBroken(true)}
+      iconStyle={iconStyle}
+      name={name}
+      size="md"
+      className="text-accent"
     />
   );
 }
@@ -624,7 +626,7 @@ function MarketplaceCard({
       }}
     >
       <div className="flex items-start gap-3">
-        <BigAppIcon url={entry.icon} name={entry.display_name} />
+        <BigAppIcon url={entry.icon} name={entry.display_name} iconStyle={entry.icon_style} />
         <div className="flex-1 min-w-0">
           <div className="text-text font-medium truncate">{entry.display_name}</div>
           <div className="text-text-dim text-[11px] mt-0.5 truncate">
@@ -676,21 +678,22 @@ function MarketplaceCard({
 // BigAppIcon — 48px tile icon for the marketplace + installed grids.
 // Falls back to a single-letter avatar so missing icons don't leave
 // holes (handful of registry entries don't ship icon.png).
-function BigAppIcon({ url, name }: { url?: string; name: string }) {
-  const [broken, setBroken] = useState(false);
-  if (!url || broken) {
-    return (
-      <div className="w-12 h-12 rounded-lg bg-bg-input text-text-dim flex items-center justify-center flex-shrink-0 text-xl font-medium">
-        {name.charAt(0).toUpperCase()}
-      </div>
-    );
-  }
+function BigAppIcon({
+  url,
+  name,
+  iconStyle,
+}: {
+  url?: string;
+  name: string;
+  iconStyle?: "image" | "monochrome";
+}) {
   return (
-    <img
+    <SharedAppIcon
       src={url}
-      alt=""
-      className="w-12 h-12 rounded-lg bg-bg-input p-1 flex-shrink-0 object-contain"
-      onError={() => setBroken(true)}
+      iconStyle={iconStyle}
+      name={name}
+      size="lg"
+      className="text-accent"
     />
   );
 }
@@ -912,7 +915,7 @@ function AppListRow({
       />
 
       {/* Icon */}
-      <AppIcon url={app.icon} name={app.display_name} />
+      <AppIcon url={app.icon} name={app.display_name} iconStyle={app.icon_style} />
 
       {/* Name + version (left column, takes remaining space, truncates) */}
       <div className="flex-1 min-w-0 flex flex-col">
@@ -1177,7 +1180,7 @@ function AppCard({
       }}
     >
       <div className="flex items-start gap-3">
-        <BigAppIcon url={app.icon} name={app.display_name} />
+        <BigAppIcon url={app.icon} name={app.display_name} iconStyle={app.icon_style} />
         <div className="flex-1 min-w-0">
           <div className="text-text font-medium truncate">{app.display_name}</div>
           <div className="text-text-dim text-[11px] mt-0.5">

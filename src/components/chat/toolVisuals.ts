@@ -22,6 +22,7 @@ export interface ToolVisual {
   key: string;
   label: string;
   iconUrl?: string;
+  iconStyle?: "image" | "monochrome";
   glyph: ToolGlyph;
 }
 
@@ -67,6 +68,7 @@ function appSource(app: InstalledAppRow): ToolVisualSource {
     key: `app:${app.install_id || app.name}`,
     label,
     iconUrl: app.icon,
+    iconStyle: app.icon_style,
     glyph: visualGlyphForName(`${app.name} ${label}`),
     aliases: uniqueTokens([app.name, app.display_name]),
     exactTools: uniqueTokens(tools),
@@ -89,6 +91,7 @@ function connectionSources(connections: ConnectionInfo[]): ToolVisualSource[] {
       key: existing?.key || `integration:${slug}`,
       label: existing?.label || connection.app_name || connection.name || connection.app_slug || "Integration",
       iconUrl: existing?.iconUrl || connection.logo,
+      iconStyle: "image",
       glyph: existing?.glyph || visualGlyphForName(`${connection.app_slug} ${connection.app_name}`),
       aliases,
       exactTools: existing?.exactTools || [],

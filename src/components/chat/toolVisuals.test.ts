@@ -11,11 +11,13 @@ describe("tool visual registry", () => {
       display_name: "CRM",
       version: "1.0.0",
       icon: "/api/apps/crm/icon.png",
+      icon_style: "monochrome",
       surfaces: { mcp_tool_names: ["contacts_find"] },
     }];
     const visual = resolveToolVisual("contacts_find", buildToolVisualRegistry(apps, []));
     expect(visual.label).toBe("CRM");
     expect(visual.iconUrl).toBe("/api/apps/crm/icon.png");
+    expect(visual.iconStyle).toBe("monochrome");
   });
 
   test("uses longest integration namespace and its server-provided logo", () => {

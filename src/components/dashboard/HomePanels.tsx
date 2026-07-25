@@ -1,44 +1,72 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { Agent, CurrentStatusMessageRow, InstanceStats } from "../../api";
+import { StatusNextStep } from "./CurrentStatuses";
 
-export function HomeLiveAgents({
+export interface AgentOperation {
+  agent: Agent;
+  status?: CurrentStatusMessageRow;
+}
+
+const RECENT_COMPLETION_MS = 30 * 60_000;
+
+export function selectAgentOperations(
+  agents: Agent[],
+  statuses: CurrentStatusMessageRow[],
+  now = Date.now(),
+): AgentOperation[] {
+  const latestStatusByAgent = new Map<number, CurrentStatusMessageRow>();
+  for (const status of statuses) {
+    const current = latestStatusByAgent.get(status.instance_id);
+    if (!current || Date.parse(status.message.created_at) > Date.parse(current.message.created_at)) {
+      latestStatusByAgent.set(status.instance_id, status);
+    }
+  }
+
+  return agents
+    .map((agent) => {
+      const reported = latestStatusByAgent.get(agent.id);
+      const createdAt = reported ? Date.parse(reported.message.created_at) : Number.NaN;
+      const recentCompleted = reported?.state === "completed"
+        && Number.isFinite(createdAt)
+        && Math.max(0, now - createdAt) <= RECENT_COMPLETION_MS;
+      const currentStatus = reported
+        && ((!reported.stale && reported.state !== "completed") || recentCompleted)
+        ? reported
+        : undefined;
+      return { agent, status: currentStatus };
+    })
+    .filter(({ agent, status }) => !!status || agent.status === "running")
+    .sort((a, b) => {
+      return operationRank(a.agent, a.status) - operationRank(b.agent, b.status)
+        || a.agent.name.localeCompare(b.agent.name);
+    });
+}
+
+export function HomeAgentOperations({
   agents,
   statuses,
 }: {
   agents: Agent[];
   statuses: CurrentStatusMessageRow[];
 }) {
-  const statusByAgent = useMemo(
-    () => new Map(statuses.map((row) => [row.instance_id, row])),
-    [statuses],
-  );
-  const live = useMemo(() => agents
-    .map((agent) => {
-      const reported = statusByAgent.get(agent.id);
-      const activeStatus = reported && reported.state !== "completed" && !reported.stale ? reported : undefined;
-      return { agent, status: activeStatus };
-    })
-    .filter(({ agent, status }) => !!status || agent.status === "running")
-    .sort((a, b) => {
-      return liveRank(a.agent, a.status) - liveRank(b.agent, b.status) || a.agent.name.localeCompare(b.agent.name);
-    })
-    .slice(0, 5), [agents, statusByAgent]);
+  const operations = useMemo(() => selectAgentOperations(agents, statuses), [agents, statuses]);
+  const visible = operations.slice(0, 5);
 
   return (
     <section className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-bg-card xl:h-[460px]">
       <PanelHeader
-        title="Live now"
-        subtitle="Current work and running agents"
-        count={live.length}
+        title="Agent operations"
+        subtitle="Current and upcoming work"
+        count={operations.length}
         to="/monitor"
       />
-      {live.length === 0 ? (
-        <EmptyState title="No active work reported" detail="Running agents and new work will appear here." />
+      {visible.length === 0 ? (
+        <EmptyState title="No agent operations right now" detail="Running agents and newly reported work will appear here." />
       ) : (
         <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
-          {live.map(({ agent, status }) => (
-            <LiveAgentRow key={agent.id} agent={agent} status={status} />
+          {visible.map(({ agent, status }) => (
+            <AgentOperationRow key={agent.id} agent={agent} status={status} />
           ))}
         </div>
       )}
@@ -110,16 +138,16 @@ function PanelHeader({
   );
 }
 
-function LiveAgentRow({ agent, status }: { agent: Agent; status?: CurrentStatusMessageRow }) {
+function AgentOperationRow({ agent, status }: AgentOperation) {
   const state = status?.state || "running";
   const tone = stateTone(state);
   return (
     <Link
       to={`/agents/${agent.id}`}
-      className="grid min-h-[68px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 transition-colors hover:bg-bg-hover"
+      className="grid min-h-[82px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 transition-colors hover:bg-bg-hover"
     >
       <span className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-[11px] font-bold ${tone.badge}`}>
-        {state === "blocked" ? "!" : state === "waiting" ? "◷" : "›"}
+        {state === "blocked" ? "!" : state === "waiting" ? "◷" : state === "completed" ? "✓" : "›"}
       </span>
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
@@ -137,6 +165,7 @@ function LiveAgentRow({ agent, status }: { agent: Agent; status?: CurrentStatusM
             <div className={`h-full ${tone.bar}`} style={{ width: `${Math.max(0, Math.min(100, status.progress))}%` }} />
           </div>
         )}
+        <StatusNextStep next={status?.next} nextAt={status?.next_at} />
       </div>
       {status ? (
         <time className="text-[10px] tabular-nums text-text-dim" title={formatExact(status.message.created_at)}>
@@ -169,10 +198,10 @@ function Metric({ label, value, warn = false }: { label: string; value: string; 
   );
 }
 
-function liveRank(agent: Agent, status?: CurrentStatusMessageRow) {
+function operationRank(agent: Agent, status?: CurrentStatusMessageRow) {
   if (status?.state === "blocked") return 0;
-  if (status?.state === "working") return 1;
-  if (status?.state === "waiting") return 2;
+  if (status?.state === "waiting") return 1;
+  if (status?.state === "working") return 2;
   if (agent.status === "running") return 3;
   return 4;
 }

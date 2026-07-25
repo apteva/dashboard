@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { AppIcon } from "@apteva/ui-kit";
 import type { ToolActivity } from "./toolActivityModel";
 import {
   resolveToolVisual,
@@ -18,7 +19,6 @@ interface ToolActivityProps {
 }
 
 type VisualState = "preparing" | "running" | "done" | "failed";
-const loadedToolIconUrls = new Set<string>();
 
 function visualState(tool: ToolActivity): VisualState {
   if (tool.state !== "done") return tool.state;
@@ -233,13 +233,6 @@ function ToolSourceIcon({
   visual: ToolVisual;
 }) {
   const canRenderImage = !!visual.iconUrl && /^(https?:|data:|\/)/.test(visual.iconUrl);
-  const iconUrl = canRenderImage ? visual.iconUrl! : "";
-  const [imageFailed, setImageFailed] = useState(false);
-  const [imageLoaded, setImageLoaded] = useState(() => loadedToolIconUrls.has(iconUrl));
-  useEffect(() => {
-    setImageFailed(false);
-    setImageLoaded(loadedToolIconUrls.has(iconUrl));
-  }, [iconUrl]);
   const state = visualState(tool);
   const stateClass = state === "running" || state === "preparing"
     ? "chat-tool-icon-running"
@@ -250,22 +243,17 @@ function ToolSourceIcon({
       title={visual.label}
       aria-hidden="true"
     >
-      <span className={`absolute inset-0 flex items-center justify-center transition-opacity duration-150 ${imageLoaded && !imageFailed ? "opacity-0" : "opacity-100"}`}>
-        <ToolGlyphIcon glyph={visual.glyph} />
-      </span>
-      {canRenderImage && !imageFailed && (
-        <img
-          src={iconUrl}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          className={`absolute inset-0 h-full w-full rounded-[inherit] bg-bg-hover object-contain p-1 transition-opacity duration-150 ${imageLoaded ? "opacity-100" : "opacity-0"}`}
-          onLoad={() => {
-            loadedToolIconUrls.add(iconUrl);
-            setImageLoaded(true);
-          }}
-          onError={() => setImageFailed(true)}
+      {canRenderImage ? (
+        <AppIcon
+          src={visual.iconUrl}
+          iconStyle={visual.iconStyle}
+          name={visual.label}
+          size="sm"
+          framed={false}
+          className="text-accent"
         />
+      ) : (
+        <ToolGlyphIcon glyph={visual.glyph} />
       )}
     </span>
   );

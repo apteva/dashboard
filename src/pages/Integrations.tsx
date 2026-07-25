@@ -42,6 +42,10 @@ import { IntegrationExplorerPanel } from "../components/integrations/Integration
 import { useNavigate } from "react-router-dom";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
+import {
+  defaultIntegrationAuthType,
+  visibleCredentialFields,
+} from "../utils/integrationAuth";
 
 // Credential-group suite summary — from GET /integrations/groups.
 // The dashboard collapses each suite into a single catalog card.
@@ -56,35 +60,6 @@ type SuiteSummary = {
 };
 
 type SourceTab = "local" | "composio" | "usage";
-
-function defaultLocalAuthType(app: AppDetail | null | undefined): string {
-  const types = app?.auth?.types || [];
-  if (types.includes("oauth_device_code")) return "oauth_device_code";
-  if (types.includes("oauth2") && shouldPreferOAuth2(app)) return "oauth2";
-  const nonOAuth = types.find((t) => t !== "oauth2");
-  return nonOAuth || types[0] || "";
-}
-
-function shouldPreferOAuth2(app: AppDetail | null | undefined): boolean {
-  if (!app?.auth?.oauth2) return false;
-  const fields = app.auth.credential_fields || [];
-  if (fields.length === 0) return true;
-  const tokenFieldNames = new Set([
-    "token",
-    "accesstoken",
-    "access_token",
-    "refresh_token",
-    "refreshtoken",
-    "expires_in",
-    "expiresin",
-    "token_type",
-    "tokentype",
-    "scope",
-  ]);
-  return fields.every((field) =>
-    tokenFieldNames.has(String(field.name || "").toLowerCase())
-  );
-}
 
 export function Integrations() {
   usePageTitle("Integrations");
@@ -325,7 +300,7 @@ export function Integrations() {
     // For OAuth2 apps, find out whether the user already registered an
     // OAuth client for this app+project. If yes, hide the form. If no,
     // we'll show two fields plus the callback URL helper.
-    if (defaultLocalAuthType(app) === "oauth2") {
+    if (defaultIntegrationAuthType(app) === "oauth2") {
       try {
         const status = await integrations.oauthClientStatus(slug, currentProject?.id);
         setOAuthClientResolved(status.resolved);
@@ -343,7 +318,7 @@ export function Integrations() {
     setError("");
     setConnecting(true);
     try {
-      const authType = defaultLocalAuthType(selectedLocalApp);
+      const authType = defaultIntegrationAuthType(selectedLocalApp);
       const isOAuth2 = authType === "oauth2";
       const isDeviceCode = authType === "oauth_device_code";
       const oauthCreds = isOAuth2 && !oauthClientResolved
@@ -1503,21 +1478,21 @@ export function Integrations() {
               Auth: {selectedLocalApp.auth.types.join(", ")} · {selectedLocalApp.tools.length} tools
             </div>
 
-            {defaultLocalAuthType(selectedLocalApp) === "oauth_device_code" && !deviceAuth && (
+            {defaultIntegrationAuthType(selectedLocalApp) === "oauth_device_code" && !deviceAuth && (
               <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted">
                 Click <b>Connect</b> to get a short sign-in code, then authorize
                 this connection with your OpenAI account.
               </div>
             )}
 
-            {defaultLocalAuthType(selectedLocalApp) === "oauth2" && oauthClientResolved && (
+            {defaultIntegrationAuthType(selectedLocalApp) === "oauth2" && oauthClientResolved && (
               <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted">
                 OAuth client already registered for this project. Click <b>Authorize</b>
                 to open {selectedLocalApp.name} in a popup.
               </div>
             )}
 
-            {defaultLocalAuthType(selectedLocalApp) === "oauth2" && !oauthClientResolved && (
+            {defaultIntegrationAuthType(selectedLocalApp) === "oauth2" && !oauthClientResolved && (
               <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted space-y-2">
                 <p>
                   <b>{selectedLocalApp.name} OAuth setup.</b> You need to register an OAuth
@@ -1572,7 +1547,7 @@ export function Integrations() {
                 </div>
               )}
 
-              {defaultLocalAuthType(selectedLocalApp) === "oauth2" && !oauthClientResolved && (
+              {defaultIntegrationAuthType(selectedLocalApp) === "oauth2" && !oauthClientResolved && (
                 <>
                   <div>
                     <label className="block text-text-muted text-sm mb-2">
@@ -1604,9 +1579,11 @@ export function Integrations() {
                 </>
               )}
 
-              {defaultLocalAuthType(selectedLocalApp) !== "oauth2" &&
-                defaultLocalAuthType(selectedLocalApp) !== "oauth_device_code" &&
-                selectedLocalApp.auth.credential_fields?.map((field) => (
+              {defaultIntegrationAuthType(selectedLocalApp) !== "oauth_device_code" &&
+                visibleCredentialFields(
+                  selectedLocalApp,
+                  defaultIntegrationAuthType(selectedLocalApp),
+                ).map((field) => (
                   <div key={field.name}>
                     <label className="block text-text-muted text-sm mb-2">{field.label}</label>
                     {field.description && (
@@ -1650,7 +1627,7 @@ export function Integrations() {
                   ? "Connecting..."
                   : deviceAuth
                   ? "Waiting for authorization..."
-                  : defaultLocalAuthType(selectedLocalApp) === "oauth2"
+                  : defaultIntegrationAuthType(selectedLocalApp) === "oauth2"
                     ? "Authorize"
                     : "Connect"}
               </button>

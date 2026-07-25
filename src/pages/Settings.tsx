@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { AppIcon } from "@apteva/ui-kit";
 import { auth, core, platformHelper, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, type Provider, type ProviderTypeInfo, type ProviderAuthStart, type ProviderAuthStatus, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser } from "../api";
 import { Modal } from "../components/Modal";
 import { ProviderUsageDetails, ProviderUsageSummary } from "../components/ProviderUsage";
@@ -4051,7 +4052,6 @@ function APIKeysTab() {
                 ) : (
                   scopeApps.map((app) => {
                     const selected = selectedAppScopes.has(app.install_id);
-                    const canRenderIcon = app.icon && /^(https?:|data:|\/)/.test(app.icon);
                     return (
                       <label
                         key={app.install_id}
@@ -4063,15 +4063,13 @@ function APIKeysTab() {
                           onChange={() => toggleAppScope(app.install_id)}
                           className="h-4 w-4 accent-accent"
                         />
-                        <div className="h-9 w-9 rounded bg-bg-card border border-border flex items-center justify-center overflow-hidden shrink-0">
-                          {canRenderIcon ? (
-                            <img src={app.icon} alt="" className="h-full w-full object-cover" />
-                          ) : (
-                            <span className="text-xs font-bold text-text-muted">
-                              {(app.display_name || app.name).slice(0, 2).toUpperCase()}
-                            </span>
-                          )}
-                        </div>
+                        <AppIcon
+                          src={app.icon}
+                          iconStyle={app.icon_style}
+                          name={app.display_name || app.name}
+                          size="md"
+                          className="text-accent"
+                        />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 min-w-0">
                             <span className="text-text text-sm font-bold truncate">{app.display_name || app.name}</span>

@@ -1,4 +1,8 @@
 import { type AppDetail } from "../../api";
+import {
+  defaultIntegrationAuthType,
+  visibleCredentialFields,
+} from "../../utils/integrationAuth";
 
 // CredentialFields — auth-type-aware input renderer for an
 // integration's credential form. Used by:
@@ -53,14 +57,9 @@ export function CredentialFields({
   setOAuthClientSecret,
   oauthClientResolved,
 }: CredentialFieldsProps) {
-  const types = detail.auth?.types || [];
-  const picked =
-    authType ||
-    (types.includes("oauth2") && shouldPreferOAuth2(detail)
-      ? "oauth2"
-      : types.find((t) => t !== "oauth2") || types[0] || "api_key");
+  const picked = authType || defaultIntegrationAuthType(detail) || "api_key";
   const isOAuth2 = picked === "oauth2";
-  const fields = detail.auth?.credential_fields || [];
+  const fields = visibleCredentialFields(detail, picked);
 
   if (!isOAuth2 && fields.length === 0) {
     return (
@@ -108,17 +107,17 @@ export function CredentialFields({
         </>
       )}
 
-      {/* Per-app credential fields (api keys, bearer tokens, basic
-          auth username+password, etc.). Driven by the catalog
-          definition so an app declaring three keys gets three rows. */}
-      {!isOAuth2 && fields.map((f) => (
+      {/* Per-app user-supplied credential fields. OAuth-generated fields are
+          retained in the encrypted connection after callback, never rendered. */}
+      {fields.map((f) => (
         <FieldRow key={f.name} label={f.label || f.name} description={f.description}>
           <input
-            type="password"
+            type={f.type === "text" ? "text" : "password"}
             value={credentials[f.name] || ""}
             onChange={(e) =>
               setCredentials({ ...credentials, [f.name]: (e.target as HTMLInputElement).value })
             }
+            required={f.required !== false}
             autoComplete="off"
             spellCheck={false}
             className="w-full bg-bg-input border border-border rounded-md px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-accent"
@@ -126,27 +125,6 @@ export function CredentialFields({
         </FieldRow>
       ))}
     </div>
-  );
-}
-
-function shouldPreferOAuth2(detail: AppDetail): boolean {
-  if (!detail.auth?.oauth2) return false;
-  const fields = detail.auth?.credential_fields || [];
-  if (fields.length === 0) return true;
-  const tokenFieldNames = new Set([
-    "token",
-    "accesstoken",
-    "access_token",
-    "refresh_token",
-    "refreshtoken",
-    "expires_in",
-    "expiresin",
-    "token_type",
-    "tokentype",
-    "scope",
-  ]);
-  return fields.every((field) =>
-    tokenFieldNames.has(String(field.name || "").toLowerCase())
   );
 }
 

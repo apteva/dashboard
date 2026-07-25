@@ -55,6 +55,7 @@ const result = await Bun.build({
     "react/jsx-dev-runtime",
     "react-dom",
     "react-dom/client",
+    "@apteva/ui-kit",
   ],
   // NODE_ENV=production so JSX compiles to `jsx()` from the prod
   // runtime (vendor/react-jsx-runtime.mjs exports Fragment / jsx /

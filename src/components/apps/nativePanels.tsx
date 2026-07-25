@@ -18,6 +18,7 @@
 
 import { Component, lazy, Suspense } from "react";
 import type { ComponentType, LazyExoticComponent, ReactNode } from "react";
+import { AppIdentityProvider, type AppIdentity } from "@apteva/ui-kit";
 
 export interface NativePanelProps {
   appName: string;
@@ -38,7 +39,11 @@ export function resolvePanelComponent(
   appName: string,
   entry: string,
   version?: string,
-  scope?: { installId?: number; projectId?: string },
+  scope?: {
+    installId?: number;
+    projectId?: string;
+    identity?: AppIdentity;
+  },
 ): ComponentType<NativePanelProps> | null {
   if (!entry) return null;
   if (!isModuleEntry(entry)) return null;
@@ -80,7 +85,9 @@ export function resolvePanelComponent(
   const Wrapped: ComponentType<NativePanelProps> = (props) => (
     <PanelErrorBoundary appName={appName} entry={entry}>
       <Suspense fallback={<div className="p-6 text-text-dim text-sm">Loading panel…</div>}>
-        <Lazy {...props} />
+        <AppIdentityProvider value={scope?.identity ?? null}>
+          <Lazy {...props} />
+        </AppIdentityProvider>
       </Suspense>
     </PanelErrorBoundary>
   );

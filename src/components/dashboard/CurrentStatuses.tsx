@@ -116,7 +116,7 @@ export function AgentCurrentStatus({
             <StatusMarker stale />
             <span className="truncate">No current status reported</span>
           </div>
-          {showNextFallback && <NextStepRow />}
+          {showNextFallback && <StatusNextStep />}
         </div>
       )}
     </div>
@@ -150,13 +150,13 @@ function StatusContent({
             <div className={`h-full ${tone.bar}`} style={{ width: `${Math.max(0, Math.min(100, status.progress))}%` }} />
           </div>
         )}
-        {(status.next || showNextFallback) && <NextStepRow next={status.next} nextAt={status.next_at} />}
+        {(status.next || showNextFallback) && <StatusNextStep next={status.next} nextAt={status.next_at} />}
       </div>
     </div>
   );
 }
 
-function NextStepRow({ next, nextAt }: { next?: string; nextAt?: string }) {
+export function StatusNextStep({ next, nextAt }: { next?: string; nextAt?: string }) {
   const label = next?.trim() || "No pending work";
   return (
     <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-4">

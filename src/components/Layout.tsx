@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { AppIcon } from "@apteva/ui-kit";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
 import { AccountMenu } from "./AccountMenu";
@@ -238,7 +239,12 @@ export function Layout() {
   // rows, so a freshly-installed app's sidebar entry appears the
   // instant the install flips to running. A 5s background poll is
   // there as a safety net for events we somehow miss.
-  const [appNav, setAppNav] = useState<{ to: string; label: string; icon?: string }[]>([]);
+  const [appNav, setAppNav] = useState<{
+    to: string;
+    label: string;
+    icon?: string;
+    iconStyle?: "image" | "monochrome";
+  }[]>([]);
   // Fetch epoch — every effect run bumps this and only the latest run
   // is allowed to write state. Without this, an in-flight unfiltered
   // fetch (currentProject not yet hydrated) can race with a later
@@ -259,7 +265,12 @@ export function Layout() {
       .list(currentProject.id)
       .then((rows) => {
         if (epoch !== fetchEpochRef.current) return; // stale response
-        const out: { to: string; label: string; icon?: string }[] = [];
+        const out: {
+          to: string;
+          label: string;
+          icon?: string;
+          iconStyle?: "image" | "monochrome";
+        }[] = [];
         const seen = new Set<string>();
         for (const r of rows) {
           if (r.status !== "running") continue;
@@ -276,6 +287,7 @@ export function Layout() {
               to,
               label: p.label || r.display_name || r.name,
               icon: r.icon,
+              iconStyle: r.icon_style,
             });
           }
         }
@@ -398,6 +410,7 @@ export function Layout() {
                   item={item}
                   navItems={navItems}
                   iconUrl={item.icon}
+                  iconStyle={item.iconStyle}
                   onNavigate={mobile ? () => setMobileNavOpen(false) : undefined}
                 />
               ))}
@@ -651,11 +664,13 @@ function SidebarLink({
   item,
   navItems,
   iconUrl,
+  iconStyle,
   onNavigate,
 }: {
   item: { to: string; label: string };
   navItems: { to: string; label: string }[];
   iconUrl?: string;
+  iconStyle?: "image" | "monochrome";
   onNavigate?: () => void;
 }) {
   const isPrefixOfAnother = navItems.some(
@@ -674,33 +689,18 @@ function SidebarLink({
         }`
       }
     >
-      {iconUrl !== undefined && <SidebarAppIcon url={iconUrl} name={item.label} />}
+      {iconUrl !== undefined && (
+        <AppIcon
+          src={iconUrl}
+          iconStyle={iconStyle}
+          name={item.label}
+          size="xs"
+          framed={false}
+          className="text-accent"
+        />
+      )}
       <span className="truncate">{item.label}</span>
     </NavLink>
-  );
-}
-
-// SidebarAppIcon — 16×16 thumbnail of the app's manifest icon, with
-// the same broken-image fallback Apps.tsx's AppIcon uses (single
-// uppercase letter on a muted square). Kept as its own component so
-// each entry has its own broken-state — a 404 on Storage's icon
-// shouldn't make every app render the letter fallback.
-function SidebarAppIcon({ url, name }: { url?: string; name: string }) {
-  const [broken, setBroken] = useState(false);
-  if (!url || broken) {
-    return (
-      <span className="w-4 h-4 rounded-sm bg-bg-input text-text-dim flex items-center justify-center text-[10px] flex-shrink-0">
-        {name.charAt(0).toUpperCase()}
-      </span>
-    );
-  }
-  return (
-    <img
-      src={url}
-      alt=""
-      className="w-4 h-4 rounded-sm flex-shrink-0"
-      onError={() => setBroken(true)}
-    />
   );
 }
 

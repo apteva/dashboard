@@ -912,6 +912,8 @@ export interface CredentialField {
   description?: string;
   required?: boolean;
   type?: string;
+  source?: "user" | "oauth";
+  hidden?: boolean;
 }
 
 export interface AppDetail extends AppSummary {
@@ -2525,6 +2527,7 @@ export interface MarketplaceEntry {
   repo: string;
   manifest_url: string;
   icon: string;
+  icon_style?: "image" | "monochrome";
   tags: string[];
   official: boolean;
   category: string;
@@ -2549,6 +2552,7 @@ export interface AppRow {
   available_version?: string;
   description: string;
   icon: string;
+  icon_style?: "image" | "monochrome";
   project_id: string;
   status: "pending" | "running" | "error" | "disabled";
   status_message?: string;  // live phase string while pending — "Cloning…", "Building…", etc.

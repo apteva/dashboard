@@ -1015,6 +1015,7 @@ function buildProjectActivityModel(
       subtitle: `${app.name} #${app.install_id}`,
       detail: app.description || "",
       iconUrl: app.icon || undefined,
+      iconStyle: app.icon_style,
       ...appSlot(index, Math.max(1, projectApps.length), agents.length > 0),
     });
   });

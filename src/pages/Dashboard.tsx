@@ -5,8 +5,9 @@ import { NewAgentButton } from "../components/NewAgentButton";
 import { ActivityFeed } from "../components/dashboard/ActivityFeed";
 import { AptevaInbox } from "../components/dashboard/AptevaInbox";
 import {
-  HomeLiveAgents,
+  HomeAgentOperations,
   HomeUsageSummary,
+  selectAgentOperations,
 } from "../components/dashboard/HomePanels";
 import { useCurrentStatuses } from "../components/dashboard/CurrentStatuses";
 import { usePageTitle } from "../hooks/usePageTitle";
@@ -43,7 +44,7 @@ export function Dashboard() {
     };
   }, [loadOverview]);
 
-  const activeCount = statuses.filter((row) => row.state !== "completed" && !row.stale).length;
+  const operationCount = selectAgentOperations(agents, statuses).length;
   const errorCount = stats.reduce((sum, row) => sum + row.errors, 0);
 
   return (
@@ -53,9 +54,9 @@ export function Dashboard() {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2.5">
               <h1 className="text-lg font-bold text-text">Home</h1>
-              {activeCount > 0 && (
+              {operationCount > 0 && (
                 <span className="rounded border border-green/25 bg-green/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-green">
-                  {activeCount} live
+                  {operationCount} in focus
                 </span>
               )}
               {errorCount > 0 && (
@@ -80,7 +81,7 @@ export function Dashboard() {
 
         <div className="grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2">
           <AptevaInbox limit={5} variant="home" />
-          <HomeLiveAgents agents={agents} statuses={statuses} />
+          <HomeAgentOperations agents={agents} statuses={statuses} />
         </div>
 
         <ActivityFeed agents={agents} />

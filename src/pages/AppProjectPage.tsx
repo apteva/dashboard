@@ -74,6 +74,12 @@ export function AppProjectPage() {
   const Native = resolvePanelComponent(app.name, panel.entry, app.version, {
     installId: app.install_id,
     projectId: currentProject?.id || "",
+    identity: {
+      name: app.name,
+      displayName: app.display_name || app.name,
+      iconUrl: app.icon,
+      iconStyle: app.icon_style,
+    },
   });
   if (Native) {
     return (

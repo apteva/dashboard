@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AppIcon } from "@apteva/ui-kit";
 import {
   BaseEdge,
   Background,
@@ -29,6 +30,7 @@ export interface SystemMapNode {
   subtitle?: string;
   detail?: string;
   iconUrl?: string;
+  iconStyle?: "image" | "monochrome";
   latest?: {
     kind: SystemMapNodeLatestKind;
     text: string;
@@ -427,7 +429,16 @@ function SystemThreadNode({ data }: NodeProps<FlowNode<MapNodeData>>) {
 
 function NodeIcon({ node }: { node: SystemMapNode }) {
   if (node.iconUrl) {
-    return <img src={node.iconUrl} alt="" className="h-5 w-5 rounded-sm object-contain" />;
+    return (
+      <AppIcon
+        src={node.iconUrl}
+        iconStyle={node.iconStyle}
+        name={node.label}
+        size="sm"
+        framed={false}
+        className="text-accent"
+      />
+    );
   }
   return <>{nodeIcon(node.kind)}</>;
 }

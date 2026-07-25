@@ -27,6 +27,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { AppIdentityProvider } from "@apteva/ui-kit";
 import { chat, type ChatComponent, type ChatMessageRow } from "../../api";
 import { Modal } from "../Modal";
 
@@ -54,6 +55,7 @@ export interface InstalledAppRow {
   display_name?: string;
   version: string;
   icon?: string;
+  icon_style?: "image" | "monochrome";
   source?: string;
   surfaces?: {
     mcp_tool_names?: string[];
@@ -194,11 +196,20 @@ export function ChatComponentMount({
   return (
     <ComponentBoundary appName={app.name} componentName={comp.name}>
       <Suspense fallback={<ComponentSkeleton />}>
-        <Lazy
-          {...(comp.props ?? {})}
-          projectId={projectId}
-          installId={app.install_id}
-        />
+        <AppIdentityProvider
+          value={{
+            name: app.name,
+            displayName: app.display_name || app.name,
+            iconUrl: app.icon,
+            iconStyle: app.icon_style,
+          }}
+        >
+          <Lazy
+            {...(comp.props ?? {})}
+            projectId={projectId}
+            installId={app.install_id}
+          />
+        </AppIdentityProvider>
       </Suspense>
     </ComponentBoundary>
   );
@@ -588,6 +599,7 @@ export function useInstalledApps(projectId: string | null | undefined): Installe
             display_name: String(r.display_name ?? r.name ?? ""),
             version: String(r.version ?? ""),
             icon: typeof r.icon === "string" ? r.icon : undefined,
+            icon_style: r.icon_style === "monochrome" ? "monochrome" : "image",
             source: typeof r.source === "string" ? r.source : undefined,
             surfaces: r.surfaces && typeof r.surfaces === "object"
               ? {

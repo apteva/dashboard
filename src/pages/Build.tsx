@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { AppIcon } from "@apteva/ui-kit";
 import {
   apps,
   chat,
@@ -41,6 +42,7 @@ interface WorkspaceItem {
   status: string;
   href: string;
   icon?: string;
+  iconStyle?: "image" | "monochrome";
 }
 
 const EMPTY_HELPER_MESSAGE =
@@ -735,12 +737,19 @@ function PanelEmpty({ children }: { children: ReactNode }) {
 }
 
 function WorkspaceIcon({ item }: { item: WorkspaceItem }) {
-  const [broken, setBroken] = useState(false);
-  if (item.kind === "app" && item.icon && !broken) {
-    return <img src={item.icon} alt="" onError={() => setBroken(true)} className="h-7 w-7 shrink-0 rounded-md bg-bg-input object-contain p-1" />;
+  if (item.kind === "app") {
+    return (
+      <AppIcon
+        src={item.icon}
+        iconStyle={item.iconStyle}
+        name={item.name}
+        size="sm"
+        className="text-accent"
+      />
+    );
   }
-  const label = item.kind === "agent" ? "A" : item.kind === "app" ? "◆" : "S";
-  const tone = item.kind === "agent" ? "bg-accent/10 text-accent" : item.kind === "app" ? "bg-green/10 text-green" : "bg-info/10 text-info";
+  const label = item.kind === "agent" ? "A" : "S";
+  const tone = item.kind === "agent" ? "bg-accent/10 text-accent" : "bg-info/10 text-info";
   return <span className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[10px] font-bold ${tone}`}>{label}</span>;
 }
 
@@ -762,6 +771,7 @@ function buildWorkspaceItems(agentRows: Agent[], appRows: AppRow[], skillRows: S
       status: app.status,
       href: "/apps",
       icon: app.icon,
+      iconStyle: app.icon_style,
     })),
     ...skillRows.map((skill): WorkspaceItem => ({
       id: `skill-${skill.id}`,
