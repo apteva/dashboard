@@ -2163,22 +2163,19 @@ function CapabilitiesManager({
   );
   const attachedKeys = useMemo(() => attachedCapabilityKeys(attached), [attached]);
 
-  const writeAttached = async (next: MCPServerConfig[]) => {
-    await core.setMCPServers(instanceId, next);
-    onAttachedChange(next);
+  const refreshAttached = async () => {
+    const config = await core.config(instanceId);
+    onAttachedChange(config.mcp_servers || []);
   };
 
-  const attachInventory = async (row: MCPServer, aliases?: string[]) => {
+  const attachInventory = async (row: MCPServer, _aliases?: string[]) => {
     const entry = configFromInventory(row);
     if (!entry) return;
     setBusyKey(`mcp:${mcpName(row)}`);
     setError(null);
     try {
-      const next = [
-        ...removeAttachedByAliases(attached, [...(aliases || mcpCapabilityAliases(row)), entry.name]),
-        entry,
-      ];
-      await writeAttached(next);
+      await core.mutateMCPServers(instanceId, [row.id], "add");
+      await refreshAttached();
     } catch (err: any) {
       setError(err?.message || "Failed to enable capability");
     } finally {
@@ -2186,11 +2183,12 @@ function CapabilitiesManager({
     }
   };
 
-  const detachName = async (name: string, aliases?: string[]) => {
+  const detachInventory = async (row: MCPServer, name: string) => {
     setBusyKey(`mcp:${name}`);
     setError(null);
     try {
-      await writeAttached(removeAttachedByAliases(attached, aliases ? [...aliases, name] : [name]));
+      await core.mutateMCPServers(instanceId, [row.id], "remove");
+      await refreshAttached();
     } catch (err: any) {
       setError(err?.message || "Failed to disable capability");
     } finally {
@@ -2303,7 +2301,7 @@ function CapabilitiesManager({
               enabled={enabled}
               disabled={!row}
               busy={busyKey === `mcp:${name}`}
-              onToggle={() => row && (enabled ? detachName(name, aliases) : attachInventory(row, aliases))}
+              onToggle={() => row && (enabled ? detachInventory(row, name) : attachInventory(row, aliases))}
             />
           );
         })}
@@ -2318,7 +2316,7 @@ function CapabilitiesManager({
               meta={`${row.tool_count || 0} tools`}
               enabled={enabled}
               busy={busyKey === `mcp:${name}`}
-              onToggle={() => enabled ? detachName(name) : attachInventory(row)}
+              onToggle={() => enabled ? detachInventory(row, name) : attachInventory(row)}
             />
           );
         })}
@@ -2344,7 +2342,7 @@ function CapabilitiesManager({
               enabled={enabled}
               disabled={!configFromInventory(row)}
               busy={busyKey === `mcp:${name}`}
-              onToggle={() => enabled ? detachName(name, aliases) : attachInventory(row, aliases)}
+              onToggle={() => enabled ? detachInventory(row, name) : attachInventory(row, aliases)}
             />
           );
         })}
@@ -2370,7 +2368,7 @@ function CapabilitiesManager({
               enabled={enabled}
               disabled={!configFromInventory(row)}
               busy={busyKey === `mcp:${name}`}
-              onToggle={() => enabled ? detachName(name, aliases) : attachInventory(row, aliases)}
+              onToggle={() => enabled ? detachInventory(row, name) : attachInventory(row, aliases)}
             />
           );
         })}
@@ -2932,11 +2930,9 @@ function CapabilityShelf({
     if (!entry) return;
     setBusyName(entry.name);
     try {
-      const next = enabled
-        ? removeAttachedByAliases(mcpServers, aliases ? [...aliases, entry.name] : [entry.name])
-        : [...removeAttachedByAliases(mcpServers, [...(aliases || mcpCapabilityAliases(row)), entry.name]), entry];
-      await core.setMCPServers(instanceId, next);
-      onAttachedChange(next);
+      await core.mutateMCPServers(instanceId, [row.id], enabled ? "remove" : "add");
+      const config = await core.config(instanceId);
+      onAttachedChange(config.mcp_servers || []);
     } finally {
       setBusyName(null);
     }

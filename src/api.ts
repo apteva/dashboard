@@ -2046,6 +2046,17 @@ export const core = {
     request<{ status: string }>("PUT", `/agents/${instanceId}/config`, {
       mcp_servers: servers,
     }),
+  // Atomically mutate registered MCP attachments. Prefer this for UI/tool
+  // toggles so callers never race by replacing a stale full config snapshot.
+  mutateMCPServers: (
+    instanceId: number,
+    mcpServerIds: number[],
+    action: "add" | "remove" | "set",
+  ) =>
+    request<any>("POST", `/agents/${instanceId}/mcp-servers`, {
+      action,
+      mcp_server_ids: mcpServerIds,
+    }),
   // Flip the include_channels flag on an instance. Use this to re-enable
   // channels when they were previously detached. Takes effect on the
   // next start of the instance — the response's restart_required field
@@ -2306,6 +2317,27 @@ export interface AppManifest {
   subscribes?: string[];
 }
 
+/**
+ * Installed app identity assets are served by the currently mounted sidecar.
+ * During an install/upgrade the manifest version can be visible just before
+ * that sidecar swap completes, so the browser may briefly cache the previous
+ * icon under the new versioned URL. Give pending and running mounts distinct
+ * URLs; the final status transition then reloads the canonical asset without
+ * requiring a page refresh.
+ */
+export function appIconRuntimeURL(
+  icon: string,
+  version: string,
+  status: string,
+): string {
+  if (!icon.startsWith("/api/apps/")) return icon;
+  const hashIndex = icon.indexOf("#");
+  const base = hashIndex >= 0 ? icon.slice(0, hashIndex) : icon;
+  const hash = hashIndex >= 0 ? icon.slice(hashIndex) : "";
+  const separator = base.includes("?") ? "&" : "?";
+  return `${base}${separator}runtime=${encodeURIComponent(`${version}:${status}`)}${hash}`;
+}
+
 export const apps = {
   manifest: () => request<AppManifest[]>("GET", "/apps/manifest"),
 
@@ -2313,7 +2345,12 @@ export const apps = {
 
   list: (projectId?: string) => {
     const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
-    return request<AppRow[]>("GET", `/apps${q}`);
+    return request<AppRow[]>("GET", `/apps${q}`).then((rows) =>
+      rows.map((row) => ({
+        ...row,
+        icon: appIconRuntimeURL(row.icon, row.version, row.status),
+      })),
+    );
   },
 
   preview: (manifestUrl?: string, manifestYaml?: string) =>

@@ -52,12 +52,11 @@ export function MCPPanel({ instanceId, running }: Props) {
   }, [instanceId, running]);
 
   useEffect(() => {
-    if (!picker) return;
     mcpServers
       .list(currentProject?.id)
       .then((rows) => setInventory(rows || []))
       .catch(() => setInventory([]));
-  }, [picker, currentProject?.id]);
+  }, [instanceId, currentProject?.id]);
 
   // Render the panel for stopped instances too — add/remove still
   // works because the server persists to config.json and the agent
@@ -71,13 +70,11 @@ export function MCPPanel({ instanceId, running }: Props) {
     (s) => !!s.proxy_config && !attachedNames.has(s.proxy_config.name),
   );
 
-  const writeList = async (next: MCPServerConfig[]) => {
+  const mutate = async (row: MCPServer, action: "add" | "remove") => {
     setBusy(true);
     setError("");
     try {
-      // include_system=true: the server honors our full list including
-      // system entries. An absent system entry will be disconnected.
-      await core.setMCPServers(instanceId, next, true);
+      await core.mutateMCPServers(instanceId, [row.id], action);
       load();
     } catch (err: any) {
       setError(err?.message || "Failed to update MCP servers");
@@ -88,18 +85,16 @@ export function MCPPanel({ instanceId, running }: Props) {
 
   const handleAttach = async (row: MCPServer) => {
     if (!row.proxy_config) return;
-    const entry: MCPServerConfig = {
-      name: row.proxy_config.name,
-      transport: row.proxy_config.transport,
-      url: row.proxy_config.url,
-      command: row.proxy_config.command,
-      args: row.proxy_config.args,
-    };
-    await writeList([...attached, entry]);
+    await mutate(row, "add");
   };
 
   const handleDetach = async (name: string) => {
-    await writeList(attached.filter((s) => s.name !== name));
+    const row = inventory.find((candidate) => candidate.proxy_config?.name === name);
+    if (!row) {
+      setError(`The inventory entry for ${name} is no longer available`);
+      return;
+    }
+    await mutate(row, "remove");
   };
 
   return (
@@ -118,20 +113,6 @@ export function MCPPanel({ instanceId, running }: Props) {
       </div>
 
       {error && <div className="text-red text-[10px] mb-2">{error}</div>}
-      {restartNotice && (
-        <div className="flex items-start gap-1.5 text-[10px] mb-2 text-warn bg-warn/10 border border-warn/30 rounded px-2 py-1.5">
-          <span className="shrink-0">⚠</span>
-          <span className="flex-1">{restartNotice}</span>
-          <button
-            onClick={() => setRestartNotice(null)}
-            className="shrink-0 text-text-muted hover:text-text"
-            title="Dismiss"
-          >
-            ×
-          </button>
-        </div>
-      )}
-
       {visibleAttached.length === 0 ? (
         <div className="text-text-dim text-[10px]">
           None attached. Click + add to wire one from this project's inventory.
