@@ -72,6 +72,7 @@ export interface StreamFrame {
   thread_id: string;
   call_id: string;
   text: string;
+  phase?: "acknowledgement" | "progress" | "final";
   done?: boolean;
   created_at?: string;
 }

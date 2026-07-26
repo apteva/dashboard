@@ -26,6 +26,76 @@ import { AppDiscoverySelect } from "../components/apps/AppDiscoverySelect";
 type Tab = "installed" | "marketplace";
 const MARKETPLACE_PAGE_SIZE = 24;
 
+export function appHasUpdate(app: AppRow): boolean {
+  return (
+    app.status !== "pending"
+    && !app.deprecated
+    && !!app.available_version
+    && !!app.version
+    && app.available_version !== app.version
+  );
+}
+
+export function projectAppsWithUpdates(
+  rows: AppRow[],
+  projectId?: string,
+): AppRow[] {
+  if (!projectId) return [];
+  return rows.filter((app) => app.project_id === projectId && appHasUpdate(app));
+}
+
+type AppUpgradeRunner = (
+  installId: number,
+  opts?: { approveNewPermissions?: boolean },
+) => Promise<unknown>;
+
+export type AppBatchUpgradeResult = {
+  updated: AppRow[];
+  permissions: Array<{ app: AppRow; prompt: UpgradePermissionPrompt }>;
+  failed: Array<{ app: AppRow; message: string }>;
+};
+
+export async function upgradeAppsSequentially(
+  targets: AppRow[],
+  upgrade: AppUpgradeRunner,
+  options?: {
+    approveNewPermissions?: boolean;
+    onProgress?: (app: AppRow, completed: number, total: number) => void;
+  },
+): Promise<AppBatchUpgradeResult> {
+  const result: AppBatchUpgradeResult = {
+    updated: [],
+    permissions: [],
+    failed: [],
+  };
+
+  for (let index = 0; index < targets.length; index += 1) {
+    const app = targets[index];
+    options?.onProgress?.(app, index, targets.length);
+    try {
+      await upgrade(app.install_id, {
+        approveNewPermissions: options?.approveNewPermissions,
+      });
+      result.updated.push(app);
+    } catch (error: any) {
+      const prompt = options?.approveNewPermissions
+        ? null
+        : upgradePermissionPromptFromError(error);
+      if (prompt) {
+        result.permissions.push({ app, prompt });
+      } else {
+        result.failed.push({
+          app,
+          message: error?.message || "Update failed",
+        });
+      }
+    }
+    options?.onProgress?.(app, index + 1, targets.length);
+  }
+
+  return result;
+}
+
 // AppIcon — renders the manifest icon, falls back to a single-letter
 // avatar when the URL is missing or 404s. Both the marketplace card
 // and the installed-app card share this so we don't end up with the
@@ -73,13 +143,21 @@ export function Apps() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [installModal, setInstallModal] = useState<{ manifestUrl?: string } | null>(null);
+  const [updateAllOpen, setUpdateAllOpen] = useState(false);
+  const [updateAllStage, setUpdateAllStage] = useState<"confirm" | "queueing" | "permissions" | "done">("confirm");
+  const [updateAllTargets, setUpdateAllTargets] = useState<AppRow[]>([]);
+  const [updateAllCurrent, setUpdateAllCurrent] = useState("");
+  const [updateAllCompleted, setUpdateAllCompleted] = useState(0);
+  const [updateAllUpdated, setUpdateAllUpdated] = useState<AppRow[]>([]);
+  const [updateAllPermissions, setUpdateAllPermissions] = useState<AppBatchUpgradeResult["permissions"]>([]);
+  const [updateAllFailures, setUpdateAllFailures] = useState<AppBatchUpgradeResult["failed"]>([]);
   // Side-panel state — single component, two contexts (a marketplace
   // entry vs. an installed app row). Only one is non-null at a time.
   const [detailEntry, setDetailEntry] = useState<MarketplaceEntry | null>(null);
   const [detailInstall, setDetailInstall] = useState<AppRow | null>(null);
 
-  const refreshInstalled = () => {
-    setLoading(true);
+  const refreshInstalled = (showLoading = true) => {
+    if (showLoading) setLoading(true);
     apps
       .list(currentProject?.id)
       .then((rows) => {
@@ -98,7 +176,9 @@ export function Apps() {
         });
       })
       .catch((e) => setError(e.message || "failed"))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (showLoading) setLoading(false);
+      });
   };
 
   const refreshMarketplace = () => {
@@ -220,6 +300,67 @@ export function Apps() {
     () => filterInstalledApps(rows, installedSearch),
     [rows, installedSearch],
   );
+  const projectUpdates = useMemo(
+    () => projectAppsWithUpdates(rows, currentProject?.id),
+    [rows, currentProject?.id],
+  );
+
+  const openUpdateAll = () => {
+    if (projectUpdates.length === 0) return;
+    setUpdateAllTargets(projectUpdates);
+    setUpdateAllStage("confirm");
+    setUpdateAllCurrent("");
+    setUpdateAllCompleted(0);
+    setUpdateAllUpdated([]);
+    setUpdateAllPermissions([]);
+    setUpdateAllFailures([]);
+    setUpdateAllOpen(true);
+  };
+
+  const runUpdateAll = async () => {
+    if (updateAllTargets.length === 0) return;
+    setUpdateAllStage("queueing");
+    setUpdateAllCompleted(0);
+    const result = await upgradeAppsSequentially(
+      updateAllTargets,
+      apps.upgrade,
+      {
+        onProgress: (app, completed) => {
+          setUpdateAllCurrent(app.display_name);
+          setUpdateAllCompleted(completed);
+        },
+      },
+    );
+    setUpdateAllUpdated(result.updated);
+    setUpdateAllPermissions(result.permissions);
+    setUpdateAllFailures(result.failed);
+    setUpdateAllStage(result.permissions.length > 0 ? "permissions" : "done");
+    refreshInstalled(false);
+  };
+
+  const approveUpdateAllPermissions = async () => {
+    const approvalTargets = updateAllPermissions.map(({ app }) => app);
+    if (approvalTargets.length === 0) return;
+    setUpdateAllTargets(approvalTargets);
+    setUpdateAllStage("queueing");
+    setUpdateAllCompleted(0);
+    const result = await upgradeAppsSequentially(
+      approvalTargets,
+      apps.upgrade,
+      {
+        approveNewPermissions: true,
+        onProgress: (app, completed) => {
+          setUpdateAllCurrent(app.display_name);
+          setUpdateAllCompleted(completed);
+        },
+      },
+    );
+    setUpdateAllUpdated((current) => [...current, ...result.updated]);
+    setUpdateAllFailures((current) => [...current, ...result.failed]);
+    setUpdateAllPermissions([]);
+    setUpdateAllStage("done");
+    refreshInstalled(false);
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -306,6 +447,21 @@ export function Apps() {
               <span className="px-1 text-[11px] tabular-nums text-text-dim sm:ml-auto sm:shrink-0">
                 {installedSearch.trim() ? `${filteredInstalled.length} of ${rows.length}` : `${rows.length}`} installed
               </span>
+              <button
+                type="button"
+                onClick={openUpdateAll}
+                disabled={projectUpdates.length === 0}
+                className="min-h-10 shrink-0 rounded border border-yellow/60 px-3 py-1.5 text-xs font-medium leading-5 text-yellow transition-colors hover:bg-yellow/10 disabled:border-border disabled:text-text-dim disabled:opacity-70 sm:min-h-0 sm:px-2.5 sm:py-1 sm:text-[11px]"
+                title={
+                  projectUpdates.length > 0
+                    ? `Update ${projectUpdates.length} app${projectUpdates.length === 1 ? "" : "s"} installed in ${currentProject?.name || "this project"}`
+                    : "All project apps are up to date"
+                }
+              >
+                {projectUpdates.length > 0
+                  ? `Update all (${projectUpdates.length})`
+                  : "All up to date"}
+              </button>
             </div>
 
             {filteredInstalled.length === 0 ? (
@@ -376,6 +532,24 @@ export function Apps() {
           setTab("installed");
           refreshInstalled();
         }}
+      />
+
+      <UpdateAllAppsModal
+        open={updateAllOpen}
+        projectName={currentProject?.name || "this project"}
+        stage={updateAllStage}
+        targets={updateAllTargets}
+        currentApp={updateAllCurrent}
+        completed={updateAllCompleted}
+        updated={updateAllUpdated}
+        permissions={updateAllPermissions}
+        failures={updateAllFailures}
+        onClose={() => {
+          if (updateAllStage !== "queueing") setUpdateAllOpen(false);
+        }}
+        onStart={() => void runUpdateAll()}
+        onApprovePermissions={() => void approveUpdateAllPermissions()}
+        onSkipPermissions={() => setUpdateAllStage("done")}
       />
 
       <AppDetailPanel
@@ -779,6 +953,214 @@ function UpgradePermissionModal({
   );
 }
 
+function UpdateAllAppsModal({
+  open,
+  projectName,
+  stage,
+  targets,
+  currentApp,
+  completed,
+  updated,
+  permissions,
+  failures,
+  onClose,
+  onStart,
+  onApprovePermissions,
+  onSkipPermissions,
+}: {
+  open: boolean;
+  projectName: string;
+  stage: "confirm" | "queueing" | "permissions" | "done";
+  targets: AppRow[];
+  currentApp: string;
+  completed: number;
+  updated: AppRow[];
+  permissions: AppBatchUpgradeResult["permissions"];
+  failures: AppBatchUpgradeResult["failed"];
+  onClose: () => void;
+  onStart: () => void;
+  onApprovePermissions: () => void;
+  onSkipPermissions: () => void;
+}) {
+  const progress = targets.length === 0
+    ? 0
+    : Math.min(100, Math.round((completed / targets.length) * 100));
+
+  return (
+    <Modal
+      open={open}
+      onClose={stage === "queueing" ? () => {} : onClose}
+      width="max-w-xl"
+      ariaLabel="Update all project apps"
+    >
+      <div className="border-b border-border px-4 py-3 sm:px-5">
+        <div className="text-sm font-semibold text-text">
+          {stage === "confirm" && `Update ${targets.length} project app${targets.length === 1 ? "" : "s"}`}
+          {stage === "queueing" && "Scheduling app updates"}
+          {stage === "permissions" && "Review new permissions"}
+          {stage === "done" && "Project app updates scheduled"}
+        </div>
+        <div className="mt-1 text-xs text-text-muted">
+          {projectName}
+        </div>
+      </div>
+
+      {stage === "confirm" && (
+        <>
+          <div className="max-h-[min(52vh,380px)] overflow-y-auto p-4 sm:p-5">
+            <p className="text-xs leading-relaxed text-text-muted">
+              This updates only apps installed directly in this project. Shared global apps are not changed.
+              Source apps may restart and will build one at a time.
+            </p>
+            <div className="mt-4 divide-y divide-border overflow-hidden rounded-lg border border-border">
+              {targets.map((app) => (
+                <div key={app.install_id} className="flex items-center gap-3 bg-bg px-3 py-2.5">
+                  <AppIcon url={app.icon} name={app.display_name} iconStyle={app.icon_style} />
+                  <span className="min-w-0 flex-1 truncate text-sm text-text">{app.display_name}</span>
+                  <span className="shrink-0 text-[11px] tabular-nums text-text-dim">
+                    v{app.version} <span className="text-yellow">→ v{app.available_version}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 border-t border-border p-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="min-h-10 rounded border border-border px-3 py-1.5 text-xs leading-5 text-text-muted hover:text-text sm:min-h-0 sm:px-2.5 sm:py-1 sm:text-[11px]"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={onStart}
+              className="min-h-10 rounded border border-yellow bg-yellow/10 px-3 py-1.5 text-xs font-semibold leading-5 text-yellow hover:bg-yellow/15 sm:min-h-0 sm:px-2.5 sm:py-1 sm:text-[11px]"
+            >
+              Update all
+            </button>
+          </div>
+        </>
+      )}
+
+      {stage === "queueing" && (
+        <div className="p-5">
+          <div className="flex items-center justify-between gap-3 text-xs">
+            <span className="min-w-0 truncate text-text">
+              {currentApp ? `Scheduling ${currentApp}` : "Preparing updates…"}
+            </span>
+            <span className="shrink-0 tabular-nums text-text-dim">
+              {completed} / {targets.length}
+            </span>
+          </div>
+          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-border">
+            <div
+              className="h-full rounded-full bg-yellow transition-[width] duration-200"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <p className="mt-3 text-[11px] text-text-dim">
+            Keep this dialog open while Apteva checks each installed app.
+          </p>
+        </div>
+      )}
+
+      {stage === "permissions" && (
+        <>
+          <div className="max-h-[min(56vh,420px)] overflow-y-auto p-4 sm:p-5">
+            <p className="text-xs leading-relaxed text-text-muted">
+              {permissions.length} app{permissions.length === 1 ? "" : "s"} request additional platform access.
+              Review the exact permissions before continuing; the other updates have already been scheduled.
+            </p>
+            <div className="mt-4 space-y-2">
+              {permissions.map(({ app, prompt }) => (
+                <div key={app.install_id} className="rounded-lg border border-yellow/40 bg-yellow/5 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-text">{app.display_name}</span>
+                    {prompt.version && (
+                      <span className="shrink-0 text-[11px] text-yellow">v{prompt.version}</span>
+                    )}
+                  </div>
+                  <ul className="mt-2 space-y-1">
+                    {prompt.missingPermissions.map((permission) => (
+                      <li key={permission} className="flex items-start gap-2 text-[11px] text-text-muted">
+                        <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-yellow" />
+                        <span className="break-all font-mono">{permission}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-col-reverse gap-2 border-t border-border p-4 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={onSkipPermissions}
+              className="min-h-10 rounded border border-border px-3 py-1.5 text-xs leading-5 text-text-muted hover:text-text sm:min-h-0 sm:px-2.5 sm:py-1 sm:text-[11px]"
+            >
+              Skip these apps
+            </button>
+            <button
+              type="button"
+              onClick={onApprovePermissions}
+              className="min-h-10 rounded border border-yellow bg-yellow/10 px-3 py-1.5 text-xs font-semibold leading-5 text-yellow hover:bg-yellow/15 sm:min-h-0 sm:px-2.5 sm:py-1 sm:text-[11px]"
+            >
+              Approve and update {permissions.length}
+            </button>
+          </div>
+        </>
+      )}
+
+      {stage === "done" && (
+        <>
+          <div className="space-y-4 p-4 sm:p-5">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-lg border border-green/30 bg-green/5 p-3">
+                <div className="text-lg font-semibold tabular-nums text-green">{updated.length}</div>
+                <div className="mt-0.5 text-[11px] text-text-muted">scheduled</div>
+              </div>
+              <div className={`rounded-lg border p-3 ${failures.length > 0 ? "border-red/30 bg-red/5" : "border-border bg-bg"}`}>
+                <div className={`text-lg font-semibold tabular-nums ${failures.length > 0 ? "text-red" : "text-text-dim"}`}>
+                  {failures.length}
+                </div>
+                <div className="mt-0.5 text-[11px] text-text-muted">failed</div>
+              </div>
+            </div>
+            {permissions.length > 0 && (
+              <p className="rounded-lg border border-yellow/30 bg-yellow/5 px-3 py-2 text-xs text-yellow">
+                {permissions.length} app{permissions.length === 1 ? " was" : "s were"} skipped because new permissions were not approved.
+              </p>
+            )}
+            {failures.length > 0 && (
+              <div className="max-h-40 space-y-1.5 overflow-y-auto">
+                {failures.map(({ app, message }) => (
+                  <div key={app.install_id} className="rounded border border-red/30 bg-red/5 px-3 py-2">
+                    <div className="text-xs font-medium text-text">{app.display_name}</div>
+                    <div className="mt-0.5 text-[11px] text-red">{message}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-[11px] leading-relaxed text-text-dim">
+              Source app builds continue in the background. Their rows will show queued, building, and running states.
+            </p>
+          </div>
+          <div className="flex justify-end border-t border-border p-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="min-h-10 rounded bg-accent px-4 py-1.5 text-xs font-semibold leading-5 text-bg hover:opacity-90 sm:min-h-0 sm:px-3 sm:py-1 sm:text-[11px]"
+            >
+              Done
+            </button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 // AppListRow — compact horizontal row for the Installed tab.
 // Different mental model from MarketplaceCard: operators are doing
 // inventory + lifecycle management here, not browsing. So we lead
@@ -853,8 +1235,7 @@ function AppListRow({
     }
   };
 
-  const updateAvailable =
-    !app.deprecated && !!app.available_version && !!app.version && app.available_version !== app.version;
+  const updateAvailable = appHasUpdate(app);
 
   // Status dot — green/amber/red/grey. The dot is the row's first
   // visual element so operators eye-scan a column of running/down
@@ -1135,8 +1516,7 @@ function AppCard({
     }
   };
 
-  const updateAvailable =
-    !app.deprecated && !!app.available_version && !!app.version && app.available_version !== app.version;
+  const updateAvailable = appHasUpdate(app);
 
   const statusColor =
     app.status === "running"

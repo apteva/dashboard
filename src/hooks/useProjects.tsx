@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useState, useEffect, type ReactNode } from "react";
 import { projects as projectsAPI, type Project } from "../api";
 
 interface ProjectContextValue {
@@ -17,7 +17,44 @@ const ProjectContext = createContext<ProjectContextValue>({
 
 const PROJECT_KEY = "apteva_project_id";
 
-// resolveInitialProjectID picks which project this tab should show.
+type ProjectStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+// resolveProjectIDForTab picks which project this tab should show and, crucially,
+// claims that choice in sessionStorage before returning it.
+//
+// Claiming matters when the tab had no session-scoped choice yet. Previously we
+// read the shared localStorage default and rendered it without copying it into
+// sessionStorage. If another tab then changed the shared default, refreshing the
+// first tab silently moved it to the other tab's project.
+export function resolveProjectIDForTab(
+  projectIDs: readonly string[],
+  tabStorage: ProjectStorage,
+  sharedStorage: ProjectStorage,
+): string | null {
+  const available = new Set(projectIDs);
+  const tabID = tabStorage.getItem(PROJECT_KEY);
+  if (tabID && available.has(tabID)) return tabID;
+
+  const sharedID = sharedStorage.getItem(PROJECT_KEY);
+  const resolved = sharedID && available.has(sharedID)
+    ? sharedID
+    : projectIDs[0] ?? null;
+
+  if (!resolved) {
+    tabStorage.removeItem(PROJECT_KEY);
+    return null;
+  }
+
+  // Turn the shared/new-tab default into an independent selection for this tab.
+  tabStorage.setItem(PROJECT_KEY, resolved);
+
+  // Repair an empty or stale shared default so subsequently opened tabs start
+  // from a real project.
+  if (sharedID !== resolved) sharedStorage.setItem(PROJECT_KEY, resolved);
+  return resolved;
+}
+
+// Project selection priority:
 // Tab-independence priority:
 //   1. sessionStorage — what THIS tab last had selected (survives in-tab
 //      refreshes; never shared with other tabs).
@@ -27,40 +64,24 @@ const PROJECT_KEY = "apteva_project_id";
 //   3. projects[0] — fallback when both stores are empty (first-ever
 //      load or freshly-cleared storage).
 //
-// Net behaviour: opening a fresh tab inherits the last project you
-// switched to; switching projects in tab A does NOT yank tab B onto
-// the new project. Each open tab is its own project context.
-function resolveInitialProjectID(): string | null {
-  if (typeof window === "undefined") return null;
-  return (
-    window.sessionStorage.getItem(PROJECT_KEY) ||
-    window.localStorage.getItem(PROJECT_KEY) ||
-    null
-  );
-}
-
 export function ProjectProvider({ children }: { children: ReactNode }) {
   const [projectList, setProjectList] = useState<Project[]>([]);
   const [current, setCurrent] = useState<Project | null>(null);
 
-  const load = () => {
+  const load = useCallback(() => {
     projectsAPI.list().then((list) => {
-      setProjectList(list || []);
-      const savedId = resolveInitialProjectID();
-      if (savedId && list?.find((p) => p.id === savedId)) {
-        setCurrent(list.find((p) => p.id === savedId) || null);
-      } else if (!current && list?.length > 0) {
-        // Fresh user with no saved selection — seed both stores from
-        // the first project so subsequent reads see a consistent
-        // default and the next tab opens on it too.
-        setCurrent(list[0]);
-        window.sessionStorage.setItem(PROJECT_KEY, list[0].id);
-        window.localStorage.setItem(PROJECT_KEY, list[0].id);
-      }
+      const nextList = list || [];
+      setProjectList(nextList);
+      const selectedID = resolveProjectIDForTab(
+        nextList.map((project) => project.id),
+        window.sessionStorage,
+        window.localStorage,
+      );
+      setCurrent(nextList.find((project) => project.id === selectedID) || null);
     }).catch(() => {});
-  };
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
 
   // setCurrentProject writes both stores intentionally:
   //   - sessionStorage so a refresh of THIS tab returns to the same

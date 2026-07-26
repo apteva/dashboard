@@ -525,6 +525,11 @@ select {
   50% { transform: scale(1); opacity: 1; filter: brightness(1.12); }
 }
 
+@keyframes chat-tool-copy-breathe {
+  0%, 100% { color: var(--text-muted); opacity: 0.78; }
+  50% { color: var(--chat-tool-running); opacity: 1; }
+}
+
 .chat-tool-running-text {
   color: var(--chat-tool-running);
 }
@@ -535,6 +540,11 @@ select {
 
 .chat-tool-copy {
   color: var(--text-muted);
+}
+
+.chat-tool-copy-running {
+  animation: chat-tool-copy-breathe 1.9s ease-in-out infinite;
+  will-change: color, opacity;
 }
 
 .chat-tool-icon-running {
@@ -566,6 +576,12 @@ select {
 @media (prefers-reduced-motion: reduce) {
   .chat-tool-icon-running {
     animation: none;
+    opacity: 1;
+  }
+
+  .chat-tool-copy-running {
+    animation: none;
+    color: var(--chat-tool-running);
     opacity: 1;
   }
 

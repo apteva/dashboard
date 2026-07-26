@@ -163,6 +163,7 @@
       "toolPreparing": "Preparando",
       "toolRunning": "En curso",
       "toolDone": "Hecho",
+      "toolContinuing": "Continuando…",
       "toolReasonPreparing": "Preparando una acción…",
       "toolReasonRunning": "Trabajando…",
       "toolReasonDone": "Acción completada",
@@ -177,6 +178,7 @@
       "today": "Hoy",
       "yesterday": "Ayer",
       "thinking": "Pensando…",
+      "preparingAction": "Preparando acción…",
       "startingConversation": "Iniciando conversación…",
       "startingResponse": "Preparando respuesta…"
     }

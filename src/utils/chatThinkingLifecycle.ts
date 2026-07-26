@@ -5,6 +5,22 @@ export interface ChatThinkingPlaceholder {
   iteration: number | null;
 }
 
+export type ChatMessagePhase = "acknowledgement" | "progress" | "final";
+
+export function explicitChatMessagePhase(value: unknown): ChatMessagePhase | null {
+  if (value === "acknowledgement" || value === "progress" || value === "final") {
+    return value;
+  }
+  return null;
+}
+
+// Persisted messages created before lifecycle phases existed are complete
+// visible replies. Treat absent/invalid metadata as final so old history never
+// revives a pending activity row.
+export function chatMessagePhase(metadata: Record<string, unknown> | undefined): ChatMessagePhase {
+  return explicitChatMessagePhase(metadata?.phase) ?? "final";
+}
+
 export function telemetryIteration(data: Record<string, any> | undefined): number | null {
   const raw = data?.iteration;
   if (raw === undefined || raw === null || raw === "") return null;
@@ -34,8 +50,47 @@ export function shouldShowChatThinking(
   awaitingResponse: boolean,
   userTurnAccepted: boolean,
   afterAgentReply: boolean,
+  visibleToolPhaseStarted = false,
 ): boolean {
-  return awaitingResponse && userTurnAccepted && !afterAgentReply;
+  return awaitingResponse
+    && userTurnAccepted
+    && !afterAgentReply
+    && !visibleToolPhaseStarted;
+}
+
+export function shouldContinueChatToolActivity(
+  awaitingResponse: boolean,
+  userTurnAccepted: boolean,
+  afterAgentReply: boolean,
+  visibleToolPhaseStarted: boolean,
+): boolean {
+  return awaitingResponse
+    && userTurnAccepted
+    && !afterAgentReply
+    && visibleToolPhaseStarted;
+}
+
+export function shouldPrepareChatAction(
+  awaitingResponse: boolean,
+  userTurnAccepted: boolean,
+  afterAgentReply: boolean,
+  phase: ChatMessagePhase | null,
+  visibleToolPhaseStarted: boolean,
+  finalReplyDelivered: boolean,
+): boolean {
+  return awaitingResponse
+    && userTurnAccepted
+    && afterAgentReply
+    && (phase === "acknowledgement" || phase === "progress")
+    && !visibleToolPhaseStarted
+    && !finalReplyDelivered;
+}
+
+export function shouldSuppressPostFinalThinking(
+  awaitingResponse: boolean,
+  finalReplyDelivered: boolean,
+): boolean {
+  return awaitingResponse && finalReplyDelivered;
 }
 
 export function shouldBeginChatTurn(activeTurnKey: string, nextTurnKey: string): boolean {
@@ -54,12 +109,15 @@ export function nextChatTurnStartKind(
 
 /**
  * Only the beginning of visible tool work replaces the current reasoning
- * placeholder. A result can arrive after core has already started a newer LLM
- * pass (notably for a long-running tool), so completion must never clear the
- * newer pass's Thinking indicator.
+ * placeholder. Streaming argument chunks are intentionally not user-visible:
+ * they do not yet carry the tool's final `_reason`, so rendering them would
+ * briefly invent generic copy before the real call arrives. A result can
+ * arrive after core has already started a newer LLM pass (notably for a
+ * long-running tool), so completion must never clear the newer pass's
+ * Thinking indicator.
  */
 export function toolEventReplacesThinking(eventType: string): boolean {
-  return eventType === "llm.tool_chunk" || eventType === "tool.call";
+  return eventType === "tool.call";
 }
 
 /**

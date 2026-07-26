@@ -27,17 +27,27 @@ import {
 import { splitToolTelemetryPaintFrame } from "../utils/toolTelemetryPaint";
 import { useToolVisualRegistry } from "./chat/toolVisuals";
 import {
+  chatMessagePhase,
   clearThinkingForIteration,
   clearThinkingThroughGeneration,
+  explicitChatMessagePhase,
   isChatUserTurnEvent,
   nextChatTurnStartKind,
+  shouldContinueChatToolActivity,
+  shouldPrepareChatAction,
   shouldShowChatThinking,
+  shouldSuppressPostFinalThinking,
   terminalToolEndsChatTurn,
   telemetryIteration,
   toolEventReplacesThinking,
+  type ChatMessagePhase,
   type ChatTurnStartKind,
   type ChatThinkingPlaceholder,
 } from "../utils/chatThinkingLifecycle";
+import {
+  nextChatBottomFollowState,
+  shouldPinChatBottom,
+} from "../utils/chatScrollBehavior";
 import { MicrophoneIcon, useRealtimeVoice } from "../state/RealtimeVoiceContext";
 
 export interface ChatPanelHeader {
@@ -164,6 +174,7 @@ export function ChatPanel({
   const [showClearModal, setShowClearModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Ephemeral tool activity. It never enters `messages`; the two sources
@@ -185,12 +196,17 @@ export function ChatPanel({
   const pendingStreamFrameRef = useRef<StreamFrame | null>(null);
   const streamAnimationFrameRef = useRef<number | null>(null);
   const [thinkingPlaceholder, setThinkingPlaceholder] = useState<ChatThinkingPlaceholder | null>(null);
+  const [preparingAction, setPreparingAction] = useState(false);
+  const [continuingAfterTools, setContinuingAfterTools] = useState(false);
   const [startingResponse, setStartingResponse] = useState(false);
   const [startingConversation, setStartingConversation] = useState(false);
   const thinkingGenerationRef = useRef(0);
+  const visibleToolPhaseStartedRef = useRef(false);
   const awaitingChatResponseRef = useRef(false);
   const acceptedChatTurnRef = useRef(false);
   const afterAgentReplyRef = useRef(false);
+  const lastAgentMessagePhaseRef = useRef<ChatMessagePhase | null>(null);
+  const finalReplyDeliveredRef = useRef(false);
   const activeChatTurnKeyRef = useRef("");
   const awaitingChatResponseTimerRef = useRef<number | null>(null);
   const queuedMessageInFlightRef = useRef("");
@@ -208,6 +224,11 @@ export function ChatPanel({
     activeChatTurnKeyRef.current = turnKey;
     acceptedChatTurnRef.current = false;
     afterAgentReplyRef.current = false;
+    lastAgentMessagePhaseRef.current = null;
+    finalReplyDeliveredRef.current = false;
+    visibleToolPhaseStartedRef.current = false;
+    setPreparingAction(false);
+    setContinuingAfterTools(false);
     setStartingResponse(true);
     setStartingConversation(startKind === "conversation");
     awaitingChatResponseRef.current = true;
@@ -218,10 +239,15 @@ export function ChatPanel({
       awaitingChatResponseRef.current = false;
       acceptedChatTurnRef.current = false;
       afterAgentReplyRef.current = false;
+      lastAgentMessagePhaseRef.current = null;
+      finalReplyDeliveredRef.current = false;
+      visibleToolPhaseStartedRef.current = false;
       awaitingChatResponseTimerRef.current = null;
       setStartingResponse(false);
       setStartingConversation(false);
       setThinkingPlaceholder(null);
+      setPreparingAction(false);
+      setContinuingAfterTools(false);
     }, 5 * 60_000);
   }, []);
 
@@ -229,8 +255,13 @@ export function ChatPanel({
     awaitingChatResponseRef.current = false;
     acceptedChatTurnRef.current = false;
     afterAgentReplyRef.current = false;
+    lastAgentMessagePhaseRef.current = null;
+    finalReplyDeliveredRef.current = false;
+    visibleToolPhaseStartedRef.current = false;
     setStartingResponse(false);
     setStartingConversation(false);
+    setPreparingAction(false);
+    setContinuingAfterTools(false);
     if (awaitingChatResponseTimerRef.current !== null) {
       window.clearTimeout(awaitingChatResponseTimerRef.current);
       awaitingChatResponseTimerRef.current = null;
@@ -293,7 +324,11 @@ export function ChatPanel({
         latestTurn.client_message_id || `message:${latestTurn.id}`,
       );
     }
-    if (rows.some((row) => row.role === "agent")) {
+    const latestAgent = rows.reduce<ChatMessageRow | null>((latest, row) => {
+      if (row.role !== "agent") return latest;
+      return !latest || row.id > latest.id ? row : latest;
+    }, null);
+    if (latestAgent) {
       // The manager performs this swap atomically for normal SSE delivery.
       // Repeating it here covers REST reconciliation after a dropped frame:
       // persisted content replaces the ephemeral bubble, never leaving both.
@@ -304,8 +339,15 @@ export function ChatPanel({
       }
       setStreamingText(null);
       setThinkingPlaceholder(null);
+      setPreparingAction(false);
+      setContinuingAfterTools(false);
       setStartingResponse(false);
-      if (awaitingChatResponseRef.current) afterAgentReplyRef.current = true;
+      if (awaitingChatResponseRef.current) {
+        const phase = chatMessagePhase(latestAgent.metadata);
+        afterAgentReplyRef.current = true;
+        lastAgentMessagePhaseRef.current = phase;
+        finalReplyDeliveredRef.current = phase === "final";
+      }
     }
     if (
       maxId > 0 &&
@@ -513,25 +555,40 @@ export function ChatPanel({
   // while transcript replacements pin the bottom in a layout effect. The
   // latter runs before paint, so swapping Thinking for a tool/message cannot
   // expose one frame at the old scroll position.
-  const atBottomRef = useRef(true);
+  const followingLatestRef = useRef(true);
+  const previousScrollTopRef = useRef(0);
+  const initiallyPinnedChatIdRef = useRef<string | null>(null);
   const followBottomAnimationFrameRef = useRef<number | null>(null);
+  const initialBottomAnimationFrameRef = useRef<number | null>(null);
+  const pinBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    previousScrollTopRef.current = el.scrollTop;
+  }, []);
   const scheduleFollowBottom = useCallback(() => {
-    if (!atBottomRef.current || followBottomAnimationFrameRef.current !== null) return;
+    if (!followingLatestRef.current || followBottomAnimationFrameRef.current !== null) return;
     followBottomAnimationFrameRef.current = window.requestAnimationFrame(() => {
       followBottomAnimationFrameRef.current = null;
-      if (!atBottomRef.current) return;
-      const el = scrollRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
+      if (!followingLatestRef.current) return;
+      pinBottom();
     });
-  }, []);
+  }, [pinBottom]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    atBottomRef.current = true;
+    followingLatestRef.current = true;
+    previousScrollTopRef.current = el.scrollTop;
     const onScroll = () => {
       const dist = el.scrollHeight - el.clientHeight - el.scrollTop;
-      atBottomRef.current = dist < 60;
+      followingLatestRef.current = nextChatBottomFollowState(
+        followingLatestRef.current,
+        previousScrollTopRef.current,
+        el.scrollTop,
+        dist,
+      );
+      previousScrollTopRef.current = el.scrollTop;
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     onScroll();
@@ -539,15 +596,66 @@ export function ChatPanel({
   }, [chatId]);
 
   useLayoutEffect(() => {
-    if (!atBottomRef.current) return;
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, liveTools, streamingText, thinkingPlaceholder, startingResponse]);
+    const forceInitialPin = !!chatId
+      && historyReady
+      && initiallyPinnedChatIdRef.current !== chatId;
+    if (!shouldPinChatBottom(
+      chatId,
+      historyReady,
+      initiallyPinnedChatIdRef.current,
+      followingLatestRef.current,
+    )) return;
+
+    if (forceInitialPin) {
+      initiallyPinnedChatIdRef.current = chatId;
+      followingLatestRef.current = true;
+    }
+    pinBottom();
+
+    if (forceInitialPin) {
+      // A second pre/post-paint pin catches Markdown and component layout that
+      // settles just after the history rows mount. Later asynchronous growth is
+      // handled by the ResizeObserver below while the user remains at bottom.
+      if (initialBottomAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(initialBottomAnimationFrameRef.current);
+      }
+      initialBottomAnimationFrameRef.current = window.requestAnimationFrame(() => {
+        pinBottom();
+        initialBottomAnimationFrameRef.current = window.requestAnimationFrame(() => {
+          pinBottom();
+          initialBottomAnimationFrameRef.current = null;
+        });
+      });
+    }
+  }, [
+    chatId,
+    historyReady,
+    messages,
+    liveTools,
+    streamingText,
+    thinkingPlaceholder,
+    preparingAction,
+    continuingAfterTools,
+    startingResponse,
+    pinBottom,
+  ]);
+
+  useEffect(() => {
+    const transcript = transcriptRef.current;
+    if (!transcript || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => scheduleFollowBottom());
+    observer.observe(transcript);
+    return () => observer.disconnect();
+  }, [chatId, scheduleFollowBottom]);
 
   useEffect(() => () => {
     if (followBottomAnimationFrameRef.current !== null) {
       window.cancelAnimationFrame(followBottomAnimationFrameRef.current);
       followBottomAnimationFrameRef.current = null;
+    }
+    if (initialBottomAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(initialBottomAnimationFrameRef.current);
+      initialBottomAnimationFrameRef.current = null;
     }
   }, []);
 
@@ -566,14 +674,15 @@ export function ChatPanel({
   // bug. Here we never copy a tool into messages or vice versa —
   // they only meet at render time, sorted by timestamp.
   //
-  // Three event types drive the lifecycle:
-  //   llm.tool_chunk → first chunk creates a "streaming" entry. We
-  //                    don't render args (intentional — args were
-  //                    the noisy bit), only the name + thread.
-  //   tool.call      → args finalised, executor running. Carries
-  //                    the agent's free-text `reason` — the human-
-  //                    readable "why".
-  //   tool.result    → finished. Success/error + duration.
+  // Two user-visible event types drive the lifecycle:
+  //   tool.call   → args finalised, executor running. Carries the agent's
+  //                 free-text `_reason` — the human-readable "why".
+  //   tool.result → finished. Success/error + duration.
+  //
+  // `llm.tool_chunk` is deliberately not rendered in chat. It is a live-only
+  // partial argument event and does not yet have the final `_reason`. Showing
+  // it used to create a generic "preparing tool" row which was immediately
+  // rewritten with slightly different wording when tool.call arrived.
   //
   // Filter: internal housekeeping (pace/done/send) stays hidden. Other tools
   // surface only when both the participant agent and selected thread match.
@@ -589,6 +698,7 @@ export function ChatPanel({
           clearThinkingThroughGeneration(current, replaceThroughGeneration),
         );
       }
+      setPreparingAction(false);
       setLiveTools((previous) => mergeToolActivityEvents(previous, paint));
     }
     if (pendingToolEventsRef.current.length > 0) {
@@ -638,13 +748,52 @@ export function ChatPanel({
       // dashboard event. Do not render that bootstrap work as the user's
       // response; event.received below accepts the turn before its real
       // llm.start arrives.
+      if (shouldSuppressPostFinalThinking(
+        awaitingChatResponseRef.current,
+        finalReplyDeliveredRef.current,
+      )) {
+        setStartingResponse(false);
+        setThinkingPlaceholder(null);
+        setPreparingAction(false);
+        setContinuingAfterTools(false);
+        return;
+      }
+      if (shouldPrepareChatAction(
+        awaitingChatResponseRef.current,
+        acceptedChatTurnRef.current,
+        afterAgentReplyRef.current,
+        lastAgentMessagePhaseRef.current,
+        visibleToolPhaseStartedRef.current,
+        finalReplyDeliveredRef.current,
+      )) {
+        setStartingResponse(false);
+        setThinkingPlaceholder(null);
+        setContinuingAfterTools(false);
+        setPreparingAction(true);
+        return;
+      }
+      if (shouldContinueChatToolActivity(
+        awaitingChatResponseRef.current,
+        acceptedChatTurnRef.current,
+        afterAgentReplyRef.current,
+        visibleToolPhaseStartedRef.current,
+      )) {
+        setStartingResponse(false);
+        setThinkingPlaceholder(null);
+        setPreparingAction(false);
+        setContinuingAfterTools(true);
+        return;
+      }
       if (!shouldShowChatThinking(
         awaitingChatResponseRef.current,
         acceptedChatTurnRef.current,
         afterAgentReplyRef.current,
+        visibleToolPhaseStartedRef.current,
       )) return;
       if (streamingText === null) {
         setStartingResponse(false);
+        setPreparingAction(false);
+        setContinuingAfterTools(false);
         setThinkingPlaceholder((current) => ({
           since: current?.since ?? (Date.parse(ev.time) || Date.now()),
           threadId: ev.thread_id || "main",
@@ -662,10 +811,14 @@ export function ChatPanel({
     }
     if (activeConversation && (ev.type === "llm.error" || ev.type === "llm.err" || ev.type === "thread.done")) {
       setThinkingPlaceholder(null);
+      setPreparingAction(false);
       clearAwaitingChatResponse();
       return;
     }
     if (ev.type !== "llm.tool_chunk" && ev.type !== "tool.call" && ev.type !== "tool.result") return;
+    // Keep the existing Thinking/Preparing action placeholder stable until a
+    // real tool.call supplies the intentional user-facing `_reason`.
+    if (ev.type === "llm.tool_chunk") return;
     const name = String(ev.data?.name || ev.data?.tool || "");
     const reason = String(ev.data?.reason || "");
     if (terminalToolEndsChatTurn(name, acceptedChatTurnRef.current)) {
@@ -688,7 +841,9 @@ export function ChatPanel({
       // intermediate. Its next LLM pass is answer preparation, not silent
       // post-reply housekeeping.
       afterAgentReplyRef.current = false;
+      visibleToolPhaseStartedRef.current = true;
       setStartingResponse(false);
+      setContinuingAfterTools(false);
     }
     const replacesThinking = beginsVisibleTool;
     queueToolEvent(ev, replacesThinking);
@@ -704,12 +859,16 @@ export function ChatPanel({
     queuedMessageInFlightRef.current = "";
     setStreamingText(null);
     setThinkingPlaceholder(null);
+    setPreparingAction(false);
+    setContinuingAfterTools(false);
     clearAwaitingChatResponse();
   }, [instanceId, chatId, cancelPendingToolEvents, clearAwaitingChatResponse]);
 
   useEffect(() => {
     if (connected) return;
     setThinkingPlaceholder(null);
+    setPreparingAction(false);
+    setContinuingAfterTools(false);
     clearAwaitingChatResponse();
   }, [connected, clearAwaitingChatResponse]);
 
@@ -721,8 +880,16 @@ export function ChatPanel({
     if (!chatId) return;
     const unsubscribe = chatConnections.subscribeStream(chatId, (f) => {
       if (f && !f.done) {
-        if (awaitingChatResponseRef.current) afterAgentReplyRef.current = true;
+        if (awaitingChatResponseRef.current) {
+          afterAgentReplyRef.current = true;
+          const phase = explicitChatMessagePhase(f.phase);
+          if (phase) {
+            lastAgentMessagePhaseRef.current = phase;
+            finalReplyDeliveredRef.current = phase === "final";
+          }
+        }
         setStartingResponse(false);
+        setPreparingAction(false);
         pendingStreamFrameRef.current = f;
         if (streamAnimationFrameRef.current === null) {
           streamAnimationFrameRef.current = window.requestAnimationFrame(() => {
@@ -731,6 +898,8 @@ export function ChatPanel({
             pendingStreamFrameRef.current = null;
             if (latest) {
               setThinkingPlaceholder(null);
+              setPreparingAction(false);
+              setContinuingAfterTools(false);
               setStreamingText(latest.text);
             }
           });
@@ -813,7 +982,7 @@ export function ChatPanel({
       return false;
     }
     markAwaitingChatResponse(clientMessageId, startKind);
-    atBottomRef.current = true;
+    followingLatestRef.current = true;
     scheduleFollowBottom();
     setSending(true);
     setError(null);
@@ -998,6 +1167,11 @@ export function ChatPanel({
     timelineTail?.kind === "message" && timelineTail.message.role === "user"
       ? "mt-4"
       : "mt-2";
+  const continuingToolKey =
+    continuingAfterTools
+    && (timelineTail?.kind === "tool" || timelineTail?.kind === "toolGroup")
+      ? timelineTail.key
+      : null;
 
   const toggleToolGroup = useCallback((key: string) => {
     setExpandedToolGroups((prev) => {
@@ -1223,10 +1397,11 @@ export function ChatPanel({
         ref={scrollRef}
         className={`scroll-safe-bottom flex-1 overflow-y-auto overflow-x-hidden px-3 py-3 sm:px-4 sm:py-4 min-w-0 transition-opacity duration-300 ${connected ? "" : "opacity-40"}`}
       >
+        <div ref={transcriptRef}>
         {!chatId && (
           <p className="text-text-muted text-xs text-center py-8">{t("chat.panel.loading")}</p>
         )}
-        {chatId && timeline.length === 0 && streamingText === null && thinkingPlaceholder === null && !startingResponse && (
+        {chatId && timeline.length === 0 && streamingText === null && thinkingPlaceholder === null && !preparingAction && !startingResponse && (
           <p className="text-text-muted text-xs text-center py-8">
             {t("chat.panel.empty")}
           </p>
@@ -1262,6 +1437,7 @@ export function ChatPanel({
                 <ChatToolActivity
                   tools={item.tools}
                   parallel={item.parallel}
+                  continuing={continuingToolKey === item.key}
                   expanded={expandedToolGroups.has(item.key)}
                   onToggle={() => toggleToolGroup(item.key)}
                   registry={toolVisualRegistry}
@@ -1272,11 +1448,25 @@ export function ChatPanel({
           }
           return (
             <div key={item.key} className={chatTimelineMarginClass(item, previousItem)} title={formatExactTimestamp(item.ts)}>
-              <ChatToolActivity tools={[item.tool]} registry={toolVisualRegistry} />
+              <ChatToolActivity
+                tools={[item.tool]}
+                continuing={continuingToolKey === item.key}
+                registry={toolVisualRegistry}
+              />
             </div>
           );
         })}
         {streamingText !== null && <div className={`${pendingAssistantMargin} first:mt-0`}><StreamingBubble text={streamingText} /></div>}
+        {continuingAfterTools && streamingText === null && thinkingPlaceholder === null && !preparingAction && (
+          <div className={`${pendingAssistantMargin} first:mt-0`}>
+            <PreparingResponsePlaceholder />
+          </div>
+        )}
+        {preparingAction && streamingText === null && thinkingPlaceholder === null && (
+          <div className={`${pendingAssistantMargin} first:mt-0`}>
+            <PreparingActionPlaceholder />
+          </div>
+        )}
         {startingResponse && streamingText === null && thinkingPlaceholder === null && (
           <div className={`${pendingAssistantMargin} first:mt-0`}>
             <StartingResponsePlaceholder conversation={startingConversation} />
@@ -1290,6 +1480,7 @@ export function ChatPanel({
             <ThinkingMessagePlaceholder />
           </div>
         )}
+        </div>
       </div>
 
       {/* Plan-mode quick actions. Only shown when plan mode is on AND
@@ -1766,6 +1957,46 @@ function ThinkingMessagePlaceholder() {
         <span />
       </span>
       <span className="text-[13px] leading-5 text-text-muted">{t("chat.panel.thinking")}</span>
+      <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+    </div>
+  );
+}
+
+function PreparingActionPlaceholder() {
+  const { t } = useTranslation();
+  const label = t("chat.panel.preparingAction");
+  return (
+    <div
+      className="grid min-h-9 min-w-0 grid-cols-[1.9rem_minmax(0,1fr)_auto] items-center gap-2 px-1 py-0.5"
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+    >
+      <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center" aria-hidden="true">
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+      </span>
+      <span className="text-[13px] leading-5 text-text-muted">{label}</span>
+      <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+    </div>
+  );
+}
+
+function PreparingResponsePlaceholder() {
+  const { t } = useTranslation();
+  const label = t("chat.panel.startingResponse");
+  return (
+    <div
+      className="grid min-h-[42px] min-w-0 grid-cols-[1.9rem_minmax(0,1fr)_auto] items-center gap-2 px-1 py-0.5"
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+    >
+      <span className="chat-thinking-dots inline-flex h-7 w-7 shrink-0 items-center justify-center gap-1" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+      <span className="text-[13px] leading-5 text-text-muted">{label}</span>
       <span className="h-4 w-4 shrink-0" aria-hidden="true" />
     </div>
   );

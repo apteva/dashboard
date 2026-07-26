@@ -12,6 +12,7 @@ import {
 interface ToolActivityProps {
   tools: ToolActivity[];
   parallel?: boolean;
+  continuing?: boolean;
   expanded?: boolean;
   onToggle?: () => void;
   registry: ToolVisualRegistry;
@@ -67,12 +68,6 @@ function aggregateStatus(
   return { text: parts.join(" · "), state };
 }
 
-function stateTextClass(state: VisualState): string {
-  if (state === "done") return "text-green";
-  if (state === "failed") return "chat-tool-failed-text";
-  return "chat-tool-running-text";
-}
-
 function summaryFocusTool(tools: ToolActivity[]): ToolActivity {
   const active = tools.filter((tool) => tool.state !== "done");
   const candidates = active.length > 0 ? active : tools;
@@ -92,6 +87,7 @@ function summaryFocusTool(tools: ToolActivity[]): ToolActivity {
 export function ChatToolActivity({
   tools,
   parallel = false,
+  continuing = false,
   expanded = false,
   onToggle,
   registry,
@@ -111,9 +107,18 @@ export function ChatToolActivity({
     : reasonLabel(tools[0]!, t);
   const focusTool = summaryFocusTool(tools);
   const focusReason = reasonLabel(focusTool, t);
+  const copyIsActive =
+    status.state === "preparing" || status.state === "running";
+  const failedCount = tools.filter((tool) => visualState(tool) === "failed").length;
+  const visibleFailure = failedCount > 0
+    ? grouped
+      ? t("chat.panel.toolsFailedCount", { count: failedCount })
+      : stateLabel(tools[0]!, t)
+    : "";
+  const allSucceeded = tools.every((tool) => visualState(tool) === "done");
   const remainingCount = tools.length - 1;
   const resolvedDetailsId = detailsId || `chat-tool-details-${tools[0]!.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-  const accessibleSummary = `${title}, ${focusReason}, ${status.text}`;
+  const accessibleSummary = `${title}, ${focusReason}, ${status.text}${continuing ? `, ${t("chat.panel.startingResponse")}` : ""}`;
 
   return (
     <section className="chat-tool-activity min-w-0 py-0.5" aria-label={accessibleSummary}>
@@ -134,14 +139,30 @@ export function ChatToolActivity({
         <ToolIconStack tools={tools} registry={registry} />
         <span className="flex min-w-0 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-2">
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className="chat-tool-copy truncate text-[13px] font-medium leading-5" title={focusReason}>
+            <span
+              className={`chat-tool-copy truncate text-[13px] font-medium leading-5 ${copyIsActive ? "chat-tool-copy-running" : ""}`}
+              title={focusReason}
+            >
               {focusReason}
             </span>
             {remainingCount > 0 && (
               <span className="shrink-0 text-[11px] font-medium text-text-muted sm:text-xs">+{remainingCount}</span>
             )}
           </span>
-          <span className={`truncate text-[11px] leading-5 sm:text-xs ${stateTextClass(status.state)}`}>{status.text}</span>
+          {visibleFailure ? (
+            <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] font-medium uppercase tracking-wide chat-tool-failed-text sm:text-[11px]">
+              <FailureIcon />
+              <span>{visibleFailure}</span>
+            </span>
+          ) : allSucceeded ? (
+            <span
+              className="inline-flex shrink-0 items-center text-green"
+              title={status.text}
+              aria-hidden="true"
+            >
+              <CheckIcon />
+            </span>
+          ) : null}
         </span>
         {grouped
           ? <ChevronIcon expanded={expanded} />
@@ -212,14 +233,24 @@ function ToolCallRow({
       aria-label={`${reason}, ${stateText}${duration ? `, ${duration}` : ""}`}
     >
       <ToolSourceIcon tool={tool} visual={visual} />
-      <span className="chat-tool-copy min-w-0 [overflow-wrap:anywhere] text-[13px] font-medium leading-5">
+      <span className={`chat-tool-copy min-w-0 [overflow-wrap:anywhere] text-[13px] font-medium leading-5 ${
+        state === "preparing" || state === "running" ? "chat-tool-copy-running" : ""
+      }`}>
         {reason}
       </span>
-      <span className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] font-medium uppercase tracking-wide sm:text-[11px] ${stateTextClass(state)}`}>
-        {state === "done" && <CheckIcon />}
-        {state === "failed" && <FailureIcon />}
-        <span>{stateText}</span>
-        {duration && <span className="text-text-dim">· {duration}</span>}
+      <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] font-medium uppercase tracking-wide sm:text-[11px]">
+        {state === "done" && (
+          <span className="inline-flex text-green" title={stateText} aria-hidden="true">
+            <CheckIcon />
+          </span>
+        )}
+        {state === "failed" && (
+          <span className="inline-flex items-center gap-1 chat-tool-failed-text">
+            <FailureIcon />
+            <span>{stateText}</span>
+          </span>
+        )}
+        {duration && <span className="text-text-dim">{duration}</span>}
       </span>
     </div>
   );
@@ -239,7 +270,7 @@ function ToolSourceIcon({
     : "";
   return (
     <span
-      className={`chat-tool-icon relative top-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-bg-hover text-text-muted ${stateClass}`}
+      className={`chat-tool-icon relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-bg-hover text-text-muted ${stateClass}`}
       title={visual.label}
       aria-hidden="true"
     >

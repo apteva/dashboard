@@ -59,7 +59,24 @@ describe("ChatToolActivity", () => {
     expect(html).toContain('aria-disabled="true"');
     expect(html).toContain("Updating weekly report scope");
     expect(html).toContain("chat-tool-icon-running");
+    expect(html).toContain("chat-tool-copy-running");
     expect(html).not.toContain("+0");
+    expect(html).not.toContain("top-0.5");
+  });
+
+  test("keeps the completed tool copy stable while response preparation renders separately", () => {
+    const html = renderToStaticMarkup(
+      <ChatToolActivity tools={[tools[0]!]} continuing registry={registry} />,
+    );
+    expect(html).toContain("Refreshing pipeline records");
+    // ChatPanel owns the separate Preparing response placeholder. The
+    // completed tool remains stable and does not resume its running pulse.
+    expect(html).not.toContain(">Preparing response…</span>");
+    expect(html).not.toContain("chat-tool-copy-running");
+    expect(html).toContain('title="Done"');
+    expect(html).not.toContain(">Done<");
+    expect(html).not.toContain(">Continuing…<");
+    expect(html).not.toContain("chat-tool-icon-running");
   });
 
   test("starts grouped calls collapsed with the parallel summary", () => {
@@ -79,11 +96,26 @@ describe("ChatToolActivity", () => {
 
   test("summarizes completed groups with the most recently finished reason", () => {
     const html = renderToStaticMarkup(
-      <ChatToolActivity tools={[tools[0]!, tools[2]!]} parallel registry={registry} />,
+      <ChatToolActivity
+        tools={[tools[0]!, { ...tools[0]!, id: "completed-b", reason: "Publishing the refreshed report", finishedAt: 1300 }]}
+        parallel
+        registry={registry}
+      />,
     );
     expect(html).toContain("Publishing the refreshed report");
     expect(html).toContain("+1");
     expect(html).not.toContain("Refreshing pipeline records");
+    expect(html).toContain('title="Completed"');
+    expect(html).not.toContain(">Completed<");
+  });
+
+  test("keeps failure explicit instead of hiding it behind the reason", () => {
+    const html = renderToStaticMarkup(
+      <ChatToolActivity tools={[tools[2]!]} registry={registry} />,
+    );
+    expect(html).toContain("Publishing the refreshed report");
+    expect(html).toContain(">failed<");
+    expect(html).not.toContain(">Done<");
   });
 
   test("shows one summary icon for multiple calls to the same tool source", () => {

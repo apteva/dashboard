@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { AppRow } from "../api";
-import { filterInstalledApps } from "./Apps";
+import {
+  appHasUpdate,
+  filterInstalledApps,
+  projectAppsWithUpdates,
+  upgradeAppsSequentially,
+} from "./Apps";
 
 function app(overrides: Partial<AppRow>): AppRow {
   return {
@@ -57,5 +62,64 @@ describe("filterInstalledApps", () => {
 
   test("returns the original inventory for an empty query", () => {
     expect(filterInstalledApps(rows, "  ")).toBe(rows);
+  });
+});
+
+describe("project app updates", () => {
+  test("selects only ready updates owned by the current project", () => {
+    const rows = [
+      app({ install_id: 1, available_version: "1.1.0" }),
+      app({ install_id: 2, project_id: "project-2", available_version: "1.1.0" }),
+      app({ install_id: 3, project_id: "", available_version: "1.1.0" }),
+      app({ install_id: 4, available_version: "1.0.0" }),
+      app({ install_id: 5, available_version: "1.1.0", status: "pending" }),
+      app({ install_id: 6, available_version: "1.1.0", deprecated: true }),
+    ];
+
+    expect(projectAppsWithUpdates(rows, "project-1").map((row) => row.install_id)).toEqual([1]);
+    expect(projectAppsWithUpdates(rows, undefined)).toEqual([]);
+  });
+
+  test("does not offer another update while an app is already pending", () => {
+    expect(appHasUpdate(app({ available_version: "1.1.0", status: "running" }))).toBe(true);
+    expect(appHasUpdate(app({ available_version: "1.1.0", status: "pending" }))).toBe(false);
+  });
+
+  test("runs upgrades sequentially and separates permission review from failures", async () => {
+    const targets = [
+      app({ install_id: 1, display_name: "One", available_version: "1.1.0" }),
+      app({ install_id: 2, display_name: "Two", available_version: "1.1.0" }),
+      app({ install_id: 3, display_name: "Three", available_version: "1.1.0" }),
+    ];
+    const order: string[] = [];
+    const permissionError: any = new Error("new permissions required");
+    permissionError.status = 409;
+    permissionError.body = {
+      version: "1.1.0",
+      missing_permissions: ["platform.files.write"],
+    };
+
+    const result = await upgradeAppsSequentially(
+      targets,
+      async (installId) => {
+        order.push(`start:${installId}`);
+        await Promise.resolve();
+        order.push(`end:${installId}`);
+        if (installId === 2) throw permissionError;
+        if (installId === 3) throw new Error("registry unavailable");
+      },
+    );
+
+    expect(order).toEqual([
+      "start:1", "end:1",
+      "start:2", "end:2",
+      "start:3", "end:3",
+    ]);
+    expect(result.updated.map(({ install_id }) => install_id)).toEqual([1]);
+    expect(result.permissions[0]?.app.install_id).toBe(2);
+    expect(result.permissions[0]?.prompt.missingPermissions).toEqual(["platform.files.write"]);
+    expect(result.failed).toEqual([
+      { app: targets[2], message: "registry unavailable" },
+    ]);
   });
 });

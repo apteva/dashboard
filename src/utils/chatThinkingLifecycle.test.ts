@@ -2,11 +2,16 @@ import { describe, expect, test } from "bun:test";
 import {
   clearThinkingForIteration,
   clearThinkingThroughGeneration,
+  chatMessagePhase,
+  explicitChatMessagePhase,
   isChatUserTurnEvent,
   isTerminalChatTurnTool,
   nextChatTurnStartKind,
   shouldBeginChatTurn,
+  shouldContinueChatToolActivity,
+  shouldPrepareChatAction,
   shouldShowChatThinking,
+  shouldSuppressPostFinalThinking,
   terminalToolEndsChatTurn,
   telemetryIteration,
   toolEventReplacesThinking,
@@ -43,12 +48,34 @@ describe("chat Thinking lifecycle", () => {
     expect(isChatUserTurnEvent({ source: "bus", message: "[chat.session_closing] deleted" })).toBe(false);
   });
 
-  test("hides housekeeping after a visible reply but allows Thinking after tool work", () => {
+  test("shows one Thinking placeholder before tools and keeps later reasoning in the tool block", () => {
     expect(shouldShowChatThinking(true, true, true)).toBe(false);
-    // A visible tool clears the after-reply gate; its follow-up LLM pass is
-    // the real answer-preparation state the operator should see.
+    // The first accepted LLM pass owns the one transcript placeholder.
     expect(shouldShowChatThinking(true, true, false)).toBe(true);
+    // Once visible work begins, later LLM passes continue inside the stable
+    // tool block instead of inserting Thinking between every tool call.
+    expect(shouldShowChatThinking(true, true, false, true)).toBe(false);
+    expect(shouldContinueChatToolActivity(true, true, false, true)).toBe(true);
+    expect(shouldContinueChatToolActivity(true, true, true, true)).toBe(false);
     expect(shouldShowChatThinking(true, false, false)).toBe(false);
+  });
+
+  test("defaults old persisted messages to the final lifecycle phase", () => {
+    expect(chatMessagePhase(undefined)).toBe("final");
+    expect(chatMessagePhase({})).toBe("final");
+    expect(chatMessagePhase({ phase: "unknown" })).toBe("final");
+    expect(chatMessagePhase({ phase: "acknowledgement" })).toBe("acknowledgement");
+    expect(explicitChatMessagePhase(undefined)).toBeNull();
+    expect(explicitChatMessagePhase("progress")).toBe("progress");
+  });
+
+  test("uses acknowledgement to prepare action and final to suppress housekeeping", () => {
+    expect(shouldPrepareChatAction(true, true, true, "acknowledgement", false, false)).toBe(true);
+    expect(shouldPrepareChatAction(true, true, true, "progress", false, false)).toBe(true);
+    expect(shouldPrepareChatAction(true, true, true, "final", false, true)).toBe(false);
+    expect(shouldPrepareChatAction(true, true, true, "acknowledgement", true, false)).toBe(false);
+    expect(shouldSuppressPostFinalThinking(true, true)).toBe(true);
+    expect(shouldSuppressPostFinalThinking(false, true)).toBe(false);
   });
 
   test("a distinct user message starts a new turn before prior housekeeping ends", () => {
@@ -110,8 +137,11 @@ describe("chat Thinking lifecycle", () => {
     expect(telemetryIteration({})).toBeNull();
   });
 
-  test("tool completion never replaces a newer Thinking pass", () => {
-    expect(toolEventReplacesThinking("llm.tool_chunk")).toBe(true);
+  test("only a real tool call replaces Thinking", () => {
+    // Argument chunks arrive before the final `_reason`. Keeping the existing
+    // placeholder avoids a generic preparing row flashing before the useful
+    // tool description.
+    expect(toolEventReplacesThinking("llm.tool_chunk")).toBe(false);
     expect(toolEventReplacesThinking("tool.call")).toBe(true);
     expect(toolEventReplacesThinking("tool.result")).toBe(false);
   });
