@@ -61,4 +61,18 @@ describe("AgentCurrentStatus", () => {
     expect(html).toContain("No current status reported");
     expect(html).toContain("No pending work");
   });
+
+  test("keeps a stale blocked status visually stale", () => {
+    const blocked = status("blocked", 10 * 24 * 60 * 60_000);
+    blocked.stale = true;
+    const html = renderToStaticMarkup(createElement(AgentCurrentStatus, {
+      status: blocked,
+      compact: true,
+      showAge: true,
+      showNextFallback: true,
+    }));
+    expect(html).toContain("bg-text-dim/15 text-text-dim");
+    expect(html).toContain("last reported");
+    expect(html).toContain(">blocked<");
+  });
 });

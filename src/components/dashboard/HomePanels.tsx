@@ -144,7 +144,7 @@ function AgentOperationRow({ agent, status }: AgentOperation) {
   return (
     <Link
       to={`/agents/${agent.id}`}
-      className="grid min-h-[82px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 transition-colors hover:bg-bg-hover"
+      className="group grid min-h-[82px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 transition-colors hover:bg-bg-hover"
     >
       <span className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-[11px] font-bold ${tone.badge}`}>
         {state === "blocked" ? "!" : state === "waiting" ? "◷" : state === "completed" ? "✓" : "›"}
@@ -167,13 +167,7 @@ function AgentOperationRow({ agent, status }: AgentOperation) {
         )}
         <StatusNextStep next={status?.next} nextAt={status?.next_at} />
       </div>
-      {status ? (
-        <time className="text-[10px] tabular-nums text-text-dim" title={formatExact(status.message.created_at)}>
-          {formatAge(status.message.created_at)}
-        </time>
-      ) : (
-        <span className="text-sm text-text-dim">→</span>
-      )}
+      <span className="text-sm text-text-dim transition-colors group-hover:text-text" aria-hidden="true">→</span>
     </Link>
   );
 }
@@ -211,20 +205,6 @@ function stateTone(state: string) {
   if (state === "waiting") return { badge: "bg-blue/15 text-blue", text: "text-blue", bar: "bg-blue" };
   if (state === "completed") return { badge: "bg-green/15 text-green", text: "text-green", bar: "bg-green" };
   return { badge: "bg-accent/15 text-accent", text: "text-accent", bar: "bg-accent" };
-}
-
-function formatAge(value: string) {
-  const ms = Date.now() - Date.parse(value);
-  if (!Number.isFinite(ms) || ms < 0) return "now";
-  if (ms < 60_000) return `${Math.max(1, Math.floor(ms / 1000))}s`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`;
-  return `${Math.floor(ms / 86_400_000)}d`;
-}
-
-function formatExact(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function formatNumber(value: number) {
