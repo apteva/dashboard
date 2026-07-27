@@ -1,4 +1,5 @@
-import { type AppDetail } from "../../api";
+import { useState, type CSSProperties } from "react";
+import { type AppDetail, type CredentialField } from "../../api";
 import {
   defaultIntegrationAuthType,
   visibleCredentialFields,
@@ -111,19 +112,75 @@ export function CredentialFields({
           retained in the encrypted connection after callback, never rendered. */}
       {fields.map((f) => (
         <FieldRow key={f.name} label={f.label || f.name} description={f.description}>
-          <input
-            type={f.type === "text" ? "text" : "password"}
+          <CredentialValueInput
+            field={f}
             value={credentials[f.name] || ""}
-            onChange={(e) =>
-              setCredentials({ ...credentials, [f.name]: (e.target as HTMLInputElement).value })
-            }
+            onChange={(value) => setCredentials({ ...credentials, [f.name]: value })}
             required={f.required !== false}
-            autoComplete="off"
-            spellCheck={false}
             className="w-full bg-bg-input border border-border rounded-md px-3 py-2 text-sm font-mono text-text focus:outline-none focus:border-accent"
           />
         </FieldRow>
       ))}
+    </div>
+  );
+}
+
+export function CredentialValueInput({
+  field,
+  value,
+  onChange,
+  required,
+  className,
+  placeholder,
+}: {
+  field: CredentialField;
+  value: string;
+  onChange: (value: string) => void;
+  required?: boolean;
+  className: string;
+  placeholder?: string;
+}) {
+  const [revealed, setRevealed] = useState(false);
+  if (field.type !== "multiline_password") {
+    return (
+      <input
+        type={field.type === "text" ? "text" : "password"}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        required={required}
+        placeholder={placeholder}
+        autoComplete="off"
+        spellCheck={false}
+        className={className}
+      />
+    );
+  }
+
+  const maskedStyle = revealed
+    ? undefined
+    : ({ WebkitTextSecurity: "disc" } as CSSProperties);
+  return (
+    <div className="relative">
+      <textarea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        required={required}
+        placeholder={placeholder}
+        autoComplete="off"
+        spellCheck={false}
+        rows={6}
+        wrap="off"
+        style={maskedStyle}
+        className={`${className} resize-y pr-14 leading-relaxed`}
+      />
+      <button
+        type="button"
+        onClick={() => setRevealed((current) => !current)}
+        className="absolute right-2 top-2 px-2 py-1 text-[10px] text-text-muted bg-bg border border-border rounded hover:text-text"
+        aria-label={revealed ? `Hide ${field.label}` : `Show ${field.label}`}
+      >
+        {revealed ? "Hide" : "Show"}
+      </button>
     </div>
   );
 }

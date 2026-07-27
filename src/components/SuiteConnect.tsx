@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { integrations } from "../api";
+import { CredentialValueInput } from "./integrations/CredentialFields";
 import { Modal } from "./Modal";
 
 // Two-screen connect flow for credential-group suites (OmniKit, SocialCast, ...).
@@ -415,11 +416,11 @@ export function SuiteConnect({ group, projectId, onClose, onConnectionsChanged }
               ).map((f) => (
                 <div key={f.name}>
                   <label className="block text-text text-xs font-medium mb-1">{f.label}</label>
-                  <input
-                    type={f.type === "text" ? "text" : "password"}
+                  <CredentialValueInput
+                    field={f}
                     className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 font-mono text-sm text-text focus:outline-none focus:border-accent"
                     value={creds[f.name] || ""}
-                    onChange={(e) => setCreds({ ...creds, [f.name]: e.target.value })}
+                    onChange={(value) => setCreds({ ...creds, [f.name]: value })}
                     placeholder={f.description || ""}
                   />
                   {f.description && (

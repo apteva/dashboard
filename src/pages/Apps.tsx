@@ -22,6 +22,7 @@ import { Modal } from "../components/Modal";
 import { AppSurfaceBadges } from "../components/apps/AppSurfaceBadges";
 import { AppDetailPanel } from "../components/apps/AppDetailPanel";
 import { AppDiscoverySelect } from "../components/apps/AppDiscoverySelect";
+import { CredentialValueInput } from "../components/integrations/CredentialFields";
 
 type Tab = "installed" | "marketplace";
 const MARKETPLACE_PAGE_SIZE = 24;
@@ -2338,10 +2339,10 @@ function InlineConnectIntegration({
       {detail.auth.credential_fields.map((f) => (
         <div key={f.name}>
           <label className="text-text-dim text-[10px]">{f.label || f.name}</label>
-          <input
-            type="password"
+          <CredentialValueInput
+            field={f}
             value={creds[f.name] || ""}
-            onChange={(e) => setCreds({ ...creds, [f.name]: e.target.value })}
+            onChange={(value) => setCreds({ ...creds, [f.name]: value })}
             className="w-full bg-bg border border-border rounded px-2 py-1 text-[11px] font-mono"
           />
           {f.description && <div className="text-text-dim text-[10px] mt-0.5">{f.description}</div>}

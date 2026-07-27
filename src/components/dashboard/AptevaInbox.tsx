@@ -8,6 +8,11 @@ import {
   type ReportMessageRow,
 } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
+import {
+  ApprovalReviewModal,
+  parseApprovalReview,
+  type ApprovalReview,
+} from "../approvals/ApprovalReviewModal";
 import { Modal } from "../Modal";
 
 type InboxItem =
@@ -215,9 +220,9 @@ function InboxRow({
   onDismissed: (messageId: number) => void;
   onActionComplete: () => void;
 }) {
+  const [approvalOpen, setApprovalOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [alertOpen, setAlertOpen] = useState(false);
-  const [submitting, setSubmitting] = useState<string | null>(null);
   const row = item.row;
   const component = getChannelComponent(row.message, `${item.kind}-card`);
   const props = component?.props || {};
@@ -247,17 +252,6 @@ function InboxRow({
   const alert = item.kind === "alert" ? parseAlertProps(props, item.row) : null;
   const tone = inboxTone(item, alert?.severity);
 
-  const sendApprovalAction = async (actionId: string) => {
-    if (item.kind !== "approval" || !approval || approval.status !== "pending" || submitting) return;
-    setSubmitting(actionId);
-    try {
-      const res = await chat.messageAction(row.message.id, actionId);
-      onApprovalUpdated(res.message);
-      onActionComplete();
-    } finally {
-      setSubmitting(null);
-    }
-  };
   const dismiss = async () => {
     await chat.messageDismiss(row.message.id);
     onDismissed(row.message.id);
@@ -298,14 +292,28 @@ function InboxRow({
             item={item}
             approval={approval}
             tone={tone}
-            submitting={submitting}
+            onApprovalOpen={() => setApprovalOpen(true)}
             onReportOpen={() => setReportOpen(true)}
             onAlertOpen={() => setAlertOpen(true)}
             onDismiss={() => void dismiss()}
-            onApprovalAction={(actionId) => void sendApprovalAction(actionId)}
           />
         </div>
       </article>
+      {approval && (
+        <ApprovalReviewModal
+          open={approvalOpen}
+          approval={approval}
+          agentName={row.instance_name || `Agent #${row.instance_id}`}
+          requestedAt={exactTime}
+          onClose={() => setApprovalOpen(false)}
+          onAction={async (actionId, note) => {
+            if (item.kind !== "approval") return;
+            const res = await chat.messageAction(row.message.id, actionId, note);
+            onApprovalUpdated(res.message);
+            onActionComplete();
+          }}
+        />
+      )}
       {report && (
         <ReportModal
           open={reportOpen}
@@ -331,20 +339,18 @@ function InboxActions({
   item,
   approval,
   tone,
-  submitting,
+  onApprovalOpen,
   onReportOpen,
   onAlertOpen,
   onDismiss,
-  onApprovalAction,
 }: {
   item: InboxItem;
-  approval: ParsedApproval | null;
+  approval: ApprovalReview | null;
   tone: InboxTone;
-  submitting: string | null;
+  onApprovalOpen: () => void;
   onReportOpen: () => void;
   onAlertOpen: () => void;
   onDismiss: () => void;
-  onApprovalAction: (actionId: string) => void;
 }) {
   if (item.kind === "report" || item.kind === "alert") {
     return (
@@ -377,26 +383,17 @@ function InboxActions({
     }
     return (
       <div className="flex items-center gap-1.5">
-        {approval.actions.slice(0, 2).map((action) => (
-          <button
-            key={action.id}
-            type="button"
-            disabled={!!submitting}
-            onClick={() => onApprovalAction(action.id)}
-            className={`rounded border px-2.5 py-1 text-[11px] disabled:opacity-40 ${
-              action.style === "danger" || action.id === "deny"
-                ? "border-red/40 text-red hover:bg-red/10"
-                : tone.action
-            }`}
-          >
-            {submitting === action.id ? "..." : action.label}
-          </button>
-        ))}
         <button
           type="button"
-          disabled={!!submitting}
+          onClick={onApprovalOpen}
+          className={`rounded border px-2.5 py-1 text-[11px] ${tone.action}`}
+        >
+          Review
+        </button>
+        <button
+          type="button"
           onClick={onDismiss}
-          className="rounded border border-border px-2.5 py-1 text-[11px] text-text-dim hover:text-text hover:border-text-muted disabled:opacity-40"
+          className="rounded border border-border px-2.5 py-1 text-[11px] text-text-dim hover:text-text hover:border-text-muted"
         >
           Dismiss
         </button>
@@ -418,11 +415,6 @@ function approvalStatus(message: ChatMessageRow): string {
 }
 
 type ChannelComponent = NonNullable<ChatMessageRow["components"]>[number];
-
-type ParsedApproval = {
-  status: string;
-  actions: Array<{ id: string; label: string; style: string }>;
-};
 
 type ParsedReport = {
   title: string;
@@ -494,29 +486,12 @@ function getChannelComponent(message: ChatMessageRow, name: string): ChannelComp
 function parseApprovalProps(
   props: Record<string, unknown>,
   row: ApprovalMessageRow,
-): ParsedApproval {
-  const status = String(props.status || row.status || "pending");
-  const rawActions = Array.isArray(props.actions) ? props.actions : [];
-  const actions = rawActions
-    .map((item) => {
-      if (!item || typeof item !== "object") return null;
-      const obj = item as Record<string, unknown>;
-      const id = String(obj.id || "").trim();
-      const label = String(obj.label || "").trim();
-      const style = String(obj.style || "").trim();
-      if (!id || !label) return null;
-      return { id, label, style };
-    })
-    .filter(Boolean) as ParsedApproval["actions"];
-  return {
-    status,
-    actions: actions.length > 0
-      ? actions
-      : [
-          { id: "approve", label: "Approve", style: "primary" },
-          { id: "deny", label: "Deny", style: "danger" },
-        ],
-  };
+): ApprovalReview {
+  return parseApprovalReview(props, {
+    title: row.title,
+    body: row.body,
+    status: row.status,
+  });
 }
 
 function parseReportProps(

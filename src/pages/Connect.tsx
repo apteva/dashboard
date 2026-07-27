@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { invites, type PublicInviteInfo } from "../api";
+import { CredentialValueInput } from "../components/integrations/CredentialFields";
 import { usePageTitle } from "../hooks/usePageTitle";
 
 // Connect — public page for end clients who don't have a dashboard login.
@@ -164,12 +165,11 @@ export function Connect() {
                     {f.label}
                     {f.required !== false && <span className="text-red"> *</span>}
                   </label>
-                  <input
-                    type={f.type === "password" ? "password" : "text"}
+                  <CredentialValueInput
+                    field={f}
                     value={creds[f.name] || ""}
-                    onChange={(e) => setCreds({ ...creds, [f.name]: e.target.value })}
+                    onChange={(value) => setCreds({ ...creds, [f.name]: value })}
                     required={f.required !== false}
-                    autoComplete="off"
                     className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
                   />
                   {f.description && (

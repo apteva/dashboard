@@ -29,6 +29,10 @@ import {
 } from "react";
 import { AppIdentityProvider } from "@apteva/ui-kit";
 import { chat, type ChatComponent, type ChatMessageRow } from "../../api";
+import {
+  ApprovalReviewModal,
+  parseApprovalReview,
+} from "../approvals/ApprovalReviewModal";
 import { Modal } from "../Modal";
 
 // ─── manifest-side types ────────────────────────────────────────────
@@ -260,12 +264,6 @@ export function ChatComponentList({
   );
 }
 
-interface ApprovalAction {
-  id: string;
-  label: string;
-  style?: string;
-}
-
 function ApprovalCard({
   props,
   messageId,
@@ -277,107 +275,68 @@ function ApprovalCard({
   onMessageUpdated?: (message: ChatMessageRow) => void;
   onActionComplete?: () => void;
 }) {
-  const [submitting, setSubmitting] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
   const id = Number(props.message_id || messageId || 0);
-  const title = String(props.title || "Approval requested");
-  const body = String(props.body || "");
-  const status = String(props.status || "pending");
-  const decision = props.decision && typeof props.decision === "object"
-    ? props.decision as Record<string, unknown>
-    : null;
-  const actions = useMemo(() => {
-    const raw = Array.isArray(props.actions) ? props.actions : [];
-    const parsed = raw
-      .map((item): ApprovalAction | null => {
-        if (!item || typeof item !== "object") return null;
-        const obj = item as Record<string, unknown>;
-        const actionId = String(obj.id || "").trim();
-        const label = String(obj.label || "").trim();
-        const style = String(obj.style || "").trim();
-        if (!actionId || !label) return null;
-        return { id: actionId, label, style };
-      })
-      .filter(Boolean) as ApprovalAction[];
-    return parsed.length > 0
-      ? parsed
-      : [
-          { id: "approve", label: "Approve", style: "primary" },
-          { id: "deny", label: "Deny", style: "danger" },
-        ];
-  }, [props.actions]);
-
-  const sendAction = async (actionId: string) => {
-    if (!id || status !== "pending" || submitting) return;
-    setSubmitting(actionId);
-    try {
-      const res = await chat.messageAction(id, actionId);
-      onMessageUpdated?.(res.message);
-      onActionComplete?.();
-    } finally {
-      setSubmitting(null);
-    }
-  };
-
-  const statusLabel = status === "approved"
+  const approval = useMemo(() => parseApprovalReview(props), [props]);
+  const statusLabel = approval.status === "approved"
     ? "Approved"
-    : status === "denied"
+    : approval.status === "denied"
       ? "Denied"
-      : status === "acted"
+      : approval.status === "acted"
         ? "Completed"
         : "Pending";
 
   return (
-    <div className="w-full max-w-2xl rounded-xl border border-accent/35 bg-bg-card/90 p-3 sm:p-4">
-      <div className="flex flex-col items-start gap-2 sm:flex-row sm:justify-between sm:gap-3">
-        <div className="min-w-0">
-          <div className="text-[10px] uppercase tracking-wide text-accent font-bold">
-            Approval
+    <>
+      <div className="w-full max-w-2xl rounded-xl border border-accent/35 bg-bg-card/90 p-3 sm:p-4">
+        <div className="flex flex-col items-start gap-2 sm:flex-row sm:justify-between sm:gap-3">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-wide text-accent font-bold">
+              Approval
+            </div>
+            <h3 className="text-sm text-text font-bold mt-0.5 break-words">{approval.title}</h3>
           </div>
-          <h3 className="text-sm text-text font-bold mt-0.5 break-words">{title}</h3>
+          <span
+            className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide border ${
+              approval.status === "pending"
+                ? "border-yellow/40 text-yellow bg-yellow/10"
+                : approval.status === "approved"
+                  ? "border-green/40 text-green bg-green/10"
+                  : approval.status === "denied"
+                    ? "border-red/40 text-red bg-red/10"
+                    : "border-text-muted/40 text-text-muted bg-bg-subtle"
+            }`}
+          >
+            {statusLabel}
+          </span>
         </div>
-        <span
-          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide border ${
-            status === "pending"
-              ? "border-yellow/40 text-yellow bg-yellow/10"
-              : status === "approved"
-                ? "border-green/40 text-green bg-green/10"
-                : "border-text-muted/40 text-text-muted bg-bg-subtle"
-          }`}
+        {approval.body && (
+          <p className="mt-3 line-clamp-2 text-sm text-text-muted leading-relaxed whitespace-pre-wrap break-words">
+            {approval.body}
+          </p>
+        )}
+        <button
+          type="button"
+          disabled={!id}
+          onClick={() => setOpen(true)}
+          className="touch-target mt-3 inline-flex items-center rounded-lg border border-accent/30 px-3 text-xs font-bold text-accent hover:bg-accent/10 hover:text-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {statusLabel}
-        </span>
+          {approval.status === "pending" ? "Review" : "View decision"}
+        </button>
       </div>
-      {body && (
-        <p className="mt-3 text-sm text-text-muted leading-relaxed whitespace-pre-wrap break-words">
-          {body}
-        </p>
-      )}
-      {status === "pending" ? (
-        <div className="mt-4 grid grid-cols-1 gap-2 min-[420px]:grid-cols-2 sm:flex sm:flex-wrap">
-          {actions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              disabled={!id || !!submitting}
-              onClick={() => void sendAction(action.id)}
-              className={`touch-target w-full rounded-lg border px-3 py-2 text-sm font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed sm:w-auto sm:text-xs ${
-                action.style === "danger" || action.id === "deny"
-                  ? "border-red/40 text-red hover:bg-red/10"
-                  : action.style === "primary" || action.id === "approve"
-                    ? "border-accent/50 text-accent bg-accent/10 hover:bg-accent/20"
-                    : "border-border text-text-muted hover:border-text hover:text-text"
-              }`}
-            >
-              {submitting === action.id ? "Sending..." : action.label}
-            </button>
-          ))}
-        </div>
-      ) : decision && (
-        <div className="mt-3 text-[11px] text-text-dim">
-          Decision: {String(decision.action_id || status)}
-        </div>
-      )}
-    </div>
+
+      <ApprovalReviewModal
+        open={open}
+        approval={approval}
+        onClose={() => setOpen(false)}
+        onAction={async (actionId, note) => {
+          if (!id) throw new Error("Approval message is unavailable.");
+          const res = await chat.messageAction(id, actionId, note);
+          onMessageUpdated?.(res.message);
+          onActionComplete?.();
+        }}
+      />
+    </>
   );
 }
 

@@ -38,6 +38,7 @@ function AppLogo({ src, className }: { src?: string | null; className?: string }
 }
 import { Modal } from "../components/Modal";
 import { SuiteConnect } from "../components/SuiteConnect";
+import { CredentialValueInput } from "../components/integrations/CredentialFields";
 import { IntegrationExplorerPanel } from "../components/integrations/IntegrationExplorerPanel";
 import { useNavigate } from "react-router-dom";
 import { useProjects } from "../hooks/useProjects";
@@ -1589,11 +1590,11 @@ export function Integrations() {
                     {field.description && (
                       <p className="text-text-dim text-xs mb-1">{field.description}</p>
                     )}
-                    <input
-                      type={field.type === "text" ? "text" : "password"}
+                    <CredentialValueInput
+                      field={field}
                       value={credentials[field.name] || ""}
-                      onChange={(e) =>
-                        setCredentials({ ...credentials, [field.name]: e.target.value })
+                      onChange={(value) =>
+                        setCredentials({ ...credentials, [field.name]: value })
                       }
                       className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text focus:outline-none focus:border-accent"
                       required={field.required !== false}

@@ -3077,7 +3077,13 @@ export const chat = {
     ),
 
   messageDismiss: (messageId: number) =>
-    request<{ message: ChatMessageRow; dismissed: boolean }>(
+    request<{
+      message: ChatMessageRow;
+      dismissed: boolean;
+      notified?: boolean;
+      forwarded?: boolean;
+      delivery_error?: string;
+    }>(
       "POST",
       "/apps/channel-chat/message-dismiss",
       { message_id: messageId },
