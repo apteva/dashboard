@@ -520,7 +520,14 @@ export function Agents() {
                     </div>
 
                     <div className="mt-4 min-h-[66px]">
-                      <AgentCurrentStatus status={currentStatusByAgent[inst.id]} compact showFallback showAge showNextFallback />
+                      <AgentCurrentStatus
+                        status={currentStatusByAgent[inst.id]}
+                        compact
+                        showFallback
+                        showAge
+                        showNextFallback
+                        statusLabel="Latest work"
+                      />
                     </div>
 
                     <RuntimeSummary live={live} running={isRunning} now={now} />
@@ -548,7 +555,7 @@ export function Agents() {
           <div className="rounded-lg border border-border bg-bg-card">
             <div className="hidden grid-cols-[minmax(12rem,1.2fr)_minmax(14rem,1.4fr)_minmax(8rem,.7fr)_minmax(10rem,1fr)_auto] gap-4 border-b border-border bg-bg-hover/40 px-4 py-2 text-[10px] font-bold uppercase tracking-wide text-text-dim lg:grid">
               <span>Agent</span>
-              <span>Current status</span>
+              <span>Latest work status</span>
               <span>Runtime</span>
               <span>Capabilities</span>
               <span className="text-right">Actions</span>
@@ -577,8 +584,8 @@ export function Agents() {
                     </Link>
 
                     <div className="min-w-0">
-                      <div className="mb-1 text-[9px] font-bold uppercase tracking-wide text-text-dim lg:hidden">Status</div>
-                      <AgentCurrentStatus status={currentStatusByAgent[inst.id]} compact showFallback showNextFallback />
+                      <div className="mb-1 text-[9px] font-bold uppercase tracking-wide text-text-dim lg:hidden">Latest work status</div>
+                      <AgentCurrentStatus status={currentStatusByAgent[inst.id]} compact showFallback showAge showNextFallback />
                     </div>
 
                     <div>

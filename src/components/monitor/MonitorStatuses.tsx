@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { Agent, CurrentStatusMessageRow } from "../../api";
-import { AgentCurrentStatus } from "../dashboard/CurrentStatuses";
+import { AgentCurrentStatus, currentStatusUpdatedAt } from "../dashboard/CurrentStatuses";
 
 export function MonitorStatuses({
   agents,
@@ -21,13 +21,19 @@ export function MonitorStatuses({
   const active = useMemo(
     () => statuses
       .filter((row) => row.state !== "completed")
-      .sort((a, b) => statusRank(a) - statusRank(b) || Date.parse(b.message.created_at) - Date.parse(a.message.created_at)),
+      .sort((a, b) => statusRank(a) - statusRank(b) || Date.parse(currentStatusUpdatedAt(b)) - Date.parse(currentStatusUpdatedAt(a))),
+    [statuses],
+  );
+  const upcoming = useMemo(
+    () => statuses
+      .filter((row) => row.state === "completed" && !!row.next?.trim())
+      .sort(compareUpcomingStatuses),
     [statuses],
   );
   const completed = useMemo(
     () => statuses
-      .filter((row) => row.state === "completed")
-      .sort((a, b) => Date.parse(b.message.created_at) - Date.parse(a.message.created_at)),
+      .filter((row) => row.state === "completed" && !row.next?.trim())
+      .sort((a, b) => Date.parse(currentStatusUpdatedAt(b)) - Date.parse(currentStatusUpdatedAt(a))),
     [statuses],
   );
   const unreported = useMemo(
@@ -67,10 +73,29 @@ export function MonitorStatuses({
         </div>
       )}
 
+      {upcoming.length > 0 && (
+        <section className="border-t border-border">
+          <header className="flex min-h-10 items-center justify-between gap-3 bg-bg-hover/25 px-4 text-xs text-text-muted">
+            <span>Upcoming</span>
+            <span className="text-[11px] tabular-nums text-text-dim">{upcoming.length}</span>
+          </header>
+          <div className="divide-y divide-border border-t border-border">
+            {upcoming.map((row) => (
+              <StatusRow
+                key={row.instance_id}
+                row={row}
+                projectName={projectNames.get(row.project_id)}
+                showProject={showProjects}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       {completed.length > 0 && (
         <details className="group border-t border-border">
           <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 text-xs text-text-muted hover:bg-bg-hover hover:text-text [&::-webkit-details-marker]:hidden">
-            <span className="leading-none">Recently completed</span>
+            <span className="leading-none">Latest completed</span>
             <span className="flex h-5 shrink-0 items-center gap-2 text-text-dim">
               <span className="inline-flex h-5 min-w-5 items-center justify-center text-[11px] leading-none tabular-nums">
                 {completed.length}
@@ -202,4 +227,13 @@ function statusRank(row: CurrentStatusMessageRow) {
   if (row.state === "working") return 1;
   if (row.state === "waiting") return 2;
   return 3;
+}
+
+function compareUpcomingStatuses(a: CurrentStatusMessageRow, b: CurrentStatusMessageRow) {
+  const aNext = a.next_at ? Date.parse(a.next_at) : Number.POSITIVE_INFINITY;
+  const bNext = b.next_at ? Date.parse(b.next_at) : Number.POSITIVE_INFINITY;
+  const safeA = Number.isFinite(aNext) ? aNext : Number.POSITIVE_INFINITY;
+  const safeB = Number.isFinite(bNext) ? bNext : Number.POSITIVE_INFINITY;
+  if (safeA !== safeB) return safeA < safeB ? -1 : 1;
+  return Date.parse(currentStatusUpdatedAt(b)) - Date.parse(currentStatusUpdatedAt(a));
 }

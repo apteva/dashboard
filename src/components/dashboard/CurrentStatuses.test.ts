@@ -35,6 +35,15 @@ describe("ageCurrentStatusRows", () => {
     expect(row?.state).toBe("blocked");
     expect(row?.stale).toBe(true);
   });
+
+  test("uses the explicit status update time instead of the message creation fallback", () => {
+    const row = status("working", 7 * 24 * 60 * 60_000);
+    row.updated_at = new Date(NOW - 60_000).toISOString();
+
+    const [aged] = ageCurrentStatusRows([row], NOW);
+
+    expect(aged?.stale).toBe(false);
+  });
 });
 
 describe("AgentCurrentStatus", () => {
@@ -72,7 +81,28 @@ describe("AgentCurrentStatus", () => {
       showNextFallback: true,
     }));
     expect(html).toContain("bg-text-dim/15 text-text-dim");
-    expect(html).toContain("last reported");
+    expect(html).toContain("Last reported");
     expect(html).toContain(">blocked<");
+  });
+
+  test("shows when the status changed and the next action with its due time", () => {
+    const current = status("completed", 7 * 24 * 60 * 60_000);
+    current.updated_at = new Date().toISOString();
+    current.next = "Run the next inbox check";
+    current.next_at = new Date(Date.now() + 60 * 60_000).toISOString();
+
+    const html = renderToStaticMarkup(createElement(AgentCurrentStatus, {
+      status: current,
+      compact: true,
+      showAge: true,
+      showNextFallback: true,
+      statusLabel: "Latest work",
+    }));
+
+    expect(html).toContain("Latest work");
+    expect(html).toMatch(/Updated (?:just now|\d+s ago)/);
+    expect(html).toContain("Run the next inbox check");
+    expect(html).toContain("<time");
+    expect(html).toContain("in 1h");
   });
 });

@@ -35,7 +35,7 @@ export function useCurrentStatuses(projectId?: string) {
 export function CurrentStatuses({ projectId }: { projectId?: string }) {
   const rows = useCurrentStatuses(projectId);
   const ordered = useMemo(
-    () => [...rows].sort((a, b) => statusRank(a) - statusRank(b) || Date.parse(b.message.created_at) - Date.parse(a.message.created_at)),
+    () => [...rows].sort((a, b) => statusRank(a) - statusRank(b) || Date.parse(currentStatusUpdatedAt(b)) - Date.parse(currentStatusUpdatedAt(a))),
     [rows],
   );
 
@@ -54,22 +54,25 @@ export function CurrentStatuses({ projectId }: { projectId?: string }) {
         <div className="px-4 py-6 text-xs text-text-dim">No agent status reported yet.</div>
       ) : (
         <div className="divide-y divide-border">
-          {ordered.map((row) => (
-            <Link
-              key={row.instance_id}
-              to={`/agents/${row.instance_id}`}
-              className="grid min-h-[68px] grid-cols-[minmax(120px,0.8fr)_minmax(0,2fr)_auto] items-center gap-4 px-4 py-2.5 hover:bg-bg-hover transition-colors"
-            >
-              <div className="min-w-0">
-                <div className="truncate text-xs font-semibold text-text">{row.instance_name}</div>
-                <div className="mt-1 text-[10px] text-text-dim">#{row.instance_id}</div>
-              </div>
-              <StatusContent status={row} />
-              <time className="text-[10px] tabular-nums text-text-dim" title={formatExact(row.message.created_at)}>
-                {formatAge(row.message.created_at)}
-              </time>
-            </Link>
-          ))}
+          {ordered.map((row) => {
+            const updatedAt = currentStatusUpdatedAt(row);
+            return (
+              <Link
+                key={row.instance_id}
+                to={`/agents/${row.instance_id}`}
+                className="grid min-h-[68px] grid-cols-[minmax(120px,0.8fr)_minmax(0,2fr)_auto] items-center gap-4 px-4 py-2.5 hover:bg-bg-hover transition-colors"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-semibold text-text">{row.instance_name}</div>
+                  <div className="mt-1 text-[10px] text-text-dim">#{row.instance_id}</div>
+                </div>
+                <StatusContent status={row} />
+                <time className="text-[10px] tabular-nums text-text-dim" title={`Updated ${formatExact(updatedAt)}`}>
+                  {formatAge(updatedAt)}
+                </time>
+              </Link>
+            );
+          })}
         </div>
       )}
     </section>
@@ -83,6 +86,7 @@ export function AgentCurrentStatus({
   showFallback = false,
   showAge = false,
   showNextFallback = false,
+  statusLabel,
 }: {
   status?: CurrentStatusMessageRow;
   compact?: boolean;
@@ -90,6 +94,7 @@ export function AgentCurrentStatus({
   showFallback?: boolean;
   showAge?: boolean;
   showNextFallback?: boolean;
+  statusLabel?: string;
 }) {
   if (!status && !showFallback) return null;
   const containerClass = compact
@@ -100,12 +105,9 @@ export function AgentCurrentStatus({
   return (
     <div className={containerClass}>
       {showAge && (
-        <div className="mb-1.5 min-h-3 text-left text-[9px] text-text-dim">
-          {status && (
-            <time title={formatExact(status.message.created_at)}>
-              {status.stale ? "last reported" : "updated"} {formatRelativeAge(status.message.created_at)}
-            </time>
-          )}
+        <div className="mb-1.5 flex min-h-3 items-center justify-between gap-2 text-left text-[9px] text-text-dim">
+          {statusLabel && <span className="font-bold uppercase tracking-wide">{statusLabel}</span>}
+          {status && <StatusUpdatedAt status={status} />}
         </div>
       )}
       {status ? (
@@ -171,6 +173,25 @@ export function StatusNextStep({ next, nextAt }: { next?: string; nextAt?: strin
   );
 }
 
+export function StatusUpdatedAt({
+  status,
+  className = "",
+}: {
+  status: CurrentStatusMessageRow;
+  className?: string;
+}) {
+  const updatedAt = currentStatusUpdatedAt(status);
+  return (
+    <time className={className} dateTime={updatedAt} title={`Updated ${formatExact(updatedAt)}`}>
+      {status.stale ? "Last reported" : "Updated"} {formatRelativeAge(updatedAt)}
+    </time>
+  );
+}
+
+export function currentStatusUpdatedAt(status: CurrentStatusMessageRow) {
+  return status.updated_at?.trim() || status.message.created_at;
+}
+
 function StatusMarker({
   state,
   stale = false,
@@ -233,9 +254,9 @@ const CURRENT_STATUS_STALE_MS = 30 * 60_000;
 
 export function ageCurrentStatusRows(rows: CurrentStatusMessageRow[], now: number) {
   return rows.map((row) => {
-    const createdAt = Date.parse(row.message.created_at);
-    if (!Number.isFinite(createdAt)) return row;
-    const age = Math.max(0, now - createdAt);
+    const updatedAt = Date.parse(currentStatusUpdatedAt(row));
+    if (!Number.isFinite(updatedAt)) return row;
+    const age = Math.max(0, now - updatedAt);
     if (row.state !== "completed" && age > CURRENT_STATUS_STALE_MS && !row.stale) {
       return { ...row, stale: true };
     }

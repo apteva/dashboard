@@ -1508,7 +1508,14 @@ function AgentRuntimePanel({
         )}
         <div className={`px-3 py-3 sm:px-4 ${instance.status === "running" ? "" : "border-t border-border/70"}`}>
           <div className="min-w-0">
-            <AgentCurrentStatus status={currentStatus} embedded showFallback />
+            <AgentCurrentStatus
+              status={currentStatus}
+              embedded
+              showFallback
+              showAge
+              showNextFallback
+              statusLabel="Latest work status"
+            />
           </div>
           <AppPanels
             slot="instance.status"

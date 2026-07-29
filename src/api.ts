@@ -2920,6 +2920,7 @@ export interface CurrentStatusMessageRow {
 	instance_id: number;
 	instance_name: string;
 	project_id: string;
+	updated_at?: string;
 	title: string;
 	detail?: string;
 	state: "working" | "waiting" | "blocked" | "completed";

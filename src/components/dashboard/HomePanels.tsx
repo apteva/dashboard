@@ -1,14 +1,12 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { Agent, CurrentStatusMessageRow, InstanceStats } from "../../api";
-import { StatusNextStep } from "./CurrentStatuses";
+import { currentStatusUpdatedAt, StatusNextStep, StatusUpdatedAt } from "./CurrentStatuses";
 
 export interface AgentOperation {
   agent: Agent;
   status?: CurrentStatusMessageRow;
 }
-
-const RECENT_COMPLETION_MS = 30 * 60_000;
 
 export function selectAgentOperations(
   agents: Agent[],
@@ -18,27 +16,20 @@ export function selectAgentOperations(
   const latestStatusByAgent = new Map<number, CurrentStatusMessageRow>();
   for (const status of statuses) {
     const current = latestStatusByAgent.get(status.instance_id);
-    if (!current || Date.parse(status.message.created_at) > Date.parse(current.message.created_at)) {
+    if (!current || Date.parse(currentStatusUpdatedAt(status)) > Date.parse(currentStatusUpdatedAt(current))) {
       latestStatusByAgent.set(status.instance_id, status);
     }
   }
 
   return agents
     .map((agent) => {
-      const reported = latestStatusByAgent.get(agent.id);
-      const createdAt = reported ? Date.parse(reported.message.created_at) : Number.NaN;
-      const recentCompleted = reported?.state === "completed"
-        && Number.isFinite(createdAt)
-        && Math.max(0, now - createdAt) <= RECENT_COMPLETION_MS;
-      const currentStatus = reported
-        && ((!reported.stale && reported.state !== "completed") || recentCompleted)
-        ? reported
-        : undefined;
-      return { agent, status: currentStatus };
+      return { agent, status: latestStatusByAgent.get(agent.id) };
     })
     .filter(({ agent, status }) => !!status || agent.status === "running")
     .sort((a, b) => {
-      return operationRank(a.agent, a.status) - operationRank(b.agent, b.status)
+      return operationRank(a.agent, a.status, now) - operationRank(b.agent, b.status, now)
+        || compareNextAt(a.status, b.status)
+        || compareUpdatedAt(a.status, b.status)
         || a.agent.name.localeCompare(b.agent.name);
     });
 }
@@ -57,7 +48,7 @@ export function HomeAgentOperations({
     <section className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-bg-card xl:h-[460px]">
       <PanelHeader
         title="Agent operations"
-        subtitle="Current and upcoming work"
+        subtitle="Latest and upcoming work"
         count={operations.length}
         to="/monitor"
       />
@@ -140,7 +131,7 @@ function PanelHeader({
 
 function AgentOperationRow({ agent, status }: AgentOperation) {
   const state = status?.state || "running";
-  const tone = stateTone(state);
+  const tone = stateTone(state, status?.stale);
   return (
     <Link
       to={`/agents/${agent.id}`}
@@ -157,9 +148,12 @@ function AgentOperationRow({ agent, status }: AgentOperation) {
             <span className="ml-auto shrink-0 text-[10px] tabular-nums text-text-dim">{Math.round(status.progress)}%</span>
           )}
         </div>
-        <p className="mt-1 truncate text-[11px] text-text-muted" title={status?.detail || undefined}>
-          {status?.title || "Running without active work reported"}
-        </p>
+        <div className="mt-1 flex min-w-0 items-center gap-2">
+          <p className="min-w-0 flex-1 truncate text-[11px] text-text-muted" title={status?.detail || undefined}>
+            {status?.title || "Running without active work reported"}
+          </p>
+          {status && <StatusUpdatedAt status={status} className="shrink-0 text-[9px] tabular-nums text-text-dim" />}
+        </div>
         {status?.progress != null && (
           <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-bg-hover">
             <div className={`h-full ${tone.bar}`} style={{ width: `${Math.max(0, Math.min(100, status.progress))}%` }} />
@@ -192,15 +186,34 @@ function Metric({ label, value, warn = false }: { label: string; value: string; 
   );
 }
 
-function operationRank(agent: Agent, status?: CurrentStatusMessageRow) {
-  if (status?.state === "blocked") return 0;
-  if (status?.state === "waiting") return 1;
-  if (status?.state === "working") return 2;
-  if (agent.status === "running") return 3;
-  return 4;
+function operationRank(agent: Agent, status: CurrentStatusMessageRow | undefined, now: number) {
+  if (!status?.stale && status?.state === "blocked") return 0;
+  if (!status?.stale && status?.state === "waiting") return 1;
+  if (!status?.stale && status?.state === "working") return 2;
+  if (status?.next_at && Date.parse(status.next_at) > now) return 3;
+  if (agent.status === "running") return 4;
+  if (status?.next) return 5;
+  if (status?.state === "completed") return 6;
+  return 7;
 }
 
-function stateTone(state: string) {
+function compareNextAt(a?: CurrentStatusMessageRow, b?: CurrentStatusMessageRow) {
+  const aTime = a?.next_at ? Date.parse(a.next_at) : Number.POSITIVE_INFINITY;
+  const bTime = b?.next_at ? Date.parse(b.next_at) : Number.POSITIVE_INFINITY;
+  const safeA = Number.isFinite(aTime) ? aTime : Number.POSITIVE_INFINITY;
+  const safeB = Number.isFinite(bTime) ? bTime : Number.POSITIVE_INFINITY;
+  if (safeA === safeB) return 0;
+  return safeA < safeB ? -1 : 1;
+}
+
+function compareUpdatedAt(a?: CurrentStatusMessageRow, b?: CurrentStatusMessageRow) {
+  const aTime = a ? Date.parse(currentStatusUpdatedAt(a)) : 0;
+  const bTime = b ? Date.parse(currentStatusUpdatedAt(b)) : 0;
+  return bTime - aTime;
+}
+
+function stateTone(state: string, stale = false) {
+  if (stale) return { badge: "bg-text-dim/15 text-text-dim", text: "text-text-dim", bar: "bg-text-dim" };
   if (state === "blocked" || state === "error") return { badge: "bg-red/15 text-red", text: "text-red", bar: "bg-red" };
   if (state === "waiting") return { badge: "bg-blue/15 text-blue", text: "text-blue", bar: "bg-blue" };
   if (state === "completed") return { badge: "bg-green/15 text-green", text: "text-green", bar: "bg-green" };

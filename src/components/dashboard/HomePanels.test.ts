@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
 import type { Agent, CurrentStatusMessageRow } from "../../api";
-import { selectAgentOperations } from "./HomePanels";
+import { HomeAgentOperations, selectAgentOperations } from "./HomePanels";
 
 const NOW = Date.parse("2026-07-25T12:00:00Z");
 
@@ -76,7 +79,7 @@ describe("selectAgentOperations", () => {
     expect(rows.map((row) => row.agent.id)).toEqual([4, 3, 2, 1, 5]);
   });
 
-  test("does not present stale work as current but keeps a running agent", () => {
+  test("keeps the latest reported status visible even when it is stale", () => {
     const rows = selectAgentOperations(
       [agent(1, "Running", "running"), agent(2, "Stopped")],
       [
@@ -86,12 +89,12 @@ describe("selectAgentOperations", () => {
       NOW,
     );
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.agent.id).toBe(1);
-    expect(rows[0]?.status).toBeUndefined();
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.agent.id)).toEqual([1, 2]);
+    expect(rows.every((row) => row.status?.stale)).toBe(true);
   });
 
-  test("keeps only recent completed work and chooses the newest status per agent", () => {
+  test("keeps completed status indefinitely and chooses the newest status per agent", () => {
     const rows = selectAgentOperations(
       [agent(1, "Recent"), agent(2, "Old")],
       [
@@ -102,8 +105,57 @@ describe("selectAgentOperations", () => {
       NOW,
     );
 
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(2);
     expect(rows[0]?.agent.id).toBe(1);
     expect(rows[0]?.status?.state).toBe("completed");
+    expect(rows[1]?.agent.id).toBe(2);
+  });
+
+  test("uses explicit status update time for recency and latest-status selection", () => {
+    const olderMessageWithFreshStatus = reported(1, "completed", 24 * 60 * 60_000);
+    olderMessageWithFreshStatus.updated_at = new Date(NOW - 60_000).toISOString();
+    const newerMessageWithOlderStatus = reported(1, "working", 30_000);
+    newerMessageWithOlderStatus.updated_at = new Date(NOW - 60 * 60_000).toISOString();
+
+    const rows = selectAgentOperations(
+      [agent(1, "Fresh")],
+      [newerMessageWithOlderStatus, olderMessageWithFreshStatus],
+      NOW,
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status?.state).toBe("completed");
+  });
+
+  test("keeps an old completed cycle visible when its next run is more than a day away", () => {
+    const current = reported(1, "completed", 3 * 24 * 60 * 60_000);
+    current.next = "Run the next weekly review";
+    current.next_at = new Date(NOW + 7 * 24 * 60 * 60_000).toISOString();
+
+    const rows = selectAgentOperations([agent(1, "Weekly")], [current], NOW);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status?.next).toBe("Run the next weekly review");
+    expect(rows[0]?.status?.next_at).toBe(current.next_at);
+  });
+});
+
+describe("HomeAgentOperations", () => {
+  test("shows the status update age and next action on the home page", () => {
+    const current = reported(1, "completed", 24 * 60 * 60_000);
+    current.updated_at = new Date().toISOString();
+    current.next = "Run the next hourly inbox check";
+
+    const html = renderToStaticMarkup(createElement(
+      MemoryRouter,
+      {},
+      createElement(HomeAgentOperations, {
+        agents: [agent(1, "Personal Agent")],
+        statuses: [current],
+      }),
+    ));
+
+    expect(html).toMatch(/Updated (?:just now|\d+s ago)/);
+    expect(html).toContain("Run the next hourly inbox check");
   });
 });
