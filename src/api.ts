@@ -2156,6 +2156,7 @@ export const invites = {
     source?: string;
     project_id?: string;
     connection_id?: number;
+    template_connection_id?: number;
     provider_id?: number;
     allowed_tools?: string;
     name?: string;
