@@ -40,13 +40,15 @@ import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
 import { AgentCurrentStatus, useCurrentStatuses } from "./dashboard/CurrentStatuses";
+import { AgentTasksPanel } from "./tasks/AgentTasksPanel";
+import { useTaskTrackingAvailable } from "../hooks/useTasks";
 import {
   appendRuntimeThoughtText,
   cleanReasoningDisplay,
   type RuntimeThoughtText,
 } from "../utils/runtimeThought";
 
-type RuntimeView = "stream" | "activity" | "memory" | "skills" | "apps" | "capabilities";
+type RuntimeView = "stream" | "tasks" | "activity" | "memory" | "skills" | "apps" | "capabilities";
 
 interface RuntimeEventItem {
   key: string;
@@ -514,11 +516,13 @@ export function AgentView({
   onDelete,
   onReload,
   initialThreads = [],
+  initialThreadId,
 }: {
   instance: Agent;
   onDelete: () => void | Promise<void>;
   onReload: () => void;
   initialThreads?: Thread[];
+  initialThreadId?: string;
 }) {
   // Event bus for fan-out to sibling panels.
   //
@@ -590,6 +594,10 @@ export function AgentView({
   // Thread detail modal
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [threadLiveEvents, setThreadLiveEvents] = useState<Record<string, TelemetryEvent[]>>({});
+
+  useEffect(() => {
+    if (initialThreadId) setSelectedThreadId(initialThreadId);
+  }, [initialThreadId, instance.id]);
 
   // Reset all live state when the instance changes — critical because
   // react-router keeps the component mounted when navigating between
@@ -1310,6 +1318,7 @@ function AgentRuntimePanel({
   const [executionBusy, setExecutionBusy] = useState<"run" | "pause" | "step" | "back" | null>(null);
   const [showDeveloperControls, setShowDeveloperControls] = useState(false);
   const telemetryConnection = useTelemetryConnectionState();
+  const taskTrackingAvailable = useTaskTrackingAvailable(instance.project_id || undefined);
 
   useEffect(() => {
     setSelectedRuntimeThread("main");
@@ -1412,6 +1421,7 @@ function AgentRuntimePanel({
 
   const primaryViews: Array<{ id: RuntimeView; label: string }> = [
     { id: "stream", label: "Live" },
+    ...(taskTrackingAvailable ? [{ id: "tasks" as RuntimeView, label: "Tasks" }] : []),
     { id: "memory", label: "Memory" },
     { id: "capabilities", label: `Capabilities${mcpServers.length > 0 ? ` ${mcpServers.length}` : ""}` },
   ];
@@ -1577,6 +1587,8 @@ function AgentRuntimePanel({
       <div className="flex-1 min-h-0">
         {view === "stream" ? (
           <RuntimeStream events={events} selectedThreadId={selectedRuntimeThread} loading={runtimeLoading} />
+        ) : view === "tasks" ? (
+          <AgentTasksPanel agent={instance} />
         ) : view === "capabilities" ? (
           <AgentCapabilitiesView
             instance={instance}

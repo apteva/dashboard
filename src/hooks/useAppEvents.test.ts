@@ -16,8 +16,8 @@
 // browser cannot run an unbounded retry loop beneath our bounded timer.
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { renderHook, act } from "@testing-library/react";
-import { useAppEvents, type AppEventEnvelope } from "./useAppEvents";
+import { renderHook, act, cleanup } from "@testing-library/react";
+import { __testHelpers, useAppEvents, type AppEventEnvelope } from "./useAppEvents";
 
 interface MockES {
   url: string;
@@ -80,6 +80,12 @@ class FakeEventSource implements MockES {
 }
 
 beforeEach(() => {
+  cleanup();
+  for (const channel of __testHelpers.channels.values()) {
+    if (channel.reconnectTimer !== null) window.clearTimeout(channel.reconnectTimer);
+    channel.es?.close();
+  }
+  __testHelpers.channels.clear();
   lastES = null;
   allESes.length = 0;
   // Install fake. Cast: TypeScript thinks EventSource is the spec
@@ -88,6 +94,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   allESes.forEach((es) => es.close());
 });
 

@@ -11,6 +11,7 @@ import { ConversationDetails } from "./ConversationDetails";
 import type { Agent, ChatRow } from "../../api";
 import type { SubscribeFn } from "../AgentView";
 import { useRealtimeAvailability } from "../../hooks/useRealtimeAvailability";
+import { ConversationTaskCard } from "../tasks/ConversationTaskCard";
 
 interface Props {
   chatId: string | null;
@@ -73,6 +74,11 @@ export function ChatMain({
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <ConversationTaskCard
+        projectId={conversation.project_id}
+        conversationId={chatId}
+        agent={instance}
+      />
       <div className="min-h-0 flex-1 overflow-hidden">
         <ChatPanel
           key={chatId}

@@ -12,6 +12,7 @@ import { apps, platform, type PlatformStatus } from "../api";
 import { ContextAgentChatWidget, readContextAgentChatOpenDefault } from "./ContextAgentChatWidget";
 import { NewAgentButton } from "./NewAgentButton";
 import { RealtimeVoiceDock } from "../state/RealtimeVoiceContext";
+import { useTaskTrackingAvailable } from "../hooks/useTasks";
 
 // Sidebar APPS section visible-cap. Above this, the overflow row
 // collapses the rest behind a "More apps (N)" toggle. Five is the
@@ -49,6 +50,7 @@ export function Layout() {
   }, []);
   const [refreshing, setRefreshing] = useState(false);
   const { projects, currentProject, setCurrentProject } = useProjects();
+  const taskTrackingAvailable = useTaskTrackingAvailable(currentProject?.id);
   const navigate = useNavigate();
   const location = useLocation();
   const isMobileChatConversation = /^\/chat\/[^/]+/.test(location.pathname);
@@ -217,6 +219,7 @@ export function Layout() {
     { to: "/", label: t("nav.dashboard") },
     { to: "/build", label: t("nav.build") },
     { to: "/agents", label: t("nav.agents") },
+    ...(taskTrackingAvailable ? [{ to: "/tasks", label: t("nav.tasks") }] : []),
     { to: "/monitor", label: t("nav.monitor") },
     { to: "/chat", label: t("nav.chat") },
   ];

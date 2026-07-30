@@ -1,7 +1,88 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { Agent, CurrentStatusMessageRow } from "../../api";
-import { AgentCurrentStatus, currentStatusUpdatedAt } from "../dashboard/CurrentStatuses";
+import {
+  AgentCurrentStatus,
+  currentStatusUpdatedAt,
+  StatusNextStep,
+  StatusUpdatedAt,
+} from "../dashboard/CurrentStatuses";
+
+export function selectUpcomingAgentSchedules(statuses: CurrentStatusMessageRow[]) {
+  const latestByAgent = new Map<number, CurrentStatusMessageRow>();
+  for (const row of statuses) {
+    const current = latestByAgent.get(row.instance_id);
+    if (!current || Date.parse(currentStatusUpdatedAt(row)) > Date.parse(currentStatusUpdatedAt(current))) {
+      latestByAgent.set(row.instance_id, row);
+    }
+  }
+  return [...latestByAgent.values()]
+    .filter((row) => !!row.next?.trim())
+    .sort(compareUpcomingStatuses);
+}
+
+export function MonitorSchedules({
+  agents,
+  statuses,
+  projectNames,
+  showProjects,
+}: {
+  agents: Agent[];
+  statuses: CurrentStatusMessageRow[];
+  projectNames: Map<string, string>;
+  showProjects: boolean;
+}) {
+  const scheduled = useMemo(() => selectUpcomingAgentSchedules(statuses), [statuses]);
+  const agentsByID = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
+  return (
+    <section className="overflow-hidden rounded-lg border border-border bg-bg-card">
+      <header className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
+        <div>
+          <h2 className="text-sm font-bold text-text">Agent schedules</h2>
+          <p className="mt-0.5 text-[11px] text-text-dim">Next autonomous actions reported by agents</p>
+        </div>
+        <span className="shrink-0 text-[11px] tabular-nums text-text-dim">{scheduled.length} upcoming</span>
+      </header>
+      {scheduled.length === 0 ? (
+        <div className="px-4 py-5">
+          <p className="text-xs font-medium text-text-muted">No upcoming agent runs reported</p>
+          <p className="mt-1 text-[11px] text-text-dim">Recurring agents appear here after reporting their next action and time.</p>
+        </div>
+      ) : (
+        <div className="divide-y divide-border">
+          {scheduled.map((row) => {
+            const agent = agentsByID.get(row.instance_id);
+            return (
+              <Link
+                key={row.instance_id}
+                to={`/agents/${row.instance_id}`}
+                className="grid min-h-[70px] grid-cols-[minmax(105px,0.7fr)_minmax(0,1.3fr)_auto] items-center gap-3 px-4 py-2.5 transition-colors hover:bg-bg-hover"
+              >
+                <AgentIdentity
+                  agentId={row.instance_id}
+                  name={row.instance_name}
+                  projectName={projectNames.get(row.project_id)}
+                  showProject={showProjects}
+                />
+                <div className="min-w-0">
+                  <StatusUpdatedAt status={row} className="text-[9px] tabular-nums text-text-dim" />
+                  <StatusNextStep next={row.next} nextAt={row.next_at} />
+                </div>
+                <span className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+                  agent?.status === "running"
+                    ? "border-green/25 bg-green/10 text-green"
+                    : "border-border text-text-dim"
+                }`}>
+                  {agent?.status || "unknown"}
+                </span>
+              </Link>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
 
 export function MonitorStatuses({
   agents,

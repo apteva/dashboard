@@ -8,6 +8,34 @@ export interface AgentOperation {
   status?: CurrentStatusMessageRow;
 }
 
+export interface AgentSchedule {
+  agent: Agent;
+  status: CurrentStatusMessageRow;
+}
+
+export function selectAgentSchedules(
+  agents: Agent[],
+  statuses: CurrentStatusMessageRow[],
+): AgentSchedule[] {
+  const latestStatusByAgent = new Map<number, CurrentStatusMessageRow>();
+  for (const status of statuses) {
+    const current = latestStatusByAgent.get(status.instance_id);
+    if (!current || Date.parse(currentStatusUpdatedAt(status)) > Date.parse(currentStatusUpdatedAt(current))) {
+      latestStatusByAgent.set(status.instance_id, status);
+    }
+  }
+  return agents
+    .flatMap((agent) => {
+      const status = latestStatusByAgent.get(agent.id);
+      return status?.next?.trim() ? [{ agent, status }] : [];
+    })
+    .sort((a, b) =>
+      compareNextAt(a.status, b.status) ||
+      compareUpdatedAt(a.status, b.status) ||
+      a.agent.name.localeCompare(b.agent.name),
+    );
+}
+
 export function selectAgentOperations(
   agents: Agent[],
   statuses: CurrentStatusMessageRow[],
@@ -58,6 +86,51 @@ export function HomeAgentOperations({
         <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
           {visible.map(({ agent, status }) => (
             <AgentOperationRow key={agent.id} agent={agent} status={status} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function HomeAgentSchedule({
+  agents,
+  statuses,
+}: {
+  agents: Agent[];
+  statuses: CurrentStatusMessageRow[];
+}) {
+  const schedules = useMemo(() => selectAgentSchedules(agents, statuses), [agents, statuses]);
+  const visible = schedules.slice(0, 8);
+  return (
+    <section className="overflow-hidden rounded-lg border border-border bg-bg-card">
+      <PanelHeader
+        title="Upcoming agent runs"
+        subtitle="The next autonomous action reported by each agent"
+        count={schedules.length}
+        to="/monitor"
+        linkLabel="View schedules"
+      />
+      {visible.length === 0 ? (
+        <EmptyState title="No upcoming runs reported" detail="Recurring agents will appear here after they report their next scheduled action." />
+      ) : (
+        <div className="divide-y divide-border">
+          {visible.map(({ agent, status }) => (
+            <Link
+              key={agent.id}
+              to={`/agents/${agent.id}`}
+              className="group grid min-h-[68px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 transition-colors hover:bg-bg-hover"
+            >
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-blue/15 text-blue" aria-hidden="true">◷</span>
+              <div className="min-w-0">
+                <div className="flex min-w-0 items-center justify-between gap-3">
+                  <span className="truncate text-xs font-semibold text-text">{agent.name}</span>
+                  <StatusUpdatedAt status={status} className="shrink-0 text-[9px] tabular-nums text-text-dim" />
+                </div>
+                <StatusNextStep next={status.next} nextAt={status.next_at} />
+              </div>
+              <span className="text-sm text-text-dim transition-colors group-hover:text-text" aria-hidden="true">→</span>
+            </Link>
           ))}
         </div>
       )}

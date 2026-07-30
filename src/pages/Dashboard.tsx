@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { instances, telemetry, type Agent, type InstanceStats } from "../api";
 import { NewAgentButton } from "../components/NewAgentButton";
@@ -6,12 +6,16 @@ import { ActivityFeed } from "../components/dashboard/ActivityFeed";
 import { AptevaInbox } from "../components/dashboard/AptevaInbox";
 import {
   HomeAgentOperations,
+  HomeAgentSchedule,
   HomeUsageSummary,
   selectAgentOperations,
 } from "../components/dashboard/HomePanels";
 import { useCurrentStatuses } from "../components/dashboard/CurrentStatuses";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { useProjects } from "../hooks/useProjects";
+import { HomeTasksPanel } from "../components/tasks/TaskOverviewPanels";
+import { operationalTaskRows, taskIsActive, taskNeedsAttention } from "../components/tasks/taskModel";
+import { useTasks } from "../hooks/useTasks";
 
 const REFRESH_MS = 30_000;
 
@@ -23,6 +27,11 @@ export function Dashboard() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [stats, setStats] = useState<InstanceStats[]>([]);
   const statuses = useCurrentStatuses(projectId);
+  const {
+    tasks,
+    enabled: tasksEnabled,
+    loading: tasksLoading,
+  } = useTasks({ projectId, limit: 100 });
 
   const loadOverview = useCallback(() => {
     Promise.all([
@@ -44,7 +53,14 @@ export function Dashboard() {
     };
   }, [loadOverview]);
 
-  const operationCount = selectAgentOperations(agents, statuses).length;
+  const activeTaskCount = useMemo(
+    () => operationalTaskRows(tasks).filter((task) => taskIsActive(task) || taskNeedsAttention(task)).length,
+    [tasks],
+  );
+  const taskFirst = tasksEnabled !== false;
+  const operationCount = taskFirst
+    ? activeTaskCount
+    : selectAgentOperations(agents, statuses).length;
   const errorCount = stats.reduce((sum, row) => sum + row.errors, 0);
 
   return (
@@ -56,7 +72,9 @@ export function Dashboard() {
               <h1 className="text-lg font-bold text-text">Home</h1>
               {operationCount > 0 && (
                 <span className="rounded border border-green/25 bg-green/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-green">
-                  {operationCount} in focus
+                  {taskFirst
+                    ? `${operationCount} active task${operationCount === 1 ? "" : "s"}`
+                    : `${operationCount} in focus`}
                 </span>
               )}
               {errorCount > 0 && (
@@ -81,8 +99,19 @@ export function Dashboard() {
 
         <div className="grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2">
           <AptevaInbox limit={5} variant="home" />
-          <HomeAgentOperations agents={agents} statuses={statuses} />
+          {taskFirst ? (
+            <HomeTasksPanel
+              agents={agents}
+              tasks={tasks}
+              enabled
+              loading={tasksLoading}
+            />
+          ) : (
+            <HomeAgentOperations agents={agents} statuses={statuses} />
+          )}
         </div>
+
+        {taskFirst && <HomeAgentSchedule agents={agents} statuses={statuses} />}
 
         <ActivityFeed agents={agents} />
       </main>

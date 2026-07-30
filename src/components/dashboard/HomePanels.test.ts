@@ -3,7 +3,12 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import type { Agent, CurrentStatusMessageRow } from "../../api";
-import { HomeAgentOperations, selectAgentOperations } from "./HomePanels";
+import {
+  HomeAgentOperations,
+  HomeAgentSchedule,
+  selectAgentOperations,
+  selectAgentSchedules,
+} from "./HomePanels";
 
 const NOW = Date.parse("2026-07-25T12:00:00Z");
 
@@ -157,5 +162,33 @@ describe("HomeAgentOperations", () => {
 
     expect(html).toMatch(/Updated (?:just now|\d+s ago)/);
     expect(html).toContain("Run the next hourly inbox check");
+  });
+});
+
+describe("HomeAgentSchedule", () => {
+  test("shows only upcoming schedule metadata and never status progress", () => {
+    const scheduled = reported(1, "completed", 60_000);
+    scheduled.next = "Run the next hourly inbox check";
+    scheduled.next_at = new Date(NOW + 60 * 60_000).toISOString();
+    scheduled.progress = 100;
+    const unscheduled = reported(2, "working", 30_000);
+
+    expect(selectAgentSchedules(
+      [agent(1, "Scheduled"), agent(2, "Unscheduled")],
+      [scheduled, unscheduled],
+    ).map((row) => row.agent.id)).toEqual([1]);
+
+    const html = renderToStaticMarkup(createElement(
+      MemoryRouter,
+      {},
+      createElement(HomeAgentSchedule, {
+        agents: [agent(1, "Scheduled"), agent(2, "Unscheduled")],
+        statuses: [scheduled, unscheduled],
+      }),
+    ));
+    expect(html).toContain("Upcoming agent runs");
+    expect(html).toContain("Run the next hourly inbox check");
+    expect(html).not.toContain("100%");
+    expect(html).not.toContain("completed work");
   });
 });

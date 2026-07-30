@@ -2931,6 +2931,202 @@ export interface CurrentStatusMessageRow {
 	stale: boolean;
 }
 
+export type AgentTaskState =
+  | "queued"
+  | "running"
+  | "waiting"
+  | "blocked"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface AgentTask {
+  id: string;
+  agent_id: number;
+  project_id: string;
+  title: string;
+  description?: string;
+  state: AgentTaskState;
+  progress?: number;
+  current_step?: string;
+  assigned_thread_id: string;
+  origin_conversation_id?: string;
+  origin_message_id?: string;
+  parent_task_id?: string;
+  schedule_kind?: "once" | "interval" | "cron";
+  schedule_expression?: string;
+  schedule_timezone?: string;
+  schedule_enabled?: boolean;
+  schedule_overlap_policy?: "skip";
+  schedule_catchup_policy?: "skip";
+  next_run_at?: string;
+  last_run_at?: string;
+  scheduled_for?: string;
+  schedule_occurrence_key?: string;
+  result?: string;
+  error?: string;
+  handoff_delivery_status?: string;
+  handoff_delivery_error?: string;
+  handoff_delivered_at?: string;
+  completion_delivery_status?: string;
+  completion_delivery_error?: string;
+  completion_delivered_at?: string;
+  last_activity_at?: string;
+  created_by_thread_id?: string;
+  created_at: string;
+  updated_at: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+export interface AgentTaskEvent {
+  id: string;
+  task_id: string;
+  agent_id: number;
+  event_type: string;
+  thread_id?: string;
+  from_state?: string;
+  to_state?: string;
+  data?: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AgentTaskStep {
+  task_id: string;
+  step_key: string;
+  thread_id: string;
+  mcp_server: string;
+  tool_name: string;
+  state: "running" | "completed" | "failed";
+  error?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+}
+
+export interface AgentTaskCounts {
+  active: number;
+  queued: number;
+  running: number;
+  waiting: number;
+  blocked: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  scheduled?: number;
+  paused?: number;
+}
+
+export interface AgentTaskListResponse {
+  enabled: boolean;
+  scheduling_enabled?: boolean;
+  tasks: AgentTask[];
+  counts?: AgentTaskCounts;
+}
+
+export interface CreateAgentTaskInput {
+  agent_id: number;
+  title: string;
+  description?: string;
+  idempotency_key?: string;
+  schedule?: AgentTaskScheduleInput;
+}
+
+export interface AgentTaskScheduleInput {
+  kind: "once" | "interval" | "cron";
+  at?: string;
+  after?: string;
+  every?: string;
+  cron?: string;
+  timezone?: string;
+  overlap_policy?: "skip";
+  catchup_policy?: "skip";
+}
+
+export interface CreateAgentTaskResponse {
+  task: AgentTask;
+  created: boolean;
+  delivery_warning?: string;
+}
+
+export function agentTaskListPath(options: {
+  projectId?: string;
+  allProjects?: boolean;
+  agentId?: number;
+  states?: AgentTaskState[];
+  assignedThreadId?: string;
+  originConversationId?: string;
+  limit?: number;
+}): string {
+  const params = new URLSearchParams();
+  if (options.allProjects) params.set("all", "1");
+  if (options.projectId) params.set("project_id", options.projectId);
+  if (options.agentId) params.set("agent_id", String(options.agentId));
+  if (options.states?.length) params.set("states", options.states.join(","));
+  if (options.assignedThreadId) params.set("assigned_thread_id", options.assignedThreadId);
+  if (options.originConversationId) params.set("origin_conversation_id", options.originConversationId);
+  if (options.limit) params.set("limit", String(options.limit));
+  return `/tasks?${params}`;
+}
+
+export const agentTasks = {
+  list: (options: {
+    projectId?: string;
+    allProjects?: boolean;
+    agentId?: number;
+    states?: AgentTaskState[];
+    assignedThreadId?: string;
+    originConversationId?: string;
+    limit?: number;
+  }) => {
+    return request<AgentTaskListResponse>("GET", agentTaskListPath(options));
+  },
+  create: (input: CreateAgentTaskInput) =>
+    request<CreateAgentTaskResponse>("POST", "/tasks", {
+      ...input,
+      state: "queued",
+      assigned_thread_id: "main",
+    }),
+  get: (taskId: string) =>
+    request<{ task: AgentTask }>("GET", `/tasks/${encodeURIComponent(taskId)}`),
+  events: (taskId: string) =>
+    request<{ events: AgentTaskEvent[] }>("GET", `/tasks/${encodeURIComponent(taskId)}/events`),
+  steps: (taskId: string) =>
+    request<{ steps: AgentTaskStep[] }>("GET", `/tasks/${encodeURIComponent(taskId)}/steps`),
+  runs: (taskId: string) =>
+    request<{ runs: AgentTask[] }>("GET", `/tasks/${encodeURIComponent(taskId)}/runs`),
+  updateSchedule: (taskId: string, schedule: AgentTaskScheduleInput) =>
+    request<{ task: AgentTask; changed: boolean }>(
+      "PATCH",
+      `/tasks/${encodeURIComponent(taskId)}/schedule`,
+      schedule,
+    ),
+  pause: (taskId: string) =>
+    request<{ task: AgentTask; changed: boolean }>(
+      "POST",
+      `/tasks/${encodeURIComponent(taskId)}/pause`,
+      {},
+    ),
+  resume: (taskId: string) =>
+    request<{ task: AgentTask; changed: boolean }>(
+      "POST",
+      `/tasks/${encodeURIComponent(taskId)}/resume`,
+      {},
+    ),
+  runNow: (taskId: string, idempotencyKey: string) =>
+    request<{ task: AgentTask; created?: boolean; delivery_warning?: string }>(
+      "POST",
+      `/tasks/${encodeURIComponent(taskId)}/run-now`,
+      { idempotency_key: idempotencyKey },
+    ),
+  cancel: (taskId: string, reason?: string) =>
+    request<{ task: AgentTask; changed: boolean }>(
+      "POST",
+      `/tasks/${encodeURIComponent(taskId)}/cancel`,
+      { reason: reason || "" },
+    ),
+};
+
 export interface ChatMessageContext {
   source: "dashboard-floating" | "dashboard-build";
   project_id?: string;

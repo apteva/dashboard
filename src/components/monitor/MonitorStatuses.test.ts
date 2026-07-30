@@ -3,7 +3,11 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import type { CurrentStatusMessageRow } from "../../api";
-import { MonitorStatuses } from "./MonitorStatuses";
+import {
+  MonitorSchedules,
+  MonitorStatuses,
+  selectUpcomingAgentSchedules,
+} from "./MonitorStatuses";
 
 function completedStatus(next?: string, nextAt?: string): CurrentStatusMessageRow {
   return {
@@ -56,5 +60,34 @@ describe("MonitorStatuses", () => {
 
     expect(html).toContain("Latest completed");
     expect(html).not.toContain(">Upcoming<");
+  });
+});
+
+describe("MonitorSchedules", () => {
+  test("uses only schedule metadata and ignores legacy status progress", () => {
+    const scheduled = completedStatus(
+      "Run the next weekly inbox review",
+      new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString(),
+    );
+    scheduled.progress = 100;
+    const unscheduled = completedStatus();
+    unscheduled.instance_id = 15;
+    unscheduled.instance_name = "Unscheduled";
+    expect(selectUpcomingAgentSchedules([scheduled, unscheduled]).map((row) => row.instance_id)).toEqual([14]);
+
+    const html = renderToStaticMarkup(createElement(
+      MemoryRouter,
+      {},
+      createElement(MonitorSchedules, {
+        agents: [],
+        statuses: [scheduled, unscheduled],
+        projectNames: new Map([["default", "Default"]]),
+        showProjects: false,
+      }),
+    ));
+    expect(html).toContain("Agent schedules");
+    expect(html).toContain("Run the next weekly inbox review");
+    expect(html).not.toContain("100%");
+    expect(html).not.toContain("Hourly inbox check completed");
   });
 });

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { instances, core, type Agent as InstanceType, type Thread } from "../api";
 import { AgentView } from "../components/AgentView";
 import { chatConnections } from "../state/chatConnections";
@@ -12,6 +12,7 @@ import { usePageTitle } from "../hooks/usePageTitle";
 export function Agent() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const [instance, setInstance] = useState<InstanceType | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -79,6 +80,7 @@ export function Agent() {
     <AgentView
       instance={instance}
       initialThreads={preloadedThreads}
+      initialThreadId={searchParams.get("thread") || undefined}
       onDelete={async () => {
         await instances.delete(instance.id);
         // Drop every dashboard-side trace of the deleted instance:
