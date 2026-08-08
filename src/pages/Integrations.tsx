@@ -45,6 +45,7 @@ import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
 import {
   defaultIntegrationAuthType,
+  isBrowserOAuthType,
   visibleCredentialFields,
 } from "../utils/integrationAuth";
 
@@ -301,7 +302,7 @@ export function Integrations() {
     // For OAuth2 apps, find out whether the user already registered an
     // OAuth client for this app+project. If yes, hide the form. If no,
     // we'll show two fields plus the callback URL helper.
-    if (defaultIntegrationAuthType(app) === "oauth2") {
+    if (isBrowserOAuthType(defaultIntegrationAuthType(app))) {
       try {
         const status = await integrations.oauthClientStatus(slug, currentProject?.id);
         setOAuthClientResolved(status.resolved);
@@ -320,9 +321,9 @@ export function Integrations() {
     setConnecting(true);
     try {
       const authType = defaultIntegrationAuthType(selectedLocalApp);
-      const isOAuth2 = authType === "oauth2";
+      const isOAuth = isBrowserOAuthType(authType);
       const isDeviceCode = authType === "oauth_device_code";
-      const oauthCreds = isOAuth2 && !oauthClientResolved
+      const oauthCreds = isOAuth && !oauthClientResolved
         ? { client_id: oauthClientID.trim(), client_secret: oauthClientSecret.trim() }
         : undefined;
       const result = await integrations.connect(
@@ -931,7 +932,7 @@ export function Integrations() {
   // lifecycle actions does not keep stretching each row horizontally.
   const renderConnectionRow = (c: ConnectionInfo) => {
     const isGlobal = !c.project_id;
-    const isLocalOAuth = (c.source || "local") === "local" && c.auth_type === "oauth2";
+    const isLocalOAuth = (c.source || "local") === "local" && isBrowserOAuthType(c.auth_type);
     const canMoveScope = c.source !== "composio" && (isGlobal ? currentProject?.id : true);
     const canExplore = c.source !== "composio" && c.app_slug === "bunny-stream" && c.status === "active";
     const menuOpen = openMenuFor === c.id;
@@ -1486,14 +1487,14 @@ export function Integrations() {
               </div>
             )}
 
-            {defaultIntegrationAuthType(selectedLocalApp) === "oauth2" && oauthClientResolved && (
+            {isBrowserOAuthType(defaultIntegrationAuthType(selectedLocalApp)) && oauthClientResolved && (
               <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted">
                 OAuth client already registered for this project. Click <b>Authorize</b>
                 to open {selectedLocalApp.name} in a popup.
               </div>
             )}
 
-            {defaultIntegrationAuthType(selectedLocalApp) === "oauth2" && !oauthClientResolved && (
+            {isBrowserOAuthType(defaultIntegrationAuthType(selectedLocalApp)) && !oauthClientResolved && (
               <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted space-y-2">
                 <p>
                   <b>{selectedLocalApp.name} OAuth setup.</b> You need to register an OAuth
@@ -1548,7 +1549,7 @@ export function Integrations() {
                 </div>
               )}
 
-              {defaultIntegrationAuthType(selectedLocalApp) === "oauth2" && !oauthClientResolved && (
+              {isBrowserOAuthType(defaultIntegrationAuthType(selectedLocalApp)) && !oauthClientResolved && (
                 <>
                   <div>
                     <label className="block text-text-muted text-sm mb-2">
@@ -1628,7 +1629,7 @@ export function Integrations() {
                   ? "Connecting..."
                   : deviceAuth
                   ? "Waiting for authorization..."
-                  : defaultIntegrationAuthType(selectedLocalApp) === "oauth2"
+                  : isBrowserOAuthType(defaultIntegrationAuthType(selectedLocalApp))
                     ? "Authorize"
                     : "Connect"}
               </button>

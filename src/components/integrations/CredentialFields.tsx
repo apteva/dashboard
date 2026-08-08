@@ -2,6 +2,7 @@ import { useState, type CSSProperties } from "react";
 import { type AppDetail, type CredentialField } from "../../api";
 import {
   defaultIntegrationAuthType,
+  isBrowserOAuthType,
   visibleCredentialFields,
 } from "../../utils/integrationAuth";
 
@@ -59,10 +60,10 @@ export function CredentialFields({
   oauthClientResolved,
 }: CredentialFieldsProps) {
   const picked = authType || defaultIntegrationAuthType(detail) || "api_key";
-  const isOAuth2 = picked === "oauth2";
+  const isOAuth = isBrowserOAuthType(picked);
   const fields = visibleCredentialFields(detail, picked);
 
-  if (!isOAuth2 && fields.length === 0) {
+  if (!isOAuth && fields.length === 0) {
     return (
       <div className="text-text-muted text-xs italic">
         {detail.name} doesn't declare any credential fields — it may not
@@ -77,7 +78,7 @@ export function CredentialFields({
           on the server side for this app+project. Operators paste
           their own client_id/secret once; subsequent connects to
           the same app reuse the saved pair and skip these two fields. */}
-      {isOAuth2 && !oauthClientResolved && (
+      {isOAuth && !oauthClientResolved && (
         <>
           <FieldRow
             label="OAuth client ID"

@@ -923,6 +923,7 @@ export interface AppDetail extends AppSummary {
     headers?: Record<string, string>;
     query_params?: Record<string, string>;
     credential_fields?: CredentialField[];
+    oauth1?: any;
     oauth2?: any;
   };
   tools: Array<{

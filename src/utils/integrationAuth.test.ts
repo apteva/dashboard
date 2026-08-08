@@ -73,4 +73,17 @@ describe("mixed OAuth credentials", () => {
     });
     expect(defaultIntegrationAuthType(apiKey)).toBe("api_key");
   });
+
+  test("uses OAuth 1.0a without exposing generated token fields", () => {
+    const xAds = app({
+      types: ["oauth1"],
+      oauth1: {},
+      credential_fields: [
+        { name: "oauth_token", label: "Token", source: "oauth", hidden: true },
+        { name: "oauth_token_secret", label: "Token secret", source: "oauth", hidden: true },
+      ],
+    });
+    expect(defaultIntegrationAuthType(xAds)).toBe("oauth1");
+    expect(visibleCredentialFields(xAds, "oauth1")).toEqual([]);
+  });
 });

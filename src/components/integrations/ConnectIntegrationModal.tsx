@@ -7,7 +7,7 @@ import {
 } from "../../api";
 import { Modal } from "../Modal";
 import { CredentialFields } from "./CredentialFields";
-import { defaultIntegrationAuthType } from "../../utils/integrationAuth";
+import { defaultIntegrationAuthType, isBrowserOAuthType } from "../../utils/integrationAuth";
 import { openOAuthPopup, pollConnection } from "./connectFlow";
 
 // ConnectIntegrationModal — one-stop modal for connecting an
@@ -100,7 +100,7 @@ export function ConnectIntegrationModal({
   }, [open, slug]);
 
   const authType = defaultIntegrationAuthType(detail) || "api_key";
-  const usingOAuthPath = authType === "oauth2";
+  const usingOAuthPath = isBrowserOAuthType(authType);
 
   const submit = async () => {
     if (!detail) return;
