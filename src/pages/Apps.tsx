@@ -123,10 +123,11 @@ function AppIcon({
 
 // The Apps tab — sidecar-based v2 Apps. Lists every install visible
 // to the current project (own installs + globals), shows surfaces +
-// status, and lets the user install a new one from a manifest URL.
+// status, and lets the user install a new one from an Apteva manifest or
+// Agent Plugins 1.0.0 package URL.
 //
 // Marketplace + permission consent UI are next iteration; for now the
-// install flow is "paste a manifest URL, fill config, click Install".
+// install flow is "paste an app URL, fill config, click Install".
 export function Apps() {
   const { currentProject } = useProjects();
   const [tab, setTab] = useState<Tab>("installed");
@@ -1935,14 +1936,17 @@ function InstallModal({
         {!preview ? (
           <>
             <label className="block">
-              <span className="text-text-muted text-xs">Manifest URL</span>
+              <span className="text-text-muted text-xs">Apteva manifest or Agent Plugin URL</span>
               <input
                 type="text"
                 value={manifestUrl}
                 onChange={(e) => setManifestUrl(e.target.value)}
-                placeholder="https://raw.githubusercontent.com/apteva/app-tasks/main/apteva.yaml"
+                placeholder="https://example.com/my-app/plugin.json"
                 className="w-full mt-1 bg-bg-input border border-border rounded px-2 py-1.5 text-sm text-text font-mono focus:outline-none focus:border-accent"
               />
+              <span className="mt-1 block text-[11px] text-text-dim">
+                Supports existing apteva.yaml manifests and Agent Plugins 1.0.0 plugin.json packages.
+              </span>
             </label>
             {error && <div className="text-red text-xs">{error}</div>}
             <div className="flex justify-end gap-2">
