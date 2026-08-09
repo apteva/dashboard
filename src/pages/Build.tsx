@@ -30,7 +30,6 @@ import { useProjects } from "../hooks/useProjects";
 import { useRealtimeAvailability } from "../hooks/useRealtimeAvailability";
 import { chatConnections } from "../state/chatConnections";
 import { chatPreviewText } from "../utils/chatPreview";
-import { ConversationTaskCard } from "../components/tasks/ConversationTaskCard";
 
 type WorkspaceTab = "project" | "activity";
 type WorkspaceItemKind = "agent" | "app" | "skill";
@@ -348,28 +347,25 @@ export function Build() {
               onAction={() => void refreshHelper()}
             />
           ) : active && context ? (
-            <>
-              <ConversationTaskCard projectId={projectId} conversationId={active.id} agent={helper} />
-              <div className="min-h-0 flex-1">
-                <ChatPanel
-                  key={active.id}
-                  instanceId={helper.id}
-                  conversationId={active.id}
-                  agentName={helper.name}
-                  agentNames={{ [helper.id]: helper.name }}
-                  participantIds={[helper.id]}
-                  realtime={realtime}
-                  subscribe={subscribe}
-                  autoConnect
-                  hideHeader
-                  messageContext={context}
-                  queuedMessage={queuedMessage?.conversationId === active.id ? queuedMessage : undefined}
-                  onQueuedMessageHandled={(id) => {
-                    setQueuedMessage((current) => current?.id === id ? null : current);
-                  }}
-                />
-              </div>
-            </>
+            <div className="min-h-0 flex-1">
+              <ChatPanel
+                key={active.id}
+                instanceId={helper.id}
+                conversationId={active.id}
+                agentName={helper.name}
+                agentNames={{ [helper.id]: helper.name }}
+                participantIds={[helper.id]}
+                realtime={realtime}
+                subscribe={subscribe}
+                autoConnect
+                hideHeader
+                messageContext={context}
+                queuedMessage={queuedMessage?.conversationId === active.id ? queuedMessage : undefined}
+                onQueuedMessageHandled={(id) => {
+                  setQueuedMessage((current) => current?.id === id ? null : current);
+                }}
+              />
+            </div>
           ) : (
             <CenteredState
               title="What should we work on?"

@@ -41,6 +41,14 @@ export interface UIComponentSpec {
   name: string;            // "file-card"
   entry: string;           // "/ui/FileCard.mjs"
   slots?: string[];        // ["chat.message_attachment"]
+  label?: string;
+  description?: string;
+  suggested?: boolean;
+  default_width?: 1 | 2;
+  supported_sizes?: Array<"half" | "full">;
+  default_size?: "half" | "full";
+  props_schema?: Record<string, unknown>;
+  settings_schema?: Record<string, unknown>;
 }
 
 // We get app rows from /api/apps. The handler now exposes
@@ -61,6 +69,7 @@ export interface InstalledAppRow {
   icon?: string;
   icon_style?: "image" | "monochrome";
   source?: string;
+  status?: string;
   surfaces?: {
     mcp_tool_names?: string[];
   };
@@ -560,6 +569,7 @@ export function useInstalledApps(projectId: string | null | undefined): Installe
             icon: typeof r.icon === "string" ? r.icon : undefined,
             icon_style: r.icon_style === "monochrome" ? "monochrome" : "image",
             source: typeof r.source === "string" ? r.source : undefined,
+            status: typeof r.status === "string" ? r.status : undefined,
             surfaces: r.surfaces && typeof r.surfaces === "object"
               ? {
                   mcp_tool_names: Array.isArray(r.surfaces.mcp_tool_names)

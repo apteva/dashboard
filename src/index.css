@@ -108,6 +108,7 @@
   --warn: #eab308;
   --error: #ef4444;
   --info: #3b82f6;
+  --recurring: #a78bfa;
 }
 
 [data-theme="terminal"][data-mode="light"] {
@@ -130,6 +131,7 @@
   --warn: #a16207;
   --error: #b91c1c;
   --info: #1d4ed8;
+  --recurring: #6d28d9;
 }
 
 [data-theme="clean"][data-mode="dark"] {
@@ -152,6 +154,7 @@
   --warn: #fbbf24;
   --error: #f87171;
   --info: #60a5fa;
+  --recurring: #c084fc;
 }
 
 [data-theme="clean"][data-mode="light"] {
@@ -174,6 +177,7 @@
   --warn: #b45309;
   --error: #b91c1c;
   --info: #1d4ed8;
+  --recurring: #7c3aed;
 }
 
 /* ─── Tailwind theme tokens ───────────────────────────────────────
@@ -207,6 +211,7 @@
   --color-warn: var(--warn);
   --color-error: var(--error);
   --color-info: var(--info);
+  --color-recurring: var(--recurring);
 
   /* Back-compat aliases — the codebase has ~40 sites using the old
    * names (text-red, bg-green, text-yellow, text-blue). They map onto
@@ -553,6 +558,12 @@ select {
   will-change: transform, opacity, filter;
 }
 
+.chat-tool-icon-stack-running {
+  animation: chat-tool-breathe 1.9s ease-in-out infinite;
+  transform-origin: center;
+  will-change: transform, opacity, filter;
+}
+
 .chat-tool-icon {
   transition: transform 180ms ease, opacity 180ms ease, filter 180ms ease;
 }
@@ -574,7 +585,8 @@ select {
 .chat-thinking-dots > span:nth-child(3) { animation-delay: 240ms; }
 
 @media (prefers-reduced-motion: reduce) {
-  .chat-tool-icon-running {
+  .chat-tool-icon-running,
+  .chat-tool-icon-stack-running {
     animation: none;
     opacity: 1;
   }
@@ -616,24 +628,27 @@ select {
   background: transparent;
 }
 
-/* Chat markdown rendering — tight spacing to match text-xs density */
+/* Chat markdown rendering. Ordinary prose stays compact, while headings and
+ * post-list sections retain enough separation to scan like ChatGPT/Codex. */
 .chat-md > *:first-child { margin-top: 0; }
 .chat-md > *:last-child { margin-bottom: 0; }
 .chat-md p { margin: 0 0 0.5rem 0; }
 .chat-md h1, .chat-md h2, .chat-md h3, .chat-md h4 {
   font-weight: 600;
-  margin: 0.75rem 0 0.25rem 0;
+  line-height: 1.35;
+  margin: 1rem 0 0.7rem 0;
   color: var(--text);
 }
 .chat-md h1 { font-size: 1.05rem; }
 .chat-md h2 { font-size: 0.95rem; }
 .chat-md h3 { font-size: 0.85rem; }
 .chat-md h4 { font-size: 0.8rem; }
-.chat-md ul, .chat-md ol { margin: 0.25rem 0 0.5rem 1.1rem; padding: 0; }
+.chat-md ul, .chat-md ol { margin: 0.3rem 0 0.7rem 1.1rem; padding: 0; }
 .chat-md ul { list-style: disc; }
 .chat-md ol { list-style: decimal; }
 .chat-md li { margin: 0.1rem 0; }
 .chat-md li > p { margin: 0; }
+.chat-md :is(ul, ol) + :is(p, h1, h2, h3, h4) { margin-top: 1rem; }
 .chat-md code {
   font-family: var(--font-mono-fixed);
   font-size: 0.9em;

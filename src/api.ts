@@ -50,7 +50,8 @@ function request<T>(
       // paths themselves (so auth.me() returning 401 during initial
       // load doesn't double-fire through the provider).
       if (!path.startsWith("/auth/") && onAuthInvalid) {
-        if (API_DEBUG) console.debug(`[api] 401 on ${path} → notifying AuthProvider`);
+        if (API_DEBUG)
+          console.debug(`[api] 401 on ${path} → notifying AuthProvider`);
         onAuthInvalid();
       }
       throw new Error("unauthorized");
@@ -76,11 +77,21 @@ function request<T>(
           const obj = JSON.parse(text);
           parsed = obj;
           if (obj && typeof obj === "object") {
-            if (obj.health_check && typeof obj.detail === "string" && obj.detail.trim() !== "") {
+            if (
+              obj.health_check &&
+              typeof obj.detail === "string" &&
+              obj.detail.trim() !== ""
+            ) {
               msg = `${obj.error || "Credential check failed"} — ${obj.detail}`;
-            } else if (typeof obj.error === "string" && obj.error.trim() !== "") {
+            } else if (
+              typeof obj.error === "string" &&
+              obj.error.trim() !== ""
+            ) {
               msg = obj.error;
-            } else if (typeof obj.message === "string" && obj.message.trim() !== "") {
+            } else if (
+              typeof obj.message === "string" &&
+              obj.message.trim() !== ""
+            ) {
               msg = obj.message;
             }
           }
@@ -94,7 +105,7 @@ function request<T>(
       throw err;
     }
     if (res.status === 204) return undefined as T;
-    return await res.json() as T;
+    return (await res.json()) as T;
   };
 
   // Dashboard panels often request the same read model in the same render
@@ -102,7 +113,9 @@ function request<T>(
   // Share only truly concurrent GETs; there is no stale cache after settle,
   // so mutation-driven refreshes still see fresh data immediately.
   if (method === "GET" && body === undefined) {
-    const headerKey = JSON.stringify(Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)));
+    const headerKey = JSON.stringify(
+      Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)),
+    );
     const key = `${url}|${headerKey}`;
     const existing = inFlightGETs.get(key);
     if (existing) return existing as Promise<T>;
@@ -120,9 +133,9 @@ function request<T>(
 // Server-wide settings (admin-editable, lives in server_settings table).
 export interface ServerSettings {
   public_url: {
-    value: string;        // raw DB value (empty if not set)
-    env_value: string;    // raw env var value (empty if not set)
-    effective: string;    // what the server is actually using
+    value: string; // raw DB value (empty if not set)
+    env_value: string; // raw env var value (empty if not set)
+    effective: string; // what the server is actually using
     source: "db" | "env" | "unset";
     oauth_callback: string; // computed: <effective>/oauth/local/callback
   };
@@ -143,8 +156,7 @@ export const serverSettings = {
     agent_boot_resume?: "auto" | "staggered" | "manual";
     agent_boot_resume_delay?: string;
     agent_rollout_delay?: string;
-  }) =>
-    request<ServerSettings>("PUT", "/settings/server", patch),
+  }) => request<ServerSettings>("PUT", "/settings/server", patch),
 };
 
 export interface AgentCoreRollout {
@@ -178,7 +190,8 @@ export const agentCoreRollouts = {
       all: true,
       ...(delaySeconds !== undefined ? { delay_seconds: delaySeconds } : {}),
     }),
-  cancel: () => request<{ cancel_requested: boolean }>("DELETE", "/agents/core-rollout"),
+  cancel: () =>
+    request<{ cancel_requested: boolean }>("DELETE", "/agents/core-rollout"),
 };
 
 // Auth
@@ -186,7 +199,12 @@ export const auth = {
   status: () =>
     request<{ reg_mode: string; needs_setup: boolean }>("GET", "/auth/status"),
 
-  register: (email: string, password: string, setupToken?: string, inviteToken?: string) => {
+  register: (
+    email: string,
+    password: string,
+    setupToken?: string,
+    inviteToken?: string,
+  ) => {
     const headers: Record<string, string> = {};
     if (setupToken) headers["X-Setup-Token"] = setupToken;
     if (inviteToken) headers["X-Invite-Token"] = inviteToken;
@@ -199,7 +217,10 @@ export const auth = {
   },
 
   login: (email: string, password: string) =>
-    request<{ user_id: number; email: string }>("POST", "/auth/login", { email, password }),
+    request<{ user_id: number; email: string }>("POST", "/auth/login", {
+      email,
+      password,
+    }),
 
   logout: () =>
     request<any>("POST", "/auth/logout").then(() => {
@@ -207,10 +228,26 @@ export const auth = {
     }),
 
   me: () =>
-    request<{ user_id: number; email: string; role: PlatformRole; created_at: string; onboarded: boolean; onboarded_at?: string; language?: string }>("GET", "/auth/me"),
+    request<{
+      user_id: number;
+      email: string;
+      role: PlatformRole;
+      created_at: string;
+      onboarded: boolean;
+      onboarded_at?: string;
+      language?: string;
+      ui_layout?: Record<string, unknown>;
+    }>("GET", "/auth/me"),
 
-  updatePreferences: (patch: { language?: string }) =>
-    request<{ language: string }>("PUT", "/auth/preferences", patch),
+  updatePreferences: (patch: {
+    language?: string;
+    ui_layout?: Record<string, unknown>;
+  }) =>
+    request<{ language: string; ui_layout: Record<string, unknown> }>(
+      "PUT",
+      "/auth/preferences",
+      patch,
+    ),
 
   completeOnboarding: () =>
     request<{ status: string }>("POST", "/auth/onboarding/complete"),
@@ -220,11 +257,10 @@ export const auth = {
   // success so a leaked cookie on another device stops working
   // immediately. The cookie making the change keeps working.
   changePassword: (currentPassword: string, newPassword: string) =>
-    request<{ status: string }>(
-      "POST",
-      "/auth/password",
-      { current_password: currentPassword, new_password: newPassword },
-    ),
+    request<{ status: string }>("POST", "/auth/password", {
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
 
   // Personal API keys for this user. Backed by /auth/keys — server scopes
   // each key to the calling user via the session cookie. The raw key is
@@ -240,30 +276,35 @@ export const auth = {
       expires_at?: string;
     },
   ) =>
-    request<{ id: number; key: string; prefix: string; kind: string }>("POST", "/auth/keys", {
-      name,
-      ...(options || {}),
-    }),
+    request<{ id: number; key: string; prefix: string; kind: string }>(
+      "POST",
+      "/auth/keys",
+      {
+        name,
+        ...(options || {}),
+      },
+    ),
 
   listKeys: () =>
-    request<Array<{
-      id: number;
-      name: string;
-      key_prefix: string;
-      kind?: "private" | "public_client";
-      project_id?: string;
-      scopes?: string;
-      allowed_origins?: string;
-      rate_limit_per_minute?: number;
-      expires_at?: string;
-      revoked_at?: string;
-      last_used?: string;
-      last_used_ip?: string;
-      created_at: string;
-    }>>("GET", "/auth/keys"),
+    request<
+      Array<{
+        id: number;
+        name: string;
+        key_prefix: string;
+        kind?: "private" | "public_client";
+        project_id?: string;
+        scopes?: string;
+        allowed_origins?: string;
+        rate_limit_per_minute?: number;
+        expires_at?: string;
+        revoked_at?: string;
+        last_used?: string;
+        last_used_ip?: string;
+        created_at: string;
+      }>
+    >("GET", "/auth/keys"),
 
-  deleteKey: (id: number) =>
-    request<any>("DELETE", `/auth/keys/${id}`),
+  deleteKey: (id: number) => request<any>("DELETE", `/auth/keys/${id}`),
 };
 
 // --- User administration ------------------------------------------------
@@ -320,12 +361,9 @@ export const users = {
   // Admin-side password reset: no current-password check, revokes every
   // session of the target user so they must log in again.
   resetPassword: (id: number, newPassword: string) =>
-    request<{ status: string }>(
-      "PATCH",
-      `/users/${id}/password`,
-      { new_password: newPassword },
-    ),
-
+    request<{ status: string }>("PATCH", `/users/${id}/password`, {
+      new_password: newPassword,
+    }),
 };
 
 // Provider types (catalog)
@@ -336,7 +374,13 @@ export interface ProviderTypeInfo {
   description: string;
   fields: string[];
   requires_credentials: boolean;
-  auth_type?: "api_key" | "oauth_device_code" | "oauth_browser" | "external_process" | "none" | string;
+  auth_type?:
+    | "api_key"
+    | "oauth_device_code"
+    | "oauth_browser"
+    | "external_process"
+    | "none"
+    | string;
   auth_provider?: string;
   runtime_status?: "available" | "auth_only" | "unsupported" | string;
   capabilities?: string[];
@@ -423,24 +467,36 @@ export interface AgentTemplate {
 
 export const agentTemplates = {
   list: () => request<AgentTemplate[]>("GET", "/agent-templates"),
-  get: (id: string) => request<AgentTemplate>("GET", `/agent-templates/${encodeURIComponent(id)}`),
+  get: (id: string) =>
+    request<AgentTemplate>("GET", `/agent-templates/${encodeURIComponent(id)}`),
   create: (t: Partial<AgentTemplate>) =>
     request<AgentTemplate>("POST", "/agent-templates", t),
   update: (id: string, t: Partial<AgentTemplate>) =>
-    request<AgentTemplate>("PUT", `/agent-templates/${encodeURIComponent(id)}`, t),
+    request<AgentTemplate>(
+      "PUT",
+      `/agent-templates/${encodeURIComponent(id)}`,
+      t,
+    ),
   delete: (id: string) =>
     request<any>("DELETE", `/agent-templates/${encodeURIComponent(id)}`),
   hide: (id: string) =>
     request<any>("POST", `/agent-templates/${encodeURIComponent(id)}/hide`, {}),
   unhide: (id: string) =>
-    request<any>("POST", `/agent-templates/${encodeURIComponent(id)}/unhide`, {}),
+    request<any>(
+      "POST",
+      `/agent-templates/${encodeURIComponent(id)}/unhide`,
+      {},
+    ),
 };
-
 
 export const projects = {
   list: () => request<Project[]>("GET", "/projects"),
   create: (name: string, description?: string, color?: string) =>
-    request<Project>("POST", "/projects", { name, description: description || "", color: color || "" }),
+    request<Project>("POST", "/projects", {
+      name,
+      description: description || "",
+      color: color || "",
+    }),
   get: (id: string) => request<Project>("GET", `/projects/${id}`),
   update: (id: string, name: string, description: string, color: string) =>
     request<Project>("PUT", `/projects/${id}`, { name, description, color }),
@@ -528,7 +584,8 @@ export const projectInvites = {
       `/projects/${projectID}/members/invites/${token}`,
     ),
   // Public-ish preview — fetched from the /login banner.
-  preview: (token: string) => request<InvitePreview>("GET", `/invites/${token}`),
+  preview: (token: string) =>
+    request<InvitePreview>("GET", `/invites/${token}`),
   // Accept requires a logged-in user whose email matches the invite.
   accept: (token: string) =>
     request<{ status: string; project_id: string; role: ProjectRole }>(
@@ -587,14 +644,20 @@ export const platformHelper = {
   capabilities: () =>
     request<PlatformHelperCapabilities>("GET", "/platform/helper/capabilities"),
   updateCapabilities: (mcpServerIds: number[]) =>
-    request<PlatformHelperCapabilities>("PUT", "/platform/helper/capabilities", {
-      mcp_server_ids: mcpServerIds,
-    }),
+    request<PlatformHelperCapabilities>(
+      "PUT",
+      "/platform/helper/capabilities",
+      {
+        mcp_server_ids: mcpServerIds,
+      },
+    ),
 };
 
 export const instances = {
   list: (projectId?: string) => {
-    const params = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    const params = projectId
+      ? `?project_id=${encodeURIComponent(projectId)}`
+      : "";
     return request<Agent[]>("GET", `/agents${params}`);
   },
 
@@ -632,7 +695,9 @@ export const instances = {
       // Unconscious: when set, spawns the background memory-consolidation
       // thread (core/thinker.go). Per-agent so a personal-assistant
       // template can enable it while a fast/stateless agent stays out.
-      ...(opts?.unconscious !== undefined ? { unconscious: opts.unconscious } : {}),
+      ...(opts?.unconscious !== undefined
+        ? { unconscious: opts.unconscious }
+        : {}),
       ...(opts?.boundAppInstallIDs && opts.boundAppInstallIDs.length > 0
         ? { bound_app_install_ids: opts.boundAppInstallIDs }
         : {}),
@@ -655,7 +720,8 @@ export const instances = {
 
   start: (id: number) => request<Agent>("POST", `/agents/${id}/start`),
 
-  pause: (id: number) => request<{ paused: boolean }>("POST", `/agents/${id}/pause`),
+  pause: (id: number) =>
+    request<{ paused: boolean }>("POST", `/agents/${id}/pause`),
 
   backgroundMemory: {
     get: (id: number) =>
@@ -667,30 +733,58 @@ export const instances = {
       }),
   },
 
-  sendEvent: (id: number, message: string | Array<{ type: string; text?: string; image_url?: { url: string }; audio_url?: { url: string; mime_type?: string } }>, threadId?: string) =>
-    request<any>("POST", `/agents/${id}/event`, { message, ...(threadId ? { thread_id: threadId } : {}) }),
+  sendEvent: (
+    id: number,
+    message:
+      | string
+      | Array<{
+          type: string;
+          text?: string;
+          image_url?: { url: string };
+          audio_url?: { url: string; mime_type?: string };
+        }>,
+    threadId?: string,
+  ) =>
+    request<any>("POST", `/agents/${id}/event`, {
+      message,
+      ...(threadId ? { thread_id: threadId } : {}),
+    }),
 
-  updateConfig: (id: number, opts: {
-    directive?: string;
-    mode?: string;
-    providers?: Array<{ name: string; default: boolean }>;
-    modelOverride?: string;
-    realtimeEnabled?: boolean;
-    realtimeVoice?: string;
-    realtimeVoiceMCP?: string[];
-  }) =>
+  updateConfig: (
+    id: number,
+    opts: {
+      directive?: string;
+      mode?: string;
+      providers?: Array<{ name: string; default: boolean }>;
+      modelOverride?: string;
+      realtimeEnabled?: boolean;
+      realtimeVoice?: string;
+      realtimeVoiceMCP?: string[];
+    },
+  ) =>
     request<Agent>("PUT", `/agents/${id}/config`, {
       ...(opts.directive ? { directive: opts.directive } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
       ...(opts.providers ? { providers: opts.providers } : {}),
-      ...(opts.modelOverride !== undefined ? { model_override: opts.modelOverride } : {}),
-      ...(opts.realtimeEnabled !== undefined ? { realtime_enabled: opts.realtimeEnabled } : {}),
-      ...(opts.realtimeVoice !== undefined ? { realtime_voice: opts.realtimeVoice } : {}),
-      ...(opts.realtimeVoiceMCP !== undefined ? { realtime_voice_mcp: opts.realtimeVoiceMCP } : {}),
+      ...(opts.modelOverride !== undefined
+        ? { model_override: opts.modelOverride }
+        : {}),
+      ...(opts.realtimeEnabled !== undefined
+        ? { realtime_enabled: opts.realtimeEnabled }
+        : {}),
+      ...(opts.realtimeVoice !== undefined
+        ? { realtime_voice: opts.realtimeVoice }
+        : {}),
+      ...(opts.realtimeVoiceMCP !== undefined
+        ? { realtime_voice_mcp: opts.realtimeVoiceMCP }
+        : {}),
     }),
 
   chatHistory: (id: number, limit?: number) =>
-    request<ChatHistoryMessage[]>("GET", `/agents/${id}/chat-history${limit ? `?limit=${limit}` : ""}`),
+    request<ChatHistoryMessage[]>(
+      "GET",
+      `/agents/${id}/chat-history${limit ? `?limit=${limit}` : ""}`,
+    ),
 };
 
 export interface ChatHistoryMessage {
@@ -763,7 +857,10 @@ export interface ModelInfo {
     max_context_window?: number;
     effective_context_window_percent?: number;
     default_reasoning_level?: string;
-    supported_reasoning_levels?: Array<{ effort: string; description?: string }>;
+    supported_reasoning_levels?: Array<{
+      effort: string;
+      description?: string;
+    }>;
     input_modalities?: string[];
     supports_parallel_tool_calls?: boolean;
     supports_reasoning_summaries?: boolean;
@@ -833,26 +930,43 @@ export const providers = {
   // If projectId is passed, the response includes providers scoped to that
   // project PLUS any unscoped "global" ones (project_id = '').
   list: (projectId?: string) => {
-    const params = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    const params = projectId
+      ? `?project_id=${encodeURIComponent(projectId)}`
+      : "";
     return request<Provider[]>("GET", `/providers${params}`);
   },
 
   get: (id: number) => request<ProviderDetail>("GET", `/providers/${id}`),
 
   models: (id: number, refresh = false) =>
-    request<ModelInfo[]>("GET", `/providers/${id}/models${refresh ? "?refresh=1" : ""}`),
+    request<ModelInfo[]>(
+      "GET",
+      `/providers/${id}/models${refresh ? "?refresh=1" : ""}`,
+    ),
 
   usage: (id: number, refresh = false) =>
-    request<ProviderUsageSnapshot>("GET", `/providers/${id}/usage${refresh ? "?refresh=1" : ""}`),
+    request<ProviderUsageSnapshot>(
+      "GET",
+      `/providers/${id}/usage${refresh ? "?refresh=1" : ""}`,
+    ),
 
-  updateModels: (id: number, models: { large: string; medium: string; small: string }) =>
+  updateModels: (
+    id: number,
+    models: { large: string; medium: string; small: string },
+  ) =>
     request<{ status: string; large: string; medium: string; small: string }>(
       "PUT",
       `/providers/${id}/models`,
       models,
     ),
 
-  create: (type: string, name: string, data: Record<string, string>, providerTypeId?: number, projectId?: string) =>
+  create: (
+    type: string,
+    name: string,
+    data: Record<string, string>,
+    providerTypeId?: number,
+    projectId?: string,
+  ) =>
     request<Provider>("POST", "/providers", {
       type,
       name,
@@ -873,7 +987,10 @@ export const providers = {
     }),
 
   authPoll: (sessionId: string) =>
-    request<ProviderAuthStatus>("GET", `/providers/auth/${encodeURIComponent(sessionId)}`),
+    request<ProviderAuthStatus>(
+      "GET",
+      `/providers/auth/${encodeURIComponent(sessionId)}`,
+    ),
 
   authStatus: (id: number) =>
     request<ProviderAuthStatus>("GET", `/providers/${id}/auth/status`),
@@ -887,8 +1004,12 @@ export const providers = {
   authSmokeTest: (id: number) =>
     request<ProviderTestResult>("POST", `/providers/${id}/auth/smoke-test`, {}),
 
-  update: (id: number, type: string, name: string, data: Record<string, string>) =>
-    request<any>("PUT", `/providers/${id}`, { type, name, data }),
+  update: (
+    id: number,
+    type: string,
+    name: string,
+    data: Record<string, string>,
+  ) => request<any>("PUT", `/providers/${id}`, { type, name, data }),
 
   delete: (id: number) => request<any>("DELETE", `/providers/${id}`),
 };
@@ -971,7 +1092,7 @@ export interface ConnectionInfo {
   logo?: string;
   auth_type: string;
   status: string;
-  source: string;                // 'local' | 'composio'
+  source: string; // 'local' | 'composio'
   provider_id?: number;
   external_id?: string;
   project_id?: string;
@@ -1057,7 +1178,7 @@ export interface ComposioToolkitDetails {
   slug: string;
   name: string;
   composio_managed_auth_schemes: string[];
-  auth_mode: string;              // lowercase: oauth2 / api_key / basic / ...
+  auth_mode: string; // lowercase: oauth2 / api_key / basic / ...
   auth_mode_display: string;
   auth_guide_url?: string;
   config_fields: ComposioCredField[];
@@ -1119,15 +1240,22 @@ export const integrations = {
 
   // Credential-group (suite) catalog — OmniKit, SocialCast, ...
   listGroups: () =>
-    request<Array<{
-      id: string;
-      name: string;
-      logo?: string | null;
-      description?: string;
-      members: Array<{ slug: string; name: string; tool_count: number; logo?: string | null }>;
-      has_account_scope: boolean;
-      has_project_scope: boolean;
-    }>>("GET", "/integrations/groups"),
+    request<
+      Array<{
+        id: string;
+        name: string;
+        logo?: string | null;
+        description?: string;
+        members: Array<{
+          slug: string;
+          name: string;
+          tool_count: number;
+          logo?: string | null;
+        }>;
+        has_account_scope: boolean;
+        has_project_scope: boolean;
+      }>
+    >("GET", "/integrations/groups"),
 
   getGroup: (id: string) =>
     request<{
@@ -1136,30 +1264,65 @@ export const integrations = {
         name: string;
         logo?: string | null;
         description?: string;
-        members: Array<{ slug: string; name: string; tool_count: number; logo?: string | null }>;
+        members: Array<{
+          slug: string;
+          name: string;
+          tool_count: number;
+          logo?: string | null;
+        }>;
         has_account_scope: boolean;
         has_project_scope: boolean;
       };
       discovery?: unknown;
-      account_scope?: { credential_fields: Array<{ name: string; label: string; description?: string; type?: string }> };
-      project_scope?: { credential_fields: Array<{ name: string; label: string; description?: string; type?: string }> };
+      account_scope?: {
+        credential_fields: Array<{
+          name: string;
+          label: string;
+          description?: string;
+          type?: string;
+        }>;
+      };
+      project_scope?: {
+        credential_fields: Array<{
+          name: string;
+          label: string;
+          description?: string;
+          type?: string;
+        }>;
+      };
     }>("GET", `/integrations/groups/${id}`),
 
   // Add or replace an account-wide credential for a suite. Runs
   // discovery and returns the cached project list; UI shows a matrix.
-  addGroupMaster: (groupId: string, credentials: Record<string, string>, projectId?: string) =>
-    request<{ master_id: number; projects: Array<{ id: string; label: string }> }>(
-      "POST",
-      `/integrations/groups/${groupId}/master`,
-      { credentials, project_id: projectId || "" },
-    ),
+  addGroupMaster: (
+    groupId: string,
+    credentials: Record<string, string>,
+    projectId?: string,
+  ) =>
+    request<{
+      master_id: number;
+      projects: Array<{ id: string; label: string }>;
+    }>("POST", `/integrations/groups/${groupId}/master`, {
+      credentials,
+      project_id: projectId || "",
+    }),
 
   getGroupMaster: (groupId: string, projectId?: string) => {
     const params = projectId ? `?project_id=${projectId}` : "";
     return request<{
-      master: { id: number; project_id: string; name: string; credentials_masked: Record<string, string> } | null;
+      master: {
+        id: number;
+        project_id: string;
+        name: string;
+        credentials_masked: Record<string, string>;
+      } | null;
       projects?: Array<{ id: string; label: string }>;
-      children?: Array<{ id: number; app_slug: string; name: string; project_id: string }>;
+      children?: Array<{
+        id: number;
+        app_slug: string;
+        name: string;
+        project_id: string;
+      }>;
     }>("GET", `/integrations/groups/${groupId}/master${params}`);
   },
 
@@ -1175,11 +1338,20 @@ export const integrations = {
   // (app, external project) pair.
   enableGroupApps: (
     groupId: string,
-    selections: Array<{ app_slug: string; external_project_id: string; label?: string }>,
+    selections: Array<{
+      app_slug: string;
+      external_project_id: string;
+      label?: string;
+    }>,
     opts?: { projectId?: string; replace?: boolean },
   ) =>
     request<{
-      created: Array<{ id: number; app_slug: string; project_id: string; name: string }>;
+      created: Array<{
+        id: number;
+        app_slug: string;
+        project_id: string;
+        name: string;
+      }>;
       already_exists: number;
       removed: number[];
     }>("POST", `/integrations/groups/${groupId}/master/enable`, {
@@ -1191,29 +1363,44 @@ export const integrations = {
   // Cascade-delete master + every child bound to it.
   deleteGroupMaster: (groupId: string, projectId?: string) => {
     const params = projectId ? `?project_id=${projectId}` : "";
-    return request<{ removed: number }>("DELETE", `/integrations/groups/${groupId}/master${params}`);
+    return request<{ removed: number }>(
+      "DELETE",
+      `/integrations/groups/${groupId}/master${params}`,
+    );
   },
 
-  catalogStatus: () => request<CatalogStatus>("GET", "/integrations/catalog/status"),
+  catalogStatus: () =>
+    request<CatalogStatus>("GET", "/integrations/catalog/status"),
 
-  downloadCatalog: () => request<{ status: string; count: number }>("POST", "/integrations/catalog/download"),
+  downloadCatalog: () =>
+    request<{ status: string; count: number }>(
+      "POST",
+      "/integrations/catalog/download",
+    ),
 
   usage: (opts?: { projectId?: string; period?: string }) => {
     const params = new URLSearchParams();
     if (opts?.projectId) params.set("project_id", opts.projectId);
     if (opts?.period) params.set("period", opts.period);
     const qs = params.toString();
-    return request<IntegrationUsageSummary>("GET", `/integrations/usage${qs ? `?${qs}` : ""}`);
+    return request<IntegrationUsageSummary>(
+      "GET",
+      `/integrations/usage${qs ? `?${qs}` : ""}`,
+    );
   },
 
-  app: (slug: string) => request<AppDetail>("GET", `/integrations/catalog/${slug}`),
+  app: (slug: string) =>
+    request<AppDetail>("GET", `/integrations/catalog/${slug}`),
 
   connections: (projectId?: string, opts?: { includeAppOwned?: boolean }) => {
     const params = new URLSearchParams();
     if (projectId) params.set("project_id", projectId);
     if (opts?.includeAppOwned) params.set("include_app_owned", "1");
     const qs = params.toString();
-    return request<ConnectionInfo[]>("GET", `/connections${qs ? `?${qs}` : ""}`);
+    return request<ConnectionInfo[]>(
+      "GET",
+      `/connections${qs ? `?${qs}` : ""}`,
+    );
   },
 
   // Owner-only credential reveal. Returns the decrypted token map for
@@ -1269,7 +1456,11 @@ export const integrations = {
   // catalog return { ok: true, skipped: true, reason: "..." }
   // — render those as a neutral state rather than success.
   testConnection: (connectionId: number) =>
-    request<ConnectionTestResult>("POST", `/connections/${connectionId}/test`, {}),
+    request<ConnectionTestResult>(
+      "POST",
+      `/connections/${connectionId}/test`,
+      {},
+    ),
 
   /** Move a connection between project and global scope. project_id=""
    *  → global; an id → that project. Mirror of apps.setScope (v0.14.5)
@@ -1283,7 +1474,9 @@ export const integrations = {
       old_project_id: string;
       new_project_id: string;
       mcp_servers_migrated: number;
-    }>("PATCH", `/connections/${connectionId}/scope`, { project_id: projectId }),
+    }>("PATCH", `/connections/${connectionId}/scope`, {
+      project_id: projectId,
+    }),
 
   // Create an additional MCP server row over an existing connection
   // with a specific tool subset. Lets the user attach two distinct
@@ -1324,7 +1517,10 @@ export const integrations = {
   },
 
   deviceAuthPoll: (sessionId: string) =>
-    request<DeviceAuthStatus>("GET", `/connections/auth/${encodeURIComponent(sessionId)}`),
+    request<DeviceAuthStatus>(
+      "GET",
+      `/connections/auth/${encodeURIComponent(sessionId)}`,
+    ),
 
   // Hosted Composio connection — server calls Composio, returns a redirect URL
   // the dashboard must open in a popup. The connection row is pending until
@@ -1335,9 +1531,9 @@ export const integrations = {
     opts?: {
       name?: string;
       projectId?: string;
-      authMode?: string;                           // API_KEY / OAUTH2 / BASIC ...
-      configCreds?: Record<string, string>;        // fields for auth_config creation
-      initCreds?: Record<string, string>;          // fields for per-connection init
+      authMode?: string; // API_KEY / OAUTH2 / BASIC ...
+      configCreds?: Record<string, string>; // fields for auth_config creation
+      initCreds?: Record<string, string>; // fields for per-connection init
     },
   ) =>
     request<ConnectCreateResponse>("POST", "/connections", {
@@ -1355,7 +1551,10 @@ export const integrations = {
   // dashboard can render a form before initiating the connection. Proxied
   // through apteva-server so the Composio API key never leaves the server.
   composioToolkit: (providerId: number, slug: string) =>
-    request<ComposioToolkitDetails>("GET", `/composio/toolkit/${encodeURIComponent(slug)}?provider_id=${providerId}`),
+    request<ComposioToolkitDetails>(
+      "GET",
+      `/composio/toolkit/${encodeURIComponent(slug)}?provider_id=${providerId}`,
+    ),
 
   // Manual trigger for Composio MCP server reconciliation. Recreates the
   // aggregate remote mcp_servers row for a (project, provider) tuple from
@@ -1371,7 +1570,11 @@ export const integrations = {
   get: (id: number) => request<ConnectionInfo>("GET", `/connections/${id}`),
 
   reauth: (id: number) =>
-    request<ConnectCreateResponse>("POST", `/connections/${id}/oauth/reauth`, {}),
+    request<ConnectCreateResponse>(
+      "POST",
+      `/connections/${id}/oauth/reauth`,
+      {},
+    ),
 
   disconnect: (id: number) => request<any>("DELETE", `/connections/${id}`),
 
@@ -1391,16 +1594,32 @@ export const integrations = {
   // subset. Auto-picks the user's first Composio provider on the server
   // side — no provider_id needed.
   composioToolkitActions: (slug: string) =>
-    request<Array<{ slug: string; name: string; description: string; toolkit: string }>>(
-      "GET",
-      `/composio/toolkits/${encodeURIComponent(slug)}/actions`,
-    ),
+    request<
+      Array<{
+        slug: string;
+        name: string;
+        description: string;
+        toolkit: string;
+      }>
+    >("GET", `/composio/toolkits/${encodeURIComponent(slug)}/actions`),
 
   tools: (id: number) =>
-    request<Array<{ name: string; description: string; method: string; path: string; input_schema: Record<string, any> }>>("GET", `/connections/${id}/tools`),
+    request<
+      Array<{
+        name: string;
+        description: string;
+        method: string;
+        path: string;
+        input_schema: Record<string, any>;
+      }>
+    >("GET", `/connections/${id}/tools`),
 
   execute: (id: number, tool: string, input: Record<string, any>) =>
-    request<{ success: boolean; status: number; data: any }>("POST", `/connections/${id}/execute`, { tool, input }),
+    request<{ success: boolean; status: number; data: any }>(
+      "POST",
+      `/connections/${id}/execute`,
+      { tool, input },
+    ),
 
   // List Composio trigger templates for this connection's toolkit.
   // Returns [] for local-source connections (server responds 404 there,
@@ -1408,15 +1627,19 @@ export const integrations = {
   // untyped because it varies per-trigger — the UI renders a dynamic
   // form from it.
   triggers: (id: number) =>
-    request<{ connection_id: number; toolkit: string; triggers: Array<{
-      slug: string;
-      name: string;
-      description: string;
-      instructions?: string;
-      type: string;      // "webhook" | "poll"
+    request<{
+      connection_id: number;
       toolkit: string;
-      config: Record<string, any>;
-    }> }>("GET", `/connections/${id}/triggers`),
+      triggers: Array<{
+        slug: string;
+        name: string;
+        description: string;
+        instructions?: string;
+        type: string; // "webhook" | "poll"
+        toolkit: string;
+        config: Record<string, any>;
+      }>;
+    }>("GET", `/connections/${id}/triggers`),
 };
 
 // MCP Servers
@@ -1426,11 +1649,11 @@ export interface MCPServer {
   command: string;
   args: string;
   description: string;
-  status: string;          // 'running' | 'stopped' | 'reachable' | 'unprobed'
+  status: string; // 'running' | 'stopped' | 'reachable' | 'unprobed'
   tool_count: number;
   pid: number;
-  source: string;          // 'custom' | 'managed' | 'local' | 'remote' | 'app'
-  transport?: string;      // 'stdio' | 'http'
+  source: string; // 'custom' | 'managed' | 'local' | 'remote' | 'app'
+  transport?: string; // 'stdio' | 'http'
   url?: string;
   provider_id?: number;
   connection_id: number;
@@ -1443,7 +1666,13 @@ export interface MCPServer {
   // forwarded to Composio as `actions` for remote rows.
   allowed_tools?: string[] | null;
   project_id?: string;
-  proxy_config?: { name: string; transport: string; url?: string; command?: string; args?: string[] };
+  proxy_config?: {
+    name: string;
+    transport: string;
+    url?: string;
+    command?: string;
+    args?: string[];
+  };
   created_at: string;
 }
 
@@ -1515,8 +1744,22 @@ export const mcpServers = {
     return request<MCPServer[]>("GET", `/mcp-servers${qs ? `?${qs}` : ""}`);
   },
 
-  create: (name: string, command: string, args: string[], env: Record<string, string>, description: string, projectId?: string) =>
-    request<MCPServer>("POST", "/mcp-servers", { name, command, args, env, description, project_id: projectId || "" }),
+  create: (
+    name: string,
+    command: string,
+    args: string[],
+    env: Record<string, string>,
+    description: string,
+    projectId?: string,
+  ) =>
+    request<MCPServer>("POST", "/mcp-servers", {
+      name,
+      command,
+      args,
+      env,
+      description,
+      project_id: projectId || "",
+    }),
 
   createManaged: (input: ManagedMCPCreateInput) =>
     request<ManagedMCPDetails>("POST", "/mcp-servers/managed", input),
@@ -1527,7 +1770,11 @@ export const mcpServers = {
   updateManaged: (id: number, input: ManagedMCPUpdateInput) =>
     request<ManagedMCPDetails>("PUT", `/mcp-servers/${id}/managed`, input),
 
-  validateManaged: (id: number, definition: ManagedMCPDefinition, bindings?: ManagedMCPBindings) =>
+  validateManaged: (
+    id: number,
+    definition: ManagedMCPDefinition,
+    bindings?: ManagedMCPBindings,
+  ) =>
     request<{ valid: boolean; tool_count?: number; error?: string }>(
       "POST",
       `/mcp-servers/${id}/validate`,
@@ -1547,7 +1794,10 @@ export const mcpServers = {
     request<MCPServer>("PATCH", `/mcp-servers/${id}`, { description }),
 
   start: (id: number) =>
-    request<{ status: string; tool_count: number; tools: MCPTool[] }>("POST", `/mcp-servers/${id}/start`),
+    request<{ status: string; tool_count: number; tools: MCPTool[] }>(
+      "POST",
+      `/mcp-servers/${id}/start`,
+    ),
 
   stop: (id: number) => request<any>("POST", `/mcp-servers/${id}/stop`),
 
@@ -1555,7 +1805,8 @@ export const mcpServers = {
   // `allowed_tools` so callers rendering a picker can pre-tick the current
   // filter. Legacy callers that typed this as `MCPTool[]` get the .tools
   // field — they keep working by accessing response.tools.
-  tools: (id: number) => request<MCPServerToolsResponse>("GET", `/mcp-servers/${id}/tools`),
+  tools: (id: number) =>
+    request<MCPServerToolsResponse>("GET", `/mcp-servers/${id}/tools`),
 
   // Overwrite the allowed_tools filter. Pass an empty array to clear
   // (re-enable all tools). Takes effect immediately for source=local
@@ -1573,7 +1824,12 @@ export const mcpServers = {
   //
   // Response shape mirrors integrations.execute for dashboard uniformity:
   //   { success: boolean, status: number, data: any }
-  callTool: (id: number, tool: string, args: Record<string, any>, projectId?: string) =>
+  callTool: (
+    id: number,
+    tool: string,
+    args: Record<string, any>,
+    projectId?: string,
+  ) =>
     request<{ success: boolean; status: number; data: any }>(
       "POST",
       `/mcp-servers/${id}/call-tool${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
@@ -1630,25 +1886,27 @@ export const subscriptions = {
       notifyAgent?: boolean;
     },
   ) =>
-    request<{ subscription: SubscriptionInfo; webhook_url: string; auto_registered: boolean; trigger_id?: string; trigger_slug?: string }>(
-      "POST",
-      "/subscriptions",
-      {
-        name,
-        slug,
-        agent_id: instanceId,
-        connection_id: opts?.connectionId || 0,
-        description: opts?.description || "",
-        hmac_secret: opts?.hmacSecret || "",
-        events: opts?.events || [],
-        thread_id: opts?.threadId || "",
-        project_id: opts?.projectId || "",
-        source: opts?.source || "webhook",
-        trigger_slug: opts?.triggerSlug || "",
-        trigger_config: opts?.triggerConfig || {},
-        notify_agent: opts?.notifyAgent || false,
-      },
-    ),
+    request<{
+      subscription: SubscriptionInfo;
+      webhook_url: string;
+      auto_registered: boolean;
+      trigger_id?: string;
+      trigger_slug?: string;
+    }>("POST", "/subscriptions", {
+      name,
+      slug,
+      agent_id: instanceId,
+      connection_id: opts?.connectionId || 0,
+      description: opts?.description || "",
+      hmac_secret: opts?.hmacSecret || "",
+      events: opts?.events || [],
+      thread_id: opts?.threadId || "",
+      project_id: opts?.projectId || "",
+      source: opts?.source || "webhook",
+      trigger_slug: opts?.triggerSlug || "",
+      trigger_config: opts?.triggerConfig || {},
+      notify_agent: opts?.notifyAgent || false,
+    }),
 
   delete: (id: string) => request<any>("DELETE", `/subscriptions/${id}`),
 
@@ -1657,10 +1915,19 @@ export const subscriptions = {
   disable: (id: string) => request<any>("POST", `/subscriptions/${id}/disable`),
 
   setNotifyAgent: (id: string, notifyAgent: boolean) =>
-    request<any>("POST", `/subscriptions/${id}/notify-agent`, { notify_agent: notifyAgent }),
+    request<any>("POST", `/subscriptions/${id}/notify-agent`, {
+      notify_agent: notifyAgent,
+    }),
 
-  test: (id: string, opts?: { event?: string; payload?: Record<string, any> }) =>
-    request<{ status: string; event: string; payload: any }>("POST", `/subscriptions/${id}/test`, opts || {}),
+  test: (
+    id: string,
+    opts?: { event?: string; payload?: Record<string, any> },
+  ) =>
+    request<{ status: string; event: string; payload: any }>(
+      "POST",
+      `/subscriptions/${id}/test`,
+      opts || {},
+    ),
 };
 
 // Core per-instance API (proxied through server)
@@ -1701,7 +1968,8 @@ export interface Status {
   sleep_iteration?: number;
 }
 
-export type SleepState = "active" | "sleeping" | "overdue" | "unknown" | "paused" | "stopped" | string;
+export type SleepState =
+  "active" | "sleeping" | "overdue" | "unknown" | "paused" | "stopped" | string;
 
 export interface ExecutionControlStatus {
   mode: "auto" | "paused" | "step";
@@ -1887,7 +2155,7 @@ export interface TelemetryStats {
 // when pushing a new desired list via setMCPServers.
 export interface MCPServerConfig {
   name: string;
-  transport?: string;      // 'http' | 'stdio'
+  transport?: string; // 'http' | 'stdio'
   url?: string;
   command?: string;
   args?: string[];
@@ -1897,7 +2165,7 @@ export interface MCPServerConfig {
   // (gateways, outbound bridges) that shouldn't be reachable from a
   // worker — the privilege boundary in the discovery model.
   no_spawn?: boolean;
-  connected?: boolean;     // present on GET, absent on PUT
+  connected?: boolean; // present on GET, absent on PUT
 }
 
 export interface ContextResetResult {
@@ -1914,8 +2182,10 @@ export interface ContextResetResult {
 }
 
 export const core = {
-  status: (instanceId: number) => request<Status>("GET", `/agents/${instanceId}/status`),
-  threads: (instanceId: number) => request<Thread[]>("GET", `/agents/${instanceId}/threads`),
+  status: (instanceId: number) =>
+    request<Status>("GET", `/agents/${instanceId}/status`),
+  threads: (instanceId: number) =>
+    request<Thread[]>("GET", `/agents/${instanceId}/threads`),
 
   // Kill a sub-thread by ID. Core stops its goroutine + removes it
   // from the persisted config so it won't respawn next boot. Rejected
@@ -1929,21 +2199,27 @@ export const core = {
   spawnRealtimeThread: (
     instanceId: number,
     threadId: string,
-    opts: { voice?: string; provider?: string; mcp?: string[]; tools?: string[] },
-  ) => request<RealtimeThreadResponse>(
-    "POST",
-    `/agents/${instanceId}/threads/${encodeURIComponent(threadId)}`,
-    {
-      realtime: true,
-      ephemeral: true,
-      voice: opts.voice || undefined,
-      provider: opts.provider || undefined,
-      mcp: opts.mcp || [],
-      tools: opts.tools || [],
-      bridge_disconnect_ttl_seconds: 45,
-      directive_suffix: REALTIME_DASHBOARD_DIRECTIVE,
+    opts: {
+      voice?: string;
+      provider?: string;
+      mcp?: string[];
+      tools?: string[];
     },
-  ),
+  ) =>
+    request<RealtimeThreadResponse>(
+      "POST",
+      `/agents/${instanceId}/threads/${encodeURIComponent(threadId)}`,
+      {
+        realtime: true,
+        ephemeral: true,
+        voice: opts.voice || undefined,
+        provider: opts.provider || undefined,
+        mcp: opts.mcp || [],
+        tools: opts.tools || [],
+        bridge_disconnect_ttl_seconds: 45,
+        directive_suffix: REALTIME_DASHBOARD_DIRECTIVE,
+      },
+    ),
 
   renewRealtimeAudioToken: (instanceId: number, threadId: string) =>
     request<RealtimeThreadResponse>(
@@ -1971,11 +2247,13 @@ export const core = {
     request<{ status: string; reset?: ContextResetResult }>(
       "PUT",
       `/agents/${instanceId}/config`,
-      { reset: {
-        ...(opts.history ? { history: true } : {}),
-        ...(opts.threads ? { threads: true } : {}),
-        ...(opts.memory ? { memory: true } : {}),
-      } },
+      {
+        reset: {
+          ...(opts.history ? { history: true } : {}),
+          ...(opts.threads ? { threads: true } : {}),
+          ...(opts.memory ? { memory: true } : {}),
+        },
+      },
     ),
 
   // Fetch the live context window of a thread — the exact messages array
@@ -2026,19 +2304,29 @@ export const core = {
       realtime_voice_mcp?: string[];
     }>("GET", `/agents/${instanceId}/config`),
   setMode: (instanceId: number, mode: RunMode) =>
-    request<{ status: string }>("PUT", `/agents/${instanceId}/config`, { mode }),
-  control: (instanceId: number, action: "run" | "pause" | "step", threadId?: string) =>
+    request<{ status: string }>("PUT", `/agents/${instanceId}/config`, {
+      mode,
+    }),
+  control: (
+    instanceId: number,
+    action: "run" | "pause" | "step",
+    threadId?: string,
+  ) =>
     request<{ status: string; execution_control: ExecutionControlStatus }>(
       "POST",
       `/agents/${instanceId}/control`,
       { action, ...(threadId ? { thread_id: threadId } : {}) },
     ),
   restoreCheckpoint: (instanceId: number, checkpointId: string) =>
-    request<{ status: string; execution_control: ExecutionControlStatus; checkpoint?: ExecutionCheckpointMeta }>(
-      "POST",
-      `/agents/${instanceId}/control`,
-      { action: "restore_checkpoint", checkpoint_id: checkpointId, mode: "step" },
-    ),
+    request<{
+      status: string;
+      execution_control: ExecutionControlStatus;
+      checkpoint?: ExecutionCheckpointMeta;
+    }>("POST", `/agents/${instanceId}/control`, {
+      action: "restore_checkpoint",
+      checkpoint_id: checkpointId,
+      mode: "step",
+    }),
   // Replace the full mcp_servers list on a running instance. The core
   // runs reconcileMCP against the list: names present get attached /
   // kept, names absent get disconnected. Always send the complete
@@ -2062,11 +2350,7 @@ export const core = {
   // channels when they were previously detached. Takes effect on the
   // next start of the instance — the response's restart_required field
   // indicates whether the caller needs to prompt for a restart to apply it.
-  toggleSystemMCP: (
-    instanceId: number,
-    name: "channels",
-    enable: boolean,
-  ) =>
+  toggleSystemMCP: (instanceId: number, name: "channels", enable: boolean) =>
     request<{
       name: string;
       enable: boolean;
@@ -2074,7 +2358,9 @@ export const core = {
       restart_required: boolean;
     }>("POST", `/agents/${instanceId}/system-mcp`, { name, enable }),
   approve: (instanceId: number, approved: boolean) =>
-    request<{ status: string }>("POST", `/agents/${instanceId}/approve`, { approved }),
+    request<{ status: string }>("POST", `/agents/${instanceId}/approve`, {
+      approved,
+    }),
 
   // Reset the main thread's conversation context. Mirrors the CLI's
   // /clear command. Choose any combination of:
@@ -2087,13 +2373,17 @@ export const core = {
     instanceId: number,
     opts?: { history?: boolean; memory?: boolean; threads?: boolean },
   ) =>
-    request<{ status: string; reset?: ContextResetResult }>("PUT", `/agents/${instanceId}/config`, {
-      reset: {
-        history: opts?.history ?? true,
-        memory: opts?.memory ?? false,
-        threads: opts?.threads ?? false,
+    request<{ status: string; reset?: ContextResetResult }>(
+      "PUT",
+      `/agents/${instanceId}/config`,
+      {
+        reset: {
+          history: opts?.history ?? true,
+          memory: opts?.memory ?? false,
+          threads: opts?.threads ?? false,
+        },
       },
-    }),
+    ),
 
   // Memory — what the agent has remembered. Auto-recalled by vector
   // similarity, so fixing or pruning a bad memory immediately changes
@@ -2103,9 +2393,14 @@ export const core = {
   listMemory: (instanceId: number) =>
     request<MemoryItem[]>("GET", `/agents/${instanceId}/memory`),
   updateMemory: (instanceId: number, index: number, text: string) =>
-    request<{ ok: boolean }>("PUT", `/agents/${instanceId}/memory/${index}`, { text }),
+    request<{ ok: boolean }>("PUT", `/agents/${instanceId}/memory/${index}`, {
+      text,
+    }),
   deleteMemory: (instanceId: number, index: number) =>
-    request<{ ok: boolean; count: number }>("DELETE", `/agents/${instanceId}/memory/${index}`),
+    request<{ ok: boolean; count: number }>(
+      "DELETE",
+      `/agents/${instanceId}/memory/${index}`,
+    ),
 };
 
 export interface MemoryItem {
@@ -2165,9 +2460,19 @@ export const invites = {
   }) => request<InviteResponse>("POST", "/invites", body),
   // Public (no-auth) fetch — used by the /connect/:token page.
   get: (token: string) =>
-    request<PublicInviteInfo>("GET", `/public/invites/${encodeURIComponent(token)}`),
-  fulfill: (token: string, body: { credentials?: Record<string, string>; name?: string }) =>
-    request<FulfillResponse>("POST", `/public/invites/${encodeURIComponent(token)}/fulfill`, body),
+    request<PublicInviteInfo>(
+      "GET",
+      `/public/invites/${encodeURIComponent(token)}`,
+    ),
+  fulfill: (
+    token: string,
+    body: { credentials?: Record<string, string>; name?: string },
+  ) =>
+    request<FulfillResponse>(
+      "POST",
+      `/public/invites/${encodeURIComponent(token)}/fulfill`,
+      body,
+    ),
 };
 
 // Channels
@@ -2195,31 +2500,56 @@ export const channels = {
     return request<ChannelInfo[]>("GET", `/channels?${params}`);
   },
   connect: (instanceId: number, type: string, config: Record<string, string>) =>
-    request<{ status: string; type: string; bot_name?: string; channel?: string }>(
-      "POST", "/channels/connect", { agent_id: instanceId, type, ...config },
-    ),
+    request<{
+      status: string;
+      type: string;
+      bot_name?: string;
+      channel?: string;
+    }>("POST", "/channels/connect", { agent_id: instanceId, type, ...config }),
   disconnect: (channelId: number) =>
     request<{ status: string }>("DELETE", `/channels/disconnect/${channelId}`),
 };
 
 export const slack = {
   configure: (projectId: string, botToken: string, appToken: string) =>
-    request<{ status: string }>("POST", "/slack/configure", { project_id: projectId, bot_token: botToken, app_token: appToken }),
+    request<{ status: string }>("POST", "/slack/configure", {
+      project_id: projectId,
+      bot_token: botToken,
+      app_token: appToken,
+    }),
   status: (projectId: string) =>
-    request<{ connected: boolean }>("GET", `/slack/status?project_id=${encodeURIComponent(projectId)}`),
+    request<{ connected: boolean }>(
+      "GET",
+      `/slack/status?project_id=${encodeURIComponent(projectId)}`,
+    ),
   listChannels: (projectId: string) =>
-    request<SlackChannelInfo[]>("GET", `/slack/channels?project_id=${encodeURIComponent(projectId)}`),
+    request<SlackChannelInfo[]>(
+      "GET",
+      `/slack/channels?project_id=${encodeURIComponent(projectId)}`,
+    ),
 };
 
 export const email = {
   configure: (projectId: string, apiKey: string) =>
-    request<{ status: string }>("POST", "/email/configure", { project_id: projectId, api_key: apiKey }),
+    request<{ status: string }>("POST", "/email/configure", {
+      project_id: projectId,
+      api_key: apiKey,
+    }),
   status: (projectId: string) =>
-    request<{ connected: boolean }>("GET", `/email/status?project_id=${encodeURIComponent(projectId)}`),
+    request<{ connected: boolean }>(
+      "GET",
+      `/email/status?project_id=${encodeURIComponent(projectId)}`,
+    ),
 };
 
 export const telemetry = {
-  query: (instanceId: number, type?: string, limit?: number, threadId?: string, since?: string) => {
+  query: (
+    instanceId: number,
+    type?: string,
+    limit?: number,
+    threadId?: string,
+    since?: string,
+  ) => {
     const params = new URLSearchParams({ agent_id: String(instanceId) });
     if (type) params.set("type", type);
     if (limit) params.set("limit", String(limit));
@@ -2228,21 +2558,26 @@ export const telemetry = {
     return request<TelemetryEvent[]>("GET", `/telemetry?${params}`);
   },
   stats: (instanceId: number, period: string = "24h") =>
-    request<TelemetryStats>("GET", `/telemetry/stats?instance_id=${instanceId}&period=${period}`),
+    request<TelemetryStats>(
+      "GET",
+      `/telemetry/stats?instance_id=${instanceId}&period=${period}`,
+    ),
 
   wipe: () => request<{ deleted: number }>("DELETE", "/telemetry"),
 
   timeline: (instanceId: number, period: string = "24h") =>
-    request<Array<{
-      time: string;
-      llm_calls: number;
-      tokens_in: number;
-      tokens_out: number;
-      cost: number;
-      tool_calls: number;
-      errors: number;
-      threads: Record<string, number>;
-    }>>("GET", `/telemetry/timeline?instance_id=${instanceId}&period=${period}`),
+    request<
+      Array<{
+        time: string;
+        llm_calls: number;
+        tokens_in: number;
+        tokens_out: number;
+        cost: number;
+        tool_calls: number;
+        errors: number;
+        threads: Record<string, number>;
+      }>
+    >("GET", `/telemetry/timeline?instance_id=${instanceId}&period=${period}`),
 
   // Project-scoped aggregate — ranks every instance in the project by
   // cost/tokens/errors over the period. Empty projectId scopes to every
@@ -2250,7 +2585,10 @@ export const telemetry = {
   projectStats: (projectId: string | undefined, period: string = "24h") => {
     const params = new URLSearchParams({ period });
     if (projectId) params.set("project_id", projectId);
-    return request<InstanceStats[]>("GET", `/telemetry/project-stats?${params}`);
+    return request<InstanceStats[]>(
+      "GET",
+      `/telemetry/project-stats?${params}`,
+    );
   },
 
   // Project-scoped timeline — buckets of cost with a per-instance
@@ -2258,7 +2596,10 @@ export const telemetry = {
   projectTimeline: (projectId: string | undefined, period: string = "24h") => {
     const params = new URLSearchParams({ period });
     if (projectId) params.set("project_id", projectId);
-    return request<ProjectTimelineBucket[]>("GET", `/telemetry/project-timeline?${params}`);
+    return request<ProjectTimelineBucket[]>(
+      "GET",
+      `/telemetry/project-timeline?${params}`,
+    );
   },
 
   // Project-scoped tool breakdown — top-N tools by call count over
@@ -2266,7 +2607,10 @@ export const telemetry = {
   projectTools: (projectId: string | undefined, period: string = "24h") => {
     const params = new URLSearchParams({ period });
     if (projectId) params.set("project_id", projectId);
-    return request<ProjectToolStat[]>("GET", `/telemetry/project-tools?${params}`);
+    return request<ProjectToolStat[]>(
+      "GET",
+      `/telemetry/project-tools?${params}`,
+    );
   },
 };
 
@@ -2378,20 +2722,21 @@ export const apps = {
     }),
 
   install: (opts: AppInstallOptions) =>
-    request<{ install_id: number; app_id: number; status: string; next_step: string }>(
-      "POST",
-      "/apps/install",
-      {
-        ...(opts.manifestUrl ? { manifest_url: opts.manifestUrl } : {}),
-        ...(opts.manifestYaml ? { manifest_yaml: opts.manifestYaml } : {}),
-        ...(opts.repo ? { repo: opts.repo } : {}),
-        ...(opts.ref ? { ref: opts.ref } : {}),
-        project_id: opts.projectId || "",
-        config: opts.config || {},
-        upgrade_policy: opts.upgradePolicy || "manual",
-        ...(opts.bindings ? { bindings: opts.bindings } : {}),
-      },
-    ),
+    request<{
+      install_id: number;
+      app_id: number;
+      status: string;
+      next_step: string;
+    }>("POST", "/apps/install", {
+      ...(opts.manifestUrl ? { manifest_url: opts.manifestUrl } : {}),
+      ...(opts.manifestYaml ? { manifest_yaml: opts.manifestYaml } : {}),
+      ...(opts.repo ? { repo: opts.repo } : {}),
+      ...(opts.ref ? { ref: opts.ref } : {}),
+      project_id: opts.projectId || "",
+      config: opts.config || {},
+      upgrade_policy: opts.upgradePolicy || "manual",
+      ...(opts.bindings ? { bindings: opts.bindings } : {}),
+    }),
 
   uninstall: (installId: number) =>
     request<{ status: string }>("DELETE", `/apps/installs/${installId}`),
@@ -2400,7 +2745,9 @@ export const apps = {
     request<AppUpgradeResponse>(
       "POST",
       `/apps/installs/${installId}/upgrade`,
-      opts?.approveNewPermissions ? { approve_new_permissions: true } : undefined,
+      opts?.approveNewPermissions
+        ? { approve_new_permissions: true }
+        : undefined,
     ),
 
   /** Move an install between project and global scope without
@@ -2443,11 +2790,12 @@ export const apps = {
   // up the new bindings; respawned=true confirms the new process is
   // healthy. Required roles can't be unbound (server 400s).
   setBindings: (installId: number, bindings: Record<string, AppBindingValue>) =>
-    request<{ ok: boolean; bindings: Record<string, any>; respawned: boolean; respawn_err: string }>(
-      "PUT",
-      `/apps/installs/${installId}/bindings`,
-      bindings,
-    ),
+    request<{
+      ok: boolean;
+      bindings: Record<string, any>;
+      respawned: boolean;
+      respawn_err: string;
+    }>("PUT", `/apps/installs/${installId}/bindings`, bindings),
 
   // preflightInstalled — same shape as preflight() but for an
   // already-installed app, so the dashboard can render the role
@@ -2461,12 +2809,22 @@ export const apps = {
     request<AppMCPTool[]>("GET", `/apps/installs/${installId}/tools`),
 
   imports: (installId: number) =>
-    request<{ imports?: AppImports }>("GET", `/apps/installs/${installId}/imports`),
+    request<{ imports?: AppImports }>(
+      "GET",
+      `/apps/installs/${installId}/imports`,
+    ),
 
   permissions: (installId: number) =>
-    request<AppPermissionCatalog>("GET", `/apps/installs/${installId}/permissions`),
+    request<AppPermissionCatalog>(
+      "GET",
+      `/apps/installs/${installId}/permissions`,
+    ),
 
-  setGrantsForAgent: (installId: number, agentId: number, policy: Omit<AppGrantPolicy, "install_id">) =>
+  setGrantsForAgent: (
+    installId: number,
+    agentId: number,
+    policy: Omit<AppGrantPolicy, "install_id">,
+  ) =>
     request<AppGrantsResponse>(
       "PUT",
       `/apps/installs/${installId}/grants/by-instance/${agentId}`,
@@ -2479,7 +2837,12 @@ export const apps = {
   marketplace: (
     projectId?: string,
     registryUrl?: string,
-    opts?: { query?: string; category?: string; page?: number; pageSize?: number },
+    opts?: {
+      query?: string;
+      category?: string;
+      page?: number;
+      pageSize?: number;
+    },
   ) => {
     // Pass project_id so the server filters the "is installed" check
     // to project-visible installs (own + globals). Without this an
@@ -2489,7 +2852,8 @@ export const apps = {
     if (projectId) params.set("project_id", projectId);
     if (registryUrl) params.set("registry_url", registryUrl);
     if (opts?.query) params.set("q", opts.query);
-    if (opts?.category && opts.category !== "all") params.set("category", opts.category);
+    if (opts?.category && opts.category !== "all")
+      params.set("category", opts.category);
     if (opts?.page) params.set("page", String(opts.page));
     if (opts?.pageSize) params.set("page_size", String(opts.pageSize));
     const q = params.toString();
@@ -2500,10 +2864,7 @@ export const apps = {
       page?: number;
       page_size?: number;
       categories?: Record<string, number>;
-    }>(
-      "GET",
-      `/apps/marketplace${q ? `?${q}` : ""}`,
-    );
+    }>("GET", `/apps/marketplace${q ? `?${q}` : ""}`);
   },
 };
 
@@ -2594,7 +2955,7 @@ export interface AppRow {
   icon_style?: "image" | "monochrome";
   project_id: string;
   status: "pending" | "running" | "error" | "disabled";
-  status_message?: string;  // live phase string while pending — "Cloning…", "Building…", etc.
+  status_message?: string; // live phase string while pending — "Cloning…", "Building…", etc.
   error_message?: string;
   source: "git" | "registry" | "builtin" | "manual" | "integration";
   upgrade_policy: "manual" | "auto-patch" | "auto-minor";
@@ -2630,17 +2991,18 @@ export interface AppImportSource {
 // EventDecl — one topic the app's manifest declares it emits via
 // ctx.Emit. Mirrors sdk.EventDecl.
 export interface EventDecl {
-  name: string;                       // e.g. "media.indexed"
-  description?: string;               // human prose for the dropdown
-  dynamic?: boolean;                  // name ends with ".*"
-  payload?: Record<string, string>;   // doc-only field → type label map
+  name: string; // e.g. "media.indexed"
+  description?: string; // human prose for the dropdown
+  dynamic?: boolean; // name ends with ".*"
+  payload?: Record<string, string>; // doc-only field → type label map
 }
 
 export interface AppUIPanel {
-  slot: string;   // "instance.tab" | "instance.status" | "settings.app" | "sidebar.widget"
+  slot: string; // "project.page" | "instance.tab" | "instance.status" | "settings.app"
   label: string;
   icon: string;
-  entry: string;  // path served by sidecar (e.g. "/ui/StatusPanel.html")
+  entry: string; // path served by sidecar (e.g. "/ui/StatusPanel.html")
+  suggested?: boolean;
 }
 
 // Manifest entry — what the app declared. Mirrors sdk.UIComponent.
@@ -2648,15 +3010,22 @@ export interface AppUIComponent {
   name: string;
   entry: string;
   slots: string[];
+  label?: string;
+  description?: string;
+  suggested?: boolean;
+  default_width?: 1 | 2;
+  supported_sizes?: Array<"half" | "full">;
+  default_size?: "half" | "full";
   props_schema?: Record<string, unknown>;
+  settings_schema?: Record<string, unknown>;
   preview_props?: Record<string, unknown>;
 }
 
 export interface AppSurfaces {
-  kind: string;                    // service | source | static
+  kind: string; // service | source | static
   mcp_tool_count: number;
   mcp_tool_names?: string[];
-  skill_count: number;             // playbooks the app ships (inherited on bind)
+  skill_count: number; // playbooks the app ships (inherited on bind)
   http_route_count: number;
   http_routes?: string[];
   ui_panel_count: number;
@@ -2707,7 +3076,13 @@ export interface AppManifestV2 {
     http_routes?: { prefix: string }[];
     mcp_tools?: { name: string; description: string }[];
     prompt_fragments?: { file: string; position: string }[];
-    ui_panels?: { slot: string; label: string; icon?: string; entry: string }[];
+    ui_panels?: {
+      slot: string;
+      label: string;
+      icon?: string;
+      entry: string;
+      suggested?: boolean;
+    }[];
     ui_app?: { domain_template: string; auth: string };
     channels?: { name: string; capabilities: string[] }[];
     workers?: { name: string; schedule: string }[];
@@ -2853,8 +3228,8 @@ export interface ChatRow {
 // chat MCP's respond(components=…) arg. The dashboard mounts each
 // entry as a UIComponent declared in the named app's manifest.
 export interface ChatComponent {
-  app: string;             // "storage"
-  name: string;            // "file-card"
+  app: string; // "storage"
+  name: string; // "file-card"
   props?: Record<string, unknown>;
 }
 
@@ -2914,219 +3289,23 @@ export interface AlertMessageRow {
   title: string;
   body: string;
   severity: string;
-	dismissed?: boolean;
+  dismissed?: boolean;
 }
 
 export interface CurrentStatusMessageRow {
-	message: ChatMessageRow;
-	instance_id: number;
-	instance_name: string;
-	project_id: string;
-	updated_at?: string;
-	title: string;
-	detail?: string;
-	state: "working" | "waiting" | "blocked" | "completed";
-	progress?: number;
-	next?: string;
-	next_at?: string;
-	stale: boolean;
-}
-
-export type AgentTaskState =
-  | "queued"
-  | "running"
-  | "waiting"
-  | "blocked"
-  | "completed"
-  | "failed"
-  | "cancelled";
-
-export interface AgentTask {
-  id: string;
-  agent_id: number;
+  message: ChatMessageRow;
+  instance_id: number;
+  instance_name: string;
   project_id: string;
+  updated_at?: string;
   title: string;
-  description?: string;
-  state: AgentTaskState;
+  detail?: string;
+  state: "working" | "waiting" | "blocked" | "completed";
   progress?: number;
-  current_step?: string;
-  assigned_thread_id: string;
-  origin_conversation_id?: string;
-  origin_message_id?: string;
-  parent_task_id?: string;
-  schedule_kind?: "once" | "interval" | "cron";
-  schedule_expression?: string;
-  schedule_timezone?: string;
-  schedule_enabled?: boolean;
-  schedule_overlap_policy?: "skip";
-  schedule_catchup_policy?: "skip";
-  next_run_at?: string;
-  last_run_at?: string;
-  scheduled_for?: string;
-  schedule_occurrence_key?: string;
-  result?: string;
-  error?: string;
-  handoff_delivery_status?: string;
-  handoff_delivery_error?: string;
-  handoff_delivered_at?: string;
-  completion_delivery_status?: string;
-  completion_delivery_error?: string;
-  completion_delivered_at?: string;
-  last_activity_at?: string;
-  created_by_thread_id?: string;
-  created_at: string;
-  updated_at: string;
-  started_at?: string;
-  completed_at?: string;
+  next?: string;
+  next_at?: string;
+  stale: boolean;
 }
-
-export interface AgentTaskEvent {
-  id: string;
-  task_id: string;
-  agent_id: number;
-  event_type: string;
-  thread_id?: string;
-  from_state?: string;
-  to_state?: string;
-  data?: Record<string, unknown>;
-  created_at: string;
-}
-
-export interface AgentTaskStep {
-  task_id: string;
-  step_key: string;
-  thread_id: string;
-  mcp_server: string;
-  tool_name: string;
-  state: "running" | "completed" | "failed";
-  error?: string;
-  created_at: string;
-  updated_at: string;
-  completed_at?: string;
-}
-
-export interface AgentTaskCounts {
-  active: number;
-  queued: number;
-  running: number;
-  waiting: number;
-  blocked: number;
-  completed: number;
-  failed: number;
-  cancelled: number;
-  scheduled?: number;
-  paused?: number;
-}
-
-export interface AgentTaskListResponse {
-  enabled: boolean;
-  scheduling_enabled?: boolean;
-  tasks: AgentTask[];
-  counts?: AgentTaskCounts;
-}
-
-export interface CreateAgentTaskInput {
-  agent_id: number;
-  title: string;
-  description?: string;
-  idempotency_key?: string;
-  schedule?: AgentTaskScheduleInput;
-}
-
-export interface AgentTaskScheduleInput {
-  kind: "once" | "interval" | "cron";
-  at?: string;
-  after?: string;
-  every?: string;
-  cron?: string;
-  timezone?: string;
-  overlap_policy?: "skip";
-  catchup_policy?: "skip";
-}
-
-export interface CreateAgentTaskResponse {
-  task: AgentTask;
-  created: boolean;
-  delivery_warning?: string;
-}
-
-export function agentTaskListPath(options: {
-  projectId?: string;
-  allProjects?: boolean;
-  agentId?: number;
-  states?: AgentTaskState[];
-  assignedThreadId?: string;
-  originConversationId?: string;
-  limit?: number;
-}): string {
-  const params = new URLSearchParams();
-  if (options.allProjects) params.set("all", "1");
-  if (options.projectId) params.set("project_id", options.projectId);
-  if (options.agentId) params.set("agent_id", String(options.agentId));
-  if (options.states?.length) params.set("states", options.states.join(","));
-  if (options.assignedThreadId) params.set("assigned_thread_id", options.assignedThreadId);
-  if (options.originConversationId) params.set("origin_conversation_id", options.originConversationId);
-  if (options.limit) params.set("limit", String(options.limit));
-  return `/tasks?${params}`;
-}
-
-export const agentTasks = {
-  list: (options: {
-    projectId?: string;
-    allProjects?: boolean;
-    agentId?: number;
-    states?: AgentTaskState[];
-    assignedThreadId?: string;
-    originConversationId?: string;
-    limit?: number;
-  }) => {
-    return request<AgentTaskListResponse>("GET", agentTaskListPath(options));
-  },
-  create: (input: CreateAgentTaskInput) =>
-    request<CreateAgentTaskResponse>("POST", "/tasks", {
-      ...input,
-      state: "queued",
-      assigned_thread_id: "main",
-    }),
-  get: (taskId: string) =>
-    request<{ task: AgentTask }>("GET", `/tasks/${encodeURIComponent(taskId)}`),
-  events: (taskId: string) =>
-    request<{ events: AgentTaskEvent[] }>("GET", `/tasks/${encodeURIComponent(taskId)}/events`),
-  steps: (taskId: string) =>
-    request<{ steps: AgentTaskStep[] }>("GET", `/tasks/${encodeURIComponent(taskId)}/steps`),
-  runs: (taskId: string) =>
-    request<{ runs: AgentTask[] }>("GET", `/tasks/${encodeURIComponent(taskId)}/runs`),
-  updateSchedule: (taskId: string, schedule: AgentTaskScheduleInput) =>
-    request<{ task: AgentTask; changed: boolean }>(
-      "PATCH",
-      `/tasks/${encodeURIComponent(taskId)}/schedule`,
-      schedule,
-    ),
-  pause: (taskId: string) =>
-    request<{ task: AgentTask; changed: boolean }>(
-      "POST",
-      `/tasks/${encodeURIComponent(taskId)}/pause`,
-      {},
-    ),
-  resume: (taskId: string) =>
-    request<{ task: AgentTask; changed: boolean }>(
-      "POST",
-      `/tasks/${encodeURIComponent(taskId)}/resume`,
-      {},
-    ),
-  runNow: (taskId: string, idempotencyKey: string) =>
-    request<{ task: AgentTask; created?: boolean; delivery_warning?: string }>(
-      "POST",
-      `/tasks/${encodeURIComponent(taskId)}/run-now`,
-      { idempotency_key: idempotencyKey },
-    ),
-  cancel: (taskId: string, reason?: string) =>
-    request<{ task: AgentTask; changed: boolean }>(
-      "POST",
-      `/tasks/${encodeURIComponent(taskId)}/cancel`,
-      { reason: reason || "" },
-    ),
-};
 
 export interface ChatMessageContext {
   source: "dashboard-floating" | "dashboard-build";
@@ -3139,7 +3318,10 @@ export interface ChatMessageContext {
   chips?: string[];
 }
 
-export function chatConversationListPath(projectId: string, archived: boolean = false): string {
+export function chatConversationListPath(
+  projectId: string,
+  archived: boolean = false,
+): string {
   return `/apps/channel-chat/conversations?project_id=${encodeURIComponent(projectId)}${archived ? "&archived=1" : ""}`;
 }
 
@@ -3150,27 +3332,46 @@ export const chat = {
   APP_PATH: "/apps/channel-chat",
 
   listChats: (instanceId: number) =>
-    request<ChatRow[]>("GET", `/apps/channel-chat/chats?instance_id=${instanceId}`),
+    request<ChatRow[]>(
+      "GET",
+      `/apps/channel-chat/chats?instance_id=${instanceId}`,
+    ),
 
   createChat: (instanceId: number, title?: string) =>
-    request<ChatRow>("POST", "/apps/channel-chat/chats", { agent_id: instanceId, title }),
+    request<ChatRow>("POST", "/apps/channel-chat/chats", {
+      agent_id: instanceId,
+      title,
+    }),
 
   listConversations: (projectId: string, archived: boolean = false) =>
     request<ChatRow[]>("GET", chatConversationListPath(projectId, archived)),
 
-  createConversation: async (projectId: string, agentIds: number[], title?: string, leadAgentId?: number) => {
+  createConversation: async (
+    projectId: string,
+    agentIds: number[],
+    title?: string,
+    leadAgentId?: number,
+  ) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
     try {
-      return await request<ChatRow>("POST", "/apps/channel-chat/conversations", {
-        project_id: projectId,
-        agent_ids: agentIds,
-        ...(title ? { title } : {}),
-        ...(leadAgentId ? { lead_agent_id: leadAgentId } : {}),
-      }, undefined, controller.signal);
+      return await request<ChatRow>(
+        "POST",
+        "/apps/channel-chat/conversations",
+        {
+          project_id: projectId,
+          agent_ids: agentIds,
+          ...(title ? { title } : {}),
+          ...(leadAgentId ? { lead_agent_id: leadAgentId } : {}),
+        },
+        undefined,
+        controller.signal,
+      );
     } catch (error) {
       if (controller.signal.aborted) {
-        throw new Error("Conversation creation timed out. Refresh the conversation list before trying again.");
+        throw new Error(
+          "Conversation creation timed out. Refresh the conversation list before trying again.",
+        );
       }
       throw error;
     } finally {
@@ -3178,17 +3379,34 @@ export const chat = {
     }
   },
 
-  updateConversation: (chatId: string, update: { title?: string; archived?: boolean }) =>
-    request<ChatRow>("PATCH", `/apps/channel-chat/conversation?id=${encodeURIComponent(chatId)}`, update),
+  updateConversation: (
+    chatId: string,
+    update: { title?: string; archived?: boolean },
+  ) =>
+    request<ChatRow>(
+      "PATCH",
+      `/apps/channel-chat/conversation?id=${encodeURIComponent(chatId)}`,
+      update,
+    ),
 
   deleteConversation: (chatId: string) =>
-    request<{ deleted: boolean }>("DELETE", `/apps/channel-chat/conversation?id=${encodeURIComponent(chatId)}`),
+    request<{ deleted: boolean }>(
+      "DELETE",
+      `/apps/channel-chat/conversation?id=${encodeURIComponent(chatId)}`,
+    ),
 
   addParticipant: (chatId: string, agentId: number) =>
-    request<ChatRow>("POST", `/apps/channel-chat/participants?id=${encodeURIComponent(chatId)}`, { agent_id: agentId }),
+    request<ChatRow>(
+      "POST",
+      `/apps/channel-chat/participants?id=${encodeURIComponent(chatId)}`,
+      { agent_id: agentId },
+    ),
 
   removeParticipant: (chatId: string, agentId: number) =>
-    request<ChatRow>("DELETE", `/apps/channel-chat/participants?id=${encodeURIComponent(chatId)}&agent_id=${agentId}`),
+    request<ChatRow>(
+      "DELETE",
+      `/apps/channel-chat/participants?id=${encodeURIComponent(chatId)}&agent_id=${agentId}`,
+    ),
 
   messages: (chatId: string, since: number = 0, limit: number = 500) =>
     request<ChatMessageRow[]>(
@@ -3196,7 +3414,13 @@ export const chat = {
       `/apps/channel-chat/messages?chat_id=${encodeURIComponent(chatId)}&since=${since}&limit=${limit}`,
     ),
 
-  post: (chatId: string, content: string, context?: ChatMessageContext, attachments?: ChatAttachment[], clientMessageId?: string) =>
+  post: (
+    chatId: string,
+    content: string,
+    context?: ChatMessageContext,
+    attachments?: ChatAttachment[],
+    clientMessageId?: string,
+  ) =>
     request<ChatMessageRow>(
       "POST",
       `/apps/channel-chat/messages?chat_id=${encodeURIComponent(chatId)}`,
@@ -3235,45 +3459,62 @@ export const chat = {
   unreadSummary: (): Promise<UnreadSummaryRow[]> =>
     request<UnreadSummaryRow[]>("GET", "/apps/channel-chat/unread-summary"),
 
-  approvalMessages: (projectId?: string, status: "pending" | "all" = "pending", limit: number = 20) => {
+  approvalMessages: (
+    projectId?: string,
+    status: "pending" | "all" = "pending",
+    limit: number = 20,
+  ) => {
     const qs = new URLSearchParams();
     if (projectId) qs.set("project_id", projectId);
     if (status) qs.set("status", status);
     qs.set("limit", String(limit));
-    return request<ApprovalMessageRow[]>("GET", `/apps/channel-chat/approval-messages?${qs.toString()}`);
+    return request<ApprovalMessageRow[]>(
+      "GET",
+      `/apps/channel-chat/approval-messages?${qs.toString()}`,
+    );
   },
 
   reportMessages: (projectId?: string, limit: number = 20) => {
     const qs = new URLSearchParams();
     if (projectId) qs.set("project_id", projectId);
     qs.set("limit", String(limit));
-    return request<ReportMessageRow[]>("GET", `/apps/channel-chat/report-messages?${qs.toString()}`);
+    return request<ReportMessageRow[]>(
+      "GET",
+      `/apps/channel-chat/report-messages?${qs.toString()}`,
+    );
   },
 
-	alertMessages: (projectId?: string, limit: number = 20) => {
+  alertMessages: (projectId?: string, limit: number = 20) => {
     const qs = new URLSearchParams();
     if (projectId) qs.set("project_id", projectId);
     qs.set("limit", String(limit));
-		return request<AlertMessageRow[]>("GET", `/apps/channel-chat/alert-messages?${qs.toString()}`);
-	},
+    return request<AlertMessageRow[]>(
+      "GET",
+      `/apps/channel-chat/alert-messages?${qs.toString()}`,
+    );
+  },
 
-	currentStatuses: (projectId?: string) => {
-		const qs = new URLSearchParams();
-		if (projectId) qs.set("project_id", projectId);
-		const suffix = qs.toString() ? `?${qs.toString()}` : "";
-		return request<CurrentStatusMessageRow[]>("GET", `/apps/channel-chat/current-statuses${suffix}`);
-	},
+  currentStatuses: (projectId?: string) => {
+    const qs = new URLSearchParams();
+    if (projectId) qs.set("project_id", projectId);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return request<CurrentStatusMessageRow[]>(
+      "GET",
+      `/apps/channel-chat/current-statuses${suffix}`,
+    );
+  },
 
   messageAction: (messageId: number, actionId: string, note?: string) =>
-    request<{ message: ChatMessageRow; status: string; forwarded: boolean; delivery_error?: string }>(
-      "POST",
-      "/apps/channel-chat/message-action",
-      {
-        message_id: messageId,
-        action_id: actionId,
-        ...(note ? { note } : {}),
-      },
-    ),
+    request<{
+      message: ChatMessageRow;
+      status: string;
+      forwarded: boolean;
+      delivery_error?: string;
+    }>("POST", "/apps/channel-chat/message-action", {
+      message_id: messageId,
+      action_id: actionId,
+      ...(note ? { note } : {}),
+    }),
 
   messageDismiss: (messageId: number) =>
     request<{
@@ -3282,16 +3523,15 @@ export const chat = {
       notified?: boolean;
       forwarded?: boolean;
       delivery_error?: string;
-    }>(
-      "POST",
-      "/apps/channel-chat/message-dismiss",
-      { message_id: messageId },
-    ),
+    }>("POST", "/apps/channel-chat/message-dismiss", { message_id: messageId }),
 
   // markSeen advances the persistent per-chat read watermark. Server
   // is monotonic, so it's safe to fire from many tabs at once. Returns
   // the watermark in effect after the call so the client can reconcile.
-  markSeen: (chatId: string, lastSeenId: number): Promise<{ last_seen_id: number }> =>
+  markSeen: (
+    chatId: string,
+    lastSeenId: number,
+  ): Promise<{ last_seen_id: number }> =>
     request<{ last_seen_id: number }>("POST", "/apps/channel-chat/seen", {
       chat_id: chatId,
       last_seen_id: lastSeenId,
@@ -3302,11 +3542,18 @@ export const chat = {
   // messages. Used to bypass channelchat and hit /agents/:id/event
   // with thread_id="main" hardcoded — that's why presence events
   // landed on main even when CHANNELCHAT_PER_THREAD was on.
-  presence: (chatId: string, action: "connected" | "disconnected"): Promise<{ status: string; thread_id: string }> =>
-    request<{ status: string; thread_id: string }>("POST", "/apps/channel-chat/presence", {
-      chat_id: chatId,
-      action,
-    }),
+  presence: (
+    chatId: string,
+    action: "connected" | "disconnected",
+  ): Promise<{ status: string; thread_id: string }> =>
+    request<{ status: string; thread_id: string }>(
+      "POST",
+      "/apps/channel-chat/presence",
+      {
+        chat_id: chatId,
+        action,
+      },
+    ),
 };
 
 export interface UnreadSummaryRow {
@@ -3315,7 +3562,7 @@ export interface UnreadSummaryRow {
   instance_name: string;
   title: string;
   latest_id: number;
-  latest_role: string;     // user | agent | system | "" if no messages
+  latest_role: string; // user | agent | system | "" if no messages
   latest_preview: string;
   latest_at: string;
   last_seen_id: number;
@@ -3357,9 +3604,12 @@ export const skills = {
   }) => request<{ id: number }>("POST", "/skills", input),
   update: (
     id: number,
-    patch: Partial<Pick<Skill, "name" | "description" | "body" | "command" | "metadata">>,
+    patch: Partial<
+      Pick<Skill, "name" | "description" | "body" | "command" | "metadata">
+    >,
   ) => request<{ updated: number }>("PUT", `/skills/${id}`, patch),
-  remove: (id: number) => request<{ deleted: number }>("DELETE", `/skills/${id}`),
+  remove: (id: number) =>
+    request<{ deleted: number }>("DELETE", `/skills/${id}`),
   setEnabled: (id: number, enabled: boolean) =>
     request<{ enabled: boolean }>("PUT", `/skills/${id}/enabled`, { enabled }),
 };
@@ -3376,7 +3626,7 @@ export const skills = {
 export type InstanceSkillStatus = "synced" | "stale" | "missing" | "orphaned";
 
 export interface InstanceSkill {
-  skill_id: number;            // 0 for orphaned journal entries
+  skill_id: number; // 0 for orphaned journal entries
   slug: string;
   name: string;
   description?: string;
@@ -3396,7 +3646,10 @@ export const instanceSkills = {
       `/agents/${instanceId}/skills/${skillId}`,
     ),
   unassign: (instanceId: number, skillId: number) =>
-    request<{ ok: boolean }>("DELETE", `/agents/${instanceId}/skills/${skillId}`),
+    request<{ ok: boolean }>(
+      "DELETE",
+      `/agents/${instanceId}/skills/${skillId}`,
+    ),
 };
 
 // --- Platform self-update status (apteva CLI / server / core / dashboard
@@ -3437,6 +3690,6 @@ export interface PlatformStatus {
 }
 
 export const platform = {
-  status:  () => request<PlatformStatus>("GET", "/platform-status"),
+  status: () => request<PlatformStatus>("GET", "/platform-status"),
   refresh: () => request<PlatformStatus>("POST", "/platform-status/refresh"),
 };

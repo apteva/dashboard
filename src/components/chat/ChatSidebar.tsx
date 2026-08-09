@@ -42,7 +42,7 @@ export function ChatSidebar({
   }, [agentsById, conversations, filter, summaryByChat]);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="border-b border-border px-3 py-3 md:py-2">
         <div className="flex items-center gap-2">
           <input
@@ -68,7 +68,7 @@ export function ChatSidebar({
         {t("chat.sidebar.conversations")}
       </div>
 
-      <ul className="page-safe-bottom flex-1 overflow-y-auto overscroll-contain">
+      <ul className="page-safe-bottom min-h-0 flex-1 overflow-y-auto overscroll-contain">
         {filtered.length === 0 ? (
           <li className="px-3 py-4 text-sm text-text-dim">{t("chat.sidebar.noConversations")}</li>
         ) : filtered.map((conversation) => {

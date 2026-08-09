@@ -1457,7 +1457,7 @@ export function ChatPanel({
           );
         })}
         {streamingText !== null && <div className={`${pendingAssistantMargin} first:mt-0`}><StreamingBubble text={streamingText} /></div>}
-        {continuingAfterTools && streamingText === null && thinkingPlaceholder === null && !preparingAction && (
+        {continuingAfterTools && continuingToolKey === null && streamingText === null && thinkingPlaceholder === null && !preparingAction && (
           <div className={`${pendingAssistantMargin} first:mt-0`}>
             <PreparingResponsePlaceholder />
           </div>

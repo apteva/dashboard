@@ -1,21 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { instances, telemetry, type Agent, type InstanceStats } from "../api";
 import { NewAgentButton } from "../components/NewAgentButton";
 import { ActivityFeed } from "../components/dashboard/ActivityFeed";
 import { AptevaInbox } from "../components/dashboard/AptevaInbox";
-import {
-  HomeAgentOperations,
-  HomeAgentSchedule,
-  HomeUsageSummary,
-  selectAgentOperations,
-} from "../components/dashboard/HomePanels";
-import { useCurrentStatuses } from "../components/dashboard/CurrentStatuses";
+import { HomeUsageSummary } from "../components/dashboard/HomePanels";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { useProjects } from "../hooks/useProjects";
-import { HomeTasksPanel } from "../components/tasks/TaskOverviewPanels";
-import { operationalTaskRows, taskIsActive, taskNeedsAttention } from "../components/tasks/taskModel";
-import { useTasks } from "../hooks/useTasks";
+import {
+  AppContributionArea,
+  ContributionManager,
+} from "../components/apps/contributions";
 
 const REFRESH_MS = 30_000;
 
@@ -26,17 +21,13 @@ export function Dashboard() {
   const projectId = currentProject?.id;
   const [agents, setAgents] = useState<Agent[]>([]);
   const [stats, setStats] = useState<InstanceStats[]>([]);
-  const statuses = useCurrentStatuses(projectId);
-  const {
-    tasks,
-    enabled: tasksEnabled,
-    loading: tasksLoading,
-  } = useTasks({ projectId, limit: 100 });
 
   const loadOverview = useCallback(() => {
     Promise.all([
       instances.list(projectId).catch(() => [] as Agent[]),
-      telemetry.projectStats(projectId, "24h").catch(() => [] as InstanceStats[]),
+      telemetry
+        .projectStats(projectId, "24h")
+        .catch(() => [] as InstanceStats[]),
     ]).then(([nextAgents, nextStats]) => {
       setAgents(nextAgents);
       setStats(nextStats);
@@ -53,14 +44,6 @@ export function Dashboard() {
     };
   }, [loadOverview]);
 
-  const activeTaskCount = useMemo(
-    () => operationalTaskRows(tasks).filter((task) => taskIsActive(task) || taskNeedsAttention(task)).length,
-    [tasks],
-  );
-  const taskFirst = tasksEnabled !== false;
-  const operationCount = taskFirst
-    ? activeTaskCount
-    : selectAgentOperations(agents, statuses).length;
   const errorCount = stats.reduce((sum, row) => sum + row.errors, 0);
 
   return (
@@ -70,16 +53,13 @@ export function Dashboard() {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2.5">
               <h1 className="text-lg font-bold text-text">Home</h1>
-              {operationCount > 0 && (
-                <span className="rounded border border-green/25 bg-green/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-green">
-                  {taskFirst
-                    ? `${operationCount} active task${operationCount === 1 ? "" : "s"}`
-                    : `${operationCount} in focus`}
-                </span>
-              )}
               {errorCount > 0 && (
                 <Link
-                  to={projectId ? `/monitor?project=${encodeURIComponent(projectId)}` : "/monitor"}
+                  to={
+                    projectId
+                      ? `/monitor?project=${encodeURIComponent(projectId)}`
+                      : "/monitor"
+                  }
                   className="rounded border border-red/30 bg-red/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red hover:bg-red/15"
                 >
                   {errorCount} error{errorCount === 1 ? "" : "s"}
@@ -90,7 +70,14 @@ export function Dashboard() {
               What needs attention and what your agents are doing now.
             </p>
           </div>
-          <NewAgentButton />
+          <div className="flex items-center gap-2">
+            <ContributionManager
+              slot="dashboard.home"
+              projectId={projectId}
+              label="Customize"
+            />
+            <NewAgentButton />
+          </div>
         </div>
       </header>
 
@@ -99,19 +86,8 @@ export function Dashboard() {
 
         <div className="grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2">
           <AptevaInbox limit={5} variant="home" />
-          {taskFirst ? (
-            <HomeTasksPanel
-              agents={agents}
-              tasks={tasks}
-              enabled
-              loading={tasksLoading}
-            />
-          ) : (
-            <HomeAgentOperations agents={agents} statuses={statuses} />
-          )}
+          <AppContributionArea slot="dashboard.home" projectId={projectId} />
         </div>
-
-        {taskFirst && <HomeAgentSchedule agents={agents} statuses={statuses} />}
 
         <ActivityFeed agents={agents} />
       </main>

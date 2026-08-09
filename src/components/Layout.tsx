@@ -7,26 +7,36 @@ import { useAuth } from "../hooks/useAuth";
 import { AccountMenu } from "./AccountMenu";
 import { NotificationsTray } from "./NotificationsTray";
 import { startChatNotifications } from "../state/chatNotifications";
-import { chatConnections, purgeLegacyChatConnectedKeys } from "../state/chatConnections";
+import {
+  chatConnections,
+  purgeLegacyChatConnectedKeys,
+} from "../state/chatConnections";
 import { apps, platform, type PlatformStatus } from "../api";
-import { ContextAgentChatWidget, readContextAgentChatOpenDefault } from "./ContextAgentChatWidget";
+import {
+  ContextAgentChatWidget,
+  readContextAgentChatOpenDefault,
+} from "./ContextAgentChatWidget";
 import { NewAgentButton } from "./NewAgentButton";
 import { RealtimeVoiceDock } from "../state/RealtimeVoiceContext";
-import { useTaskTrackingAvailable } from "../hooks/useTasks";
+import {
+  preferredSidebarAppNames,
+  SidebarAppManager,
+  useProjectUILayout,
+} from "./apps/contributions";
 
 // Sidebar APPS section visible-cap. Above this, the overflow row
 // collapses the rest behind a "More apps (N)" toggle. Five is the
 // "shows above the fold on a 720-tall screen plus the MANAGE
-// section underneath" threshold — picked empirically. Pinning lands
-// in a later PR; PR-1 uses the first N entries by the server's
-// sort order.
+// section underneath" threshold — picked empirically.
 const SIDEBAR_APPS_VISIBLE = 5;
 
 export function Layout() {
   const { t } = useTranslation();
   const [version, setVersion] = useState("");
   const [versionTip, setVersionTip] = useState("");
-  const [platformStatus, setPlatformStatus] = useState<PlatformStatus | null>(null);
+  const [platformStatus, setPlatformStatus] = useState<PlatformStatus | null>(
+    null,
+  );
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   // Sidebar APPS overflow toggle. Default collapsed so a long
   // install list (~22 apps in the boot we saw) doesn't push the
@@ -50,12 +60,15 @@ export function Layout() {
   }, []);
   const [refreshing, setRefreshing] = useState(false);
   const { projects, currentProject, setCurrentProject } = useProjects();
-  const taskTrackingAvailable = useTaskTrackingAvailable(currentProject?.id);
+  const { project: projectUILayout } = useProjectUILayout(currentProject?.id);
+  const [sidebarAppsOpen, setSidebarAppsOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const isMobileChatConversation = /^\/chat\/[^/]+/.test(location.pathname);
   const { user, logout } = useAuth();
-  const [agentDrawerOpen, setAgentDrawerOpen] = useState(readContextAgentChatOpenDefault);
+  const [agentDrawerOpen, setAgentDrawerOpen] = useState(
+    readContextAgentChatOpenDefault,
+  );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const openPlatformHelper = useCallback(() => {
@@ -81,7 +94,13 @@ export function Layout() {
       },
       { replace: true },
     );
-  }, [location.hash, location.pathname, location.search, navigate, openPlatformHelper]);
+  }, [
+    location.hash,
+    location.pathname,
+    location.search,
+    navigate,
+    openPlatformHelper,
+  ]);
 
   // The authenticated dashboard is a viewport shell: pages provide their own
   // scroll containers. Keep the browser document itself locked while Layout is
@@ -163,7 +182,10 @@ export function Layout() {
   // load so a refresh after an update lands shows the new state.
   useEffect(() => {
     if (!user) return;
-    platform.status().then(setPlatformStatus).catch(() => {});
+    platform
+      .status()
+      .then(setPlatformStatus)
+      .catch(() => {});
   }, [user]);
 
   const refreshPlatformStatus = useCallback(async () => {
@@ -219,7 +241,6 @@ export function Layout() {
     { to: "/", label: t("nav.dashboard") },
     { to: "/build", label: t("nav.build") },
     { to: "/agents", label: t("nav.agents") },
-    ...(taskTrackingAvailable ? [{ to: "/tasks", label: t("nav.tasks") }] : []),
     { to: "/monitor", label: t("nav.monitor") },
     { to: "/chat", label: t("nav.chat") },
   ];
@@ -242,12 +263,16 @@ export function Layout() {
   // rows, so a freshly-installed app's sidebar entry appears the
   // instant the install flips to running. A 5s background poll is
   // there as a safety net for events we somehow miss.
-  const [appNav, setAppNav] = useState<{
-    to: string;
-    label: string;
-    icon?: string;
-    iconStyle?: "image" | "monochrome";
-  }[]>([]);
+  const [appNav, setAppNav] = useState<
+    {
+      name: string;
+      to: string;
+      label: string;
+      icon?: string;
+      iconStyle?: "image" | "monochrome";
+      suggested?: boolean;
+    }[]
+  >([]);
   // Fetch epoch — every effect run bumps this and only the latest run
   // is allowed to write state. Without this, an in-flight unfiltered
   // fetch (currentProject not yet hydrated) can race with a later
@@ -269,10 +294,12 @@ export function Layout() {
       .then((rows) => {
         if (epoch !== fetchEpochRef.current) return; // stale response
         const out: {
+          name: string;
           to: string;
           label: string;
           icon?: string;
           iconStyle?: "image" | "monochrome";
+          suggested?: boolean;
         }[] = [];
         const seen = new Set<string>();
         for (const r of rows) {
@@ -287,10 +314,12 @@ export function Layout() {
             if (seen.has(to)) continue;
             seen.add(to);
             out.push({
+              name: r.name,
               to,
               label: p.label || r.display_name || r.name,
               icon: r.icon,
               iconStyle: r.icon_style,
+              suggested: p.suggested,
             });
           }
         }
@@ -312,9 +341,14 @@ export function Layout() {
     };
   }, [refreshAppNav]);
 
+  const pinnedAppNames = new Set(
+    preferredSidebarAppNames(appNav, projectUILayout),
+  );
+  const pinnedAppNav = appNav.filter((item) => pinnedAppNames.has(item.name));
+
   // Flat list — only used for "is this entry's path a prefix of
   // another's" active-link disambiguation. Doesn't change rendering.
-  const navItems = [...primaryNav, ...appNav, ...manageNav];
+  const navItems = [...primaryNav, ...pinnedAppNav, ...manageNav];
 
   useEffect(() => {
     setMobileNavOpen(false);
@@ -355,7 +389,8 @@ export function Layout() {
               const mine = !!user && p.user_id === user.id;
               return (
                 <option key={p.id} value={p.id}>
-                  {p.name}{mine ? "" : " (shared)"}
+                  {p.name}
+                  {mine ? "" : " (shared)"}
                 </option>
               );
             })}
@@ -398,38 +433,60 @@ export function Layout() {
             Caps the visible list at SIDEBAR_APPS_VISIBLE so an
             installer with 20+ apps doesn't bury the MANAGE section
             below the fold. Anything beyond the cap collapses behind
-            a "More apps (N)" toggle. Pinning lands in a later PR; for
-            now the first SIDEBAR_APPS_VISIBLE entries (server's sort
-            order) are the ones shown. */}
-        {appNav.length > 0 && (() => {
-          const visibleApps = showAllApps ? appNav : appNav.slice(0, SIDEBAR_APPS_VISIBLE);
-          const overflow = appNav.length - visibleApps.length;
-          return (
-            <>
-              <SidebarSectionHeader label={t("nav.appsSection")} />
-              {visibleApps.map((item) => (
-                <SidebarLink
-                  key={item.to}
-                  item={item}
-                  navItems={navItems}
-                  iconUrl={item.icon}
-                  iconStyle={item.iconStyle}
-                  onNavigate={mobile ? () => setMobileNavOpen(false) : undefined}
-                />
-              ))}
-              {(overflow > 0 || showAllApps) && (
-                <button
-                  onClick={toggleShowAllApps}
-                  className="w-full px-5 py-2 text-xs text-text-muted hover:text-text text-left transition-colors"
-                >
-                  {showAllApps
-                    ? t("nav.showLess")
-                    : t("nav.moreApps", { count: overflow })}
-                </button>
-              )}
-            </>
-          );
-        })()}
+            a "More apps (N)" toggle. Preferred apps are stored in the
+            current project's generic UI layout. */}
+        {appNav.length > 0 &&
+          (() => {
+            const visibleApps = showAllApps
+              ? pinnedAppNav
+              : pinnedAppNav.slice(0, SIDEBAR_APPS_VISIBLE);
+            const overflow = pinnedAppNav.length - visibleApps.length;
+            return (
+              <>
+                <div className="flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => setSidebarAppsOpen(true)}
+                    className="min-w-0 flex-1 text-left"
+                    aria-label="Choose preferred apps"
+                  >
+                    <SidebarSectionHeader label={t("nav.appsSection")} />
+                  </button>
+                </div>
+                {visibleApps.map((item) => (
+                  <SidebarLink
+                    key={item.to}
+                    item={item}
+                    navItems={navItems}
+                    iconUrl={item.icon}
+                    iconStyle={item.iconStyle}
+                    onNavigate={
+                      mobile ? () => setMobileNavOpen(false) : undefined
+                    }
+                  />
+                ))}
+                {visibleApps.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSidebarAppsOpen(true)}
+                    className="w-full px-5 py-2 text-left text-xs text-text-dim hover:text-text"
+                  >
+                    Choose preferred apps…
+                  </button>
+                )}
+                {(overflow > 0 || showAllApps) && (
+                  <button
+                    onClick={toggleShowAllApps}
+                    className="w-full px-5 py-2 text-xs text-text-muted hover:text-text text-left transition-colors"
+                  >
+                    {showAllApps
+                      ? t("nav.showLess")
+                      : t("nav.moreApps", { count: overflow })}
+                  </button>
+                )}
+              </>
+            );
+          })()}
 
         {/* Manage group — platform-administration verbs. Things you
             do TO the platform, not WITH the platform's daily surfaces. */}
@@ -443,18 +500,14 @@ export function Layout() {
           />
         ))}
       </div>
+
       {/* Logged-in user + account menu (change password, logout). Rendered
           above the version line so it sits in the same footer area. */}
-      {user && (
-        <AccountMenu user={user} onLogout={logout} />
-      )}
+      {user && <AccountMenu user={user} onLogout={logout} />}
 
       {version && (
         <div className="px-5 py-3 border-t border-border flex items-center gap-2">
-          <span
-            className="text-text-muted text-xs"
-            title={versionTip}
-          >
+          <span className="text-text-muted text-xs" title={versionTip}>
             v{version}
           </span>
           {platformStatus?.update_available && (
@@ -480,7 +533,12 @@ export function Layout() {
       </nav>
 
       {mobileNavOpen && (
-        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
+        <div
+          className="fixed inset-0 z-50 md:hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Navigation"
+        >
           <button
             type="button"
             className="absolute inset-0 bg-black/50"
@@ -502,12 +560,28 @@ export function Layout() {
         />
       )}
 
+      {sidebarAppsOpen && currentProject?.id && (
+        <SidebarAppManager
+          projectId={currentProject.id}
+          apps={appNav.map(({ name, label, icon, iconStyle, suggested }) => ({
+            name,
+            label,
+            icon,
+            iconStyle,
+            suggested,
+          }))}
+          onClose={() => setSidebarAppsOpen(false)}
+        />
+      )}
+
       {/* Main content */}
       <main className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col">
         {/* Slim top bar — global controls. Currently just the
             notifications tray; placeholder for future search,
             user-shortcut, or quick-create surfaces. */}
-        <div className={`${isMobileChatConversation ? "hidden md:flex" : "flex"} app-topbar-safe border-b border-border items-center justify-between md:justify-end gap-3 px-3 flex-shrink-0 safe-area-x`}>
+        <div
+          className={`${isMobileChatConversation ? "hidden md:flex" : "flex"} app-topbar-safe border-b border-border items-center justify-between md:justify-end gap-3 px-3 flex-shrink-0 safe-area-x`}
+        >
           <button
             type="button"
             onClick={() => setMobileNavOpen(true)}
@@ -515,7 +589,16 @@ export function Layout() {
             aria-label="Open navigation"
           >
             <span className="sr-only">Open navigation</span>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              aria-hidden="true"
+            >
               <path d="M4 7h16" />
               <path d="M4 12h16" />
               <path d="M4 17h16" />
@@ -524,7 +607,9 @@ export function Layout() {
           <div className="md:hidden min-w-0 flex-1">
             <div className="text-sm font-bold text-accent truncate">Apteva</div>
             {currentProject && (
-              <div className="text-[11px] text-text-dim truncate">{currentProject.name}</div>
+              <div className="text-[11px] text-text-dim truncate">
+                {currentProject.name}
+              </div>
             )}
           </div>
           <NotificationsTray />
@@ -620,8 +705,12 @@ function PlatformUpdateModal(props: {
         </div>
 
         <div className="bg-border/30 rounded p-3 mb-4 text-xs">
-          <div className="font-medium mb-2">{updateInstructionsTitle(status.install_method)}</div>
-          <pre className="font-mono text-text-muted whitespace-pre-wrap leading-relaxed">{updateInstructionsBody(status.install_method)}</pre>
+          <div className="font-medium mb-2">
+            {updateInstructionsTitle(status.install_method)}
+          </div>
+          <pre className="font-mono text-text-muted whitespace-pre-wrap leading-relaxed">
+            {updateInstructionsBody(status.install_method)}
+          </pre>
           {updateInstructionsNote(status.install_method) && (
             <div className="mt-2 text-text-dim text-[11px] italic">
               {updateInstructionsNote(status.install_method)}
@@ -677,7 +766,9 @@ function SidebarLink({
   onNavigate?: () => void;
 }) {
   const isPrefixOfAnother = navItems.some(
-    (other) => other !== item && other.to.startsWith(item.to + (item.to === "/" ? "" : "/")),
+    (other) =>
+      other !== item &&
+      other.to.startsWith(item.to + (item.to === "/" ? "" : "/")),
   );
   return (
     <NavLink

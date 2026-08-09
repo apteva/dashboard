@@ -39,16 +39,14 @@ import { Modal } from "./Modal";
 import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
-import { AgentCurrentStatus, useCurrentStatuses } from "./dashboard/CurrentStatuses";
-import { AgentTasksPanel } from "./tasks/AgentTasksPanel";
-import { useTaskTrackingAvailable } from "../hooks/useTasks";
+import { AppContributionArea } from "./apps/contributions";
 import {
   appendRuntimeThoughtText,
   cleanReasoningDisplay,
   type RuntimeThoughtText,
 } from "../utils/runtimeThought";
 
-type RuntimeView = "stream" | "tasks" | "activity" | "memory" | "skills" | "apps" | "capabilities";
+type RuntimeView = "stream" | "activity" | "memory" | "skills" | "apps" | "capabilities";
 
 interface RuntimeEventItem {
   key: string;
@@ -1298,11 +1296,6 @@ function AgentRuntimePanel({
   onDelete: () => void;
   advancedContent: ReactNode;
 }) {
-  const currentStatuses = useCurrentStatuses(instance.project_id || undefined);
-  const currentStatus = useMemo(
-    () => currentStatuses.find((status) => status.instance_id === instance.id),
-    [currentStatuses, instance.id],
-  );
   const [mcpServers, setMCPServers] = useState<MCPServerConfig[]>([]);
   const [installedApps, setInstalledApps] = useState<AppRow[]>([]);
   const [mcpInventory, setMCPInventory] = useState<MCPServer[]>([]);
@@ -1318,7 +1311,6 @@ function AgentRuntimePanel({
   const [executionBusy, setExecutionBusy] = useState<"run" | "pause" | "step" | "back" | null>(null);
   const [showDeveloperControls, setShowDeveloperControls] = useState(false);
   const telemetryConnection = useTelemetryConnectionState();
-  const taskTrackingAvailable = useTaskTrackingAvailable(instance.project_id || undefined);
 
   useEffect(() => {
     setSelectedRuntimeThread("main");
@@ -1421,7 +1413,6 @@ function AgentRuntimePanel({
 
   const primaryViews: Array<{ id: RuntimeView; label: string }> = [
     { id: "stream", label: "Live" },
-    ...(taskTrackingAvailable ? [{ id: "tasks" as RuntimeView, label: "Tasks" }] : []),
     { id: "memory", label: "Memory" },
     { id: "capabilities", label: `Capabilities${mcpServers.length > 0 ? ` ${mcpServers.length}` : ""}` },
   ];
@@ -1518,13 +1509,10 @@ function AgentRuntimePanel({
         )}
         <div className={`px-3 py-3 sm:px-4 ${instance.status === "running" ? "" : "border-t border-border/70"}`}>
           <div className="min-w-0">
-            <AgentCurrentStatus
-              status={currentStatus}
-              embedded
-              showFallback
-              showAge
-              showNextFallback
-              statusLabel="Latest work status"
+            <AppContributionArea
+              slot="dashboard.agent_detail"
+              projectId={instance.project_id || undefined}
+              agentId={instance.id}
             />
           </div>
           <AppPanels
@@ -1587,8 +1575,6 @@ function AgentRuntimePanel({
       <div className="flex-1 min-h-0">
         {view === "stream" ? (
           <RuntimeStream events={events} selectedThreadId={selectedRuntimeThread} loading={runtimeLoading} />
-        ) : view === "tasks" ? (
-          <AgentTasksPanel agent={instance} />
         ) : view === "capabilities" ? (
           <AgentCapabilitiesView
             instance={instance}

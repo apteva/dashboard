@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import {
   chat,
   type ApprovalMessageRow,
@@ -58,6 +59,20 @@ afterEach(() => {
 });
 
 describe("AptevaInbox approvals", () => {
+  test("stretches with neighboring Home widgets instead of capping its height", async () => {
+    chat.approvalMessages = (async () => []) as typeof chat.approvalMessages;
+    chat.reportMessages = (async () => []) as typeof chat.reportMessages;
+    chat.alertMessages = (async () => []) as typeof chat.alertMessages;
+
+    const { container } = render(<MemoryRouter><AptevaInbox variant="home" /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText("You're all caught up")).toBeTruthy());
+    const panel = container.querySelector("section");
+    expect(panel?.className).toContain("h-full");
+    expect(panel?.className).toContain("xl:min-h-[520px]");
+    expect(panel?.className).not.toContain("xl:h-[60vh]");
+    expect(panel?.className).not.toContain("xl:max-h-[680px]");
+  });
+
   test("keeps Dismiss on the row and moves decisions into Review with feedback", async () => {
     chat.approvalMessages = (async () => [approvalRow]) as typeof chat.approvalMessages;
     chat.reportMessages = (async () => []) as typeof chat.reportMessages;

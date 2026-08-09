@@ -6,12 +6,10 @@ import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { ChatPanel } from "../ChatPanel";
 import { Modal } from "../Modal";
-import { AgentContextCard } from "./AgentContextCard";
-import { ConversationDetails } from "./ConversationDetails";
+import { ConversationContextPanel } from "./ConversationContextPanel";
 import type { Agent, ChatRow } from "../../api";
 import type { SubscribeFn } from "../AgentView";
 import { useRealtimeAvailability } from "../../hooks/useRealtimeAvailability";
-import { ConversationTaskCard } from "../tasks/ConversationTaskCard";
 
 interface Props {
   chatId: string | null;
@@ -74,11 +72,6 @@ export function ChatMain({
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <ConversationTaskCard
-        projectId={conversation.project_id}
-        conversationId={chatId}
-        agent={instance}
-      />
       <div className="min-h-0 flex-1 overflow-hidden">
         <ChatPanel
           key={chatId}
@@ -113,9 +106,14 @@ export function ChatMain({
             ×
           </button>
         </div>
-        <div className="page-safe-bottom min-h-0 overflow-y-auto">
-          <ConversationDetails key={conversation.id} conversation={conversation} agents={agents} onChanged={onConversationChanged} onRemoved={handleConversationRemoved} />
-          <AgentContextCard instance={instance} chatId={chatId} />
+        <div className="page-safe-bottom min-h-0 flex-1 overflow-hidden">
+          <ConversationContextPanel
+            conversation={conversation}
+            agents={agents}
+            instance={instance}
+            onChanged={onConversationChanged}
+            onRemoved={handleConversationRemoved}
+          />
         </div>
       </Modal>
     </div>

@@ -64,19 +64,21 @@ describe("ChatToolActivity", () => {
     expect(html).not.toContain("top-0.5");
   });
 
-  test("keeps the completed tool copy stable while response preparation renders separately", () => {
+  test("keeps response preparation inside the completed tool summary", () => {
     const html = renderToStaticMarkup(
       <ChatToolActivity tools={[tools[0]!]} continuing registry={registry} />,
     );
     expect(html).toContain("Refreshing pipeline records");
-    // ChatPanel owns the separate Preparing response placeholder. The
-    // completed tool remains stable and does not resume its running pulse.
+    // The stable tool row owns the continuation state. ChatPanel does not need
+    // a second Preparing response row below it.
     expect(html).not.toContain(">Preparing response…</span>");
-    expect(html).not.toContain("chat-tool-copy-running");
-    expect(html).toContain('title="Done"');
+    expect(html).toContain("chat-tool-activity-continuing");
+    expect(html).toContain("chat-tool-copy-running");
+    expect(html).toContain("chat-tool-icon-stack-running");
+    expect(html).toContain('aria-busy="true"');
+    expect(html).not.toContain('title="Done"');
     expect(html).not.toContain(">Done<");
     expect(html).not.toContain(">Continuing…<");
-    expect(html).not.toContain("chat-tool-icon-running");
   });
 
   test("starts grouped calls collapsed with the parallel summary", () => {

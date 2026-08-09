@@ -56,6 +56,25 @@ describe("tool visual registry", () => {
     expect(remove.label).toBe("Apteva");
   });
 
+  test("uses an installed app's identity for its namespaced tools", () => {
+    const tasksApp: InstalledAppRow = {
+      install_id: 7,
+      name: "tasks",
+      display_name: "Tasks",
+      version: "1.0.0",
+      icon: "/api/apps/tasks/icon.svg",
+      icon_style: "monochrome",
+      surfaces: { mcp_tool_names: ["create", "complete"] },
+    };
+    const registry = buildToolVisualRegistry([tasksApp], []);
+    const complete = resolveToolVisual("tasks_complete", registry);
+
+    expect(complete.key).toBe("app:7");
+    expect(complete.label).toBe("Tasks");
+    expect(complete.iconStyle).toBe("monochrome");
+    expect(complete.iconUrl).toBe(tasksApp.icon);
+  });
+
   test("groups project MCP tools by their server namespace", () => {
     const servers = [{
       id: 42,

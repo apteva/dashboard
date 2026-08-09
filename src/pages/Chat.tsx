@@ -1,19 +1,16 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { chat, instances, platformHelper, type Agent, type ChatRow, type UnreadSummaryRow } from "../api";
-import { AgentContextCard } from "../components/chat/AgentContextCard";
+import type { ChatRow } from "../api";
 import { ChatMain } from "../components/chat/ChatMain";
 import { ChatSidebar } from "../components/chat/ChatSidebar";
-import { ConversationDetails } from "../components/chat/ConversationDetails";
-import { conversationsWithoutHelper } from "../components/chat/helperConversationModel";
+import { ConversationContextPanel } from "../components/chat/ConversationContextPanel";
 import { NewConversationModal } from "../components/chat/NewConversationModal";
+import { useChatDirectory } from "../hooks/useChatDirectory";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { useProjects } from "../hooks/useProjects";
 import { notifications } from "../state/notifications";
-
-const REFRESH_MS = 8000;
 
 export function Chat() {
   const { t } = useTranslation();
@@ -23,10 +20,15 @@ export function Chat() {
   const { chatId: chatIdFromUrl } = useParams<{ chatId?: string }>();
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const hasContextColumn = useMediaQuery("(min-width: 1024px)");
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [conversations, setConversations] = useState<ChatRow[]>([]);
-  const [summary, setSummary] = useState<UnreadSummaryRow[]>([]);
-  const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
+  const {
+    agents,
+    conversations,
+    summary,
+    loadedProjectId,
+    addConversation,
+    updateConversation,
+    removeConversation,
+  } = useChatDirectory(projectId);
   const [showRightPane, setShowRightPane] = useState(true);
   const [newConversationOpen, setNewConversationOpen] = useState(false);
 
@@ -40,40 +42,6 @@ export function Chat() {
     }
     return counts;
   }, [allNotifications]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setAgents([]);
-    setConversations([]);
-    setSummary([]);
-    setLoadedProjectId(null);
-    if (!projectId) return () => { cancelled = true; };
-    const load = () => Promise.all([
-      instances.list(projectId).catch(() => [] as Agent[]),
-      // The API only returns explicit conv-* conversations. Internal
-      // default-* inbox/status records never become dashboard chats.
-      chat.listConversations(projectId).catch(() => [] as ChatRow[]),
-      chat.unreadSummary().catch(() => [] as UnreadSummaryRow[]),
-      platformHelper.get(),
-    ]).then(([nextAgents, allConversations, nextSummary, helper]) => {
-      if (cancelled) return;
-      // Platform Helper owns the floating meta-assistant surface. Keep its
-      // private threads out of the regular agent conversation manager.
-      const visibleAgents = nextAgents.filter((agent) => agent.id !== helper.id && agent.kind !== "platform_helper");
-      const visibleConversations = conversationsWithoutHelper(allConversations, helper.id);
-      setAgents(visibleAgents);
-      setConversations(visibleConversations);
-      setSummary(nextSummary.filter((row) => visibleConversations.some((conversation) => conversation.id === row.chat_id)));
-      setLoadedProjectId(projectId);
-    }).catch(() => {
-      // Fail closed: do not briefly expose helper threads if helper identity
-      // cannot be resolved. The next polling pass retries the complete load.
-    });
-    void load();
-    const timer = window.setInterval(() => { void load(); }, REFRESH_MS);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [chatIdFromUrl, projectId]);
-
   const projectReady = loadedProjectId === projectId;
   const projectAgents = projectReady ? agents : [];
   const projectConversations = projectReady ? conversations : [];
@@ -108,14 +76,14 @@ export function Chat() {
 
   const selectConversation = (id: string) => navigate(`/chat/${id}`);
   const conversationCreated = (conversation: ChatRow) => {
-    setConversations((current) => [conversation, ...current.filter((row) => row.id !== conversation.id)]);
+    addConversation(conversation);
     navigate(`/chat/${conversation.id}`);
   };
   const conversationChanged = (conversation: ChatRow) => {
-    setConversations((current) => current.map((row) => row.id === conversation.id ? conversation : row));
+    updateConversation(conversation);
   };
   const conversationRemoved = (conversationId: string) => {
-    setConversations((current) => current.filter((row) => row.id !== conversationId));
+    removeConversation(conversationId);
     navigate("/chat");
   };
 
@@ -139,9 +107,9 @@ export function Chat() {
         </button>
       </div>
 
-      <div className="relative min-h-0 flex-1 overflow-hidden md:grid md:grid-cols-[260px_minmax(0,1fr)] md:divide-x md:divide-border lg:grid-cols-[260px_minmax(0,1fr)_280px]">
+      <div className="relative min-h-0 flex-1 overflow-hidden md:grid md:grid-cols-[260px_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)] md:divide-x md:divide-border lg:grid-cols-[260px_minmax(0,1fr)_280px]">
         {(!chatIdFromUrl || isDesktop) && (
-          <div className="h-full bg-bg">
+          <div className="h-full min-h-0 overflow-hidden bg-bg">
             <ChatSidebar
               instances={projectAgents}
               conversations={projectConversations}
@@ -155,7 +123,7 @@ export function Chat() {
         )}
 
         {(chatIdFromUrl || isDesktop) && (
-          <div className="h-full min-h-0">
+          <div className="h-full min-h-0 overflow-hidden">
             <ChatMain
               chatId={focusedChatId}
               conversation={focusedConversation}
@@ -172,12 +140,16 @@ export function Chat() {
         )}
 
         {showRightPane && hasContextColumn && (
-          <div className="overflow-y-auto">
+          <div className="h-full min-h-0 overflow-hidden">
             {focusedInstance && focusedConversation ? (
-              <>
-                <ConversationDetails key={focusedConversation.id} conversation={focusedConversation} agents={projectAgents} onChanged={conversationChanged} onRemoved={conversationRemoved} />
-                <AgentContextCard instance={focusedInstance} chatId={focusedChatId} />
-              </>
+              <ConversationContextPanel
+                key={focusedConversation.id}
+                conversation={focusedConversation}
+                agents={projectAgents}
+                instance={focusedInstance}
+                onChanged={conversationChanged}
+                onRemoved={conversationRemoved}
+              />
             ) : <div className="p-4 text-sm text-text-dim">{t("chat.main.noChatSelected")}</div>}
           </div>
         )}

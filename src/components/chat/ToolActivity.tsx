@@ -108,20 +108,23 @@ export function ChatToolActivity({
   const focusTool = summaryFocusTool(tools);
   const focusReason = reasonLabel(focusTool, t);
   const copyIsActive =
-    status.state === "preparing" || status.state === "running";
+    continuing || status.state === "preparing" || status.state === "running";
   const failedCount = tools.filter((tool) => visualState(tool) === "failed").length;
   const visibleFailure = failedCount > 0
     ? grouped
       ? t("chat.panel.toolsFailedCount", { count: failedCount })
       : stateLabel(tools[0]!, t)
     : "";
-  const allSucceeded = tools.every((tool) => visualState(tool) === "done");
+  const allSucceeded = !continuing && tools.every((tool) => visualState(tool) === "done");
   const remainingCount = tools.length - 1;
   const resolvedDetailsId = detailsId || `chat-tool-details-${tools[0]!.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   const accessibleSummary = `${title}, ${focusReason}, ${status.text}${continuing ? `, ${t("chat.panel.startingResponse")}` : ""}`;
 
   return (
-    <section className="chat-tool-activity min-w-0 py-0.5" aria-label={accessibleSummary}>
+    <section
+      className={`chat-tool-activity min-w-0 py-0.5 ${continuing ? "chat-tool-activity-continuing" : ""}`}
+      aria-label={accessibleSummary}
+    >
       <button
         type="button"
         className={`grid min-h-9 w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-1 text-left ${
@@ -132,11 +135,12 @@ export function ChatToolActivity({
         aria-expanded={grouped ? expanded : undefined}
         aria-controls={grouped ? resolvedDetailsId : undefined}
         aria-disabled={grouped ? undefined : true}
+        aria-busy={copyIsActive || undefined}
         tabIndex={grouped ? 0 : -1}
         onClick={grouped ? onToggle : undefined}
         title={grouped ? `${title} · ${expanded ? t("chat.panel.hideToolCalls") : t("chat.panel.showToolCalls")}` : focusReason}
       >
-        <ToolIconStack tools={tools} registry={registry} />
+        <ToolIconStack tools={tools} registry={registry} continuing={continuing} />
         <span className="flex min-w-0 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-2">
           <span className="flex min-w-0 items-center gap-1.5">
             <span
@@ -179,7 +183,15 @@ export function ChatToolActivity({
   );
 }
 
-function ToolIconStack({ tools, registry }: { tools: ToolActivity[]; registry: ToolVisualRegistry }) {
+function ToolIconStack({
+  tools,
+  registry,
+  continuing = false,
+}: {
+  tools: ToolActivity[];
+  registry: ToolVisualRegistry;
+  continuing?: boolean;
+}) {
   const sources: Array<{ tool: ToolActivity; visual: ToolVisual }> = [];
   for (const tool of tools) {
     const visual = resolveToolVisual(tool.name, registry);
@@ -195,7 +207,10 @@ function ToolIconStack({ tools, registry }: { tools: ToolActivity[]; registry: T
   const visible = sources.slice(0, 4);
   const extra = Math.max(0, sources.length - visible.length);
   return (
-    <span className="flex min-w-[1.9rem] items-center py-0.5 pl-0.5" aria-hidden="true">
+    <span
+      className={`flex min-w-[1.9rem] items-center py-0.5 pl-0.5 ${continuing ? "chat-tool-icon-stack-running" : ""}`}
+      aria-hidden="true"
+    >
       {visible.map(({ tool, visual }, index) => (
         <span key={visual.key} className={index === 0 ? "relative" : "relative -ml-1.5"} style={{ zIndex: visible.length - index }}>
           <ToolSourceIcon tool={tool} visual={visual} />

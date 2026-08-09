@@ -1,6 +1,17 @@
-import { useState, useEffect, createContext, useContext, type ReactNode, createElement } from "react";
+import {
+  useState,
+  useEffect,
+  createContext,
+  useContext,
+  type ReactNode,
+  createElement,
+} from "react";
 import { auth, setAuthInvalidHandler, type PlatformRole } from "../api";
-import { normalizeDashboardLanguage, setDashboardLanguage, type DashboardLanguage } from "../i18n";
+import {
+  normalizeDashboardLanguage,
+  setDashboardLanguage,
+  type DashboardLanguage,
+} from "../i18n";
 
 // Auth state lives in a single React Context at the root of the app so
 // every consumer — ProtectedRoute, Login, Layout — reads the same
@@ -19,6 +30,7 @@ export interface AuthUser {
   // flow. Drives <OnboardingGate> in App.tsx.
   onboarded: boolean;
   language: DashboardLanguage;
+  uiLayout: Record<string, unknown>;
 }
 
 interface AuthState {
@@ -27,7 +39,12 @@ interface AuthState {
   // Legacy boolean view retained so existing ProtectedRoute checks keep working.
   authenticated: boolean | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, setupToken?: string, inviteToken?: string) => Promise<any>;
+  register: (
+    email: string,
+    password: string,
+    setupToken?: string,
+    inviteToken?: string,
+  ) => Promise<any>;
   logout: () => void;
   // Refresh the user profile after a settings change (email edit, etc.).
   refresh: () => Promise<void>;
@@ -49,6 +66,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         createdAt: r.created_at,
         onboarded: r.onboarded,
         language: normalizeDashboardLanguage(r.language),
+        uiLayout:
+          r.ui_layout && typeof r.ui_layout === "object" ? r.ui_layout : {},
       });
       void setDashboardLanguage(r.language);
     } catch {
@@ -96,4 +115,11 @@ export function useAuth(): AuthState {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used inside <AuthProvider>");
   return ctx;
+}
+
+// Generic app contributions are also rendered in isolated previews and tests.
+// They may read layout preferences when an authenticated shell is present, but
+// should still render their suggested defaults without one.
+export function useOptionalAuth(): AuthState | null {
+  return useContext(AuthContext);
 }

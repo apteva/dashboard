@@ -146,7 +146,7 @@ export function AptevaInbox({
   }, [items.length, onCountChange]);
 
   return (
-    <section className={`border border-border bg-bg-card rounded-lg flex flex-col overflow-hidden ${variant === "home" ? "h-full xl:h-[460px]" : "min-h-[300px]"}`}>
+    <section className={`border border-border bg-bg-card rounded-lg flex flex-col overflow-hidden ${variant === "home" ? "h-full xl:min-h-[520px]" : "min-h-[300px]"}`}>
       <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
@@ -178,7 +178,7 @@ export function AptevaInbox({
         </div>
       </div>
 
-      <div className={`flex-1 p-3 space-y-3 overflow-auto ${variant === "home" ? "max-h-[360px]" : variant === "monitor" ? "max-h-[680px]" : ""}`}>
+      <div className={`min-h-0 flex-1 p-3 space-y-3 overflow-auto ${variant === "monitor" ? "max-h-[680px]" : ""}`}>
         {error && (
           <div className="rounded border border-red/30 bg-red/10 px-3 py-2 text-[11px] text-red">
             {error}

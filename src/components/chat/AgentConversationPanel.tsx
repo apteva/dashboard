@@ -3,7 +3,6 @@ import { chat, instances, type Agent, type ChatRow, type RealtimeAvailability } 
 import { ChatPanel } from "../ChatPanel";
 import type { SubscribeFn } from "../AgentView";
 import { useProjects } from "../../hooks/useProjects";
-import { ConversationTaskCard } from "../tasks/ConversationTaskCard";
 
 interface Props {
   instance: Agent;
@@ -92,13 +91,6 @@ export function AgentConversationPanel({ instance, subscribe, realtime }: Props)
         </select>
         <button type="button" onClick={() => void createConversation()} disabled={creating} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded border border-border text-base text-accent hover:border-accent hover:bg-accent/10 disabled:opacity-40" title="New conversation" aria-label="New conversation">+</button>
       </div>
-      {conversationId && (
-        <ConversationTaskCard
-          projectId={instance.project_id || currentProject?.id}
-          conversationId={conversationId}
-          agent={instance}
-        />
-      )}
       <div className="min-h-0 flex-1">
         {conversationId ? (
           <ChatPanel
