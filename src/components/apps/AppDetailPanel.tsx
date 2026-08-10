@@ -31,6 +31,7 @@ interface Props {
   /** Fired after a scope change succeeds so the parent can refresh
    *  the app list (the row's project_id just changed). */
   onScopeChanged?: () => void;
+  onAgentDefaultChanged?: (enabled: boolean) => void;
 }
 
 interface View {
@@ -53,6 +54,8 @@ interface View {
   installId?: number;
   components?: AppUIComponent[];
   imports?: AppImports;
+  defaultForNewAgents?: boolean;
+  projectId?: string;
 }
 
 function viewFromProps(p: Props): View | null {
@@ -95,6 +98,8 @@ function viewFromProps(p: Props): View | null {
       installId: i.install_id,
       components: i.ui_components,
       imports: i.imports,
+      defaultForNewAgents: i.default_for_new_agents,
+      projectId: i.project_id,
     };
   }
   return null;
@@ -305,7 +310,7 @@ function PanelBody({ view, props }: { view: View; props: Props }) {
       </div>
     );
   }
-  return <TabbedBody view={view} />;
+  return <TabbedBody view={view} onAgentDefaultChanged={props.onAgentDefaultChanged} />;
 
   // helper kept inside scope so it can read s; same reading pattern as
   // before, just inlined for readability when bodies diverge.
@@ -376,7 +381,7 @@ type TabKey = "overview" | "bindings" | "settings" | "imports" | "tools";
 // their own tab so they can spread out without competing with the
 // 50-field config form for screen space. Tabs are visible at all
 // times (no hidden state); the active one underlines.
-function TabbedBody({ view }: { view: View }) {
+function TabbedBody({ view, onAgentDefaultChanged }: { view: View; onAgentDefaultChanged?: (enabled: boolean) => void }) {
   const s = view.surfaces;
   const hasBindings =
     (s?.required_apps && s.required_apps.length > 0) ||
@@ -418,7 +423,9 @@ function TabbedBody({ view }: { view: View }) {
         ))}
       </div>
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-7">
-        {active === "overview" && <OverviewTab view={view} />}
+        {active === "overview" && (
+          <OverviewTab view={view} onAgentDefaultChanged={onAgentDefaultChanged} />
+        )}
         {active === "bindings" && view.installId !== undefined && (
           <BindingsEditor installId={view.installId} />
         )}
@@ -606,7 +613,7 @@ function formatImportEvent(event: { type?: string; message?: string; [key: strin
   }
 }
 
-function OverviewTab({ view }: { view: View }) {
+function OverviewTab({ view, onAgentDefaultChanged }: { view: View; onAgentDefaultChanged?: (enabled: boolean) => void }) {
   const s = view.surfaces;
   return (
     <>
@@ -624,6 +631,15 @@ function OverviewTab({ view }: { view: View }) {
           <AppSurfaceBadges surfaces={s} />
         </section>
       )}
+      {view.installId !== undefined &&
+        ((s?.mcp_tool_names?.length || 0) > 0 || (s?.skill_count || 0) > 0) && (
+          <AgentDefaultSection
+            installId={view.installId}
+            initialEnabled={!!view.defaultForNewAgents}
+            global={!view.projectId}
+            onChanged={onAgentDefaultChanged}
+          />
+        )}
       {s?.required_apps && s.required_apps.length > 0 && (
         <DependenciesList deps={s.required_apps} />
       )}
@@ -635,6 +651,68 @@ function OverviewTab({ view }: { view: View }) {
         <LinksList repo={view.repo} manifestUrl={view.manifestUrl} />
       )}
     </>
+  );
+}
+
+function AgentDefaultSection({
+  installId,
+  initialEnabled,
+  global,
+  onChanged,
+}: {
+  installId: number;
+  initialEnabled: boolean;
+  global: boolean;
+  onChanged?: (enabled: boolean) => void;
+}) {
+  const [enabled, setEnabled] = useState(initialEnabled);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => setEnabled(initialEnabled), [initialEnabled]);
+
+  const toggle = async () => {
+    const next = !enabled;
+    setSaving(true);
+    setError("");
+    try {
+      await apps.setAgentDefault(installId, next);
+      setEnabled(next);
+      onChanged?.(next);
+    } catch (e: any) {
+      setError(e?.message || "Could not update the default");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="border border-border rounded-md px-4 py-3 flex items-center gap-4">
+      <div className="flex-1 min-w-0">
+        <h3 className="text-text font-semibold text-sm">Attach to new agents by default</h3>
+        <p className="text-text-dim text-xs mt-1 leading-relaxed">
+          {global
+            ? "Preselected for new agents in every project. It can be unchecked during creation."
+            : "Preselected for new agents in this project. It can be unchecked during creation."}
+        </p>
+        {error && <p className="text-red text-xs mt-1">{error}</p>}
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        aria-label="Attach to new agents by default"
+        disabled={saving}
+        onClick={toggle}
+        className={`relative h-6 w-11 rounded-full border transition-colors disabled:opacity-50 ${
+          enabled ? "bg-accent border-accent" : "bg-bg-input border-border"
+        }`}
+      >
+        <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-text transition-transform ${
+          enabled ? "translate-x-5" : "translate-x-1"
+        }`} />
+      </button>
+    </section>
   );
 }
 

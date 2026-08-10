@@ -112,6 +112,29 @@ function defaultAppAccessDraft(): AppAccessDraft {
   return { mode: "full", folders: "/", read: true, write: false, delete: false };
 }
 
+export function defaultAgentAppInstallIDs(rows: AppRow[]): Set<number> {
+  return new Set(
+    rows
+      .filter((app) => app.status === "running" && app.default_for_new_agents)
+      .map((app) => app.install_id),
+  );
+}
+
+export function effectiveAgentAppInstallIDs(
+  selected: Iterable<number>,
+  installedApps: AppRow[],
+  requiredSlugs: Iterable<string>,
+): number[] {
+  const effective = new Set(selected);
+  const required = new Set(requiredSlugs);
+  for (const app of installedApps) {
+    if (app.status === "running" && required.has(app.name)) {
+      effective.add(app.install_id);
+    }
+  }
+  return Array.from(effective);
+}
+
 function folderGrantResource(folder: string): string {
   let f = folder.trim();
   if (!f || f === "/") return "folder/**";
@@ -172,6 +195,7 @@ export function AgentNew() {
   // step can auto-install required apps from the chosen template's
   // requirements without re-querying. Both calls are cheap.
   const [installedApps, setInstalledApps] = useState<AppRow[]>([]);
+  const [installedAppsLoaded, setInstalledAppsLoaded] = useState(false);
   const [marketplace, setMarketplace] = useState<MarketplaceEntry[]>([]);
   // Operator's existing integration connections, used by the Setup
   // step to satisfy template requirements. Refetched when the
@@ -182,12 +206,34 @@ export function AgentNew() {
   const [installProgress, setInstallProgress] = useState<Record<string, string>>({});
 
   useEffect(() => {
+    let cancelled = false;
+    setInstalledAppsLoaded(false);
     agentTemplates.list().then(setTemplates).catch(() => setTemplates([]));
     providers
       .list(currentProject?.id)
       .then((list) => setHasProvider(list.some((p) => p.type === "llm")))
       .catch(() => setHasProvider(false));
-    appsAPI.list(currentProject?.id).then(setInstalledApps).catch(() => setInstalledApps([]));
+    appsAPI
+      .list(currentProject?.id)
+      .then((list) => {
+        if (cancelled) return;
+        setInstalledApps(list);
+        setInstalledAppsLoaded(true);
+        const defaults = defaultAgentAppInstallIDs(list);
+        const access: Record<number, AppAccessDraft> = {};
+        for (const id of defaults) access[id] = defaultAppAccessDraft();
+        setState((s) => ({
+          ...s,
+          boundAppInstallIDs: defaults,
+          appAccess: access,
+        }));
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setInstalledApps([]);
+          setInstalledAppsLoaded(false);
+        }
+      });
     appsAPI
       .marketplace(currentProject?.id)
       .then((res) => setMarketplace(res.apps))
@@ -196,15 +242,13 @@ export function AgentNew() {
       .connections(currentProject?.id)
       .then(setConnections)
       .catch(() => setConnections([]));
+    return () => {
+      cancelled = true;
+    };
   }, [currentProject?.id]);
 
-  // Defaults: nothing pre-selected. Operators consciously opt in to
-  // each MCP server attached to their new agent — that's safer
-  // (least-privilege) and the wizard's choices stay legible
-  // ("Storage" + "Slack" is clearer than "everything in the project
-  // unless I think to uncheck it"). The boundAppInstallIDs / IDs
-  // sets stay empty until the operator clicks rows in the Setup
-  // step.
+  // App defaults are a creation-time starting point only. Once loaded, the
+  // operator owns the selection and can uncheck every app before creating.
 
   // refreshConnections is called from the Setup step's "I just
   // connected something" Refresh button so the operator doesn't
@@ -238,13 +282,13 @@ export function AgentNew() {
   // skipped. Returns when every required app has reached `running`
   // (or throws on first install error). Parallel POSTs are safe —
   // apps_loader serializes the build step server-side via semaphore.
-  const installRequiredApps = async (tpl: AgentTemplate) => {
+  const installRequiredApps = async (tpl: AgentTemplate): Promise<AppRow[]> => {
     const installedSlugs = new Set(installedApps.map((a) => a.name));
     const slugs = tpl.requirements
       .filter((r) => r.kind === "app" && r.required && r.slug)
       .map((r) => r.slug!)
       .filter((slug) => !installedSlugs.has(slug));
-    if (slugs.length === 0) return;
+    if (slugs.length === 0) return installedApps;
 
     const installIDs: Record<string, number> = {};
     await Promise.all(
@@ -284,7 +328,7 @@ export function AgentNew() {
       }
       if (allDone) {
         setInstalledApps(list);
-        return;
+        return list;
       }
       await new Promise((r) => setTimeout(r, 1500));
     }
@@ -309,6 +353,12 @@ export function AgentNew() {
         // Directive empty is fine — server fills "Idle. Waiting…".
         // Mode + unconscious always have sensible defaults; system
         // MCPs are hardcoded (channels on, apteva off).
+        return true;
+      case "setup":
+        if (!installedAppsLoaded) {
+          setError("Installed apps could not be loaded yet. Retry or refresh before creating the agent.");
+          return false;
+        }
         return true;
       default:
         return true;
@@ -340,7 +390,17 @@ export function AgentNew() {
       // are deferred to the agent detail page so the wizard stays
       // short and predictable.
       const tpl = templates.find((t) => t.id === state.templateID);
-      if (tpl) await installRequiredApps(tpl);
+      const appsAtCreate = tpl ? await installRequiredApps(tpl) : installedApps;
+      const requiredAppSlugs = new Set(
+        (tpl?.requirements || [])
+          .filter((r) => r.kind === "app" && r.required && r.slug)
+          .map((r) => r.slug!),
+      );
+      const effectiveAppInstallIDs = effectiveAgentAppInstallIDs(
+        state.boundAppInstallIDs,
+        appsAtCreate,
+        requiredAppSlugs,
+      );
 
       const startNow = hasProvider !== false;
       const boundAppGrants = buildAppGrantPolicies(state);
@@ -353,7 +413,7 @@ export function AgentNew() {
         {
           includeChannels: state.includeChannels,
           unconscious: state.unconscious,
-          boundAppInstallIDs: Array.from(state.boundAppInstallIDs),
+          boundAppInstallIDs: effectiveAppInstallIDs,
           boundConnectionIDs: Array.from(state.boundConnectionIDs),
           boundAppGrants,
         },
@@ -827,7 +887,7 @@ function SetupStep({
       <div>
         <h2 className="text-text text-lg font-bold">MCP servers</h2>
         <p className="text-text-muted text-sm mt-1">
-          Pick the integrations + apps this agent should attach as MCP servers. Nothing's selected by default — least-privilege is the safer floor, so opt in to what this agent actually needs.
+          Review the integrations and apps this agent will receive. Project defaults are preselected, and you can opt out of any of them before creation.
         </p>
       </div>
 
@@ -1034,6 +1094,7 @@ function SetupStep({
               const checked = state.boundAppInstallIDs.has(a.install_id);
               const toolCount = a.surfaces?.mcp_tool_count || 0;
               const skillCount = a.surfaces?.skill_count || 0;
+              const isDefault = !!a.default_for_new_agents;
               const catalog = permissionCatalogs[a.install_id];
               const hasScopedAccess = !!catalog?.permissions?.length && !!catalog?.resources?.length;
               // What binding this app brings the agent: its tools (via the
@@ -1051,7 +1112,9 @@ function SetupStep({
                     meta={`v${a.version}`}
                     badge={hasScopedAccess ? `${surfaceBadge} · scoped` : surfaceBadge}
                     statusDot={a.status === "running" ? "green" : "amber"}
-                    hint={a.project_id ? undefined : "global"}
+                    hint={isDefault
+                      ? (a.project_id ? "default for this project" : "global default")
+                      : (a.project_id ? undefined : "global")}
                   />
                   {checked && hasScopedAccess && (
                     <ScopedAppAccess

@@ -20,6 +20,7 @@ function app(overrides: Partial<AppRow>): AppRow {
     status: "running",
     source: "registry",
     upgrade_policy: "manual",
+    default_for_new_agents: false,
     permissions: ["platform.apps.call"],
     surfaces: {
       kind: "service",

@@ -674,9 +674,8 @@ export const instances = {
       // connections the operator wants attached as MCP servers on
       // this new agent. Server writes app_agent_bindings rows for
       // the apps and appends per-connection /mcp/<id> URLs to the
-      // agent's config.json mcp_servers list. Missing = "default
-      // behaviour" (all project-visible apps reachable through the
-      // gateway, no extra explicit MCP rows).
+      // agent's config.json mcp_servers list. Missing asks the server
+      // to resolve project/global defaults; [] is an explicit opt-out.
       boundAppInstallIDs?: number[];
       boundConnectionIDs?: number[];
       boundAppGrants?: AppGrantPolicy[];
@@ -698,9 +697,7 @@ export const instances = {
       ...(opts?.unconscious !== undefined
         ? { unconscious: opts.unconscious }
         : {}),
-      ...(opts?.boundAppInstallIDs && opts.boundAppInstallIDs.length > 0
-        ? { bound_app_install_ids: opts.boundAppInstallIDs }
-        : {}),
+      ...boundAppInstallIDsPayload(opts?.boundAppInstallIDs),
       ...(opts?.boundConnectionIDs && opts.boundConnectionIDs.length > 0
         ? { bound_connection_ids: opts.boundConnectionIDs }
         : {}),
@@ -786,6 +783,10 @@ export const instances = {
       `/agents/${id}/chat-history${limit ? `?limit=${limit}` : ""}`,
     ),
 };
+
+export function boundAppInstallIDsPayload(ids?: number[]): { bound_app_install_ids?: number[] } {
+  return ids === undefined ? {} : { bound_app_install_ids: ids };
+}
 
 export interface ChatHistoryMessage {
   id: string;
@@ -2765,6 +2766,13 @@ export const apps = {
       sidecar_restarted: boolean;
     }>("PATCH", `/apps/installs/${installId}/scope`, { project_id: projectId }),
 
+  setAgentDefault: (installId: number, enabled: boolean) =>
+    request<{ install_id: number; default_for_new_agents: boolean }>(
+      "PATCH",
+      `/apps/installs/${installId}/agent-default`,
+      { default_for_new_agents: enabled },
+    ),
+
   setStatus: (
     installId: number,
     status: "running" | "disabled" | "error",
@@ -2959,6 +2967,7 @@ export interface AppRow {
   error_message?: string;
   source: "git" | "registry" | "builtin" | "manual" | "integration";
   upgrade_policy: "manual" | "auto-patch" | "auto-minor";
+  default_for_new_agents: boolean;
   permissions: string[];
   surfaces: AppSurfaces;
   deprecated?: boolean;

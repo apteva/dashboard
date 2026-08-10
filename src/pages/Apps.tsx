@@ -589,6 +589,12 @@ export function Apps() {
           setDetailInstall(null);
           refreshInstalled();
         }}
+        onAgentDefaultChanged={(enabled) => {
+          setDetailInstall((current) => current
+            ? { ...current, default_for_new_agents: enabled }
+            : current);
+          refreshInstalled();
+        }}
       />
     </div>
   );
@@ -1326,6 +1332,7 @@ function AppListRow({
           <Pill className="bg-border text-text-muted">global</Pill>
         )}
         {app.source === "builtin" && <Pill className="bg-blue/15 text-blue">built-in</Pill>}
+        {app.default_for_new_agents && <Pill className="bg-accent/15 text-accent">default</Pill>}
         {app.deprecated && <Pill className="bg-red/15 text-red">deprecated</Pill>}
         {updateAvailable && <Pill className="bg-yellow/15 text-yellow">update</Pill>}
       </div>
@@ -1581,6 +1588,7 @@ function AppCard({
           <Pill className="bg-border text-text-muted">global</Pill>
         )}
         {app.source === "builtin" && <Pill className="bg-blue/15 text-blue">built-in</Pill>}
+        {app.default_for_new_agents && <Pill className="bg-accent/15 text-accent">default</Pill>}
         {app.deprecated && <Pill className="bg-red/15 text-red">deprecated</Pill>}
         {updateAvailable && <Pill className="bg-yellow/15 text-yellow">update available</Pill>}
       </div>
