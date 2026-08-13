@@ -27,6 +27,23 @@ import { CredentialValueInput } from "../components/integrations/CredentialField
 type Tab = "installed" | "marketplace";
 const MARKETPLACE_PAGE_SIZE = 24;
 
+export function marketplaceCategoryNames(
+  categoryCounts: Record<string, number>,
+): string[] {
+  return Object.keys(categoryCounts).sort(
+    (a, b) => categoryCounts[b] - categoryCounts[a] || a.localeCompare(b),
+  );
+}
+
+export function resolveMarketplaceCategory(
+  current: string,
+  categoryCounts: Record<string, number>,
+): string {
+  const categories = marketplaceCategoryNames(categoryCounts);
+  if (categories.length === 0) return current === "all" ? "" : current;
+  return categories.includes(current) ? current : categories[0];
+}
+
 export function appHasUpdate(app: AppRow): boolean {
   return (
     app.status !== "pending"
@@ -139,7 +156,7 @@ export function Apps() {
   const [installedSearch, setInstalledSearch] = useState("");
   const [marketplaceSearch, setMarketplaceSearch] = useState("");
   const [marketplaceQuery, setMarketplaceQuery] = useState("");
-  const [marketplaceCategory, setMarketplaceCategory] = useState<string>("all");
+  const [marketplaceCategory, setMarketplaceCategory] = useState<string>("");
   const [marketplacePage, setMarketplacePage] = useState(1);
   const [registryURL, setRegistryURL] = useState<string>("");
   const [loading, setLoading] = useState(true);
@@ -215,6 +232,7 @@ export function Apps() {
   // when the user flips tabs or switches project mid-flight.
   useEffect(() => {
     let cancelled = false;
+    let selectingCategory = false;
     setLoading(true);
     const run = async () => {
       try {
@@ -237,16 +255,27 @@ export function Apps() {
             pageSize: MARKETPLACE_PAGE_SIZE,
           });
           if (cancelled) return;
+          const categoryCounts = r.categories || {};
+          const resolvedCategory = resolveMarketplaceCategory(
+            marketplaceCategory,
+            categoryCounts,
+          );
+          setMarketplaceCategories(categoryCounts);
+          if (resolvedCategory !== marketplaceCategory) {
+            selectingCategory = true;
+            setMarketplaceCategory(resolvedCategory);
+            setMarketplacePage(1);
+            return;
+          }
           setMarketplace(r.apps);
           setMarketplaceTotal(r.total ?? r.apps.length);
-          setMarketplaceCategories(r.categories || {});
           setRegistryURL(r.registry_url);
         }
       } catch (e: any) {
         if (cancelled) return;
         setError(e?.message || "failed");
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && !selectingCategory) setLoading(false);
       }
     };
     run();
@@ -627,7 +656,7 @@ export function filterInstalledApps(rows: AppRow[], query: string): AppRow[] {
   });
 }
 
-function MarketplaceView({
+export function MarketplaceView({
   entries,
   total,
   page,
@@ -658,7 +687,7 @@ function MarketplaceView({
   onInstall: (e: MarketplaceEntry) => void;
   onOpenDetails: (e: MarketplaceEntry) => void;
 }) {
-  const hasFilters = query.trim() !== "" || category !== "all";
+  const hasFilters = query.trim() !== "" || category !== "";
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const pageStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const pageEnd = Math.min(total, (page - 1) * pageSize + entries.length);
@@ -673,9 +702,7 @@ function MarketplaceView({
     );
   }
 
-  const categories = Object.keys(categoryCounts).sort(
-    (a, b) => categoryCounts[b] - categoryCounts[a],
-  );
+  const categories = marketplaceCategoryNames(categoryCounts);
 
   return (
     <div className="space-y-5">
@@ -689,12 +716,6 @@ function MarketplaceView({
           className="bg-bg-input border border-border rounded px-3 py-1.5 text-sm flex-1 min-w-[200px] max-w-md"
         />
         <div className="flex flex-wrap gap-1.5">
-          <CategoryChip
-            label="all"
-            count={Object.values(categoryCounts).reduce((sum, n) => sum + n, 0)}
-            active={category === "all"}
-            onClick={() => onCategoryChange("all")}
-          />
           {categories.map((c) => (
             <CategoryChip
               key={c}

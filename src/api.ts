@@ -468,6 +468,61 @@ export interface Project {
   created_at: string;
 }
 
+export interface ProjectPresetAgent {
+  key: string;
+  name: string;
+  directive: string;
+  mode: "autonomous" | "cautious" | "learn";
+  unconscious?: boolean;
+  apps?: string[];
+}
+
+export interface ProjectPreset {
+  id: string;
+  category: "personal" | "work" | "development" | "business";
+  name: string;
+  description: string;
+  agents: ProjectPresetAgent[];
+  dashboard?: string[];
+}
+
+export interface ProjectPresetAppPreview {
+  name: string;
+  installed: boolean;
+  install_id?: number;
+  scope?: "project" | "global";
+}
+
+export interface ProjectPresetAgentPreview extends ProjectPresetAgent {
+  unconscious: boolean;
+  apps: string[];
+  app_install_ids: number[];
+}
+
+export interface ProjectPresetWidget {
+  id: string;
+  component: string;
+  size: "half" | "full";
+  settings?: Record<string, unknown>;
+}
+
+export interface ProjectPresetPreview {
+  preset: ProjectPreset;
+  planner: "selected" | "meta" | "deterministic";
+  confidence: number;
+  project: { name: string; description: string; color: string };
+  apps: ProjectPresetAppPreview[];
+  agents: ProjectPresetAgentPreview[];
+  layout: ProjectPresetWidget[];
+  warnings: string[];
+  next_steps?: string[];
+}
+
+export interface ProjectPresetApplyInput {
+  preset_id: string;
+  description: string;
+}
+
 // Agent templates — starter configs surfaced in /agents/new wizard.
 // Builtin rows are seeded by the server, app-contributed rows arrive
 // on app install, user rows are created here via .create() or
@@ -568,6 +623,40 @@ export const projects = {
   update: (id: string, name: string, description: string, color: string) =>
     request<Project>("PUT", `/projects/${id}`, { name, description, color }),
   delete: (id: string) => request<any>("DELETE", `/projects/${id}`),
+};
+
+export const projectPresets = {
+  list: () =>
+    request<{ schema_version: number; presets: ProjectPreset[] }>(
+      "GET",
+      "/project-presets",
+    ),
+  preview: (
+    projectId: string,
+    input: {
+      preset_id?: string;
+      category?: string;
+      description: string;
+    },
+  ) =>
+    request<ProjectPresetPreview>(
+      "POST",
+      `/projects/${encodeURIComponent(projectId)}/setup/preview`,
+      input,
+    ),
+  apply: (projectId: string, input: ProjectPresetApplyInput) =>
+    request<{
+      status: "applied";
+      project_id: string;
+      preset_id: string;
+      created_agents: Array<{ id: number; name: string; status: string }>;
+      existing_agents: Array<{ id: number; name: string; status: string }>;
+      warnings: string[];
+    }>(
+      "POST",
+      `/projects/${encodeURIComponent(projectId)}/setup/apply`,
+      input,
+    ),
 };
 
 // ─── Multi-user + roles ────────────────────────────────────────────────

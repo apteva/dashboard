@@ -3,7 +3,9 @@ import type { AppRow } from "../api";
 import {
   appHasUpdate,
   filterInstalledApps,
+  marketplaceCategoryNames,
   projectAppsWithUpdates,
+  resolveMarketplaceCategory,
   upgradeAppsSequentially,
 } from "./Apps";
 
@@ -63,6 +65,28 @@ describe("filterInstalledApps", () => {
 
   test("returns the original inventory for an empty query", () => {
     expect(filterInstalledApps(rows, "  ")).toBe(rows);
+  });
+});
+
+describe("marketplace category selection", () => {
+  const categories = { media: 12, productivity: 20, business: 20 };
+
+  test("keeps an available selected category", () => {
+    expect(resolveMarketplaceCategory("media", categories)).toBe("media");
+  });
+
+  test("replaces all or a missing category with the first available category", () => {
+    expect(resolveMarketplaceCategory("all", categories)).toBe("business");
+    expect(resolveMarketplaceCategory("missing", categories)).toBe("business");
+    expect(resolveMarketplaceCategory("", categories)).toBe("business");
+  });
+
+  test("orders categories by count and then by name", () => {
+    expect(marketplaceCategoryNames(categories)).toEqual([
+      "business",
+      "productivity",
+      "media",
+    ]);
   });
 });
 

@@ -1,17 +1,27 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { auth, providerTypes, providers, projects, type ProviderTypeInfo, type Project } from "../api";
+import { auth, instances, providerTypes, providers, type ProviderTypeInfo } from "../api";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme, type ThemeMode } from "../hooks/useTheme";
 import { usePageTitle } from "../hooks/usePageTitle";
-import { MFASetup } from "../components/auth/MFASetup";
+import { ProjectPresetSetup } from "../components/projects/ProjectPresetSetup";
 
 // Welcome flow gated on users.onboarded_at being NULL (see
 // <OnboardingGate> in App.tsx). Skip is allowed at every step; the
 // "Finish" button on the last step calls /auth/onboarding/complete,
 // which stamps onboarded_at and lets the user into the dashboard.
 
-type StepId = "theme" | "project" | "security" | "provider";
+export const ONBOARDING_STEP_IDS = ["theme", "setup", "provider"] as const;
+type StepId = (typeof ONBOARDING_STEP_IDS)[number];
+
+export async function activateOnboardingPresetAgents(
+  agentIds: number[],
+  startAgent: (id: number) => Promise<unknown> = instances.start,
+) {
+  const results = await Promise.allSettled(agentIds.map((id) => startAgent(id)));
+  const started = results.filter((result) => result.status === "fulfilled").length;
+  return { started, failed: results.length - started };
+}
 
 interface StepDef {
   id: StepId;
@@ -23,13 +33,7 @@ interface StepDef {
 
 const STEPS: StepDef[] = [
   { id: "theme", canSkip: false },
-  // The project step lets the user rename/describe the "Default"
-  // project that registration auto-created. Skippable because the
-  // default name is already serviceable; the description in particular
-  // becomes useful context for LLM-using apps that surface it
-  // (media's auto-describer prepends it to prompts, for example).
-  { id: "project", canSkip: true },
-  { id: "security", canSkip: true },
+  { id: "setup", canSkip: true },
   { id: "provider", canSkip: true },
 ];
 
@@ -43,6 +47,9 @@ export function Onboarding() {
   // /agents/new wizard. Without one, we route to / and let them poke
   // around the dashboard first.
   const [providerAdded, setProviderAdded] = useState(false);
+  const [setupApplied, setSetupApplied] = useState(false);
+  const [presetAgentsToStart, setPresetAgentsToStart] = useState<number[]>([]);
+  const [activationMessage, setActivationMessage] = useState("");
   const navigate = useNavigate();
   const { refresh, user } = useAuth();
 
@@ -58,6 +65,18 @@ export function Onboarding() {
   const step = STEPS[stepIdx]!;
   const isLast = stepIdx === STEPS.length - 1;
 
+  const activatePresetAgents = async () => {
+    if (presetAgentsToStart.length === 0) return;
+    setActivationMessage("Starting your new agents…");
+    const { started, failed } = await activateOnboardingPresetAgents(presetAgentsToStart);
+    setPresetAgentsToStart([]);
+    setActivationMessage(
+      failed === 0
+        ? `${started} preset agent${started === 1 ? " is" : "s are"} online.`
+        : `${started} preset agent${started === 1 ? " is" : "s are"} online; ${failed} still need attention.`,
+    );
+  };
+
   const advance = async () => {
     if (!isLast) {
       setStepIdx(stepIdx + 1);
@@ -69,7 +88,7 @@ export function Onboarding() {
     // dashboard's empty state with its "Build your first agent →"
     // CTA is a fine landing — they can come back when they're ready
     // to wire up an LLM key.
-    const dest = providerAdded ? "/agents/new" : "/";
+    const dest = setupApplied ? "/" : providerAdded ? "/agents/new" : "/";
     try {
       await auth.completeOnboarding();
       await refresh();
@@ -96,19 +115,32 @@ export function Onboarding() {
 
         <div className="border border-border rounded-lg p-8 bg-bg-card mt-6">
           {step.id === "theme" && <ThemeStep />}
-          {step.id === "project" && <ProjectStep />}
-          {step.id === "security" && (
-            <div className="space-y-5">
-              <div>
-                <h2 className="text-text text-lg font-bold">Secure your account</h2>
-                <p className="text-text-muted text-sm mt-1">
-                  Two-factor authentication is optional and can also be enabled later in Settings → Account.
-                </p>
-              </div>
-              <MFASetup onEnabled={refresh} />
-            </div>
+          {step.id === "setup" && (
+            <ProjectPresetSetup
+              onApplied={(result) => {
+                setSetupApplied(true);
+                setPresetAgentsToStart(
+                  result.createdAgents
+                    .filter((agent) => agent.status !== "running")
+                    .map((agent) => agent.id),
+                );
+              }}
+            />
           )}
-          {step.id === "provider" && <ProviderStep onSaved={() => setProviderAdded(true)} />}
+          {step.id === "provider" && (
+            <>
+              <ProviderStep
+                setupReady={setupApplied}
+                onSaved={async () => {
+                  setProviderAdded(true);
+                  await activatePresetAgents();
+                }}
+              />
+              {activationMessage && (
+                <div className="mt-4 text-sm text-accent" role="status">{activationMessage}</div>
+              )}
+            </>
+          )}
 
           <div className="flex justify-between items-center mt-8 pt-6 border-t border-border">
             {step.canSkip ? (
@@ -237,161 +269,13 @@ function ThemeCard({
   );
 }
 
-// ProjectStep — let the user rename + describe the "Default" project
-// registration auto-created. Skippable because the auto name is fine;
-// the description in particular is worth filling because LLM-using
-// apps surface it as context (media's auto-describer, for example,
-// prepends it to vision prompts). Color is offered as a small set of
-// pre-picked swatches rather than a free-form picker — the dashboard's
-// project chips use this, and a curated palette keeps them legible.
-const PROJECT_COLORS = [
-  "#6366f1", // indigo (the auto-create default)
-  "#10b981", // emerald
-  "#f59e0b", // amber
-  "#ef4444", // red
-  "#3b82f6", // blue
-  "#a855f7", // violet
-  "#14b8a6", // teal
-  "#ec4899", // pink
-];
-
-function ProjectStep() {
-  const [project, setProject] = useState<Project | null>(null);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [color, setColor] = useState(PROJECT_COLORS[0]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    // Registration auto-creates one "Default" project. We seed the
-    // form from whatever's there (in the rare case the user already
-    // edited it from a different tab, we reflect their latest values).
-    // If there's somehow no project, the step still renders — Save
-    // will fail with a useful message rather than wedging the form.
-    projects
-      .list()
-      .then((list) => {
-        const p = list[0];
-        if (p) {
-          setProject(p);
-          setName(p.name);
-          setDescription(p.description);
-          setColor(p.color || PROJECT_COLORS[0]);
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
-
-  const dirty = !!project &&
-    (name !== project.name || description !== project.description || color !== (project.color || PROJECT_COLORS[0]));
-
-  const onSave = async () => {
-    if (!project) {
-      setError("No project to update — your account didn't get one auto-created. Hit Skip and create one from the dashboard.");
-      return;
-    }
-    setSaving(true);
-    setError("");
-    try {
-      const updated = await projects.update(project.id, name.trim() || project.name, description, color);
-      setProject(updated);
-      setSaved(true);
-    } catch (err: any) {
-      setError(err?.message || "Failed to update project");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (loading) {
-    return <div className="text-text-muted text-sm">Loading…</div>;
-  }
-
-  return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h2 className="text-text text-lg font-bold">Name your first project</h2>
-        <p className="text-text-muted text-sm mt-1">
-          Projects are the top-level scope your agents, providers, and integrations live in. A short description helps agents that read project context (the auto-describer in media uses it, for example).
-        </p>
-      </div>
-
-      <div>
-        <label className="block text-text-muted text-sm mb-2">Name</label>
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => {
-            setName((e.target as HTMLInputElement).value);
-            setSaved(false);
-            setError("");
-          }}
-          className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text focus:outline-none focus:border-accent"
-          placeholder="Default"
-          autoComplete="off"
-        />
-      </div>
-
-      <div>
-        <label className="block text-text-muted text-sm mb-2">Description</label>
-        <textarea
-          value={description}
-          onChange={(e) => {
-            setDescription((e.target as HTMLTextAreaElement).value);
-            setSaved(false);
-            setError("");
-          }}
-          rows={3}
-          className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text focus:outline-none focus:border-accent resize-none"
-          placeholder="What this project is for — e.g. 'Personal automation: email triage, scheduling, content drafting'"
-          spellCheck={false}
-        />
-      </div>
-
-      <div>
-        <label className="block text-text-muted text-sm mb-2">Color</label>
-        <div className="flex flex-wrap gap-2">
-          {PROJECT_COLORS.map((c) => (
-            <button
-              key={c}
-              onClick={() => {
-                setColor(c);
-                setSaved(false);
-                setError("");
-              }}
-              className={`w-8 h-8 rounded-full border-2 transition-all ${
-                color === c ? "border-text scale-110" : "border-border hover:border-text-dim"
-              }`}
-              style={{ backgroundColor: c }}
-              aria-label={`Pick color ${c}`}
-            />
-          ))}
-        </div>
-      </div>
-
-      {error && <div className="text-red text-sm">{error}</div>}
-      {saved && (
-        <div className="text-accent text-sm">Saved — you can change this any time in Settings → Projects.</div>
-      )}
-
-      {project && dirty && !saved && (
-        <button
-          onClick={onSave}
-          disabled={saving}
-          className="self-start px-4 py-2 border border-border rounded-lg text-sm text-text hover:bg-bg-hover transition-colors disabled:opacity-50"
-        >
-          {saving ? "Saving…" : "Save project"}
-        </button>
-      )}
-    </div>
-  );
-}
-
-function ProviderStep({ onSaved }: { onSaved?: () => void }) {
+function ProviderStep({
+  setupReady,
+  onSaved,
+}: {
+  setupReady?: boolean;
+  onSaved?: () => void | Promise<void>;
+}) {
   const [types, setTypes] = useState<ProviderTypeInfo[]>([]);
   const [selected, setSelected] = useState<ProviderTypeInfo | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -440,7 +324,7 @@ function ProviderStep({ onSaved }: { onSaved?: () => void }) {
       // GetAllProviderEnvVars.
       await providers.create(selected.type, selected.name, trimmed, selected.id, "");
       setSaved(true);
-      onSaved?.();
+      await onSaved?.();
     } catch (err: any) {
       setError(err?.message || "Failed to save provider");
     } finally {
@@ -451,9 +335,13 @@ function ProviderStep({ onSaved }: { onSaved?: () => void }) {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h2 className="text-text text-lg font-bold">Add an LLM provider key</h2>
+        <h2 className="text-text text-lg font-bold">
+          {setupReady ? "Bring your agents online" : "Add an LLM provider key"}
+        </h2>
         <p className="text-text-muted text-sm mt-1">
-          Your agents need a model to think with. Paste a key from a provider — you can add or change keys later in Settings → Providers.
+          {setupReady
+            ? "Your workspace is ready. Connect a model to start its agents — you can change providers later in Settings."
+            : "Your agents need a model to think with. Paste a key from a provider — you can add or change keys later in Settings → Providers."}
         </p>
       </div>
 

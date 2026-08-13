@@ -12,6 +12,7 @@ import { useTranslation } from "react-i18next";
 import { DASHBOARD_LANGUAGES, normalizeDashboardLanguage, setDashboardLanguage, type DashboardLanguage } from "../i18n";
 import { resolveEffectiveAgentProvider } from "../utils/providerSelection";
 import { MFASetup } from "../components/auth/MFASetup";
+import { ProjectPresetSetup } from "../components/projects/ProjectPresetSetup";
 import {
   globalHelperCapabilityInventory,
   helperCapabilityKind,
@@ -4844,6 +4845,7 @@ function ProjectsTab() {
   const [color, setColor] = useState(PROJECT_COLORS[0]);
   // Which project's Members modal is open. Null when closed.
   const [membersFor, setMembersFor] = useState<string | null>(null);
+  const [setupFor, setSetupFor] = useState<string | null>(null);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -4916,6 +4918,9 @@ function ProjectsTab() {
               <button onClick={() => setMembersFor(p.id)} className="text-xs text-text-muted hover:text-text transition-colors">
                 Members
               </button>
+              <button onClick={() => setSetupFor(p.id)} className="text-xs text-text-muted hover:text-text transition-colors">
+                Set up
+              </button>
               <button onClick={() => openEdit(p)} className="text-xs text-text-muted hover:text-text transition-colors">
                 Edit
               </button>
@@ -4984,6 +4989,13 @@ function ProjectsTab() {
             projectName={projects.find((p) => p.id === membersFor)?.name || ""}
             onClose={() => setMembersFor(null)}
           />
+        </Modal>
+      )}
+      {setupFor && (
+        <Modal open={!!setupFor} onClose={() => setSetupFor(null)} width="max-w-4xl" ariaLabel="Set up project">
+          <div className="p-6 overflow-y-auto">
+            <ProjectPresetSetup projectId={setupFor} onApplied={() => void reload()} />
+          </div>
         </Modal>
       )}
     </div>
