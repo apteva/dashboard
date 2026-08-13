@@ -31,6 +31,10 @@ export interface AuthUser {
   onboarded: boolean;
   language: DashboardLanguage;
   uiLayout: Record<string, unknown>;
+  uiLayoutRevision: number;
+  mfaEnabled: boolean;
+  mfaType: string;
+  mfaRecoveryCodesRemaining: number;
 }
 
 interface AuthState {
@@ -38,7 +42,11 @@ interface AuthState {
   user: AuthUser | null | false;
   // Legacy boolean view retained so existing ProtectedRoute checks keep working.
   authenticated: boolean | null;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<{ mfaRequired: boolean }>;
+  verifyMFA: (code: string) => Promise<{
+    usedRecoveryCode: boolean;
+    recoveryCodesRemaining: number;
+  }>;
   register: (
     email: string,
     password: string,
@@ -68,6 +76,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         language: normalizeDashboardLanguage(r.language),
         uiLayout:
           r.ui_layout && typeof r.ui_layout === "object" ? r.ui_layout : {},
+        uiLayoutRevision: Number(r.ui_layout_revision || 0),
+        mfaEnabled: Boolean(r.mfa_enabled),
+        mfaType: r.mfa_type || "",
+        mfaRecoveryCodesRemaining: Number(r.mfa_recovery_codes_remaining || 0),
       });
       void setDashboardLanguage(r.language);
     } catch {
@@ -94,10 +106,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user,
     authenticated: user === null ? null : user !== false,
     login: async (email, password) => {
-      await auth.login(email, password);
+      const result = await auth.login(email, password);
+      if (result.mfa_required) return { mfaRequired: true };
       // Pull the full profile so we have `created_at` too; the login
       // response only carries id+email.
       await loadMe();
+      return { mfaRequired: false };
+    },
+    verifyMFA: async (code) => {
+      const result = await auth.verifyMFA(code);
+      await loadMe();
+      return {
+        usedRecoveryCode: result.used_recovery_code,
+        recoveryCodesRemaining: result.recovery_codes_remaining,
+      };
     },
     register: (email, password, setupToken, inviteToken) =>
       auth.register(email, password, setupToken, inviteToken),

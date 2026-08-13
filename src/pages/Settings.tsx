@@ -11,6 +11,7 @@ import { usePageTitle } from "../hooks/usePageTitle";
 import { useTranslation } from "react-i18next";
 import { DASHBOARD_LANGUAGES, normalizeDashboardLanguage, setDashboardLanguage, type DashboardLanguage } from "../i18n";
 import { resolveEffectiveAgentProvider } from "../utils/providerSelection";
+import { MFASetup } from "../components/auth/MFASetup";
 import {
   globalHelperCapabilityInventory,
   helperCapabilityKind,
@@ -4502,6 +4503,8 @@ function AccountTab() {
   // local: open → collect current/new/confirm → POST /auth/password.
   const { user, refresh } = useAuth();
   const [showPwd, setShowPwd] = useState(false);
+  const [showMFASetup, setShowMFASetup] = useState(false);
+  const [mfaAction, setMFAAction] = useState<"disable" | "recovery" | null>(null);
   // Success banner state here so the page itself acknowledges the
   // change; the modal's own banner is short-lived.
   const [changed, setChanged] = useState(false);
@@ -4564,6 +4567,53 @@ function AccountTab() {
       </div>
 
       <div className="border border-border rounded-lg p-5 bg-bg-card">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-text text-sm font-bold">Two-factor authentication</h3>
+              <span className={`rounded border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ${user.mfaEnabled ? "border-green/35 bg-green/10 text-green" : "border-border text-text-dim"}`}>
+                {user.mfaEnabled ? "Enabled" : "Optional"}
+              </span>
+            </div>
+            <p className="text-text-muted text-sm mt-2 max-w-2xl">
+              Require a code from your authenticator app when signing in to the dashboard. API keys and agent credentials are unaffected.
+            </p>
+          </div>
+        </div>
+        {user.mfaEnabled ? (
+          <div className="mt-4 space-y-3">
+            <p className="text-xs text-text-dim">
+              {user.mfaRecoveryCodesRemaining} recovery code{user.mfaRecoveryCodesRemaining === 1 ? "" : "s"} remaining.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setMFAAction("recovery")}
+                className="px-4 py-2.5 border border-border rounded-lg text-sm text-text-muted hover:text-accent hover:border-accent transition-colors"
+              >
+                New recovery codes
+              </button>
+              <button
+                type="button"
+                onClick={() => setMFAAction("disable")}
+                className="px-4 py-2.5 border border-border rounded-lg text-sm text-text-muted hover:text-red hover:border-red transition-colors"
+              >
+                Disable two-factor
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setShowMFASetup(true)}
+            className="mt-4 px-5 py-2.5 border border-accent text-accent rounded-lg text-sm font-bold hover:bg-accent/10 transition-colors"
+          >
+            Enable two-factor
+          </button>
+        )}
+      </div>
+
+      <div className="border border-border rounded-lg p-5 bg-bg-card">
         <h3 className="text-text text-sm font-bold mb-3">Sign out</h3>
         <p className="text-text-muted text-sm mb-4">
           This will end your current session. You'll need to sign in again.
@@ -4580,6 +4630,20 @@ function AccountTab() {
         open={showPwd}
         onClose={() => setShowPwd(false)}
         onChanged={() => { setChanged(true); refresh(); }}
+      />
+      <Modal open={showMFASetup} onClose={() => setShowMFASetup(false)}>
+        <div className="w-full max-w-xl p-5">
+          <div className="mb-5 flex items-center gap-3">
+            <h3 className="text-sm font-bold text-text">Enable two-factor authentication</h3>
+            <button type="button" onClick={() => setShowMFASetup(false)} className="ml-auto text-lg text-text-dim hover:text-text" aria-label="Close">×</button>
+          </div>
+          <MFASetup onEnabled={refresh} />
+        </div>
+      </Modal>
+      <MFAActionModal
+        mode={mfaAction}
+        onClose={() => setMFAAction(null)}
+        onChanged={refresh}
       />
     </div>
   );
@@ -4653,6 +4717,116 @@ function AccountChangePasswordModal({
           </button>
         </div>
       </form>
+    </Modal>
+  );
+}
+
+function MFAActionModal({
+  mode,
+  onClose,
+  onChanged,
+}: {
+  mode: "disable" | "recovery" | null;
+  onClose: () => void;
+  onChanged: () => void | Promise<void>;
+}) {
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
+  const [copied, setCopied] = useState(false);
+
+  const resetAndClose = () => {
+    setPassword("");
+    setCode("");
+    setBusy(false);
+    setError("");
+    setRecoveryCodes([]);
+    setCopied(false);
+    onClose();
+  };
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!mode) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (mode === "disable") {
+        await auth.disableMFA(password, code);
+        await onChanged();
+        resetAndClose();
+        return;
+      }
+      const result = await auth.regenerateMFARecoveryCodes(password, code);
+      setRecoveryCodes(result.recovery_codes);
+      setPassword("");
+      setCode("");
+      await onChanged();
+    } catch (err: any) {
+      setError(err?.message === "unauthorized" ? "The password or authentication code is incorrect." : err?.message || "Could not update two-factor authentication");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyCodes = async () => {
+    try {
+      await navigator.clipboard.writeText(recoveryCodes.join("\n"));
+      setCopied(true);
+    } catch {
+      setError("Could not copy automatically. Select and save the codes manually.");
+    }
+  };
+
+  return (
+    <Modal open={mode !== null} onClose={resetAndClose}>
+      <div className="w-full max-w-lg p-5">
+        <div className="mb-4 flex items-center gap-3">
+          <h3 className="text-sm font-bold text-text">
+            {mode === "disable" ? "Disable two-factor authentication" : "Generate new recovery codes"}
+          </h3>
+          <button type="button" onClick={resetAndClose} className="ml-auto text-lg text-text-dim hover:text-text" aria-label="Close">×</button>
+        </div>
+        {recoveryCodes.length > 0 ? (
+          <div className="space-y-4">
+            <p className="text-xs leading-5 text-text-muted">
+              Your previous recovery codes no longer work. Save these replacements now; they will not be shown again.
+            </p>
+            <div className="grid gap-2 rounded-lg border border-border bg-bg-input p-4 font-mono text-xs text-text sm:grid-cols-2">
+              {recoveryCodes.map((recoveryCode) => <code key={recoveryCode}>{recoveryCode}</code>)}
+            </div>
+            <button type="button" onClick={copyCodes} className="rounded-lg border border-border px-4 py-2 text-xs font-semibold text-text-muted hover:border-accent hover:text-accent">
+              {copied ? "Copied" : "Copy recovery codes"}
+            </button>
+            {error && <p className="text-xs text-red" role="alert">{error}</p>}
+          </div>
+        ) : (
+          <form onSubmit={submit} className="space-y-4">
+            <p className="text-xs leading-5 text-text-muted">
+              Confirm this sensitive change with your current password and an authenticator or recovery code.
+            </p>
+            <label className="block">
+              <span className="text-xs font-semibold text-text-muted">Current password</span>
+              <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required disabled={busy}
+                className="mt-1.5 w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 text-sm text-text focus:border-accent focus:outline-none" />
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-text-muted">Authentication or recovery code</span>
+              <input type="text" value={code} onChange={(event) => setCode(event.target.value)} autoComplete="one-time-code" autoCapitalize="characters" spellCheck={false} required disabled={busy}
+                className="mt-1.5 w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 text-center font-mono text-base tracking-wider text-text focus:border-accent focus:outline-none" />
+            </label>
+            {error && <p className="text-xs text-red" role="alert">{error}</p>}
+            <div className="flex justify-end gap-2 pt-1">
+              <button type="button" onClick={resetAndClose} disabled={busy} className="rounded-lg border border-border px-4 py-2 text-xs text-text-muted hover:text-text">Cancel</button>
+              <button type="submit" disabled={busy || !password || !code.trim()} className={`rounded-lg px-4 py-2 text-xs font-bold disabled:opacity-50 ${mode === "disable" ? "border border-red text-red hover:bg-red/10" : "bg-accent text-bg hover:bg-accent-hover"}`}>
+                {busy ? "Confirming…" : mode === "disable" ? "Disable" : "Generate codes"}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
     </Modal>
   );
 }

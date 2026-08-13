@@ -4,13 +4,14 @@ import { auth, providerTypes, providers, projects, type ProviderTypeInfo, type P
 import { useAuth } from "../hooks/useAuth";
 import { useTheme, type ThemeMode } from "../hooks/useTheme";
 import { usePageTitle } from "../hooks/usePageTitle";
+import { MFASetup } from "../components/auth/MFASetup";
 
 // Welcome flow gated on users.onboarded_at being NULL (see
 // <OnboardingGate> in App.tsx). Skip is allowed at every step; the
 // "Finish" button on the last step calls /auth/onboarding/complete,
 // which stamps onboarded_at and lets the user into the dashboard.
 
-type StepId = "theme" | "project" | "provider";
+type StepId = "theme" | "project" | "security" | "provider";
 
 interface StepDef {
   id: StepId;
@@ -28,6 +29,7 @@ const STEPS: StepDef[] = [
   // becomes useful context for LLM-using apps that surface it
   // (media's auto-describer prepends it to prompts, for example).
   { id: "project", canSkip: true },
+  { id: "security", canSkip: true },
   { id: "provider", canSkip: true },
 ];
 
@@ -95,6 +97,17 @@ export function Onboarding() {
         <div className="border border-border rounded-lg p-8 bg-bg-card mt-6">
           {step.id === "theme" && <ThemeStep />}
           {step.id === "project" && <ProjectStep />}
+          {step.id === "security" && (
+            <div className="space-y-5">
+              <div>
+                <h2 className="text-text text-lg font-bold">Secure your account</h2>
+                <p className="text-text-muted text-sm mt-1">
+                  Two-factor authentication is optional and can also be enabled later in Settings → Account.
+                </p>
+              </div>
+              <MFASetup onEnabled={refresh} />
+            </div>
+          )}
           {step.id === "provider" && <ProviderStep onSaved={() => setProviderAdded(true)} />}
 
           <div className="flex justify-between items-center mt-8 pt-6 border-t border-border">

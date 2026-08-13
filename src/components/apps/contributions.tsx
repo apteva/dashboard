@@ -34,6 +34,8 @@ export interface UILayoutDocument {
 }
 
 const LAYOUT_EVENT = "apteva:ui-layout-changed";
+const surfaceSaveQueues = new Map<string, Promise<unknown>>();
+const surfaceSaveVersions = new Map<string, number>();
 
 function normalizeLayout(value: unknown): UILayoutDocument {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -49,6 +51,7 @@ export function useProjectUILayout(projectId?: string | null) {
   const initial =
     user && typeof user === "object" ? normalizeLayout(user.uiLayout) : {};
   const [document, setDocument] = useState<UILayoutDocument>(initial);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
   useEffect(() => {
     if (user && typeof user === "object")
@@ -74,18 +77,59 @@ export function useProjectUILayout(projectId?: string | null) {
       setDocument(next);
       window.dispatchEvent(new CustomEvent(LAYOUT_EVENT, { detail: next }));
       try {
+        setSaveState("saving");
         await auth.updatePreferences({
           ui_layout: next as Record<string, unknown>,
         });
+        setSaveState("saved");
       } catch {
-        // Keep the optimistic local layout. The next authenticated profile load
-        // reconciles it if persistence failed.
+        setSaveState("error");
       }
     },
     [document, projectId],
   );
 
-  return { document, project, update };
+  const updateSurface = useCallback(
+    async (surface: string, widgets: WidgetInstance[]) => {
+      if (!projectId) return;
+      const stored = serializeWidgetInstances(widgets);
+      const nextProject: ProjectUILayout = {
+        ...project,
+        slots: { ...(project.slots || {}), [surface]: stored },
+      };
+      const optimistic: UILayoutDocument = {
+        ...document,
+        projects: { ...(document.projects || {}), [projectId]: nextProject },
+      };
+      setDocument(optimistic);
+      window.dispatchEvent(new CustomEvent(LAYOUT_EVENT, { detail: optimistic }));
+      setSaveState("saving");
+      const queueKey = `${projectId}:${surface}`;
+      const version = (surfaceSaveVersions.get(queueKey) || 0) + 1;
+      surfaceSaveVersions.set(queueKey, version);
+      const previous = surfaceSaveQueues.get(queueKey) || Promise.resolve();
+      const request = previous.catch(() => undefined).then(() =>
+        auth.patchUILayoutSurface(projectId, surface, stored),
+      );
+      surfaceSaveQueues.set(queueKey, request);
+      try {
+        const response = await request;
+        if (surfaceSaveVersions.get(queueKey) === version) {
+          const confirmed = normalizeLayout(response.ui_layout);
+          setDocument(confirmed);
+          window.dispatchEvent(new CustomEvent(LAYOUT_EVENT, { detail: confirmed }));
+          setSaveState("saved");
+        }
+      } catch {
+        if (surfaceSaveVersions.get(queueKey) === version) setSaveState("error");
+      } finally {
+        if (surfaceSaveQueues.get(queueKey) === request) surfaceSaveQueues.delete(queueKey);
+      }
+    },
+    [document, project, projectId],
+  );
+
+  return { document, project, update, updateSurface, saveState };
 }
 
 export interface Contribution {
@@ -111,6 +155,63 @@ export function contributionsFor(
     }
   }
   return out;
+}
+
+interface ContributionEligibilityResponse {
+  contributions?: Array<{
+    app: string;
+    component: string;
+    eligible: boolean;
+  }>;
+}
+
+export function useEligibleContributionKeys(
+  projectId: string | null | undefined,
+  slot: string,
+  agentId?: number,
+  threadId?: string,
+) {
+  const [keys, setKeys] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    if (!projectId || !agentId || slot === "dashboard.home") {
+      setKeys(null);
+      return;
+    }
+    let cancelled = false;
+    const params = new URLSearchParams({
+      project_id: projectId,
+      surface: slot,
+      agent_id: String(agentId),
+    });
+    if (threadId) params.set("thread_id", threadId);
+    const load = () =>
+      fetch(`/api/ui/contributions?${params.toString()}`, {
+        credentials: "same-origin",
+      })
+        .then((response) => {
+          if (!response.ok) throw new Error("unable to resolve contributions");
+          return response.json() as Promise<ContributionEligibilityResponse>;
+        })
+        .then((response) => {
+          if (cancelled) return;
+          setKeys(new Set(
+            (response.contributions || [])
+              .filter((item) => item.eligible)
+              .map((item) => contributionKey(item.app, item.component)),
+          ));
+        })
+        .catch(() => {
+          if (!cancelled) setKeys(null);
+        });
+    void load();
+    const onAppsChanged = () => void load();
+    window.addEventListener("apteva:apps-changed", onAppsChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("apteva:apps-changed", onAppsChanged);
+    };
+  }, [agentId, projectId, slot, threadId]);
+  return keys;
 }
 
 export function supportedWidgetSizes(spec: UIComponentSpec): WidgetSize[] {
@@ -156,6 +257,18 @@ export function widgetInstancesFor(
   project: ProjectUILayout,
 ): ResolvedWidgetInstance[] {
   const byKey = new Map(contributions.map((item) => [item.key, item]));
+  return storedWidgetInstancesFor(contributions, slot, project).flatMap((entry) => {
+    const contribution = byKey.get(entry.component);
+    return contribution ? [{ ...entry, contribution }] : [];
+  });
+}
+
+export function storedWidgetInstancesFor(
+  contributions: Contribution[],
+  slot: string,
+  project: ProjectUILayout,
+): WidgetInstance[] {
+  const byKey = new Map(contributions.map((item) => [item.key, item]));
   const explicit =
     project.slots && Object.prototype.hasOwnProperty.call(project.slots, slot);
   const explicitValue = project.slots?.[slot];
@@ -180,20 +293,20 @@ export function widgetInstancesFor(
     const legacy = typeof entry === "string";
     const component = legacy ? entry : entry.component;
     const contribution = byKey.get(component);
-    if (!contribution) return [];
+    const fallbackSize: WidgetSize = typeof entry !== "string" && entry.size === "full"
+      ? "full"
+      : "half";
     return [{
       id: legacy
         ? `legacy:${slot}:${index}:${component}`
         : entry.id || `widget:${slot}:${index}:${component}`,
       component,
-      size: normalizedWidgetSize(
-        contribution.spec,
-        legacy ? undefined : entry.size,
-      ),
+      size: contribution
+        ? normalizedWidgetSize(contribution.spec, legacy ? undefined : entry.size)
+        : fallbackSize,
       settings: legacy
-        ? defaultWidgetSettings(contribution.spec)
-        : { ...defaultWidgetSettings(contribution.spec), ...(entry.settings || {}) },
-      contribution,
+        ? contribution ? defaultWidgetSettings(contribution.spec) : {}
+        : { ...(contribution ? defaultWidgetSettings(contribution.spec) : {}), ...(entry.settings || {}) },
     }];
   });
 }
@@ -261,9 +374,17 @@ export function AppContributionArea({
 }) {
   const apps = useInstalledApps(projectId);
   const { project } = useProjectUILayout(projectId);
+  const eligibleKeys = useEligibleContributionKeys(
+    projectId,
+    slot,
+    agentId,
+    threadId,
+  );
   const contributions = useMemo(
-    () => contributionsFor(apps, slot),
-    [apps, slot],
+    () => contributionsFor(apps, slot).filter(
+      (item) => !eligibleKeys || eligibleKeys.has(item.key),
+    ),
+    [apps, eligibleKeys, slot],
   );
   const widgets = widgetInstancesFor(contributions, slot, project);
   if (!projectId || widgets.length === 0) return empty;
@@ -284,7 +405,7 @@ export function AppContributionArea({
   );
 }
 
-function ContributionMount({
+export function ContributionMount({
   instance,
   apps,
   slot,
@@ -301,9 +422,12 @@ function ContributionMount({
 }) {
   const { contribution } = instance;
   const [eventRevision, setEventRevision] = useState(0);
-  useAppEvents(contribution.app.name, projectId, () =>
-    setEventRevision((value) => value + 1),
-  );
+  useAppEvents(contribution.app.name, projectId, (event) => {
+    const topics = contribution.spec.refresh_topics || [];
+    if (topics.length === 0 || topics.includes(event.topic)) {
+      setEventRevision((value) => value + 1);
+    }
+  });
   const width = instance.size === "full" ? "xl:col-span-2" : "";
   return (
     <div
@@ -338,31 +462,37 @@ export function ContributionManager({
   slot,
   projectId,
   label = "Customize",
+  agentId,
+  threadId,
+  compact = false,
 }: {
   slot: string;
   projectId?: string | null;
   label?: string;
+  agentId?: number;
+  threadId?: string;
+  compact?: boolean;
 }) {
   const apps = useInstalledApps(projectId);
-  const { project, update } = useProjectUILayout(projectId);
+  const { project, updateSurface } = useProjectUILayout(projectId);
   const [open, setOpen] = useState(false);
   const [dragging, setDragging] = useState<string | null>(null);
-  const options = useMemo(() => contributionsFor(apps, slot), [apps, slot]);
-  if (!projectId || options.length === 0) return null;
+  const eligibleKeys = useEligibleContributionKeys(projectId, slot, agentId, threadId);
+  const options = useMemo(
+    () => contributionsFor(apps, slot).filter(
+      (item) => !eligibleKeys || eligibleKeys.has(item.key),
+    ),
+    [apps, eligibleKeys, slot],
+  );
+  if (!projectId) return null;
+  const configuredAll = storedWidgetInstancesFor(options, slot, project);
   const configured = widgetInstancesFor(options, slot, project);
   const persist = (next: WidgetInstance[]) => {
-    const stored = serializeWidgetInstances(next);
-    void update({
-      ...project,
-      slots: {
-        ...(project.slots || {}),
-        [slot]: stored,
-      },
-    });
+    void updateSurface(slot, next);
   };
   const add = (item: Contribution) => {
     persist([
-      ...configured,
+      ...configuredAll,
       {
         id: newWidgetInstanceID(item.key),
         component: item.key,
@@ -372,11 +502,11 @@ export function ContributionManager({
     ]);
   };
   const patchInstance = (id: string, patch: Partial<WidgetInstance>) =>
-    persist(configured.map((item) => item.id === id ? { ...item, ...patch } : item));
+    persist(configuredAll.map((item) => item.id === id ? { ...item, ...patch } : item));
   const remove = (id: string) =>
-    persist(configured.filter((item) => item.id !== id));
+    persist(configuredAll.filter((item) => item.id !== id));
   const move = (id: string, targetID: string) => {
-    persist(reorderWidgetInstances(configured, id, targetID));
+    persist(reorderWidgetInstances(configuredAll, id, targetID));
   };
   const nudge = (id: string, delta: number) => {
     const from = configured.findIndex((item) => item.id === id);
@@ -389,7 +519,10 @@ export function ContributionManager({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="rounded border border-border px-3 py-1.5 text-[10px] text-text-muted hover:bg-bg-hover hover:text-text"
+        aria-label={compact ? "Add or manage widgets" : undefined}
+        className={compact
+          ? "flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-sm text-text-muted hover:border-accent hover:text-accent"
+          : "rounded border border-border px-3 py-1.5 text-[10px] text-text-muted hover:bg-bg-hover hover:text-text"}
       >
         {label}
       </button>
@@ -538,6 +671,11 @@ export function ContributionManager({
                 Widget gallery
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
+                {options.length === 0 && (
+                  <p className="col-span-full rounded border border-dashed border-border px-4 py-6 text-center text-[10px] text-text-dim">
+                    No installed app provides a widget for this area yet.
+                  </p>
+                )}
                 {options.map((item) => {
                   const count = configured.filter((instance) => instance.component === item.key).length;
                   return (
@@ -624,7 +762,7 @@ function WidgetFootprintPreview({ size }: { size: WidgetSize }) {
   );
 }
 
-function WidgetSettingsEditor({
+export function WidgetSettingsEditor({
   schema,
   settings,
   onChange,

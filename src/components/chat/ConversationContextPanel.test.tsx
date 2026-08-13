@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import {
   cleanup,
-  fireEvent,
   render,
   screen,
   waitFor,
@@ -36,9 +35,9 @@ afterEach(() => {
 });
 
 describe("ConversationContextPanel", () => {
-  test("keeps chat generic and reserves the side context for app contributions", async () => {
+  test("keeps chat generic and exposes contextual widgets without a dead Apps tab", async () => {
     const fetchMock = mock(
-      async () =>
+      async (_input: RequestInfo | URL) =>
         new Response(JSON.stringify([]), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -61,18 +60,57 @@ describe("ConversationContextPanel", () => {
         .getByRole("tab", { name: "Details" })
         .getAttribute("aria-selected"),
     ).toBe("true");
-    fireEvent.click(screen.getByRole("tab", { name: "Apps" }));
-    await waitFor(() =>
-      expect(
-        screen.getByText("No app components are available for this thread."),
-      ).toBeTruthy(),
+    expect(screen.queryByRole("tab", { name: "Apps" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add or manage widgets" })).toBeTruthy();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock.mock.calls.some((call) =>
+      String(call[0]).startsWith("/api/apps?project_id=project-one"),
+    )).toBe(true);
+  });
+
+  test("renders each eligible thread contribution as its own named tab", async () => {
+    const contextualConversation = {
+      ...conversation,
+      id: "conv-contextual",
+      project_id: "project-two",
+      thread_id: "opaque-thread-two",
+    };
+    globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.startsWith("/api/ui/contributions")) {
+        return new Response(JSON.stringify({
+          contributions: [{ app: "tasks", component: "agent-tasks", eligible: true }],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify([{
+        install_id: 41,
+        name: "tasks",
+        display_name: "Tasks",
+        version: "3.2.6",
+        status: "running",
+        ui_components: [{
+          name: "agent-tasks",
+          entry: "/ui/AgentTasksWidget.mjs",
+          label: "Tasks",
+          suggested: true,
+          slots: ["dashboard.thread_sidebar"],
+        }],
+      }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    render(
+      <MemoryRouter>
+        <ConversationContextPanel
+          conversation={contextualConversation}
+          agents={[agent]}
+          instance={{ ...agent, project_id: "project-two" }}
+          onChanged={() => {}}
+          onRemoved={() => {}}
+        />
+      </MemoryRouter>,
     );
-    expect(
-      screen.getByRole("tab", { name: "Apps" }).getAttribute("aria-selected"),
-    ).toBe("true");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/apps?project_id=project-one",
-      expect.anything(),
-    );
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Tasks" })).toBeTruthy());
+    expect(screen.queryByRole("tab", { name: "Apps" })).toBeNull();
   });
 });

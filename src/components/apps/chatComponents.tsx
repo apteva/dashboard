@@ -26,6 +26,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { AppIdentityProvider } from "@apteva/ui-kit";
 import { chat, type ChatComponent, type ChatMessageRow } from "../../api";
@@ -44,6 +45,8 @@ export interface UIComponentSpec {
   label?: string;
   description?: string;
   suggested?: boolean;
+  visibility?: "attached" | "project";
+  refresh_topics?: string[];
   default_width?: 1 | 2;
   supported_sizes?: Array<"half" | "full">;
   default_size?: "half" | "full";
@@ -487,8 +490,10 @@ function AlertCard({ props }: { props: Record<string, unknown> }) {
 
 function ComponentSkeleton() {
   return (
-    <div className="border border-border rounded p-2 animate-pulse text-text-dim text-xs">
-      Loading…
+    <div className="space-y-2 rounded border border-border p-3" aria-label="Loading component">
+      <div className="h-2.5 w-1/3 animate-pulse rounded bg-bg-hover" />
+      <div className="h-2 w-full animate-pulse rounded bg-bg-hover" />
+      <div className="h-2 w-2/3 animate-pulse rounded bg-bg-hover" />
     </div>
   );
 }
@@ -537,7 +542,93 @@ class ComponentBoundary extends Component<
   }
 }
 
-// ─── React-friendly hook to fetch installed apps once ───────────────
+// ─── Shared installed-app catalog ───────────────────────────────────
+
+interface InstalledAppsCacheEntry {
+  apps: InstalledAppRow[];
+  promise: Promise<void> | null;
+  listeners: Set<() => void>;
+}
+
+const installedAppsCache = new Map<string, InstalledAppsCacheEntry>();
+const EMPTY_INSTALLED_APPS: InstalledAppRow[] = [];
+let installedAppsChangeListenerReady = false;
+
+function normalizeInstalledApps(rows: unknown): InstalledAppRow[] {
+  const arr = Array.isArray(rows) ? rows : [];
+  return arr.map((r: any) => ({
+    install_id: r.install_id ?? r.id ?? 0,
+    name: String(r.name ?? ""),
+    display_name: String(r.display_name ?? r.name ?? ""),
+    version: String(r.version ?? ""),
+    icon: typeof r.icon === "string" ? r.icon : undefined,
+    icon_style: r.icon_style === "monochrome" ? "monochrome" : "image",
+    source: typeof r.source === "string" ? r.source : undefined,
+    status: typeof r.status === "string" ? r.status : undefined,
+    surfaces: r.surfaces && typeof r.surfaces === "object"
+      ? {
+          mcp_tool_names: Array.isArray(r.surfaces.mcp_tool_names)
+            ? r.surfaces.mcp_tool_names.map(String)
+            : [],
+        }
+      : undefined,
+    ui_components: Array.isArray(r.ui_components) ? r.ui_components : [],
+  }));
+}
+
+function cacheEntry(projectId: string): InstalledAppsCacheEntry {
+  let entry = installedAppsCache.get(projectId);
+  if (!entry) {
+    entry = { apps: [], promise: null, listeners: new Set() };
+    installedAppsCache.set(projectId, entry);
+  }
+  return entry;
+}
+
+function notifyInstalledApps(entry: InstalledAppsCacheEntry) {
+  for (const listener of [...entry.listeners]) listener();
+}
+
+function loadInstalledApps(projectId: string, force = false): Promise<void> {
+  const entry = cacheEntry(projectId);
+  if (entry.promise && !force) return entry.promise;
+  const request = fetch(`/api/apps?project_id=${encodeURIComponent(projectId)}`, {
+    credentials: "same-origin",
+  })
+    .then((response) => {
+      if (!response.ok) throw new Error(`Unable to load apps (${response.status})`);
+      return response.json();
+    })
+    .then((rows) => {
+      entry.apps = normalizeInstalledApps(rows);
+      notifyInstalledApps(entry);
+    })
+    .catch(() => {
+      // Preserve the last known-good catalog during transient reconnects.
+    })
+    .finally(() => {
+      if (entry.promise === request) entry.promise = null;
+    });
+  entry.promise = request;
+  return request;
+}
+
+function ensureInstalledAppsChangeListener() {
+  if (installedAppsChangeListenerReady || typeof window === "undefined") return;
+  installedAppsChangeListenerReady = true;
+  window.addEventListener("apteva:apps-changed", () => {
+    for (const projectId of installedAppsCache.keys()) {
+      void loadInstalledApps(projectId, true);
+    }
+  });
+}
+
+export function refreshInstalledApps(projectId?: string) {
+  if (projectId) return loadInstalledApps(projectId, true);
+  return Promise.all(
+    [...installedAppsCache.keys()].map((id) => loadInstalledApps(id, true)),
+  ).then(() => undefined);
+}
 
 /**
  * Lightweight "give me the list of installed apps for this project"
@@ -546,47 +637,29 @@ class ComponentBoundary extends Component<
  * churn at component render frequency.
  */
 export function useInstalledApps(projectId: string | null | undefined): InstalledAppRow[] {
-  const [apps, setApps] = useState<InstalledAppRow[]>([]);
+  ensureInstalledAppsChangeListener();
+  const key = projectId || "";
+  const subscribe = useMemo(
+    () => (listener: () => void) => {
+      if (!key) return () => {};
+      const entry = cacheEntry(key);
+      entry.listeners.add(listener);
+      return () => entry.listeners.delete(listener);
+    },
+    [key],
+  );
+  const getSnapshot = useMemo(
+    () => () => (key ? cacheEntry(key).apps : EMPTY_INSTALLED_APPS),
+    [key],
+  );
+  const apps = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   useEffect(() => {
-    if (!projectId) {
-      setApps([]);
-      return;
-    }
-    let cancelled = false;
-    fetch(`/api/apps?project_id=${encodeURIComponent(projectId)}`, {
-      credentials: "same-origin",
-    })
-      .then((r) => r.json())
-      .then((rows: unknown) => {
-        if (cancelled) return;
-        const arr = Array.isArray(rows) ? rows : [];
-        setApps(
-          arr.map((r: any) => ({
-            install_id: r.install_id ?? r.id ?? 0,
-            name: String(r.name ?? ""),
-            display_name: String(r.display_name ?? r.name ?? ""),
-            version: String(r.version ?? ""),
-            icon: typeof r.icon === "string" ? r.icon : undefined,
-            icon_style: r.icon_style === "monochrome" ? "monochrome" : "image",
-            source: typeof r.source === "string" ? r.source : undefined,
-            status: typeof r.status === "string" ? r.status : undefined,
-            surfaces: r.surfaces && typeof r.surfaces === "object"
-              ? {
-                  mcp_tool_names: Array.isArray(r.surfaces.mcp_tool_names)
-                    ? r.surfaces.mcp_tool_names.map(String)
-                    : [],
-                }
-              : undefined,
-            ui_components: Array.isArray(r.ui_components) ? r.ui_components : [],
-          })),
-        );
-      })
-      .catch(() => {
-        if (!cancelled) setApps([]);
-      });
-    return () => {
-      cancelled = true;
-    };
+    if (key) void loadInstalledApps(key);
   }, [projectId]);
   return apps;
 }
+
+export const __installedAppsTestHelpers = {
+  cache: installedAppsCache,
+  normalizeInstalledApps,
+};

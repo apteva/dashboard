@@ -1,6 +1,6 @@
 {
   "name": "apteva-dashboard",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "module": "src/main.tsx",
   "type": "module",
   "private": true,
@@ -30,6 +30,7 @@
     "dompurify": "^3.4.11",
     "i18next": "^26.3.4",
     "marked": "^18.0.0",
+    "qrcode.react": "^4.2.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-i18next": "^17.0.8",

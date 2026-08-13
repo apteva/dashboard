@@ -14,33 +14,72 @@ import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { resolvePanelComponent } from "../components/apps/nativePanels";
 
+interface LoadedApp {
+  app: AppRow;
+  projectId: string;
+  routeName: string;
+}
+
+export function loadedAppMatchesRoute(
+  loaded: Pick<LoadedApp, "projectId" | "routeName">,
+  projectId?: string,
+  routeName?: string,
+): boolean {
+  return !!projectId && !!routeName && loaded.projectId === projectId && loaded.routeName === routeName;
+}
+
 export function AppProjectPage() {
   const { name } = useParams<{ name: string }>();
   const { currentProject } = useProjects();
-  const [app, setApp] = useState<AppRow | null>(null);
+  const [loaded, setLoaded] = useState<LoadedApp | null>(null);
   const [error, setError] = useState("");
+  const app = loaded?.app ?? null;
   usePageTitle(["App", app?.display_name || app?.name || name || "loading"]);
 
   useEffect(() => {
-    if (!name) return;
+    const projectId = currentProject?.id;
+    if (!name || !projectId) {
+      setLoaded(null);
+      return;
+    }
+    // Project switches can leave the previous request in flight. If that
+    // older request resolves last, it must not replace the selected
+    // project's install (and produce a mixed install_id/project_id panel
+    // URL). Clear the old row immediately and ignore stale completions.
+    let cancelled = false;
+    setLoaded(null);
+    setError("");
     apps
-      .list(currentProject?.id)
+      .list(projectId)
       .then((rows) => {
-        const found = rows.find((r) => r.name === name);
+        if (cancelled) return;
+        // Prefer the install owned by this project when the same app also
+        // has a global install visible to it.
+        const found =
+          rows.find((r) => r.name === name && r.project_id === projectId) ||
+          rows.find((r) => r.name === name && !r.project_id);
         if (!found) {
           setError(`App "${name}" is not installed in this project.`);
-          setApp(null);
+          setLoaded(null);
           return;
         }
         if (found.status !== "running") {
           setError(`App "${name}" is ${found.status} — start it from the Apps tab.`);
-          setApp(null);
+          setLoaded(null);
           return;
         }
-        setApp(found);
+        // Keep the request scope and row together. Never derive the panel's
+        // project ID later from mutable context: that allowed an old install
+        // row and a newly-selected project to be combined during reloads.
+        setLoaded({ app: found, projectId, routeName: name });
         setError("");
       })
-      .catch((e) => setError(e.message || "failed to load app"));
+      .catch((e) => {
+        if (!cancelled) setError(e.message || "failed to load app");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [name, currentProject?.id]);
 
   if (error) {
@@ -52,9 +91,16 @@ export function AppProjectPage() {
       </div>
     );
   }
-  if (!app) {
+  if (!loaded || !app) {
     return <div className="p-6 text-text-dim text-sm">Loading…</div>;
   }
+  // Effects run after render. During a project or route switch, refuse to
+  // render data produced by the previous request even if the row omits its
+  // project_id (for example, a global install or stale cached response).
+  if (!loadedAppMatchesRoute(loaded, currentProject?.id, name)) {
+    return <div className="p-6 text-text-dim text-sm">Loading…</div>;
+  }
+  const panelProjectId = loaded.projectId;
   const panel = (app.ui_panels || []).find((p) => p.slot === "project.page");
   if (!panel) {
     return (
@@ -73,7 +119,7 @@ export function AppProjectPage() {
   // React tree, inherits the importmap'd React + theme + router.
   const Native = resolvePanelComponent(app.name, panel.entry, app.version, {
     installId: app.install_id,
-    projectId: currentProject?.id || "",
+    projectId: panelProjectId,
     identity: {
       name: app.name,
       displayName: app.display_name || app.name,
@@ -87,7 +133,7 @@ export function AppProjectPage() {
         <Native
           appName={app.name}
           installId={app.install_id}
-          projectId={currentProject?.id || ""}
+          projectId={panelProjectId}
         />
       </div>
     );
@@ -97,7 +143,7 @@ export function AppProjectPage() {
   // + project_id flow as URL params so the panel can scope reads.
   const params = new URLSearchParams({
     install_id: String(app.install_id),
-    project_id: currentProject?.id || "",
+    project_id: panelProjectId,
   });
   const src = `/api/apps/${app.name}${panel.entry}?${params.toString()}`;
 

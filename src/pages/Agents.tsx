@@ -7,7 +7,7 @@ import { Modal } from "../components/Modal";
 import { sleepClassName, sleepLabel, sleepTitle, type SleepLike } from "../utils/sleepStatus";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
 import { openAgentConversation } from "../utils/agentConversations";
-import { AppContributionArea } from "../components/apps/contributions";
+import { AppContributionArea, ContributionManager } from "../components/apps/contributions";
 
 type AgentLiveStatus = { threads: number; iter: number; rate: string } & SleepLike;
 type AgentsViewMode = "cards" | "list";
@@ -409,6 +409,11 @@ export function Agents() {
           </p>
         </div>
         <div className="hidden items-center gap-2 lg:flex">
+          <ContributionManager
+            slot="dashboard.agent_card"
+            projectId={projectId}
+            label="Edit cards"
+          />
           {list.some((agent) => agent.core_update_available) && (
             <button
               type="button"

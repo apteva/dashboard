@@ -17,16 +17,17 @@ import { auth, projectInvites, type InvitePreview } from "../api";
 //  3. `locked`  — only existing users can sign in (default after setup
 //                 completes). Hide the "Create an account" toggle entirely.
 export function Login() {
-  const [mode, setMode] = useState<"loading" | "setup" | "login" | "register">(
+  const [mode, setMode] = useState<"loading" | "setup" | "login" | "register" | "mfa">(
     "loading",
   );
-  usePageTitle(mode === "setup" ? "Setup" : mode === "register" ? "Create Account" : "Login");
+  usePageTitle(mode === "setup" ? "Setup" : mode === "register" ? "Create Account" : mode === "mfa" ? "Verify Sign In" : "Login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [mfaCode, setMFACode] = useState("");
   const [setupToken, setSetupToken] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const { login, register, authenticated } = useAuth();
+  const { login, verifyMFA, register, authenticated } = useAuth();
   const navigate = useNavigate();
 
   // ?invite=<token> handling. When present:
@@ -150,7 +151,12 @@ export function Login() {
         // server reads it before validating the rest of the body.
         await register(email, password, undefined, inviteToken || undefined);
       }
-      await login(email, password);
+      const result = await login(email, password);
+      if (result.mfaRequired) {
+        setMFACode("");
+        setMode("mfa");
+        return;
+      }
       // If this login came via an invite link, also accept the invite
       // so the project_members row gets written. Best-effort: a
       // failure here lands the user inside the dashboard without
@@ -166,6 +172,25 @@ export function Login() {
     } catch (err: any) {
       console.log("[login] handleSubmit error:", err?.message || err);
       setError(err.message || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleMFAVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      await verifyMFA(mfaCode);
+      if (inviteToken) {
+        try { await projectInvites.accept(inviteToken); } catch (e: any) {
+          setInviteErr(e?.message || "Signed in, but failed to accept invite");
+        }
+      }
+      navigate("/");
+    } catch (err: any) {
+      setError(err?.message === "unauthorized" ? "That authentication code is invalid or expired." : err?.message || "Verification failed");
     } finally {
       setBusy(false);
     }
@@ -200,10 +225,11 @@ export function Login() {
             </p>
 
             <div className="mb-5">
-              <label className="block text-text-muted text-sm mb-2">
+              <label htmlFor="setup-token" className="block text-text-muted text-sm mb-2">
                 Setup token
               </label>
               <input
+                id="setup-token"
                 type="text"
                 value={setupToken}
                 onChange={(e) => setSetupToken(e.target.value)}
@@ -216,10 +242,11 @@ export function Login() {
             </div>
 
             <div className="mb-5">
-              <label className="block text-text-muted text-sm mb-2">
+              <label htmlFor="setup-email" className="block text-text-muted text-sm mb-2">
                 Admin email
               </label>
               <input
+                id="setup-email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -231,10 +258,11 @@ export function Login() {
             </div>
 
             <div className="mb-5">
-              <label className="block text-text-muted text-sm mb-2">
+              <label htmlFor="setup-password" className="block text-text-muted text-sm mb-2">
                 Password
               </label>
               <input
+                id="setup-password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -254,6 +282,57 @@ export function Login() {
               className="w-full bg-accent text-bg font-bold py-3 rounded-lg text-base hover:bg-accent-hover transition-colors disabled:opacity-50"
             >
               {busy ? "Creating admin…" : "Create admin & sign in"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === "mfa") {
+    return (
+      <div className="min-h-screen bg-bg flex items-center justify-center">
+        <div className="w-full max-w-md px-6">
+          <div className="text-center mb-10">
+            <h1 className="text-text text-3xl font-bold">Verify sign in</h1>
+            <p className="text-text-muted text-base mt-2">
+              Enter the code from your authenticator app.
+            </p>
+          </div>
+          <form onSubmit={handleMFAVerify} className="border border-border rounded-lg p-8 bg-bg-card">
+            <label className="block text-text-muted text-sm mb-2" htmlFor="mfa-code">
+              Authentication or recovery code
+            </label>
+            <input
+              id="mfa-code"
+              type="text"
+              value={mfaCode}
+              onChange={(event) => setMFACode(event.target.value)}
+              className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-center font-mono text-lg tracking-widest text-text focus:outline-none focus:border-accent"
+              placeholder="000000"
+              autoComplete="one-time-code"
+              autoCapitalize="characters"
+              spellCheck={false}
+              required
+              autoFocus
+            />
+            <p className="mt-2 text-xs text-text-dim">
+              You can also enter one of your single-use recovery codes.
+            </p>
+            {error && <div className="text-red text-sm mt-4">{error}</div>}
+            <button
+              type="submit"
+              disabled={busy || !mfaCode.trim()}
+              className="mt-5 w-full bg-accent text-bg font-bold py-3 rounded-lg text-base hover:bg-accent-hover transition-colors disabled:opacity-50"
+            >
+              {busy ? "Verifying…" : "Verify"}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setMode("login"); setMFACode(""); setError(""); }}
+              className="mt-4 w-full text-sm text-text-muted hover:text-text"
+            >
+              Back to sign in
             </button>
           </form>
         </div>
@@ -299,10 +378,11 @@ export function Login() {
           className="border border-border rounded-lg p-8 bg-bg-card"
         >
           <div className="mb-5">
-            <label className="block text-text-muted text-sm mb-2">
+            <label htmlFor="login-email" className="block text-text-muted text-sm mb-2">
               Username or email
             </label>
             <input
+              id="login-email"
               type="text"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -315,10 +395,11 @@ export function Login() {
           </div>
 
           <div className="mb-5">
-            <label className="block text-text-muted text-sm mb-2">
+            <label htmlFor="login-password" className="block text-text-muted text-sm mb-2">
               Password
             </label>
             <input
+              id="login-password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}

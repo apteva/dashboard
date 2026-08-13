@@ -217,10 +217,58 @@ export const auth = {
   },
 
   login: (email: string, password: string) =>
-    request<{ user_id: number; email: string }>("POST", "/auth/login", {
+    request<{
+      user_id?: number;
+      email: string;
+      mfa_required: boolean;
+    }>("POST", "/auth/login", {
       email,
       password,
     }),
+
+  verifyMFA: (code: string) =>
+    request<{
+      user_id: number;
+      email: string;
+      used_recovery_code: boolean;
+      recovery_codes_remaining: number;
+    }>("POST", "/auth/mfa/verify", { code }),
+
+  mfaStatus: () =>
+    request<{
+      enabled: boolean;
+      type: string;
+      pending: boolean;
+      recovery_codes_remaining: number;
+      enabled_at?: string;
+    }>("GET", "/auth/mfa"),
+
+  beginMFAEnrollment: (currentPassword: string) =>
+    request<{ type: "totp"; secret: string; otpauth_uri: string }>(
+      "POST",
+      "/auth/mfa/enroll",
+      { current_password: currentPassword },
+    ),
+
+  confirmMFAEnrollment: (code: string) =>
+    request<{ enabled: true; recovery_codes: string[] }>(
+      "POST",
+      "/auth/mfa/confirm",
+      { code },
+    ),
+
+  disableMFA: (currentPassword: string, code: string) =>
+    request<{ enabled: false }>("POST", "/auth/mfa/disable", {
+      current_password: currentPassword,
+      code,
+    }),
+
+  regenerateMFARecoveryCodes: (currentPassword: string, code: string) =>
+    request<{ recovery_codes: string[] }>(
+      "POST",
+      "/auth/mfa/recovery-codes",
+      { current_password: currentPassword, code },
+    ),
 
   logout: () =>
     request<any>("POST", "/auth/logout").then(() => {
@@ -237,16 +285,35 @@ export const auth = {
       onboarded_at?: string;
       language?: string;
       ui_layout?: Record<string, unknown>;
+      ui_layout_revision?: number;
+      mfa_enabled?: boolean;
+      mfa_type?: string;
+      mfa_recovery_codes_remaining?: number;
     }>("GET", "/auth/me"),
 
   updatePreferences: (patch: {
     language?: string;
     ui_layout?: Record<string, unknown>;
   }) =>
-    request<{ language: string; ui_layout: Record<string, unknown> }>(
+    request<{ language: string; ui_layout: Record<string, unknown>; ui_layout_revision?: number }>(
       "PUT",
       "/auth/preferences",
       patch,
+    ),
+
+  patchUILayoutSurface: (
+    projectId: string,
+    surface: string,
+    value: unknown[],
+  ) =>
+    request<{
+      value: unknown[];
+      ui_layout: Record<string, unknown>;
+      revision: number;
+    }>(
+      "PATCH",
+      `/ui-layout/projects/${encodeURIComponent(projectId)}/surfaces/${encodeURIComponent(surface)}`,
+      { value },
     ),
 
   completeOnboarding: () =>
@@ -3022,6 +3089,8 @@ export interface AppUIComponent {
   label?: string;
   description?: string;
   suggested?: boolean;
+  visibility?: "attached" | "project";
+  refresh_topics?: string[];
   default_width?: 1 | 2;
   supported_sizes?: Array<"half" | "full">;
   default_size?: "half" | "full";

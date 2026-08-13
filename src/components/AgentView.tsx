@@ -39,7 +39,7 @@ import { Modal } from "./Modal";
 import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
-import { AppContributionArea } from "./apps/contributions";
+import { AppContributionArea, ContributionManager } from "./apps/contributions";
 import {
   appendRuntimeThoughtText,
   cleanReasoningDisplay,
@@ -1508,6 +1508,14 @@ function AgentRuntimePanel({
           <LiveStatsBar instanceId={instance.id} subscribe={subscribe} sleep={liveStatus} />
         )}
         <div className={`px-3 py-3 sm:px-4 ${instance.status === "running" ? "" : "border-t border-border/70"}`}>
+          <div className="mb-2 flex justify-end">
+            <ContributionManager
+              slot="dashboard.agent_detail"
+              projectId={instance.project_id || undefined}
+              agentId={instance.id}
+              label="Customize"
+            />
+          </div>
           <div className="min-w-0">
             <AppContributionArea
               slot="dashboard.agent_detail"
