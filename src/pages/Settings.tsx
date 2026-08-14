@@ -4256,6 +4256,11 @@ function ServerTab() {
   const [bootDelay, setBootDelay] = useState("5s");
   const [rolloutDelay, setRolloutDelay] = useState("15s");
   const [lifecycleSaving, setLifecycleSaving] = useState(false);
+  const [geoIPEnabled, setGeoIPEnabled] = useState(false);
+  const [geoIPSource, setGeoIPSource] = useState<"dbip" | "maxmind" | "test">("dbip");
+  const [geoIPAccountID, setGeoIPAccountID] = useState("");
+  const [geoIPLicenseKey, setGeoIPLicenseKey] = useState("");
+  const [geoIPSaving, setGeoIPSaving] = useState(false);
 
   const load = () => {
     serverSettings
@@ -4267,6 +4272,9 @@ function ServerTab() {
         setBootResume(d.agent_lifecycle.boot_resume);
         setBootDelay(d.agent_lifecycle.boot_resume_delay);
         setRolloutDelay(d.agent_lifecycle.rollout_delay);
+        setGeoIPEnabled(d.geoip.enabled);
+        if (d.geoip.source === "dbip" || d.geoip.source === "maxmind" || d.geoip.source === "test") setGeoIPSource(d.geoip.source);
+        setGeoIPAccountID(d.geoip.account_id || "");
       })
       .catch((err) => setError(err?.message || "Failed to load"));
   };
@@ -4322,6 +4330,33 @@ function ServerTab() {
       setError(err?.message || "Failed to save agent lifecycle settings");
     } finally {
       setLifecycleSaving(false);
+    }
+  };
+
+  const handleGeoIPSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSaved(false);
+    setGeoIPSaving(true);
+    try {
+      const patch: Parameters<typeof serverSettings.update>[0] = {
+        geoip_enabled: geoIPEnabled,
+        geoip_source: geoIPSource,
+        geoip_account_id: geoIPAccountID.trim(),
+      };
+      if (geoIPLicenseKey.trim()) patch.geoip_license_key = geoIPLicenseKey.trim();
+      const updated = await serverSettings.update(patch);
+      setData(updated);
+      setGeoIPLicenseKey("");
+      setSaved(true);
+      setTimeout(() => {
+        setSaved(false);
+        load();
+      }, 1800);
+    } catch (err: any) {
+      setError(err?.message || "Failed to save country lookup settings");
+    } finally {
+      setGeoIPSaving(false);
     }
   };
 
@@ -4418,6 +4453,92 @@ function ServerTab() {
           )}
         </div>
       </form>
+
+      {isAdmin && <form onSubmit={handleGeoIPSave} className="border border-border rounded-lg p-5 bg-bg-card space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-text text-sm font-bold">Visitor country</h3>
+            <p className="mt-1 text-xs leading-relaxed text-text-muted">
+              Resolve public visitor IPs locally. DB-IP Country Lite is enabled automatically on new installations; lookups add no network request to storefront traffic and fail open if the database is unavailable.
+            </p>
+          </div>
+          <label className="flex shrink-0 items-center gap-2 text-xs text-text">
+            <input
+              type="checkbox"
+              checked={geoIPEnabled}
+              onChange={(e) => setGeoIPEnabled(e.target.checked)}
+              disabled={!data.geoip.managed}
+              className="accent-accent"
+            />
+            Enabled
+          </label>
+        </div>
+
+        {!data.geoip.managed ? (
+          <div className="rounded-lg border border-border bg-bg-hover/40 p-3 text-xs text-text-muted">
+            Managed externally by <code className="text-text">APTEVA_GEOIP_COUNTRY_DB</code>.
+          </div>
+        ) : <>
+          <label className="block">
+            <span className="block text-xs font-bold text-text mb-2">Database source</span>
+            <select
+              value={geoIPSource}
+              onChange={(e) => setGeoIPSource(e.target.value as "dbip" | "maxmind" | "test")}
+              className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 text-sm text-text focus:border-accent focus:outline-none"
+            >
+              <option value="dbip">DB-IP Country Lite (free, no account)</option>
+              <option value="maxmind">GeoLite2 Country (MaxMind account)</option>
+              <option value="test">MaxMind test database (development only)</option>
+            </select>
+          </label>
+
+          {geoIPSource === "maxmind" && <div className="grid gap-4 sm:grid-cols-2">
+            <label className="block">
+              <span className="block text-xs font-bold text-text mb-2">MaxMind account ID</span>
+              <input
+                value={geoIPAccountID}
+                onChange={(e) => setGeoIPAccountID(e.target.value)}
+                autoComplete="off"
+                className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 font-mono text-sm text-text focus:border-accent focus:outline-none"
+              />
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-text mb-2">License key</span>
+              <input
+                type="password"
+                value={geoIPLicenseKey}
+                onChange={(e) => setGeoIPLicenseKey(e.target.value)}
+                placeholder={data.geoip.has_license_key ? "Saved — leave blank to keep" : "Required"}
+                autoComplete="new-password"
+                className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 font-mono text-sm text-text focus:border-accent focus:outline-none"
+              />
+            </label>
+          </div>}
+
+          {geoIPSource === "dbip" && <p className="text-[11px] leading-relaxed text-text-dim">
+            IP geolocation data by{" "}
+            <a className="text-accent hover:underline" href="https://db-ip.com" target="_blank" rel="noreferrer">DB-IP</a>
+            {" "}(CC BY 4.0). The free country database is downloaded anonymously and refreshed monthly.
+          </p>}
+
+          <div className="rounded-lg border border-border bg-bg-hover/40 p-3 text-[11px] space-y-1">
+            <div className="flex items-center gap-2">
+              <span className={`h-2 w-2 rounded-full ${data.geoip.active ? "bg-green" : "bg-text-dim"}`} />
+              <span className="text-text">{data.geoip.active ? "Country lookup active" : geoIPEnabled ? "Waiting for database" : "Country lookup disabled"}</span>
+            </div>
+            {data.geoip.updated_at && <div className="text-text-dim">Database updated {new Date(data.geoip.updated_at).toLocaleString()}</div>}
+            <div className="text-text-dim break-all">{data.geoip.database_path}</div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={geoIPSaving || (geoIPEnabled && geoIPSource === "maxmind" && (!geoIPAccountID.trim() || (!data.geoip.has_license_key && !geoIPLicenseKey.trim())))}
+            className="px-5 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
+          >
+            {geoIPSaving ? "Saving…" : "Save visitor country"}
+          </button>
+        </>}
+      </form>}
 
       {isAdmin && <form onSubmit={handleLifecycleSave} className="border border-border rounded-lg p-5 bg-bg-card space-y-5">
         <div>

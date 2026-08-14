@@ -72,7 +72,7 @@ export function Dashboard() {
       description: "Approvals, reports, and alerts from your agents.",
       supportedSizes: ["half", "full"],
       defaultSize: "half",
-      render: () => <AptevaInbox limit={5} variant="home" />,
+      render: () => <AptevaInbox projectId={projectId} limit={5} variant="home" />,
     },
     {
       key: "native:activity",

@@ -3,8 +3,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { MemoryRouter } from "react-router-dom";
 import {
   chat,
+  type AlertMessageRow,
   type ApprovalMessageRow,
   type ChatMessageRow,
+  type ReportMessageRow,
 } from "../../api";
 import { AptevaInbox } from "./AptevaInbox";
 
@@ -43,6 +45,37 @@ const approvalRow: ApprovalMessageRow = {
   status: "pending",
 };
 
+function reportRow(id: number): ReportMessageRow {
+  return {
+    message: {
+      ...approvalMessage,
+      id,
+      content: `Report ${id}`,
+      components: [{ app: "channel-chat", name: "report-card", props: { title: `Report ${id}` } }],
+    },
+    instance_id: 14,
+    instance_name: "Patreon Agent",
+    project_id: "default",
+    title: `Report ${id}`,
+    summary: `Report summary ${id}`,
+  };
+}
+
+const alertRow: AlertMessageRow = {
+  message: {
+    ...approvalMessage,
+    id: 2,
+    content: "Publishing is blocked",
+    components: [{ app: "channel-chat", name: "alert-card", props: { title: "Publishing is blocked", severity: "error" } }],
+  },
+  instance_id: 14,
+  instance_name: "Patreon Agent",
+  project_id: "default",
+  title: "Publishing is blocked",
+  body: "The publishing credential expired.",
+  severity: "error",
+};
+
 const originalApprovalMessages = chat.approvalMessages;
 const originalReportMessages = chat.reportMessages;
 const originalAlertMessages = chat.alertMessages;
@@ -59,6 +92,50 @@ afterEach(() => {
 });
 
 describe("AptevaInbox approvals", () => {
+  test("ranks the complete inbox before applying the Home display limit", async () => {
+    const requestedLimits: number[] = [];
+    chat.approvalMessages = (async (_projectId, _status, limit) => {
+      requestedLimits.push(limit ?? -1);
+      return [{ ...approvalRow, message: { ...approvalMessage, id: 1 } }];
+    }) as typeof chat.approvalMessages;
+    chat.alertMessages = (async (_projectId, limit) => {
+      requestedLimits.push(limit ?? -1);
+      return [alertRow];
+    }) as typeof chat.alertMessages;
+    chat.reportMessages = (async (_projectId, limit) => {
+      requestedLimits.push(limit ?? -1);
+      return [101, 102, 103, 104, 105, 106].map(reportRow);
+    }) as typeof chat.reportMessages;
+
+    const { container } = render(
+      <MemoryRouter><AptevaInbox allProjects limit={5} variant="home" /></MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByText("View all 8 →")).toBeTruthy());
+    expect(requestedLimits).toEqual([100, 100, 100]);
+    const visibleTitles = Array.from(container.querySelectorAll("article"))
+      .map((row) => row.textContent || "");
+    expect(visibleTitles).toHaveLength(5);
+    expect(visibleTitles[0]).toContain("Publish Patreon update");
+    expect(visibleTitles[1]).toContain("Publishing is blocked");
+    expect(visibleTitles[2]).toContain("Report 106");
+    expect(screen.queryByText("Report 101")).toBeNull();
+    expect(screen.getByText("3 more items across all projects →")).toBeTruthy();
+  });
+
+  test("opens Monitor with the same explicit project scope", async () => {
+    chat.approvalMessages = (async () => []) as typeof chat.approvalMessages;
+    chat.reportMessages = (async () => []) as typeof chat.reportMessages;
+    chat.alertMessages = (async () => []) as typeof chat.alertMessages;
+
+    render(
+      <MemoryRouter><AptevaInbox projectId="project with space" variant="home" /></MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("You're all caught up")).toBeTruthy());
+    expect(screen.getByRole("link", { name: "View operations →" }).getAttribute("href"))
+      .toBe("/monitor?project=project%20with%20space");
+  });
+
   test("stretches with neighboring Home widgets instead of capping its height", async () => {
     chat.approvalMessages = (async () => []) as typeof chat.approvalMessages;
     chat.reportMessages = (async () => []) as typeof chat.reportMessages;

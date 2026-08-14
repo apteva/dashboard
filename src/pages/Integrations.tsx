@@ -40,6 +40,7 @@ import { Modal } from "../components/Modal";
 import { SuiteConnect } from "../components/SuiteConnect";
 import { CredentialValueInput } from "../components/integrations/CredentialFields";
 import { IntegrationExplorerPanel } from "../components/integrations/IntegrationExplorerPanel";
+import { URLPropertiesPanel } from "../components/integrations/URLPropertiesPanel";
 import { useNavigate } from "react-router-dom";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
@@ -127,6 +128,7 @@ export function Integrations() {
   const [pickerFilter, setPickerFilter] = useState("");
   const [providerList, setProviderList] = useState<Provider[]>([]);
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
+  const [detailsFor, setDetailsFor] = useState<ConnectionInfo | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   // Local catalog state
@@ -184,7 +186,10 @@ export function Integrations() {
   const hasComposio = !!composioProvider;
 
   const loadConnections = useCallback(() => {
-    integrations.connections(currentProject?.id).then(setConnections).catch(() => {});
+    integrations.connections(currentProject?.id).then((next) => {
+      setConnections(next);
+      setDetailsFor((current) => current ? next.find((connection) => connection.id === current.id) || null : null);
+    }).catch(() => {});
   }, [currentProject?.id]);
 
   useEffect(() => {
@@ -282,6 +287,7 @@ export function Integrations() {
 
   const selectLocalApp = async (slug: string) => {
     const app = await integrations.app(slug);
+    setDetailsFor(null);
     setSelectedLocalApp(app);
     setCredentials({});
     // Suggest a default connection name. If the user already has one or
@@ -940,9 +946,18 @@ export function Integrations() {
     return (
       <div
         key={c.id}
-        className="border border-border rounded-lg p-3 sm:p-4 bg-bg-card flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+        className={`border rounded-lg p-3 sm:p-4 bg-bg-card flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 transition-colors ${detailsFor?.id === c.id ? "border-accent" : "border-border"}`}
       >
-        <div className="min-w-0 flex flex-wrap items-center gap-2 sm:gap-3">
+        <button
+          type="button"
+          onClick={() => {
+            setDetailsFor(c);
+            setSelectedLocalApp(null);
+            setComposioPicked(null);
+          }}
+          className="min-w-0 flex flex-1 flex-wrap items-center gap-2 text-left sm:gap-3"
+          aria-label={`Open ${c.name} connection`}
+        >
           <span
             className={`inline-block w-2.5 h-2.5 rounded-full ${
               c.status === "active"
@@ -963,7 +978,9 @@ export function Integrations() {
             ) : (
               <>
                 <span className="text-text text-base font-bold">{c.name}</span>
-                <span className="text-text-muted text-sm ml-2">· {c.app_name}</span>
+                {c.name.trim().toLowerCase() !== c.app_name.trim().toLowerCase() && (
+                  <span className="text-text-muted text-sm ml-2">· {c.app_name}</span>
+                )}
               </>
             )}
           </div>
@@ -987,7 +1004,8 @@ export function Integrations() {
           {c.status === "pending" && (
             <span className="text-xs text-warn">pending…</span>
           )}
-        </div>
+          <span className="ml-auto hidden text-xs text-text-dim transition-colors group-hover:text-text sm:inline">View →</span>
+        </button>
         <div className="flex shrink-0 items-center gap-3">
           {c.tool_count > 0 && (
             <span className="text-text-dim text-sm">{c.tool_count} tools</span>
@@ -1652,6 +1670,69 @@ export function Integrations() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* Existing connection details (right panel). Provider-specific
+            setup belongs here, after the operator selects a connection,
+            rather than occupying the global Integrations catalog. */}
+        {detailsFor && !selectedLocalApp && !composioPicked && (
+          <aside className="fixed inset-x-0 bottom-0 top-12 z-40 overflow-y-auto border-t border-border bg-bg p-4 shadow-xl md:static md:z-auto md:w-[430px] md:shrink-0 md:border-l md:border-t-0 md:p-5 md:shadow-none">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <AppLogo src={detailsFor.logo} className="h-9 w-9 shrink-0 rounded" />
+                <div className="min-w-0">
+                  <h2 className="truncate text-base font-bold text-text">{detailsFor.name}</h2>
+                  {detailsFor.name.trim().toLowerCase() !== detailsFor.app_name.trim().toLowerCase() && (
+                    <p className="mt-0.5 truncate text-xs text-text-dim">{detailsFor.app_name}</p>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDetailsFor(null)}
+                className="touch-target shrink-0 text-sm text-text-muted transition-colors hover:text-text"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 grid grid-cols-3 overflow-hidden rounded-lg border border-border bg-bg-card text-center">
+              <div className="border-r border-border px-2 py-2.5">
+                <div className="text-[10px] uppercase tracking-wide text-text-dim">Status</div>
+                <div className={detailsFor.status === "active" ? "mt-1 text-xs font-bold text-green" : "mt-1 text-xs font-bold text-warn"}>{detailsFor.status}</div>
+              </div>
+              <div className="border-r border-border px-2 py-2.5">
+                <div className="text-[10px] uppercase tracking-wide text-text-dim">Scope</div>
+                <div className="mt-1 truncate text-xs font-medium text-text">{detailsFor.project_id ? currentProject?.name || "Project" : "Global"}</div>
+              </div>
+              <div className="px-2 py-2.5">
+                <div className="text-[10px] uppercase tracking-wide text-text-dim">Tools</div>
+                <div className="mt-1 text-xs font-medium text-text">{detailsFor.tool_count}</div>
+              </div>
+            </div>
+
+            <div className="mt-5">
+              <URLPropertiesPanel connections={[detailsFor]} />
+            </div>
+
+            <div className="mt-5 grid grid-cols-2 gap-2 border-t border-border pt-4">
+              <button
+                type="button"
+                disabled={testInFlight.has(detailsFor.id)}
+                onClick={() => handleTestConnection(detailsFor.id)}
+                className="rounded-md border border-border px-3 py-2 text-xs font-medium text-text-muted transition-colors hover:border-accent hover:text-text disabled:opacity-40"
+              >
+                {testInFlight.has(detailsFor.id) ? "Testing…" : "Test connection"}
+              </button>
+              <button
+                type="button"
+                onClick={() => openCredsFor(detailsFor)}
+                className="rounded-md border border-border px-3 py-2 text-xs font-medium text-text-muted transition-colors hover:border-accent hover:text-text"
+              >
+                View credentials
+              </button>
+            </div>
+          </aside>
         )}
       </div>
 

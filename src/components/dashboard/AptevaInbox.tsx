@@ -20,6 +20,11 @@ type InboxItem =
   | { kind: "report"; row: ReportMessageRow }
   | { kind: "alert"; row: AlertMessageRow };
 
+// The component limit controls how many rows fit in the widget, not how many
+// candidates are considered. Fetch a broad bounded window so a burst of
+// reports cannot hide an older pending approval or alert before ranking.
+const INBOX_FETCH_LIMIT = 100;
+
 export function AptevaInbox({
   allProjects = false,
   projectId: projectIdOverride,
@@ -66,9 +71,9 @@ export function AptevaInbox({
     setLoading(true);
     setError(null);
     Promise.all([
-      chat.approvalMessages(projectId, "pending", limit),
-      chat.reportMessages(projectId, limit),
-      chat.alertMessages(projectId, limit),
+      chat.approvalMessages(projectId, "pending", INBOX_FETCH_LIMIT),
+      chat.reportMessages(projectId, INBOX_FETCH_LIMIT),
+      chat.alertMessages(projectId, INBOX_FETCH_LIMIT),
     ])
       .then(([approvalRows, reportRows, alertRows]) => {
         if (epoch !== loadEpoch.current) return;
@@ -83,7 +88,7 @@ export function AptevaInbox({
       .finally(() => {
         if (epoch === loadEpoch.current) setLoading(false);
       });
-  }, [allProjects, effectiveProjectId, limit, scope]);
+  }, [allProjects, effectiveProjectId, scope]);
 
   useEffect(() => {
     let timer: number | null = null;
@@ -123,27 +128,23 @@ export function AptevaInbox({
     setAlerts((prev) => prev.filter((row) => row.message.id !== messageId));
   }, []);
 
-  const items = useMemo(() => {
+  const allItems = useMemo(() => {
     const merged: InboxItem[] = [
       ...(scopeIsCurrent ? approvals : []).map((row): InboxItem => ({ kind: "approval", row })),
       ...(scopeIsCurrent ? reports : []).map((row): InboxItem => ({ kind: "report", row })),
       ...(scopeIsCurrent ? alerts : []).map((row): InboxItem => ({ kind: "alert", row })),
     ];
-    return merged
-      .sort((a, b) => {
-        if (variant === "monitor") {
-          const priority = { approval: 0, alert: 1, report: 2 } as const;
-          const byPriority = priority[a.kind] - priority[b.kind];
-          if (byPriority !== 0) return byPriority;
-        }
-        return b.row.message.id - a.row.message.id;
-      })
-      .slice(0, limit);
-  }, [alerts, approvals, reports, limit, scopeIsCurrent, variant]);
+    return merged.sort(compareInboxItems);
+  }, [alerts, approvals, reports, scopeIsCurrent]);
+
+  const items = useMemo(() => allItems.slice(0, limit), [allItems, limit]);
+  const monitorHref = !allProjects && effectiveProjectId
+    ? `/monitor?project=${encodeURIComponent(effectiveProjectId)}`
+    : "/monitor?scope=all";
 
   useEffect(() => {
-    onCountChange?.(items.length);
-  }, [items.length, onCountChange]);
+    onCountChange?.(allItems.length);
+  }, [allItems.length, onCountChange]);
 
   return (
     <section className={`border border-border bg-bg-card rounded-lg flex flex-col overflow-hidden ${variant === "home" ? "h-full xl:min-h-[520px]" : "min-h-[300px]"}`}>
@@ -151,9 +152,9 @@ export function AptevaInbox({
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-text text-sm font-bold">{variant === "default" ? "Apteva Inbox" : variant === "home" ? "Inbox" : "Needs attention"}</h2>
-            {variant !== "default" && items.length > 0 && (
+            {variant !== "default" && allItems.length > 0 && (
               <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-accent">
-                {items.length}
+                {allItems.length}
               </span>
             )}
           </div>
@@ -163,8 +164,8 @@ export function AptevaInbox({
         </div>
         <div className="flex items-center gap-3">
           {variant === "home" && (
-            <Link to="/monitor" className="text-[11px] text-text-muted hover:text-text">
-              View operations →
+            <Link to={monitorHref} className="text-[11px] text-text-muted hover:text-text">
+              {allItems.length > items.length ? `View all ${allItems.length}` : "View operations"} →
             </Link>
           )}
           <button
@@ -202,9 +203,40 @@ export function AptevaInbox({
             onActionComplete={load}
           />
         ))}
+        {variant === "home" && allItems.length > items.length && (
+          <Link
+            to={monitorHref}
+            className="flex min-h-9 items-center justify-center rounded-md border border-dashed border-border px-3 text-[11px] text-text-muted transition-colors hover:border-accent hover:text-text"
+          >
+            {allItems.length - items.length} more item{allItems.length - items.length === 1 ? "" : "s"} {allProjects ? "across all projects" : "in this project"} →
+          </Link>
+        )}
       </div>
     </section>
   );
+}
+
+function compareInboxItems(a: InboxItem, b: InboxItem): number {
+  const byPriority = inboxPriority(a) - inboxPriority(b);
+  if (byPriority !== 0) return byPriority;
+  return b.row.message.id - a.row.message.id;
+}
+
+function inboxPriority(item: InboxItem): number {
+  if (item.kind === "approval") return 0;
+  if (item.kind === "report") return 4;
+
+  switch (item.row.severity.trim().toLowerCase()) {
+    case "critical":
+    case "fatal":
+    case "error":
+      return 1;
+    case "warning":
+    case "warn":
+      return 2;
+    default:
+      return 3;
+  }
 }
 
 function InboxRow({

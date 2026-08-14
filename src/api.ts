@@ -146,6 +146,23 @@ export interface ServerSettings {
     rollout_delay: string;
     legacy_detach_active: boolean;
   };
+  geoip: {
+    enabled: boolean;
+    active: boolean;
+    source: "dbip" | "maxmind" | "test" | "environment" | "";
+    managed: boolean;
+    account_id?: string;
+    has_license_key: boolean;
+    database_path: string;
+    database_present: boolean;
+    database_size?: number;
+    updated_at?: string;
+    attribution?: {
+      name: string;
+      url: string;
+      license: string;
+    };
+  };
 }
 
 export const serverSettings = {
@@ -156,6 +173,10 @@ export const serverSettings = {
     agent_boot_resume?: "auto" | "staggered" | "manual";
     agent_boot_resume_delay?: string;
     agent_rollout_delay?: string;
+    geoip_enabled?: boolean;
+    geoip_source?: "dbip" | "maxmind" | "test";
+    geoip_account_id?: string;
+    geoip_license_key?: string;
   }) => request<ServerSettings>("PUT", "/settings/server", patch),
 };
 
@@ -1212,6 +1233,34 @@ export interface AppDetail extends AppSummary {
     input_schema: Record<string, any>;
   }>;
   explorer?: IntegrationExplorerConfig;
+  url_properties?: IntegrationURLPropertyDefinition[];
+}
+
+export interface IntegrationURLPropertyDefinition {
+  id: string;
+  label: string;
+  purpose?: string;
+  types: string[];
+  verification_methods: string[];
+  setup_url?: string;
+}
+
+export interface IntegrationURLPropertyStatus {
+  definition: IntegrationURLPropertyDefinition;
+  ready: boolean;
+  fingerprint: string;
+  configured_prefix: string;
+  state: {
+    type?: string;
+    value?: string;
+    verification_method?: string;
+    verification_filename?: string;
+    hosting_status?: string;
+    operator_confirmed_at?: string;
+    last_successful_provider_pull_at?: string;
+    last_test_at?: string;
+    relay_status?: string;
+  };
 }
 
 export interface IntegrationExplorerConfig {
@@ -1548,6 +1597,43 @@ export const integrations = {
 
   app: (slug: string) =>
     request<AppDetail>("GET", `/integrations/catalog/${slug}`),
+
+  urlProperties: (slug: string, connectionId: number) =>
+    request<{ integration: string; properties: IntegrationURLPropertyStatus[] }>(
+      "GET",
+      `/integrations/catalog/${slug}/url-properties?connection_id=${connectionId}`,
+    ),
+
+  configureURLProperty: (
+    slug: string,
+    property: string,
+    connectionId: number,
+    verificationFilename: string,
+    verificationContent: string,
+  ) =>
+    request<IntegrationURLPropertyStatus>(
+      "PUT",
+      `/integrations/catalog/${slug}/url-properties/${property}?connection_id=${connectionId}`,
+      {
+        verification_method: "file",
+        verification_filename: verificationFilename,
+        verification_content: verificationContent,
+      },
+    ),
+
+  testURLProperty: (slug: string, property: string, connectionId: number) =>
+    request<IntegrationURLPropertyStatus>(
+      "POST",
+      `/integrations/catalog/${slug}/url-properties/${property}/test?connection_id=${connectionId}`,
+      {},
+    ),
+
+  confirmURLProperty: (slug: string, property: string, connectionId: number) =>
+    request<IntegrationURLPropertyStatus>(
+      "POST",
+      `/integrations/catalog/${slug}/url-properties/${property}/confirm?connection_id=${connectionId}`,
+      {},
+    ),
 
   connections: (projectId?: string, opts?: { includeAppOwned?: boolean }) => {
     const params = new URLSearchParams();

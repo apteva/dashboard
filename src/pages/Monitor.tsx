@@ -16,7 +16,9 @@ export function Monitor() {
   const { projects, currentProject } = useProjects();
   const requestedProjectId = searchParams.get("project");
   const requestedProject = projects.find((project) => project.id === requestedProjectId);
-  const allProjects = searchParams.get("scope") === "all" || (!requestedProjectId && searchParams.get("scope") !== "project");
+  // Match Home's current-project scope by default. All-project monitoring is
+  // still available, but only when the operator explicitly selects it.
+  const allProjects = searchParams.get("scope") === "all";
   const selectedProject = allProjects ? undefined : requestedProject || currentProject || undefined;
   const projectId = selectedProject?.id;
   const wallboard = searchParams.get("wallboard") === "1";
