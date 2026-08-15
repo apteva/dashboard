@@ -75,10 +75,10 @@ describe("marketplace category selection", () => {
     expect(resolveMarketplaceCategory("media", categories)).toBe("media");
   });
 
-  test("replaces all or a missing category with the first available category", () => {
-    expect(resolveMarketplaceCategory("all", categories)).toBe("business");
-    expect(resolveMarketplaceCategory("missing", categories)).toBe("business");
-    expect(resolveMarketplaceCategory("", categories)).toBe("business");
+  test("uses all apps for an empty, all, or missing category", () => {
+    expect(resolveMarketplaceCategory("all", categories)).toBe("");
+    expect(resolveMarketplaceCategory("missing", categories)).toBe("");
+    expect(resolveMarketplaceCategory("", categories)).toBe("");
   });
 
   test("orders categories by count and then by name", () => {

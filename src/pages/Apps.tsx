@@ -40,8 +40,8 @@ export function resolveMarketplaceCategory(
   categoryCounts: Record<string, number>,
 ): string {
   const categories = marketplaceCategoryNames(categoryCounts);
-  if (categories.length === 0) return current === "all" ? "" : current;
-  return categories.includes(current) ? current : categories[0];
+  if (current === "" || current === "all") return "";
+  return categories.includes(current) ? current : "";
 }
 
 export function appHasUpdate(app: AppRow): boolean {
@@ -716,6 +716,12 @@ export function MarketplaceView({
           className="bg-bg-input border border-border rounded px-3 py-1.5 text-sm flex-1 min-w-[200px] max-w-md"
         />
         <div className="flex flex-wrap gap-1.5">
+          <CategoryChip
+            label="all"
+            count={Object.values(categoryCounts).reduce((sum, count) => sum + count, 0)}
+            active={category === ""}
+            onClick={() => onCategoryChange("")}
+          />
           {categories.map((c) => (
             <CategoryChip
               key={c}
