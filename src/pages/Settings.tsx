@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AppIcon } from "@apteva/ui-kit";
-import { auth, core, platformHelper, providers, providerTypes, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, type Provider, type ProviderTypeInfo, type ProviderAuthStart, type ProviderAuthStatus, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser } from "../api";
+import { auth, core, platformHelper, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, runtimeEntryAsAppDetail, type RuntimeCatalogEntry, type RuntimeConnection, type ConnectionTestResult, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser } from "../api";
 import { Modal } from "../components/Modal";
 import { ProviderUsageDetails, ProviderUsageSummary } from "../components/ProviderUsage";
+import { CredentialFields } from "../components/integrations/CredentialFields";
+import { defaultIntegrationAuthType, isBrowserOAuthType } from "../utils/integrationAuth";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme, type ThemeName, type ThemeMode } from "../hooks/useTheme";
+import { useAudience, AUDIENCES, type AudienceSection } from "../hooks/useAudience";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { useTranslation } from "react-i18next";
 import { DASHBOARD_LANGUAGES, normalizeDashboardLanguage, setDashboardLanguage, type DashboardLanguage } from "../i18n";
@@ -71,24 +74,38 @@ export function Settings() {
   );
   const { user } = useAuth();
   const { t } = useTranslation();
+  const { shows } = useAudience();
   // Multi-user: Users tab is admin-only. Non-admins still get every
   // other tab; just hides the platform-wide user management surface.
   const isAdmin = !!user && user.role === "admin";
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: "projects", label: t("settings.tabs.projects") },
-    { id: "helper", label: t("settings.tabs.helper") },
+  // Audience gating follows the users-tab precedent: hidden tabs leave
+  // the strip but their `tab === "..."` render branches stay intact, so
+  // a ?tab= deep link still lands — nothing is unmounted, only untabbed.
+  const allTabs: { id: Tab; label: string; section?: AudienceSection }[] = [
+    { id: "projects", label: t("settings.tabs.projects"), section: "settings.projects" },
+    { id: "helper", label: t("settings.tabs.helper"), section: "settings.helper" },
     { id: "appearance", label: t("settings.tabs.appearance") },
     { id: "channels", label: t("settings.tabs.channels") },
-    { id: "providers", label: t("settings.tabs.providers") },
-    { id: "mcp", label: t("settings.tabs.mcp") },
-    { id: "subscriptions", label: t("settings.tabs.subscriptions") },
-    { id: "api-keys", label: t("settings.tabs.apiKeys") },
+    { id: "providers", label: t("settings.tabs.providers"), section: "settings.providers" },
+    { id: "mcp", label: t("settings.tabs.mcp"), section: "settings.mcp" },
+    { id: "subscriptions", label: t("settings.tabs.subscriptions"), section: "settings.subscriptions" },
+    { id: "api-keys", label: t("settings.tabs.apiKeys"), section: "settings.apiKeys" },
     { id: "data", label: t("settings.tabs.data") },
-    { id: "server", label: t("settings.tabs.server") },
+    { id: "server", label: t("settings.tabs.server"), section: "settings.server" },
     { id: "account", label: t("settings.tabs.account") },
-    ...(isAdmin ? [{ id: "users" as Tab, label: t("settings.tabs.users") }] : []),
+    ...(isAdmin ? [{ id: "users" as Tab, label: t("settings.tabs.users"), section: "settings.users" as AudienceSection }] : []),
   ];
+  const tabs = allTabs.filter((item) => !item.section || shows(item.section));
+  // The default tab (projects) is audience-gated, so an unqualified
+  // /settings visit at a narrow audience falls through to the first
+  // tab that audience can actually see.
+  useEffect(() => {
+    if (!requestedTab && tabs.length > 0 && !tabs.some((item) => item.id === tab)) {
+      setTab(tabs[0]!.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs.map((item) => item.id).join(","), requestedTab]);
   const activeTab = tabs.find((t) => t.id === tab);
   usePageTitle([t("settings.title"), activeTab?.label || t("settings.tabs.projects")]);
   const selectTab = (next: Tab) => {
@@ -161,6 +178,7 @@ export function Settings() {
 
 function AppearanceTab() {
   const { theme, mode, resolvedMode, setTheme, setMode } = useTheme();
+  const { audience, setAudience } = useAudience();
   const { user, refresh } = useAuth();
   const { t, i18n } = useTranslation();
   const [savingLanguage, setSavingLanguage] = useState(false);
@@ -242,6 +260,32 @@ function AppearanceTab() {
         <p className="text-text-dim text-xs mt-2">
           {t("settings.appearance.autoModeHint")}
         </p>
+      </section>
+
+      <section>
+        <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">{t("settings.appearance.audience")}</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-3xl">
+          {AUDIENCES.map((value) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setAudience(value)}
+              className={`text-left border rounded-lg p-3 transition-colors ${
+                audience === value
+                  ? "border-accent bg-accent/5"
+                  : "border-border hover:border-text-dim"
+              }`}
+            >
+              <div className="text-text text-sm font-bold">
+                {t(`settings.appearance.audience_${value}`)}
+              </div>
+              <div className="text-text-muted text-xs mt-1 leading-relaxed">
+                {t(`settings.appearance.audience_${value}Description`)}
+              </div>
+            </button>
+          ))}
+        </div>
+        <p className="text-text-dim text-xs mt-2">{t("settings.appearance.audienceHint")}</p>
       </section>
 
       <section>
@@ -638,22 +682,69 @@ type HelperModelTier = "large" | "medium" | "small";
 type HelperModelMapping = Record<HelperModelTier, string>;
 
 const EMPTY_HELPER_MODELS: HelperModelMapping = { large: "", medium: "", small: "" };
-const TEXT_PROVIDER_KEYS = new Set(["fireworks", "openai", "openai-codex", "anthropic", "google", "ollama", "nvidia", "opencode-go", "venice", "xai"]);
 
-function runtimeProviderKey(provider: Pick<Provider, "type" | "name">): string {
-  const raw = provider.type === "llm" ? provider.name : provider.type;
+// normalizeProviderName matches a provider name saved in an agent's
+// config against the server's provider_key spelling. Only needed for
+// strings that come out of stored config — connections arrive with
+// provider_key already resolved by the catalog.
+function normalizeProviderName(raw: string): string {
   return raw.toLowerCase().trim().replace(/\s+/g, "-");
 }
 
-function isTextProvider(provider: Provider): boolean {
-  return provider.type === "llm" || TEXT_PROVIDER_KEYS.has(runtimeProviderKey(provider));
+// primaryRuntimeConnections reduces the runtime connection list to one
+// entry per provider. The server returns them in pool order (project
+// scope, then is_primary, then id), so taking the first occurrence
+// yields exactly the credential an agent will boot with — no client-side
+// precedence logic, which is what runtimeProviderKey()/isTextProvider()
+// used to reimplement.
+export function primaryRuntimeConnections(
+  connections: RuntimeConnection[],
+): RuntimeConnection[] {
+  const seen = new Set<string>();
+  const out: RuntimeConnection[] = [];
+  for (const connection of connections) {
+    if (seen.has(connection.provider_key)) continue;
+    seen.add(connection.provider_key);
+    out.push(connection);
+  }
+  return out;
+}
+
+// groupRuntimeConnectionsByProvider buckets connections by provider so
+// the Models tab can render one card per provider. A bucket with more
+// than one member is where the operator has to choose a primary.
+export function groupRuntimeConnectionsByProvider(
+  connections: RuntimeConnection[],
+): Array<[string, RuntimeConnection[]]> {
+  const groups = new Map<string, RuntimeConnection[]>();
+  for (const connection of connections) {
+    const group = groups.get(connection.provider_key) || [];
+    group.push(connection);
+    groups.set(connection.provider_key, group);
+  }
+  return [...groups.entries()];
+}
+
+// availableRuntimeEntries is the catalog minus what is already
+// connected, keyed on slug rather than provider_key so two catalog
+// entries that map to the same runtime (an API key and a subscription,
+// say) can both still be offered.
+export function availableRuntimeEntries(
+  catalog: RuntimeCatalogEntry[],
+  connected: RuntimeConnection[],
+): RuntimeCatalogEntry[] {
+  const connectedSlugs = new Set(connected.map((connection) => connection.app_slug));
+  return catalog.filter((entry) => !connectedSlugs.has(entry.slug));
 }
 
 function HelperTab() {
-  const [providerList, setProviderList] = useState<Provider[]>([]);
-  const textProviders = providerList
-    .filter(isTextProvider)
-    .filter((provider, index, rows) => rows.findIndex((row) => runtimeProviderKey(row) === runtimeProviderKey(provider)) === index);
+  const [runtimeConns, setRuntimeConns] = useState<RuntimeConnection[]>([]);
+  // The server returns these in pool order (project scope, then primary,
+  // then id), so first-wins dedup here produces exactly the provider the
+  // agent will boot with. This used to be reimplemented client-side by
+  // runtimeProviderKey()/isTextProvider(), which duplicated the server's
+  // legacy type-vs-name normalization.
+  const textProviders = primaryRuntimeConnections(runtimeConns);
   const [helper, setHelper] = useState<Agent | null>(null);
   const [runtimeProvider, setRuntimeProvider] = useState("");
   const [runtimeModels, setRuntimeModels] = useState<HelperModelMapping>(EMPTY_HELPER_MODELS);
@@ -673,11 +764,14 @@ function HelperTab() {
   const [capabilitiesNotice, setCapabilitiesNotice] = useState("");
 
   const providerSignature = textProviders
-    .map((provider) => `${provider.id}:${runtimeProviderKey(provider)}`)
+    .map((connection) => `${connection.id}:${connection.provider_key}`)
     .join("|");
 
   useEffect(() => {
-    providers.list().then(setProviderList).catch((err: any) => setError(err?.message || "Unable to load text providers."));
+    integrations
+      .runtimeConnections()
+      .then(setRuntimeConns)
+      .catch((err: any) => setError(err?.message || "Unable to load text providers."));
   }, []);
 
   useEffect(() => {
@@ -709,7 +803,7 @@ function HelperTab() {
     try {
       const parsed = JSON.parse(agent.config || "{}");
       const override = parsed?.model_override;
-      return runtimeProviderKey({ type: String(override?.provider || ""), name: "" }) === providerName
+      return normalizeProviderName(String(override?.provider || "")) === providerName
         ? String(override?.model || "")
         : "";
     } catch {
@@ -750,7 +844,7 @@ function HelperTab() {
     return () => { cancelled = true; };
   }, [providerSignature, applyRuntimeConfig]);
 
-  const selectedProviderRow = textProviders.find((provider) => runtimeProviderKey(provider) === selectedProvider) || null;
+  const selectedProviderRow = textProviders.find((connection) => connection.provider_key === selectedProvider) || null;
 
   useEffect(() => {
     let cancelled = false;
@@ -759,7 +853,7 @@ function HelperTab() {
     setLoadingModels(true);
     const loadModels = async () => {
       try {
-        const nextCatalog = await providers.models(selectedProviderRow.id);
+        const nextCatalog = await integrations.connectionModels(selectedProviderRow.id);
         if (!cancelled) setCatalog(nextCatalog);
       } catch {
         // A provider without model discovery can still accept a model ID.
@@ -785,9 +879,9 @@ function HelperTab() {
     setNotice("");
     try {
       await instancesAPI.updateConfig(helper.id, {
-        providers: textProviders.map((provider) => ({
-          name: runtimeProviderKey(provider),
-          default: runtimeProviderKey(provider) === selectedProvider,
+        providers: textProviders.map((connection) => ({
+          name: connection.provider_key,
+          default: connection.provider_key === selectedProvider,
         })),
         modelOverride: selectedModel,
       });
@@ -872,7 +966,7 @@ function HelperTab() {
                   }}
                   className="h-10 rounded-md border border-border bg-bg-input px-3 text-sm text-text focus:border-accent focus:outline-none"
                 >
-                  {textProviders.map((provider) => <option key={provider.id} value={runtimeProviderKey(provider)}>{provider.name}{provider.project_id ? " · project" : " · global"}</option>)}
+                  {textProviders.map((connection) => <option key={connection.id} value={connection.provider_key}>{connection.app_name}{connection.scope === "project" ? " · project" : " · global"}</option>)}
                 </select>
               </label>
 
@@ -994,91 +1088,70 @@ function HelperTab() {
 function ProvidersTab() {
   const { currentProject } = useProjects();
   const { t } = useTranslation();
-  const [providerList, setProviderList] = useState<Provider[]>([]);
-  const [types, setTypes] = useState<ProviderTypeInfo[]>([]);
-  const [configuring, setConfiguring] = useState<ProviderTypeInfo | null>(null);
-  const [fields, setFields] = useState<Record<string, string>>({});
-  const [authSession, setAuthSession] = useState<ProviderAuthStart | null>(null);
-  const [authStatus, setAuthStatus] = useState<ProviderAuthStatus | null>(null);
-  const [authBusy, setAuthBusy] = useState(false);
-  const [authPollTick, setAuthPollTick] = useState(0);
+  const [catalog, setCatalog] = useState<RuntimeCatalogEntry[]>([]);
+  const [connected, setConnected] = useState<RuntimeConnection[]>([]);
+  const [configuring, setConfiguring] = useState<RuntimeCatalogEntry | null>(null);
+  const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
-  // makeGlobal — when true, this provider is created with project_id=""
-  // (visible across every project the user owns). When false, it's
-  // scoped to currentProject. The list endpoint always returns the
-  // union of project-scoped + globals, so a global created here will
-  // immediately show up everywhere with the "global" scope badge.
+  const [busyID, setBusyID] = useState<number | null>(null);
+  // makeGlobal — when true the connection is created with project_id=""
+  // and is visible from every project. Project-scoped credentials still
+  // win over globals when both exist, so this is a sharing choice rather
+  // than a precedence one.
   const [makeGlobal, setMakeGlobal] = useState(false);
-  // Health-check state, keyed by provider id. Set when the operator
-  // clicks "Test" on a row; rendered next to the row's controls.
-  // testingProviderID is the id of the in-flight probe (one at a
-  // time — the button disables to avoid double-fires).
-  const [testResultByID, setTestResultByID] = useState<Record<number, import("../api").ProviderTestResult>>({});
-  const [testingProviderID, setTestingProviderID] = useState<number | null>(null);
+  const [testResultByID, setTestResultByID] = useState<Record<number, ConnectionTestResult>>({});
   const [usageByID, setUsageByID] = useState<Record<number, ProviderUsageSnapshot>>({});
   const [usageLoadingByID, setUsageLoadingByID] = useState<Record<number, boolean>>({});
   const [usageErrorByID, setUsageErrorByID] = useState<Record<number, string>>({});
-  const [usageDetails, setUsageDetails] = useState<{ provider: Provider; usage: ProviderUsageSnapshot } | null>(null);
+  const [usageDetails, setUsageDetails] = useState<{ connection: RuntimeConnection; usage: ProviderUsageSnapshot } | null>(null);
 
-  const loadProviderUsage = useCallback(async (providerID: number, refresh = false) => {
-    setUsageLoadingByID((current) => ({ ...current, [providerID]: true }));
+  const load = useCallback(() => {
+    integrations
+      .runtimeConnections(currentProject?.id)
+      .then(setConnected)
+      .catch(() => setConnected([]));
+    integrations
+      .runtimeCatalog("llm")
+      .then(setCatalog)
+      .catch(() => setCatalog([]));
+  }, [currentProject?.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const loadUsage = useCallback(async (connectionID: number, refresh = false) => {
+    setUsageLoadingByID((current) => ({ ...current, [connectionID]: true }));
     try {
-      const usage = await providers.usage(providerID, refresh);
-      setUsageByID((current) => ({ ...current, [providerID]: usage }));
+      const usage = await integrations.connectionUsage(connectionID, refresh);
+      setUsageByID((current) => ({ ...current, [connectionID]: usage }));
       setUsageErrorByID((current) => {
-        if (!current[providerID]) return current;
+        if (!current[connectionID]) return current;
         const next = { ...current };
-        delete next[providerID];
+        delete next[connectionID];
         return next;
       });
     } catch (err: any) {
       setUsageErrorByID((current) => ({
         ...current,
-        [providerID]: err?.message || "Usage unavailable",
+        [connectionID]: err?.message || "Usage unavailable",
       }));
     } finally {
-      setUsageLoadingByID((current) => ({ ...current, [providerID]: false }));
+      setUsageLoadingByID((current) => ({ ...current, [connectionID]: false }));
     }
   }, []);
 
-  const handleTest = async (name: string) => {
-    const p = getActive(name);
-    if (!p) return;
-    setTestingProviderID(p.id);
-    try {
-      const res = await providers.test(p.id);
-      setTestResultByID((m) => ({ ...m, [p.id]: res }));
-    } catch (err: any) {
-      // request() throws on 4xx/5xx; for the test endpoint we still
-      // want to surface the error inline, so build a synthetic failure
-      // result from the thrown message.
-      setTestResultByID((m) => ({
-        ...m,
-        [p.id]: { ok: false, latency_ms: 0, error: String(err?.message || "test failed") },
-      }));
-    } finally {
-      setTestingProviderID(null);
-    }
-  };
-
-  const load = () => {
-    providers.list(currentProject?.id).then(setProviderList).catch(() => {});
-    providerTypes.list().then(setTypes).catch(() => {});
-  };
-  useEffect(() => { load(); }, [currentProject?.id]);
+  // Poll quota for subscription-backed connections only. Capability now
+  // comes from the catalog's runtime block instead of provider_types.
+  const usageEligibleIDs = connected
+    .filter((connection) => connection.capabilities?.includes("subscription_usage"))
+    .map((connection) => connection.id)
+    .join(",");
 
   useEffect(() => {
-    const supportedNames = new Set(
-      types
-        .filter((type) => type.capabilities?.includes("subscription_usage"))
-        .map((type) => type.name),
-    );
-    const eligible = providerList.filter((provider) => supportedNames.has(provider.name));
-    if (eligible.length === 0) return;
-
+    const ids = usageEligibleIDs ? usageEligibleIDs.split(",").map(Number) : [];
+    if (ids.length === 0) return;
     const refreshEligible = () => {
       if (document.visibilityState !== "visible") return;
-      eligible.forEach((provider) => void loadProviderUsage(provider.id));
+      ids.forEach((id) => void loadUsage(id));
     };
     refreshEligible();
     const interval = window.setInterval(refreshEligible, 5 * 60 * 1000);
@@ -1087,472 +1160,352 @@ function ProvidersTab() {
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshEligible);
     };
-  }, [providerList, types, loadProviderUsage]);
+  }, [usageEligibleIDs, loadUsage]);
 
-  const isActive = (name: string) => providerList.some((p) => p.name === name);
-  const getActive = (name: string) => providerList.find((p) => p.name === name);
+  // Group connections by provider_key. A group with more than one member
+  // is where the operator has to choose which credential agents use —
+  // the providers table used to decide this silently by lowest id.
+  const providerGroups = groupRuntimeConnectionsByProvider(connected);
 
-  // Resolve "where does this provider belong" — global when the
-  // checkbox is set OR when no project is currently selected (no
-  // project context to scope to). Otherwise, the current project.
   const targetProjectID = (): string =>
     makeGlobal || !currentProject ? "" : currentProject.id;
 
-  const handleActivate = async (pt: ProviderTypeInfo) => {
-    const authType = pt.auth_type || "api_key";
-    if (!pt.requires_credentials || authType === "none") {
-      // No credentials needed — activate immediately. Honour the
-      // makeGlobal toggle too (it persists across credential-less
-      // activations within this tab session).
-      try {
-        await providers.create(pt.type, pt.name, {}, pt.id, targetProjectID());
-        load();
-      } catch {}
-      return;
-    }
-    if (authType === "oauth_device_code") {
-      setConfiguring(pt);
-      setFields({});
-      setAuthSession(null);
-      setAuthStatus(null);
-      setMakeGlobal(false);
-      setError("");
-      return;
-    }
-    // Open credential form. Reset the toggle to project-scoped by
-    // default — globals are an explicit opt-in per provider.
-    setConfiguring(pt);
-    setFields({});
-    setAuthSession(null);
-    setAuthStatus(null);
+  const openConnect = (entry: RuntimeCatalogEntry) => {
+    setConfiguring(entry);
+    setCredentials({});
     setMakeGlobal(false);
     setError("");
   };
 
-  const handleStartAuth = async () => {
+  const handleConnect = async (event: React.FormEvent) => {
+    event.preventDefault();
     if (!configuring) return;
-    setError("");
-    setAuthBusy(true);
-    try {
-      const session = await providers.authStart(configuring.id, targetProjectID());
-      setAuthSession(session);
-      setAuthStatus({ status: "pending", next_poll_seconds: session.interval_seconds || 5 });
-      setAuthPollTick(0);
-    } catch (err: any) {
-      setError(err?.message || "Failed to start authentication");
-    } finally {
-      setAuthBusy(false);
+    const trimmed: Record<string, string> = {};
+    for (const field of configuring.credential_fields || []) {
+      const value = (credentials[field.name] || "").trim();
+      if (value) trimmed[field.name] = value;
     }
-  };
-
-  useEffect(() => {
-    if (!authSession?.session_id || authStatus?.status !== "pending") return;
-    let cancelled = false;
-    const delay = Math.max(2, authStatus.next_poll_seconds || authSession.interval_seconds || 5) * 1000;
-    const timer = window.setTimeout(async () => {
-      try {
-        const next = await providers.authPoll(authSession.session_id);
-        if (cancelled) return;
-        setAuthStatus(next);
-        if (next.status === "connected") {
-          setConfiguring(null);
-          setAuthSession(null);
-          setAuthStatus(null);
-          setMakeGlobal(false);
-          load();
-        } else if (next.status === "pending") {
-          setAuthPollTick((n) => n + 1);
-        } else if (next.status === "expired" || next.status === "failed") {
-          setError(next.error || `Authentication ${next.status}`);
-        }
-      } catch (err: any) {
-        if (!cancelled) setError(err?.message || "Authentication check failed");
-      }
-    }, delay);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [authSession?.session_id, authStatus?.status, authStatus?.next_poll_seconds, authPollTick]);
-
-  const handleSaveCredentials = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!configuring) return;
-    setError("");
-
-    const data: Record<string, string> = {};
-    for (const f of configuring.fields) {
-      if (fields[f]) data[f] = fields[f];
-    }
-    if (Object.keys(data).length === 0) {
+    if (Object.keys(trimmed).length === 0) {
       setError("At least one field is required");
       return;
     }
-
+    setError("");
     try {
-      await providers.create(configuring.type, configuring.name, data, configuring.id, targetProjectID());
+      // auto_mcp off: this credential backs the agent runtime. Exposing
+      // the provider's REST tools to every agent is a separate choice,
+      // made in Integrations.
+      await integrations.connect(
+        configuring.slug,
+        configuring.name,
+        trimmed,
+        defaultIntegrationAuthType(runtimeEntryAsAppDetail(configuring)) || "api_key",
+        targetProjectID(),
+        undefined,
+        "integration",
+        false,
+      );
       setConfiguring(null);
-      setFields({});
+      setCredentials({});
       setMakeGlobal(false);
       load();
     } catch (err: any) {
-      // request() now unpacks the {error, status_code, …} body on 4xx
-      // into err.message + err.body, so the upstream's reason ("Invalid
-      // API key") lands directly here without per-caller JSON parsing.
-      // err.body.status_code is set when the upstream returned a
-      // ProviderTestResult — prefix it for context.
       const body = err?.body;
-      if (body && body.status_code) {
-        setError(`${body.status_code} — ${err.message || "Failed"}`);
-      } else {
-        setError(err?.message || "Failed");
-      }
+      setError(
+        body?.status_code
+          ? `${body.status_code} — ${err.message || "Failed"}`
+          : err?.message || "Failed",
+      );
     }
   };
 
-  const handleDeactivate = async (name: string) => {
-    const p = getActive(name);
-    if (p) {
-      await providers.delete(p.id);
+  const handleTest = async (connection: RuntimeConnection) => {
+    setBusyID(connection.id);
+    try {
+      const result = await integrations.testConnection(connection.id);
+      setTestResultByID((current) => ({ ...current, [connection.id]: result }));
+    } catch (err: any) {
+      setTestResultByID((current) => ({
+        ...current,
+        [connection.id]: { ok: false, latency_ms: 0, error: String(err?.message || "test failed") },
+      }));
+    } finally {
+      setBusyID(null);
+    }
+  };
+
+  const handleMakePrimary = async (connection: RuntimeConnection) => {
+    if (connection.is_primary) return;
+    setBusyID(connection.id);
+    try {
+      await integrations.setPrimary(connection.id);
       load();
-    }
-  };
-
-  const handleRefreshAuth = async (name: string) => {
-    const p = getActive(name);
-    if (!p) return;
-    setTestingProviderID(p.id);
-    try {
-      const res = await providers.authRefresh(p.id);
-      setTestResultByID((m) => ({
-        ...m,
-        [p.id]: {
-          ok: res.auth_status === "connected",
-          latency_ms: 0,
-          error: res.error || (res.auth_status === "connected" ? "" : res.auth_status || "refresh failed"),
-        },
-      }));
     } catch (err: any) {
-      setTestResultByID((m) => ({
-        ...m,
-        [p.id]: { ok: false, latency_ms: 0, error: err?.message || "refresh failed" },
-      }));
+      setError(err?.message || "Could not set primary");
     } finally {
-      setTestingProviderID(null);
+      setBusyID(null);
     }
   };
 
-  const handleTestAuth = async (name: string) => {
-    const p = getActive(name);
-    if (!p) return;
-    setTestingProviderID(p.id);
+  const handleDisconnect = async (connection: RuntimeConnection) => {
+    setBusyID(connection.id);
     try {
-      const res = await providers.authSmokeTest(p.id);
-      setTestResultByID((m) => ({ ...m, [p.id]: res }));
+      await integrations.disconnect(connection.id);
+      load();
     } catch (err: any) {
-      setTestResultByID((m) => ({
-        ...m,
-        [p.id]: { ok: false, latency_ms: 0, error: err?.message || "test failed" },
-      }));
+      setError(err?.message || "Could not disconnect");
     } finally {
-      setTestingProviderID(null);
+      setBusyID(null);
     }
   };
 
-  const handleLogoutAuth = async (name: string) => {
-    const p = getActive(name);
-    if (!p) return;
-    await providers.authLogout(p.id);
-    load();
+  const handlePinModel = async (connection: RuntimeConnection, tier: string, model: string) => {
+    setBusyID(connection.id);
+    try {
+      // Empty string means "provider default" — send null so the key is
+      // removed rather than stored as a model ID of "".
+      await integrations.updateRuntimeConfig(connection.id, {
+        [`model_${tier}`]: model.trim() || null,
+      });
+      load();
+    } catch (err: any) {
+      setError(err?.message || "Could not save model");
+    } finally {
+      setBusyID(null);
+    }
   };
 
-  // Group types by category. We collapse "browser" and "browserbase" into
-  // the same "Browser" section so users see Browserbase, Local Browser, and
-  // Remote CDP side-by-side instead of in two separate headings.
-  const typeLabels: Record<string, string> = {
-    llm: "LLM",
-    embeddings: "Embeddings",
-    tts: "Text-to-Speech",
-    browser: "Browser",
-    search: "Search",
-    integrations: "Integrations",
-  };
-  const groupKeyFor = (t: string): string => {
-    if (t === "browserbase") return "browser";
-    return t;
-  };
-  const groups: Record<string, ProviderTypeInfo[]> = {};
-  for (const t of types) {
-    if ((t.runtime_status || "available") === "unsupported" && !isActive(t.name)) {
-      continue;
-    }
-    const key = groupKeyFor(t.type);
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(t);
-  }
+  const available = availableRuntimeEntries(catalog, connected);
 
   return (
     <div className="space-y-8 max-w-4xl">
       <div>
         <h2 className="text-text text-base font-bold">Providers</h2>
         <p className="text-text-muted text-sm mt-1">
-          Activate providers to enable LLMs, integrations, and other services.
+          Model providers your agents think with. Each one is a connection, so it
+          shares the credential store, health checks, and usage tracking with
+          every other integration.
           {currentProject ? (
             <>
               {" "}
-              Showing providers scoped to project <b>{currentProject.name}</b>{" "}
-              plus any{" "}
+              Showing providers connected in <b>{currentProject.name}</b> plus any{" "}
               <span className="inline-flex items-center gap-1 px-1.5 py-0 rounded bg-bg-hover text-text-muted text-[10px] align-middle">
                 <GlobeIcon /> global
               </span>{" "}
-              providers shared across all your projects. Tick{" "}
-              <i>Make global</i> in the credential modal to share a key
-              everywhere; otherwise it stays project-only.
+              ones shared across your projects.
             </>
           ) : (
-            <> Without a selected project, new providers are unscoped — global by default.</>
+            <> Without a selected project, new providers are global by default.</>
           )}
         </p>
       </div>
 
-      {Object.entries(groups).map(([groupType, items]) => (
-        <section key={groupType}>
+      {error && <div className="text-red text-sm">{error}</div>}
+
+      {connected.length > 0 && (
+        <section>
           <h3 className="text-text-muted text-sm font-bold mb-3 uppercase tracking-wide">
-            {typeLabels[groupType] || groupType}
+            Connected
           </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {items.map((pt) => {
-              const activeProvider = getActive(pt.name);
-              const active = !!activeProvider;
-              const unsupported = (pt.runtime_status || "available") === "unsupported";
-              const supportsUsage = !!pt.capabilities?.includes("subscription_usage");
-              return (
-                <div
-                  key={pt.id}
-                  className={`border rounded-lg p-4 transition-colors cursor-pointer ${
-                    active
-                      ? "border-green bg-bg-card"
-                      : "border-border bg-bg-card hover:border-accent"
-                  }`}
-                  onClick={() => active ? undefined : handleActivate(pt)}
-                >
-                  <div className="flex items-center justify-between mb-1 gap-2 min-w-0">
-                    <span className="text-text text-sm font-bold truncate">{pt.name}</span>
-                    {active && (
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {(() => {
-                          const p = getActive(pt.name);
-                          // Global vs project badges share the same
-                          // shape/weight — only the leading glyph
-                          // differentiates them, so they read as
-                          // siblings instead of one shouting at you.
-                          const isGlobal = !p?.project_id;
-                          if (isGlobal) {
-                            return (
+          <div className="space-y-3">
+            {providerGroups.map(([providerKey, group]) => (
+              <div key={providerKey} className="border border-border rounded-lg bg-bg-card p-4">
+                <div className="flex items-center justify-between gap-2 mb-3 min-w-0">
+                  <span className="text-text text-sm font-bold truncate">
+                    {group[0]?.app_name || providerKey}
+                  </span>
+                  <span className="text-[10px] text-text-dim font-mono">{providerKey}</span>
+                </div>
+
+                <div className="space-y-3">
+                  {group.map((connection) => {
+                    const busy = busyID === connection.id;
+                    const result = testResultByID[connection.id];
+                    const supportsUsage = !!connection.capabilities?.includes("subscription_usage");
+                    return (
+                      <div
+                        key={connection.id}
+                        className="rounded-md border border-border p-3"
+                      >
+                        <div className="flex items-center justify-between gap-2 mb-2 min-w-0">
+                          <div className="flex items-center gap-2 min-w-0">
+                            {/* Only render the choice when there IS one.
+                                A lone credential has nothing to pick
+                                between, so the control would be noise. */}
+                            {group.length > 1 && (
+                              <input
+                                type="radio"
+                                name={`primary-${providerKey}`}
+                                checked={connection.is_primary}
+                                onChange={() => void handleMakePrimary(connection)}
+                                disabled={busy}
+                                className="accent-accent"
+                                aria-label={`Use ${connection.name} for agents`}
+                                title="Use this credential for agents"
+                              />
+                            )}
+                            <span className="text-text text-sm truncate">{connection.name}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {connection.scope === "global" ? (
                               <span
                                 className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-muted flex items-center gap-1"
-                                title="Global — shared with every project. To make this project-only, deactivate then re-activate without checking 'Make global'."
+                                title="Global — shared with every project."
                               >
                                 <GlobeIcon />
                                 global
                               </span>
-                            );
-                          }
-                          return (
-                            <span
-                              className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-muted"
-                              title={`Scoped to project ${p?.project_id ?? ""}`}
-                            >
-                              project
-                            </span>
-                          );
-                        })()}
-                        {unsupported && (
-                          <span
-                            className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-dim"
-                            title="Legacy provider — use Apps or Integrations for new browser automation."
-                          >
-                            legacy
-                          </span>
+                            ) : (
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-muted"
+                                title={`Scoped to project ${connection.project_id}`}
+                              >
+                                project
+                              </span>
+                            )}
+                            {/* Only meaningful alongside siblings. A lone
+                                credential is trivially the default, so
+                                badging it says nothing and competes with
+                                the scope badge for attention. */}
+                            {connection.is_primary && group.length > 1 && (
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-accent"
+                                title="Agents in this scope use this credential."
+                              >
+                                default
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {supportsUsage && (
+                          <div className="mb-2">
+                            <ProviderUsageSummary
+                              usage={usageByID[connection.id]}
+                              loading={usageLoadingByID[connection.id]}
+                              refreshing={usageLoadingByID[connection.id] && !!usageByID[connection.id]}
+                              error={usageErrorByID[connection.id]}
+                              onRefresh={() => void loadUsage(connection.id, true)}
+                              onOpenDetails={() => {
+                                const usage = usageByID[connection.id];
+                                if (usage) setUsageDetails({ connection, usage });
+                              }}
+                            />
+                          </div>
                         )}
-                        <span className="inline-block w-2 h-2 rounded-full bg-green" />
+
+                        <div className="flex flex-wrap items-center gap-2 mb-2">
+                          {(["large", "medium", "small"] as const).map((tier) => (
+                            <label key={tier} className="flex items-center gap-1.5">
+                              <span className="text-[10px] uppercase tracking-wide text-text-dim">
+                                {tier}
+                              </span>
+                              <input
+                                type="text"
+                                defaultValue={connection.runtime_config?.[`model_${tier}`] || ""}
+                                placeholder="provider default"
+                                onBlur={(event) => {
+                                  const next = (event.target as HTMLInputElement).value;
+                                  const current = connection.runtime_config?.[`model_${tier}`] || "";
+                                  if (next.trim() !== String(current).trim()) {
+                                    void handlePinModel(connection, tier, next);
+                                  }
+                                }}
+                                disabled={busy}
+                                spellCheck={false}
+                                className="bg-bg-input border border-border rounded px-2 py-1 text-xs font-mono text-text focus:outline-none focus:border-accent"
+                                style={{ width: "11rem" }}
+                              />
+                            </label>
+                          ))}
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => void handleTest(connection)}
+                            disabled={busy}
+                            className="text-xs text-text-muted hover:text-accent transition-colors disabled:opacity-50"
+                            title="Probe the upstream with the saved credentials"
+                          >
+                            {busy ? "Working…" : "Test"}
+                          </button>
+                          <button
+                            onClick={() => void handleDisconnect(connection)}
+                            disabled={busy}
+                            className="text-xs text-text-muted hover:text-red transition-colors disabled:opacity-50"
+                          >
+                            Disconnect
+                          </button>
+                          {result && (
+                            <span
+                              className={`text-xs ${result.ok ? "text-green" : "text-red"}`}
+                              title={result.error || ""}
+                            >
+                              {result.ok
+                                ? `✓ ok (${result.latency_ms}ms)`
+                                : `✗ ${result.error || "failed"}`}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    )}
-                  </div>
-                  <p className="text-text-muted text-xs leading-relaxed mb-2">{pt.description}</p>
-                  {active && supportsUsage && activeProvider ? (
-                    <ProviderUsageSummary
-                      usage={usageByID[activeProvider.id]}
-                      loading={usageLoadingByID[activeProvider.id]}
-                      refreshing={usageLoadingByID[activeProvider.id] && !!usageByID[activeProvider.id]}
-                      error={usageErrorByID[activeProvider.id]}
-                      onRefresh={() => void loadProviderUsage(activeProvider.id, true)}
-                      onOpenDetails={() => {
-                        const usage = usageByID[activeProvider.id];
-                        if (usage) setUsageDetails({ provider: activeProvider, usage });
-                      }}
-                    />
-                  ) : null}
-                  {active ? (
-                    <div className="flex items-center gap-3">
-                      {(pt.auth_type || "api_key") === "api_key" ? (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleTest(pt.name); }}
-                          className="text-xs text-text-muted hover:text-accent transition-colors disabled:opacity-50"
-                          disabled={testingProviderID === getActive(pt.name)?.id}
-                          title="Probe the upstream with the saved credentials"
-                        >
-                          {testingProviderID === getActive(pt.name)?.id ? "Testing…" : "Test"}
-                        </button>
-                      ) : (
-                        <>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleTestAuth(pt.name); }}
-                            className="text-xs text-text-muted hover:text-accent transition-colors disabled:opacity-50"
-                            disabled={testingProviderID === getActive(pt.name)?.id}
-                            title="Probe the subscription-backed runtime with the saved auth"
-                          >
-                            {testingProviderID === getActive(pt.name)?.id ? "Testing…" : "Test"}
-                          </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleRefreshAuth(pt.name); }}
-                            className="text-xs text-text-muted hover:text-accent transition-colors disabled:opacity-50"
-                            disabled={testingProviderID === getActive(pt.name)?.id}
-                          >
-                            {testingProviderID === getActive(pt.name)?.id ? "Refreshing…" : "Refresh"}
-                          </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleLogoutAuth(pt.name); }}
-                            className="text-xs text-text-muted hover:text-red transition-colors"
-                          >
-                            Logout
-                          </button>
-                        </>
-                      )}
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleDeactivate(pt.name); }}
-                        className="text-xs text-text-muted hover:text-red transition-colors"
-                      >
-                        Deactivate
-                      </button>
-                      {testResultByID[getActive(pt.name)?.id ?? -1] && (
-                        <span
-                          className={`text-xs ${testResultByID[getActive(pt.name)?.id ?? -1]?.ok ? "text-green" : "text-red"}`}
-                          title={testResultByID[getActive(pt.name)?.id ?? -1]?.error || ""}
-                        >
-                          {testResultByID[getActive(pt.name)?.id ?? -1]?.ok
-                            ? `✓ ${testResultByID[getActive(pt.name)?.id ?? -1]?.model_count
-                                ? `${testResultByID[getActive(pt.name)?.id ?? -1]?.model_count} models`
-                                : "ok"} (${testResultByID[getActive(pt.name)?.id ?? -1]?.latency_ms}ms)`
-                            : `✗ ${testResultByID[getActive(pt.name)?.id ?? -1]?.error || "failed"}`}
-                        </span>
-                      )}
-                    </div>
-                  ) : (
-                    <span className="text-xs text-accent">
-                      {(pt.auth_type || "api_key") === "oauth_device_code" ? "Connect" : pt.requires_credentials ? "Configure" : "Activate"}
-                    </span>
-                  )}
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
-        </section>
-      ))}
-
-      {/* Credential configuration modal */}
-      <Modal open={!!configuring} onClose={() => setConfiguring(null)}>
-        {configuring && (configuring.auth_type || "api_key") === "oauth_device_code" ? (
-          <div className="p-6 space-y-4">
-            <h3 className="text-text text-base font-bold">{configuring.name}</h3>
-            <p className="text-text-muted text-sm">{configuring.description}</p>
-
-            {currentProject && !authSession && (
-              <label className="flex items-start gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={makeGlobal}
-                  onChange={(e) => setMakeGlobal(e.target.checked)}
-                  className="mt-1 accent-accent"
-                />
-                <span className="text-sm text-text-muted leading-snug">
-                  <span className="text-text">Make global</span> — share this sign-in with every project, not just <b>{currentProject.name}</b>.
-                </span>
-              </label>
-            )}
-
-            {authSession ? (
-              <div className="space-y-3">
-                <div className="rounded-lg border border-border bg-bg-hover p-4">
-                  <div className="text-xs uppercase text-text-muted mb-1">Code</div>
-                  <div className="text-text text-2xl font-bold tracking-wide">{authSession.user_code}</div>
-                </div>
-                {authSession.verification_uri && (
-                  <a
-                    href={authSession.verification_uri}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex text-sm text-accent hover:text-accent-hover"
-                  >
-                    Open sign-in page
-                  </a>
-                )}
-                <div className="text-sm text-text-muted">
-                  {authStatus?.status === "pending" ? "Waiting for authorization…" : authStatus?.status}
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={handleStartAuth}
-                disabled={authBusy}
-                className="w-full px-4 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
-              >
-                {authBusy ? "Starting…" : "Connect"}
-              </button>
-            )}
-
-            {configuring.runtime_status === "auth_only" && (
-              <div className="text-xs text-text-muted bg-bg-hover border border-border rounded-lg p-3">
-                This sign-in can be saved now. Agent runtime support will be enabled separately.
-              </div>
-            )}
-
-            {error && <div className="text-red text-sm">{error}</div>}
-
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={() => setConfiguring(null)}
-                className="px-4 py-2.5 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        ) : configuring && (
-          <form onSubmit={handleSaveCredentials} className="p-6 space-y-4">
-            <h3 className="text-text text-base font-bold">{configuring.name}</h3>
-            <p className="text-text-muted text-sm">{configuring.description}</p>
-
-            {configuring.fields.map((field) => (
-              <div key={field}>
-                <label className="block text-text-muted text-sm mb-2">{field}</label>
-                <input
-                  type={field.includes("KEY") || field.includes("SECRET") ? "password" : "text"}
-                  value={fields[field] || ""}
-                  onChange={(e) => setFields({ ...fields, [field]: e.target.value })}
-                  className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent"
-                  placeholder={field.includes("HOST") ? "http://localhost:11434" : ""}
-                  autoFocus={configuring.fields[0] === field}
-                />
               </div>
             ))}
+          </div>
+        </section>
+      )}
 
-            {/* Scope toggle. Default off (project-scoped). When on, the
-                provider is created with project_id="" — visible to every
-                project the user owns. Useful for personal LLM / API keys
-                you don't want to re-enter per project. */}
+      <section>
+        <h3 className="text-text-muted text-sm font-bold mb-3 uppercase tracking-wide">
+          Available
+        </h3>
+        {available.length === 0 ? (
+          <p className="text-text-muted text-sm">
+            Every model provider in the catalog is connected.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {available.map((entry) => (
+              <div
+                key={entry.slug}
+                className="border border-border bg-bg-card rounded-lg p-4 transition-colors cursor-pointer hover:border-accent"
+                onClick={() => openConnect(entry)}
+              >
+                <div className="flex items-center justify-between mb-1 gap-2 min-w-0">
+                  <span className="text-text text-sm font-bold truncate">{entry.name}</span>
+                  <span className="text-[10px] text-text-dim font-mono shrink-0">
+                    {entry.provider_key}
+                  </span>
+                </div>
+                <p className="text-text-muted text-xs leading-relaxed mb-2 line-clamp-3">
+                  {entry.description}
+                </p>
+                <span className="text-xs text-accent">
+                  {isBrowserOAuthType(defaultIntegrationAuthType(runtimeEntryAsAppDetail(entry)))
+                    ? "Connect"
+                    : "Configure"}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Credential form. Same renderer as every other integration, so
+          inputs carry the catalog's labels rather than env var names. */}
+      <Modal open={!!configuring} onClose={() => setConfiguring(null)}>
+        {configuring && (
+          <form onSubmit={handleConnect} className="p-6 space-y-4">
+            <h3 className="text-text text-base font-bold">{configuring.name}</h3>
+            <p className="text-text-muted text-sm">{configuring.description}</p>
+
+            <CredentialFields
+              detail={runtimeEntryAsAppDetail(configuring)}
+              credentials={credentials}
+              setCredentials={setCredentials}
+            />
+
             {currentProject && (
               <label className="flex items-start gap-2 cursor-pointer select-none">
                 <input
@@ -1585,7 +1538,7 @@ function ProvidersTab() {
                 type="submit"
                 className="px-4 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
               >
-                Activate
+                Connect
               </button>
             </div>
           </form>
@@ -1603,7 +1556,7 @@ function ProvidersTab() {
               <div>
                 <h3 className="text-text text-base font-bold">{t("settings.providers.usageDetails")}</h3>
                 <p className="text-xs text-text-muted mt-1">
-                  {usageDetails.provider.name}
+                  {usageDetails.connection.name}
                   {usageDetails.usage.plan ? ` · ${usageDetails.usage.plan}` : ""}
                 </p>
               </div>
@@ -1669,11 +1622,6 @@ function MCPServersTab() {
   const [testRunning, setTestRunning] = useState(false);
   const [showOptional, setShowOptional] = useState(false);
 
-  const [providerList, setProviderList] = useState<Provider[]>([]);
-  const [composioConns, setComposioConns] = useState<number>(0);
-  const [syncingComposio, setSyncingComposio] = useState(false);
-  const [composioSyncError, setComposioSyncError] = useState("");
-
   const load = () => mcpServers.list(currentProject?.id).then((s) => setServers(s || [])).catch(() => {});
 
   const openRenameMCP = (s: MCPServer) => {
@@ -1702,43 +1650,6 @@ function MCPServersTab() {
     const i = setInterval(load, 5000);
     return () => clearInterval(i);
   }, [currentProject?.id]);
-
-  // Look for a Composio provider and active composio connections in this
-  // project — if they exist but there's no remote mcp row, offer a Sync
-  // button. Reconcile is idempotent so Sync is always safe to click.
-  useEffect(() => {
-    providers.list(currentProject?.id).then(setProviderList).catch(() => {});
-    integrations
-      .connections(currentProject?.id)
-      .then((cs) => {
-        const count = (cs || []).filter(
-          (c) => c.source === "composio" && c.status === "active",
-        ).length;
-        setComposioConns(count);
-      })
-      .catch(() => {});
-  }, [currentProject?.id, servers.length]);
-
-  const composioProvider = providerList.find((p) => p.name === "Composio");
-  const hasRemoteRow = servers.some(
-    (s) => s.source === "remote" && s.provider_id === composioProvider?.id,
-  );
-  const showComposioSyncHint =
-    !!composioProvider && composioConns > 0 && !hasRemoteRow;
-
-  const handleComposioSync = async () => {
-    if (!composioProvider) return;
-    setSyncingComposio(true);
-    setComposioSyncError("");
-    try {
-      await integrations.composioReconcile(composioProvider.id, currentProject?.id);
-      load();
-    } catch (err: any) {
-      setComposioSyncError(err?.message || "Sync failed");
-    } finally {
-      setSyncingComposio(false);
-    }
-  };
 
   // When the user picks a connection in the "From connection" tab, load
   // the full app tool catalog. A connection always has at least one MCP
@@ -1882,19 +1793,6 @@ function MCPServersTab() {
       const allowed = allChecked ? [] : Array.from(scopeModal.selected);
       await mcpServers.setAllowedTools(scopeModal.server.id, allowed);
 
-      // For remote rows, trigger a reconcile so Composio re-creates the
-      // upstream server with the new action set. Await it so upstream
-      // PATCH failures surface to the user instead of a silent mismatch
-      // between what the dashboard shows and what the hosted MCP exposes.
-      if (
-        scopeModal.server.source === "remote" &&
-        scopeModal.server.provider_id
-      ) {
-        await integrations.composioReconcile(
-          scopeModal.server.provider_id,
-          currentProject?.id,
-        );
-      }
       // Refresh cached tool list + allowed_tools for this row.
       setAllowedTools((prev) => ({ ...prev, [scopeModal.server.id]: allowed }));
       setScopeModal(null);
@@ -1915,35 +1813,6 @@ function MCPServersTab() {
           that Apteva instances can use.
         </p>
       </div>
-
-      {/* Hint for missing Composio hosted MCP row */}
-      {showComposioSyncHint && (
-        <div className="border border-accent/40 bg-accent/5 rounded-lg p-4">
-          <div className="flex items-start gap-3">
-            <div className="flex-1">
-              <div className="text-text text-sm font-bold">
-                Composio hosted MCP not synced
-              </div>
-              <p className="text-text-muted text-xs mt-1">
-                You have {composioConns} active Composio connection
-                {composioConns === 1 ? "" : "s"} but no hosted MCP server row
-                yet. Click Sync to create (or refresh) the per-toolkit
-                Composio MCP rows for this project.
-              </p>
-              {composioSyncError && (
-                <p className="text-red text-xs mt-2">{composioSyncError}</p>
-              )}
-            </div>
-            <button
-              onClick={handleComposioSync}
-              disabled={syncingComposio}
-              className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
-            >
-              {syncingComposio ? "Syncing…" : "Sync"}
-            </button>
-          </div>
-        </div>
-      )}
 
       {!showAdd && (
         <button
@@ -2736,13 +2605,6 @@ function MCPServersTab() {
                 Tick every tool (Select all) to clear the filter and expose
                 the whole catalog.
               </p>
-              {scopeModal.server.source === "remote" && (
-                <p className="text-accent text-xs mt-2">
-                  ℹ Composio-hosted server — a reconcile will run after save
-                  so the upstream gets the new action set. Running instances
-                  need a restart to pick up the change.
-                </p>
-              )}
             </div>
 
             <div className="shrink-0 flex items-center gap-3 mb-3 text-xs">
@@ -2848,12 +2710,11 @@ function SubscriptionsTab() {
   //   pickerOpen=true, adding=null  → modal shows the source picker
   //   pickerOpen=*,    adding=...   → modal shows the configure form
   //   both falsy                    → modal closed
-  // Source tagged union covers app-event subscriptions + the two
-  // existing webhook flavors (local + composio).
+  // Source tagged union covers app-event subscriptions and integration
+  // webhooks.
   type AddSource =
     | { kind: "app"; appName: string; appLabel: string; scope: "project" | "global" }
-    | { kind: "webhook"; conn: any }
-    | { kind: "composio"; conn: any };
+    | { kind: "webhook"; conn: any };
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState("");
   const [adding, setAdding] = useState<AddSource | null>(null);
@@ -2885,20 +2746,6 @@ function SubscriptionsTab() {
   const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
-
-  // Composio trigger picker state. Populated when the user opens the
-  // subscribe modal on a composio-source connection; empty for local
-  // connections (those use the catalog's webhook_events list instead).
-  const [composioTriggers, setComposioTriggers] = useState<Array<{
-    slug: string;
-    name: string;
-    description: string;
-    type: string;
-    config: Record<string, any>;
-  }>>([]);
-  const [loadingTriggers, setLoadingTriggers] = useState(false);
-  const [selectedTrigger, setSelectedTrigger] = useState<string>("");
-  const [triggerConfig, setTriggerConfig] = useState<Record<string, any>>({});
 
   const load = () => {
     // Wait for the current project to resolve before hitting the
@@ -2942,47 +2789,11 @@ function SubscriptionsTab() {
     setHmacSecret("");
     setNotifyAgent(false);
     setSelectedEvents(new Set());
-    setSelectedTrigger("");
-    setTriggerConfig({});
-    setComposioTriggers([]);
     setError("");
   };
   useEffect(() => { load(); }, [currentProject?.id]);
 
   const safeConns = connections || [];
-
-  // When the user opens the subscribe modal on a composio-source
-  // connection, fetch the available trigger templates for that toolkit.
-  // Local-source connections use the catalog's webhook_events list
-  // instead; we clear Composio state to avoid stale picker entries.
-  useEffect(() => {
-    if (!adding) {
-      setComposioTriggers([]);
-      setSelectedTrigger("");
-      setTriggerConfig({});
-      return;
-    }
-    if (adding.kind !== "composio") {
-      setComposioTriggers([]);
-      return;
-    }
-    setLoadingTriggers(true);
-    integrations
-      .triggers(adding.conn.id)
-      .then((resp) => {
-        setComposioTriggers(resp.triggers || []);
-        if ((resp.triggers || []).length > 0) {
-          setSelectedTrigger(resp.triggers[0].slug);
-          setTriggerConfig({});
-        }
-      })
-      .catch(() => setComposioTriggers([]))
-      .finally(() => setLoadingTriggers(false));
-  }, [adding?.kind === "composio" ? adding.conn.id : null]);
-
-  // Currently-selected trigger's config schema — used by the dynamic
-  // form renderer inside the modal.
-  const selectedTriggerSchema = composioTriggers.find((t) => t.slug === selectedTrigger);
 
   const handleSubscribe = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3011,22 +2822,6 @@ function SubscriptionsTab() {
             events: uniqueTopics.length > 0 ? uniqueTopics : ["*"],
             projectId: currentProject?.id,
             source: "app_event",
-            notifyAgent,
-          },
-        );
-      } else if (adding.kind === "composio") {
-        if (!selectedTrigger) { setError("Select a trigger"); return; }
-        await subscriptions.create(
-          `${adding.conn.app_name} trigger`,
-          adding.conn.app_slug,
-          instanceId,
-          {
-            connectionId: adding.conn.id,
-            description: description.trim(),
-            events: [selectedTrigger],
-            projectId: currentProject?.id,
-            triggerSlug: selectedTrigger,
-            triggerConfig,
             notifyAgent,
           },
         );
@@ -3179,10 +2974,7 @@ function SubscriptionsTab() {
         </section>
       )}
 
-      {/* Single entry point. Picker modal lists every subscribable
-          source (installed apps + webhook-capable integrations +
-          composio integrations) so the operator can browse them in
-          one place rather than chasing two separate lists. */}
+      {/* Single entry point for app events and integration webhooks. */}
       <div className="flex justify-end">
         <button
           onClick={() => { closeAddFlow(); setPickerOpen(true); }}
@@ -3195,22 +2987,17 @@ function SubscriptionsTab() {
       {/* Unified add flow — picker phase OR configure phase */}
       <Modal open={pickerOpen || !!adding} onClose={closeAddFlow}>
         {pickerOpen && !adding && (() => {
-          // Build the picker source list: installed apps + webhook-
-          // capable integrations + composio integrations. One row per
-          // option, search-filterable on label.
+          // Build the picker source list: installed apps and webhook-
+          // capable catalog integrations. One row per option.
           const webhookConns = safeConns.filter((c: any) =>
-            c.source !== "composio" && catalog[c.app_slug]?.has_webhooks,
+            catalog[c.app_slug]?.has_webhooks,
           );
-          const composioConns = safeConns.filter((c: any) => c.source === "composio");
           const q = pickerSearch.trim().toLowerCase();
           const matches = (s: string) => !q || s.toLowerCase().includes(q);
           const visibleApps = (appsList || []).filter((a) =>
             matches(a.display_name || a.name),
           );
           const visibleWebhook = webhookConns.filter((c: any) =>
-            matches(c.app_name) || matches(c.name),
-          );
-          const visibleComposio = composioConns.filter((c: any) =>
             matches(c.app_name) || matches(c.name),
           );
           return (
@@ -3290,36 +3077,7 @@ function SubscriptionsTab() {
                     </div>
                   </section>
                 )}
-                {visibleComposio.length > 0 && (
-                  <section>
-                    <h4 className="text-text-muted text-xs font-bold uppercase tracking-wide mb-2">
-                      Integrations (composio)
-                    </h4>
-                    <div className="space-y-1">
-                      {visibleComposio.map((c: any) => (
-                        <button
-                          key={c.id}
-                          onClick={() => {
-                            setAdding({ kind: "composio", conn: c });
-                            setSelectedEvents(new Set());
-                            setPickerOpen(false);
-                          }}
-                          className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-bg-card text-left"
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="text-text text-sm font-medium truncate">{c.app_name}</span>
-                            <span className="text-text-dim text-xs truncate">{c.name}</span>
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-300">
-                              composio
-                            </span>
-                          </div>
-                          <span className="text-text-muted text-xs">trigger →</span>
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-                )}
-                {visibleApps.length === 0 && visibleWebhook.length === 0 && visibleComposio.length === 0 && (
+                {visibleApps.length === 0 && visibleWebhook.length === 0 && (
                   <p className="text-text-dim text-sm py-4 text-center">
                     {q ? "No matches." : "No subscribable apps or integrations yet. Install an app, or connect an integration first."}
                   </p>
@@ -3341,8 +3099,6 @@ function SubscriptionsTab() {
                 <p className="text-text-muted text-sm mt-1">
                   {adding.kind === "app"
                     ? "Wake the agent on app events emitted from this project's installed sidecar."
-                    : adding.kind === "composio"
-                    ? "Subscribe via Composio. The trigger config drives the upstream subscription."
                     : `Subscribe to ${adding.conn.app_name} events. The webhook is auto-registered upstream — no manual setup needed.`}
                 </p>
               </div>
@@ -3568,70 +3324,6 @@ function SubscriptionsTab() {
                 </div>
               );
             })()}
-
-            {adding.kind === "composio" && (
-              // Composio-source: render a trigger picker populated from
-              // the live Composio catalog for this connection's toolkit,
-              // plus a dynamic config form built from the selected
-              // trigger's config schema.
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-text-muted text-sm mb-2">Trigger</label>
-                  {loadingTriggers ? (
-                    <p className="text-text-dim text-sm">Loading triggers…</p>
-                  ) : composioTriggers.length === 0 ? (
-                    <p className="text-text-dim text-sm">No triggers available for {adding.conn.app_slug} in Composio.</p>
-                  ) : (
-                    <select
-                      value={selectedTrigger}
-                      onChange={(e) => { setSelectedTrigger(e.target.value); setTriggerConfig({}); }}
-                      className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text focus:outline-none focus:border-accent"
-                    >
-                      {composioTriggers.map((t) => (
-                        <option key={t.slug} value={t.slug}>
-                          {t.name} ({t.type})
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  {selectedTriggerSchema?.description && (
-                    <p className="text-text-dim text-xs mt-1">{selectedTriggerSchema.description}</p>
-                  )}
-                  {selectedTriggerSchema?.type === "poll" && (
-                    <p className="text-warn text-[11px] mt-1">
-                      ⓘ Polling trigger — Composio checks upstream on a schedule (typically 15-min intervals). Not real-time.
-                    </p>
-                  )}
-                </div>
-                {selectedTriggerSchema && Object.keys(selectedTriggerSchema.config || {}).length > 0 && (
-                  <div>
-                    <label className="block text-text-muted text-sm mb-2">Configuration</label>
-                    <div className="space-y-2 border border-border rounded-lg bg-bg-input p-3">
-                      {Object.entries(selectedTriggerSchema.config).map(([key, spec]: [string, any]) => {
-                        const required = spec?.required === true;
-                        const typeLabel = spec?.type || "string";
-                        const desc = spec?.description || spec?.title || "";
-                        const current = triggerConfig[key] ?? "";
-                        return (
-                          <div key={key}>
-                            <label className="block text-[11px] text-text-dim mb-1">
-                              <span className="font-mono text-text">{key}</span>
-                              <span className="ml-2 text-text-dim">{typeLabel}{required ? " *" : ""}</span>
-                            </label>
-                            <input
-                              value={String(current)}
-                              onChange={(e) => setTriggerConfig({ ...triggerConfig, [key]: e.target.value })}
-                              placeholder={desc}
-                              className="w-full bg-bg-card border border-border rounded px-2 py-1.5 text-sm text-text font-mono focus:outline-none focus:border-accent"
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
 
             {adding.kind === "webhook" && (() => {
               // Local-source: use the catalog's webhook_events list.

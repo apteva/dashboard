@@ -2,6 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, mem
 import { useTranslation } from "react-i18next";
 import { chat, telemetry, type ChatAttachment, type ChatMessageContext, type ChatMessageRow, type RealtimeAvailability, type TelemetryEvent } from "../api";
 import { useProjects } from "../hooks/useProjects";
+import { useTheme } from "../hooks/useTheme";
 import {
   ChatComponentList,
   useInstalledApps,
@@ -152,6 +153,10 @@ export function ChatPanel({
   // works).
   const { currentProject } = useProjects();
   const projectId = currentProject?.id ?? "";
+  // The composer carries a couple of terminal-theme affordances (the `>`
+  // prompt glyph). They're identity, not chrome, so they follow data-theme
+  // rather than showing up unconditionally in `clean`.
+  const { theme } = useTheme();
   const installedApps = useInstalledApps(projectId || null);
   const toolVisualRegistry = useToolVisualRegistry(projectId || null, installedApps);
   const telemetryAgentKey = (participantIds?.length ? participantIds : [instanceId]).join(",");
@@ -1618,9 +1623,11 @@ export function ChatPanel({
               void addImageFiles(e.dataTransfer.files);
             }
           }}
-          className="flex min-h-[54px] items-center gap-1.5 rounded-2xl border border-border bg-bg-card/95 px-2 py-1.5 shadow-lg backdrop-blur-sm transition-colors focus-within:border-accent/60 sm:min-h-[58px] sm:gap-3 sm:px-4 sm:py-2"
+          className="flex min-h-[54px] items-center gap-1.5 rounded-lg border border-border bg-bg-card/95 px-2 py-1.5 shadow-lg backdrop-blur-sm transition-colors focus-within:border-accent/60 sm:min-h-[58px] sm:gap-3 sm:px-4 sm:py-2"
         >
-          <span className="hidden sm:inline font-bold text-sm text-accent shrink-0 self-center">&gt;</span>
+          {theme === "terminal" && (
+            <span className="hidden sm:inline font-bold text-sm text-accent shrink-0 self-center">&gt;</span>
+          )}
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -1685,7 +1692,7 @@ export function ChatPanel({
             }}
             rows={1}
             style={{ lineHeight: "20px", minHeight: "36px" }}
-            className="block min-w-0 flex-1 resize-none bg-transparent py-2 font-mono text-base text-text placeholder:text-text-dim focus:outline-none sm:text-sm"
+            className="block min-w-0 flex-1 resize-none bg-transparent py-2 text-base text-text placeholder:text-text-dim focus:outline-none sm:text-sm"
             placeholder={
               !chatId
                 ? t("chat.panel.placeholderLoading")

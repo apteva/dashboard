@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   integrations,
-  providers,
   invites,
   mcpServers,
   type AppSummary,
@@ -9,9 +8,6 @@ import {
   type ConnectionInfo,
   type ConnectionTestResult,
   type IntegrationUsageSummary,
-  type Provider,
-  type ComposioApp,
-  type ComposioToolkitDetails,
   type ConnectCreateResponse,
   type DeviceAuthStart,
   type DeviceAuthStatus,
@@ -62,7 +58,7 @@ type SuiteSummary = {
   has_project_scope: boolean;
 };
 
-type SourceTab = "local" | "composio" | "usage";
+type SourceTab = "local" | "usage";
 
 export function Integrations() {
   usePageTitle("Integrations");
@@ -126,10 +122,8 @@ export function Integrations() {
   const [pickerBusy, setPickerBusy] = useState(false);
   const [pickerErr, setPickerErr] = useState("");
   const [pickerFilter, setPickerFilter] = useState("");
-  const [providerList, setProviderList] = useState<Provider[]>([]);
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
   const [detailsFor, setDetailsFor] = useState<ConnectionInfo | null>(null);
-  const [loaded, setLoaded] = useState(false);
 
   // Local catalog state
   const [localSearch, setLocalSearch] = useState("");
@@ -165,26 +159,6 @@ export function Integrations() {
   const [oauthClientResolved, setOAuthClientResolved] = useState(false);
   const [oauthCallbackURL, setOAuthCallbackURL] = useState("");
 
-  // Composio state
-  const [composioSearch, setComposioSearch] = useState("");
-  const [composioApps, setComposioApps] = useState<ComposioApp[]>([]);
-  const [composioLoading, setComposioLoading] = useState(false);
-  const [composioError, setComposioError] = useState("");
-  const [composioPicked, setComposioPicked] = useState<ComposioApp | null>(null);
-  const [composioDetails, setComposioDetails] = useState<ComposioToolkitDetails | null>(null);
-  const [composioDetailsLoading, setComposioDetailsLoading] = useState(false);
-  const [composioConfigCreds, setComposioConfigCreds] = useState<Record<string, string>>({});
-  const [composioInitCreds, setComposioInitCreds] = useState<Record<string, string>>({});
-  const [composioSubmitting, setComposioSubmitting] = useState(false);
-
-  // The local integrations catalog is always-on — every install ships
-  // (or auto-downloads on first boot) the apteva/integrations JSON,
-  // and the server serves it unconditionally. No "Apteva Local"
-  // provider row to look up here. Composio stays a real provider:
-  // it needs an API key, so it has to be explicitly activated.
-  const composioProvider = providerList.find((p) => p.name === "Composio");
-  const hasComposio = !!composioProvider;
-
   const loadConnections = useCallback(() => {
     integrations.connections(currentProject?.id).then((next) => {
       setConnections(next);
@@ -214,36 +188,6 @@ export function Integrations() {
     integrations.listGroups().then(setSuites).catch(() => setSuites([]));
   }, [localSearch]);
 
-  const loadComposioApps = useCallback(
-    (search?: string) => {
-      if (!composioProvider) return;
-      setComposioLoading(true);
-      setComposioError("");
-      integrations
-        .composioApps(composioProvider.id, search)
-        .then((apps) => setComposioApps(apps || []))
-        .catch((err) => setComposioError(err?.message || "Failed to load Composio apps"))
-        .finally(() => setComposioLoading(false));
-    },
-    [composioProvider],
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-    providers
-      .list(currentProject?.id)
-      .then((p) => {
-        if (cancelled) return;
-        setProviderList(p);
-        setLoaded(true);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setLoaded(true);
-      });
-    return () => { cancelled = true; };
-  }, [currentProject?.id]);
-
   useEffect(() => {
     loadConnections();
   }, [loadConnections]);
@@ -251,30 +195,6 @@ export function Integrations() {
   useEffect(() => {
     if (tab === "local") loadLocalApps();
   }, [tab, loadLocalApps]);
-
-  useEffect(() => {
-    if (tab === "composio" && composioApps.length === 0) loadComposioApps();
-  }, [tab, loadComposioApps, composioApps.length]);
-
-  // Debounced server-side search when the user types in the Composio search
-  // box — the upstream catalog is large and client-side filtering only covers
-  // the first page we fetched on mount.
-  useEffect(() => {
-    if (tab !== "composio") return;
-    const t = setTimeout(() => {
-      loadComposioApps(composioSearch || undefined);
-    }, 300);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [composioSearch, tab]);
-
-  // Default tab: local catalog is always-on, so we land there.
-  // Composio only auto-selects if we've nothing better to show
-  // (placeholder — kept for future variants that might land
-  // composio-first).
-  useEffect(() => {
-    if (!loaded) return;
-  }, [loaded, hasComposio]);
 
   // --- Local app interactions ---
 
@@ -394,119 +314,6 @@ export function Integrations() {
     } finally {
       setConnecting(false);
     }
-  };
-
-  // --- Composio interactions ---
-
-  // Clicking a Composio app fetches its schema and decides whether we need
-  // to collect anything on our side. Per Composio's documented flow:
-  //   - Managed OAuth toolkits (is_composio_managed=true, e.g. GitHub,
-  //     Google Sheets) → zero inline form, open Connect Link popup
-  //     immediately. Composio runs its own OAuth app. The auth_config is
-  //     use_composio_managed_auth (no credentials needed from us). Note
-  //     that Composio's toolkit schema still lists config_fields for these
-  //     toolkits, but those are optional "bring-your-own-OAuth" overrides
-  //     — we ignore them for managed flows.
-  //   - API_KEY / BASIC / BEARER toolkits (Pushover) → zero inline form,
-  //     open Connect Link popup, user enters credentials on Composio's
-  //     hosted form.
-  //   - Non-managed OAuth toolkits where the user *wants* their own OAuth
-  //     app → inline form for config_fields (client_id / client_secret),
-  //     which we write into a use_custom_auth auth config. We don't offer
-  //     this today — managed flows cover the common case.
-  //
-  // Rule: if the toolkit is composio-managed OR has no config_fields, skip
-  // our form entirely and let Composio handle credential collection.
-  const handlePickComposio = async (app: ComposioApp) => {
-    if (!composioProvider) return;
-    setComposioError("");
-
-    // Fetch toolkit details FIRST so we can decide whether we need to
-    // render our own side panel at all. Composio-managed and
-    // no-config-field toolkits hand the entire credential collection
-    // off to Composio's hosted modal — opening (and immediately
-    // closing) our side panel just causes a visible flash. Only call
-    // setComposioPicked when there's a real form to show.
-    setComposioDetailsLoading(true);
-    let d: ComposioToolkitDetails;
-    try {
-      d = await integrations.composioToolkit(composioProvider.id, app.slug);
-    } catch (err: any) {
-      setComposioError(err?.message || "Failed to load toolkit details");
-      setComposioDetailsLoading(false);
-      return;
-    }
-    setComposioDetailsLoading(false);
-
-    const shouldSkipForm = d.is_composio_managed || d.config_fields.length === 0;
-    if (shouldSkipForm) {
-      // Straight to Composio's hosted flow — no inline side panel.
-      // submitComposioConnection opens the popup with the redirect_url
-      // it gets back from the server.
-      await submitComposioConnection(app, d, {}, {});
-      return;
-    }
-
-    // Real config_fields to collect (e.g. the user wants to bring their
-    // own OAuth client_id/secret instead of using composio-managed
-    // auth) — show the inline form.
-    setComposioPicked(app);
-    setComposioDetails(d);
-    setComposioConfigCreds({});
-    setComposioInitCreds({});
-  };
-
-  const submitComposioConnection = async (
-    app: ComposioApp,
-    details: ComposioToolkitDetails,
-    configCreds: Record<string, string>,
-    initCreds: Record<string, string>,
-  ) => {
-    if (!composioProvider) return;
-    setComposioSubmitting(true);
-    try {
-      // For composio-managed toolkits, the server must create the auth
-      // config with type=use_composio_managed_auth. Our server's
-      // ensureAuthConfig takes the managed path only when authMode is
-      // empty, so we send an empty string here to signal that intent.
-      // For non-managed toolkits we pass the scheme verbatim so the server
-      // uses use_custom_auth.
-      const authMode = details.is_composio_managed ? "" : details.auth_mode.toUpperCase();
-      const result = await integrations.connectComposio(composioProvider.id, app.slug, {
-        name: app.name,
-        projectId: currentProject?.id,
-        authMode,
-        configCreds,
-        initCreds,
-      });
-      // Two response shapes:
-      //   - redirect_url set → OAuth flow, open popup and poll
-      //   - redirect_url empty → direct create succeeded on the server side,
-      //     connection is already active, just refresh
-      if (result.redirect_url) {
-        openOAuthPopup(result.redirect_url);
-        pollConnection(result.connection.id, true);
-      } else if (result.connection) {
-        // Composio direct create (no redirect needed) — connection is
-        // already active, go straight to the tool picker.
-        openPickerFor(result.connection as unknown as ConnectionInfo);
-      }
-      setComposioPicked(null);
-      setComposioDetails(null);
-      setComposioConfigCreds({});
-      setComposioInitCreds({});
-      loadConnections();
-    } catch (err: any) {
-      setComposioError(err?.message || "Failed to start Composio connection");
-    } finally {
-      setComposioSubmitting(false);
-    }
-  };
-
-  const handleSubmitComposioForm = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!composioPicked || !composioDetails) return;
-    await submitComposioConnection(composioPicked, composioDetails, composioConfigCreds, composioInitCreds);
   };
 
   // --- OAuth popup + poll ---
@@ -729,13 +536,6 @@ export function Integrations() {
   // every tool enabled — we locate that row by connection_id and edit
   // its allowed_tools in place.
   //
-  // Composio integrations: MCP rows are pooled per-toolkit (not
-  // per-connection) and carry source="remote". They're not linked via
-  // connection_id, so we match on (source="remote", name=toolkit slug,
-  // provider_id). The server-side /mcp-servers/:id/tools endpoint
-  // already fetches the full Composio action catalog for remote rows,
-  // and PUT /tools triggers the reconcile that rotates Composio's
-  // upstream server to pick up the new action set.
   const openPickerFor = async (c: ConnectionInfo) => {
     setPickerFor(c);
     setPickerMCPId(null);
@@ -746,14 +546,7 @@ export function Integrations() {
     setPickerLoading(true);
     try {
       const servers = await mcpServers.list(c.project_id || "");
-      const existing = c.source === "composio"
-        ? (servers || []).find(
-            (s) =>
-              s.source === "remote" &&
-              s.name === c.app_slug &&
-              (c.provider_id == null || s.provider_id === c.provider_id),
-          )
-        : (servers || []).find((s) => s.connection_id === c.id);
+      const existing = (servers || []).find((s) => s.connection_id === c.id);
       if (existing) {
         const info = await mcpServers.tools(existing.id);
         setPickerMCPId(existing.id);
@@ -764,22 +557,6 @@ export function Integrations() {
           ? new Set(info.allowed_tools)
           : new Set(info.tools.map((t) => t.name));
         setPickerSelected(current);
-      } else if (c.source === "composio") {
-        // Composio connection active but reconcile hasn't produced an
-        // MCP row yet — fall back to the raw toolkit action catalog so
-        // the user can still pick. On submit we skip the unknown
-        // pickerMCPId path; the reconcile will create the row with the
-        // chosen filter on the next boot.
-        const actions = await integrations.composioToolkitActions(c.app_slug);
-        setPickerTools(
-          (actions || []).map((a) => ({
-            name: a.slug,
-            description: a.description || a.name,
-          })),
-        );
-        // Default: tick all so an empty selection doesn't silently
-        // disable every tool — user can untick what they don't want.
-        setPickerSelected(new Set((actions || []).map((a) => a.slug)));
       } else {
         // Local fallback: no MCP row auto-created — use the raw
         // connection tool catalog and create a new scoped MCP on submit.
@@ -812,18 +589,7 @@ export function Integrations() {
       const allowed = Array.from(pickerSelected);
       if (pickerMCPId != null) {
         // Edit the auto-created MCP row in place — no second MCP server.
-        // For Composio remote rows, the server's PUT /tools handler
-        // triggers a reconcile that rotates the upstream Composio
-        // server to the new action set.
         await mcpServers.setAllowedTools(pickerMCPId, allowed);
-      } else if (pickerFor.source === "composio") {
-        // Composio reconcile hasn't produced an MCP row yet (race
-        // between connection activation and the background reconcile).
-        // Refuse the save rather than silently dropping the selection —
-        // the user can re-open the picker in a moment and try again.
-        throw new Error(
-          "Composio is still provisioning this toolkit. Reload the page and try again in a few seconds.",
-        );
       } else {
         // Local fallback (no auto-created MCP found) — create a scoped one.
         await integrations.createScopedMCP(
@@ -919,19 +685,7 @@ export function Integrations() {
     }
   };
 
-  // --- Filtering for Composio ---
-
-  const filteredComposioApps = composioSearch
-    ? composioApps.filter(
-        (a) =>
-          a.name.toLowerCase().includes(composioSearch.toLowerCase()) ||
-          a.slug.toLowerCase().includes(composioSearch.toLowerCase()),
-      )
-    : composioApps;
-
   // --- Render ---
-
-  if (!loaded) return null;
 
   // renderConnectionRow — single source of truth for a connection row.
   // Secondary operations live behind the overflow menu so adding OAuth
@@ -939,8 +693,8 @@ export function Integrations() {
   const renderConnectionRow = (c: ConnectionInfo) => {
     const isGlobal = !c.project_id;
     const isLocalOAuth = (c.source || "local") === "local" && isBrowserOAuthType(c.auth_type);
-    const canMoveScope = c.source !== "composio" && (isGlobal ? currentProject?.id : true);
-    const canExplore = c.source !== "composio" && c.app_slug === "bunny-stream" && c.status === "active";
+    const canMoveScope = isGlobal ? !!currentProject?.id : true;
+    const canExplore = c.app_slug === "bunny-stream" && c.status === "active";
     const menuOpen = openMenuFor === c.id;
     const menuItemClass = "block w-full text-left px-3 py-2 text-sm text-text-muted hover:bg-bg-hover hover:text-text transition-colors";
     return (
@@ -953,7 +707,6 @@ export function Integrations() {
           onClick={() => {
             setDetailsFor(c);
             setSelectedLocalApp(null);
-            setComposioPicked(null);
           }}
           className="min-w-0 flex flex-1 flex-wrap items-center gap-2 text-left sm:gap-3"
           aria-label={`Open ${c.name} connection`}
@@ -984,13 +737,7 @@ export function Integrations() {
               </>
             )}
           </div>
-          <span
-            className={`text-xs px-1.5 py-0.5 rounded ${
-              c.source === "composio"
-                ? "bg-purple-900/40 text-purple-300"
-                : "bg-bg-hover text-text-dim"
-            }`}
-          >
+          <span className="text-xs px-1.5 py-0.5 rounded bg-bg-hover text-text-dim">
             {c.source || "local"}
           </span>
           {isGlobal && (
@@ -1106,8 +853,7 @@ export function Integrations() {
         </p>
       </div>
 
-      {/* Source tabs — Apteva Local is always available; Composio
-          stays a real provider, gated on its API key being set. */}
+      {/* Catalog and usage views. */}
       <div className="border-b border-border flex max-w-full gap-0 overflow-x-auto px-4 sm:px-6">
         <button
           onClick={() => setTab("local")}
@@ -1117,18 +863,7 @@ export function Integrations() {
               : "text-text-muted border-transparent hover:text-text"
           }`}
         >
-          Apteva Local
-        </button>
-        <button
-          onClick={() => setTab("composio")}
-          disabled={!hasComposio}
-          className={`shrink-0 whitespace-nowrap px-4 sm:px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
-            tab === "composio"
-              ? "text-accent border-accent"
-              : "text-text-muted border-transparent hover:text-text"
-          } ${!hasComposio ? "opacity-50 cursor-not-allowed" : ""}`}
-        >
-          Composio {!hasComposio && "· inactive"}
+          Catalog
         </button>
         <button
           onClick={() => setTab("usage")}
@@ -1150,7 +885,7 @@ export function Integrations() {
               which connections are scoped to the current project vs.
               visible across every project. Both sections render the
               same row component; only the heading differs. */}
-          {connections && connections.length > 0 && (
+          {tab === "local" && connections && connections.length > 0 && (
             <section>
               <h2 className="text-text text-base font-bold mb-3">
                 Connected ({connections.length})
@@ -1298,179 +1033,10 @@ export function Integrations() {
             </section>
           )}
 
-          {tab === "composio" && hasComposio && (
-            <section>
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-text text-base font-bold">Composio App Catalog</h2>
-                <button
-                  onClick={() => loadComposioApps()}
-                  className="text-xs text-accent hover:text-accent-hover transition-colors"
-                >
-                  Refresh
-                </button>
-              </div>
-              <input
-                value={composioSearch}
-                onChange={(e) => setComposioSearch(e.target.value)}
-                className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent mb-4"
-                placeholder="Search Composio apps..."
-              />
-              {composioLoading && <p className="text-text-muted text-sm">Loading Composio catalog…</p>}
-              {composioError && <p className="text-red text-sm mb-3">{composioError}</p>}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {filteredComposioApps.map((app) => {
-                  const isConnected = (connections || []).some(
-                    (c) => c.app_slug === app.slug && c.source === "composio",
-                  );
-                  return (
-                    <button
-                      key={app.slug}
-                      onClick={() => !isConnected && handlePickComposio(app)}
-                      disabled={isConnected}
-                      className={`border rounded-lg p-4 text-left transition-colors ${
-                        isConnected
-                          ? "border-green bg-bg-card cursor-default"
-                          : "border-border bg-bg-card hover:border-accent"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 mb-2">
-                        <AppLogo src={app.logo} className="w-6 h-6 rounded" />
-                        <div className="flex-1 min-w-0">
-                          <span className="text-text text-sm font-bold">{app.name}</span>
-                          <span className="text-text-dim text-xs ml-1.5">{app.slug}</span>
-                        </div>
-                        {app.composio_managed && (
-                          <span className="text-[10px] px-1 py-0.5 rounded bg-accent/20 text-accent">
-                            managed
-                          </span>
-                        )}
-                        {isConnected && <span className="text-green text-xs shrink-0">connected</span>}
-                      </div>
-                      {app.description && (
-                        <p className="text-text-muted text-xs leading-relaxed line-clamp-2">
-                          {app.description}
-                        </p>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-              {!composioLoading && filteredComposioApps.length === 0 && (
-                <p className="text-text-muted text-sm">No apps.</p>
-              )}
-              <p className="text-text-dim text-xs mt-4">
-                Clicking an app opens Composio's OAuth flow in a popup. Composio handles the
-                entire authorization on its side — we only store a reference. A single hosted
-                MCP server will appear in the MCP Servers list, aggregating every Composio
-                connection in this project.
-              </p>
-            </section>
-          )}
-
           {tab === "usage" && (
             <IntegrationUsagePanel projectId={currentProject?.id} />
           )}
         </div>
-
-        {/* Composio toolkit connect form (right panel) */}
-        {tab === "composio" && composioPicked && (
-          <div className="fixed inset-x-0 bottom-0 top-12 z-40 bg-bg border-t border-border overflow-y-auto p-4 shadow-xl md:static md:z-auto md:w-96 md:shrink-0 md:border-t-0 md:border-l md:p-6 md:shadow-none">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-text text-base font-bold">{composioPicked.name}</h2>
-              <button
-                onClick={() => {
-                  setComposioPicked(null);
-                  setComposioDetails(null);
-                  setComposioConfigCreds({});
-                  setComposioInitCreds({});
-                }}
-                className="text-text-muted hover:text-text text-sm transition-colors"
-              >
-                Close
-              </button>
-            </div>
-
-            {composioDetailsLoading && (
-              <p className="text-text-muted text-sm">Loading toolkit details…</p>
-            )}
-
-            {composioError && <p className="text-red text-sm mb-4">{composioError}</p>}
-
-            {composioDetails && (
-              <>
-                <div className="text-text-dim text-xs mb-4">
-                  Auth: {composioDetails.auth_mode_display || composioDetails.auth_mode}
-                  {composioDetails.is_composio_managed && (
-                    <span className="ml-2 text-accent">· composio-managed</span>
-                  )}
-                </div>
-
-                {composioDetails.auth_guide_url && (
-                  <a
-                    href={composioDetails.auth_guide_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-accent text-xs hover:text-accent-hover block mb-4"
-                  >
-                    → setup guide for {composioDetails.name}
-                  </a>
-                )}
-
-                {composioDetails.config_fields.length === 0 && (
-                  <div className="bg-bg-hover border border-border rounded-lg p-3 mb-4 text-xs text-text-muted">
-                    {composioDetails.is_composio_managed
-                      ? "Clicking Authorize opens Composio's OAuth flow — you'll be redirected to the provider to sign in."
-                      : "Clicking Connect opens Composio's hosted credential form where you'll enter your API key. Composio stores it on their side."}
-                  </div>
-                )}
-
-                <form onSubmit={handleSubmitComposioForm} className="space-y-4">
-                  {composioDetails.config_fields.length > 0 && (
-                    <>
-                      <p className="text-text-muted text-xs">
-                        These fields configure the auth config itself (e.g. your own OAuth app's
-                        client id/secret). The user's per-connection credentials are entered on
-                        Composio's side after submit.
-                      </p>
-                      {composioDetails.config_fields.map((f) => (
-                        <div key={`c-${f.name}`}>
-                          <label className="block text-text-muted text-sm mb-1">
-                            {f.display_name}
-                            {f.required && <span className="text-red ml-1">*</span>}
-                          </label>
-                          {f.description && (
-                            <p className="text-text-dim text-xs mb-1">{f.description}</p>
-                          )}
-                          <input
-                            type={f.type === "password" || /key|secret|token/i.test(f.name) ? "password" : "text"}
-                            value={composioConfigCreds[f.name] || ""}
-                            onChange={(e) =>
-                              setComposioConfigCreds({ ...composioConfigCreds, [f.name]: e.target.value })
-                            }
-                            className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text focus:outline-none focus:border-accent"
-                            required={f.required}
-                          />
-                        </div>
-                      ))}
-                    </>
-                  )}
-
-                  <button
-                    type="submit"
-                    disabled={composioSubmitting}
-                    className="w-full px-5 py-3 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
-                  >
-                    {composioSubmitting
-                      ? "Connecting…"
-                      : composioDetails.is_composio_managed
-                        ? "Authorize"
-                        : "Connect"}
-                  </button>
-                </form>
-              </>
-            )}
-          </div>
-        )}
 
         {/* Local app connect form (right panel) */}
         {tab === "local" && selectedLocalApp && (
@@ -1675,7 +1241,7 @@ export function Integrations() {
         {/* Existing connection details (right panel). Provider-specific
             setup belongs here, after the operator selects a connection,
             rather than occupying the global Integrations catalog. */}
-        {detailsFor && !selectedLocalApp && !composioPicked && (
+        {detailsFor && !selectedLocalApp && (
           <aside className="fixed inset-x-0 bottom-0 top-12 z-40 overflow-y-auto border-t border-border bg-bg p-4 shadow-xl md:static md:z-auto md:w-[430px] md:shrink-0 md:border-l md:border-t-0 md:p-5 md:shadow-none">
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 items-center gap-3">
@@ -2074,10 +1640,13 @@ export function Integrations() {
   );
 }
 
-function IntegrationUsagePanel({ projectId }: { projectId?: string }) {
+export function IntegrationUsagePanel({ projectId }: { projectId?: string }) {
   const [period, setPeriod] = useState("7d");
   const [summary, setSummary] = useState<IntegrationUsageSummary | null>(null);
-  const [loading, setLoading] = useState(false);
+  // Start in the loading state. The panel is mounted only after the Usage tab
+  // is selected, so rendering an empty "0 / No usage" frame before the first
+  // request resolves makes a healthy request look broken or stale.
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(() => {

@@ -217,7 +217,15 @@
       "themeCleanDescription": "Inter, esquinas redondeadas y sombras sutiles. Listo para presentaciones.",
       "modeAuto": "Auto",
       "modeDark": "Oscuro",
-      "modeLight": "Claro"
+      "modeLight": "Claro",
+      "audience": "Nivel de interfaz",
+      "audienceHint": "Se guarda localmente en este dispositivo. Las secciones ocultas siguen accesibles por enlace directo: nada se elimina, solo se aparta.",
+      "audience_personal": "Personal",
+      "audience_personalDescription": "Solo tus agentes y tus herramientas. Crea cosas pidiéndoselo al asistente.",
+      "audience_business": "Negocio",
+      "audience_businessDescription": "Añade cuentas conectadas, el marketplace, los costes y los ajustes de equipo.",
+      "audience_developer": "Desarrollador",
+      "audience_developerDescription": "Todo: habilidades, servidores MCP, controles paso a paso y diagnósticos."
     },
     "providers": {
       "subscriptionUsage": "Uso de la suscripción",
@@ -239,5 +247,21 @@
     "en": "Ingles",
     "fr": "Frances",
     "es": "Espanol"
+  },
+  "_audienceVocabulary": {
+    "personal": {
+      "nav": {
+        "build": "Crear",
+        "dashboard": "Inicio"
+      }
+    },
+    "business": {
+      "nav": {
+        "integrations": "Cuentas conectadas",
+        "apps": "Marketplace",
+        "monitor": "Actividad",
+        "usage": "Costes"
+      }
+    }
   }
 }

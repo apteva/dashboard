@@ -475,9 +475,6 @@ export interface ProviderTypeInfo {
   sort_order: number;
 }
 
-export const providerTypes = {
-  list: () => request<ProviderTypeInfo[]>("GET", "/provider-types"),
-};
 
 // Projects
 export interface Project {
@@ -1104,93 +1101,6 @@ export interface ProviderAuthStatus {
   account?: Record<string, any>;
 }
 
-export const providers = {
-  // If projectId is passed, the response includes providers scoped to that
-  // project PLUS any unscoped "global" ones (project_id = '').
-  list: (projectId?: string) => {
-    const params = projectId
-      ? `?project_id=${encodeURIComponent(projectId)}`
-      : "";
-    return request<Provider[]>("GET", `/providers${params}`);
-  },
-
-  get: (id: number) => request<ProviderDetail>("GET", `/providers/${id}`),
-
-  models: (id: number, refresh = false) =>
-    request<ModelInfo[]>(
-      "GET",
-      `/providers/${id}/models${refresh ? "?refresh=1" : ""}`,
-    ),
-
-  usage: (id: number, refresh = false) =>
-    request<ProviderUsageSnapshot>(
-      "GET",
-      `/providers/${id}/usage${refresh ? "?refresh=1" : ""}`,
-    ),
-
-  updateModels: (
-    id: number,
-    models: { large: string; medium: string; small: string },
-  ) =>
-    request<{ status: string; large: string; medium: string; small: string }>(
-      "PUT",
-      `/providers/${id}/models`,
-      models,
-    ),
-
-  create: (
-    type: string,
-    name: string,
-    data: Record<string, string>,
-    providerTypeId?: number,
-    projectId?: string,
-  ) =>
-    request<Provider>("POST", "/providers", {
-      type,
-      name,
-      data,
-      provider_type_id: providerTypeId || 0,
-      project_id: projectId || "",
-    }),
-
-  // Test an already-saved provider's credentials. Used by the "Test"
-  // button on each row in the Settings page providers section.
-  test: (id: number) =>
-    request<ProviderTestResult>("POST", `/providers/${id}/test`, {}),
-
-  authStart: (providerTypeId: number, projectId?: string) =>
-    request<ProviderAuthStart>("POST", "/providers/auth/start", {
-      provider_type_id: providerTypeId,
-      project_id: projectId || "",
-    }),
-
-  authPoll: (sessionId: string) =>
-    request<ProviderAuthStatus>(
-      "GET",
-      `/providers/auth/${encodeURIComponent(sessionId)}`,
-    ),
-
-  authStatus: (id: number) =>
-    request<ProviderAuthStatus>("GET", `/providers/${id}/auth/status`),
-
-  authRefresh: (id: number) =>
-    request<ProviderAuthStatus>("POST", `/providers/${id}/auth/refresh`, {}),
-
-  authLogout: (id: number) =>
-    request<ProviderAuthStatus>("POST", `/providers/${id}/auth/logout`, {}),
-
-  authSmokeTest: (id: number) =>
-    request<ProviderTestResult>("POST", `/providers/${id}/auth/smoke-test`, {}),
-
-  update: (
-    id: number,
-    type: string,
-    name: string,
-    data: Record<string, string>,
-  ) => request<any>("PUT", `/providers/${id}`, { type, name, data }),
-
-  delete: (id: number) => request<any>("DELETE", `/providers/${id}`),
-};
 
 // Integrations catalog + connections
 export interface AppSummary {
@@ -1213,6 +1123,71 @@ export interface CredentialField {
   type?: string;
   source?: "user" | "oauth";
   hidden?: boolean;
+}
+
+// A catalog app that can back an agent runtime (LLM, embeddings, TTS).
+// Returned by GET /integrations/catalog?runtime_role=...
+//
+// Carries auth_types + credential_fields so a credential form renders the
+// same labelled inputs it does for any other integration. The provider
+// -types list it replaces exposed only raw env var names, which is why
+// onboarding used to label its inputs "ANTHROPIC_API_KEY".
+export interface RuntimeCatalogEntry {
+  slug: string;
+  name: string;
+  description: string;
+  logo: string | null;
+  role: "llm" | "embeddings" | "tts";
+  /** Name apteva-core expects in config.json — "anthropic", "google". */
+  provider_key: string;
+  auth_types: string[];
+  credential_fields?: CredentialField[];
+  capabilities?: string[];
+  /** Names only, never values. */
+  env_vars?: string[];
+}
+
+/** A connected runtime backend, as listed by GET /connections/runtime.
+ *  Never carries credentials — it drives a settings screen. */
+export interface RuntimeConnection {
+  id: number;
+  name: string;
+  app_slug: string;
+  app_name: string;
+  /** Name apteva-core uses in config.json. Several connections can share
+   *  one provider_key; exactly one of them is primary per scope. */
+  provider_key: string;
+  role: "llm" | "embeddings" | "tts";
+  project_id: string;
+  scope: "global" | "project";
+  /** Whether this credential is the one agents boot with. */
+  is_primary: boolean;
+  capabilities?: string[];
+  /** Model picks and non-secret knobs: model_large, model_small, … */
+  runtime_config: Record<string, any>;
+  env_vars?: string[];
+}
+
+/** Adapt a runtime catalog entry to the shape the shared credential
+ *  form reads (it only touches `name` and `auth`), so runtime providers
+ *  and ordinary integrations render through one component. */
+export function runtimeEntryAsAppDetail(entry: RuntimeCatalogEntry): AppDetail {
+  return {
+    slug: entry.slug,
+    name: entry.name,
+    description: entry.description,
+    logo: entry.logo,
+    categories: [],
+    auth_types: entry.auth_types,
+    tool_count: 0,
+    has_webhooks: false,
+    base_url: "",
+    auth: {
+      types: entry.auth_types,
+      credential_fields: entry.credential_fields,
+    },
+    tools: [],
+  } as AppDetail;
 }
 
 export interface AppDetail extends AppSummary {
@@ -1298,7 +1273,7 @@ export interface ConnectionInfo {
   logo?: string;
   auth_type: string;
   status: string;
-  source: string; // 'local' | 'composio'
+  source: string; // catalog-backed connections use 'local'
   provider_id?: number;
   external_id?: string;
   project_id?: string;
@@ -1335,8 +1310,7 @@ export interface DeviceAuthStatus {
   account?: { id?: string; email?: string };
 }
 
-// Response shape when a connection create kicks off an OAuth flow (local
-// oauth2/composio) or an oauth_device_code flow.
+// Response shape when a connection create kicks off an OAuth or device-code flow.
 export interface ConnectCreateResponse {
   connection: ConnectionInfo;
   redirect_url?: string;
@@ -1359,37 +1333,6 @@ export interface ConnectionTestResult {
   latency_ms: number;
   status_code?: number;
   error?: string;
-}
-
-export interface ComposioApp {
-  slug: string;
-  name: string;
-  description?: string;
-  logo?: string;
-  categories?: string[];
-  no_auth?: boolean;
-  composio_managed?: boolean;
-}
-
-export interface ComposioCredField {
-  name: string;
-  display_name: string;
-  description?: string;
-  type: string;
-  required: boolean;
-  default?: string;
-}
-
-export interface ComposioToolkitDetails {
-  slug: string;
-  name: string;
-  composio_managed_auth_schemes: string[];
-  auth_mode: string; // lowercase: oauth2 / api_key / basic / ...
-  auth_mode_display: string;
-  auth_guide_url?: string;
-  config_fields: ComposioCredField[];
-  init_fields: ComposioCredField[];
-  is_composio_managed: boolean;
 }
 
 export interface CatalogStatus {
@@ -1443,6 +1386,16 @@ export const integrations = {
     const params = qs.toString() ? `?${qs.toString()}` : "";
     return request<AppSummary[]>("GET", `/integrations/catalog${params}`);
   },
+
+  // Catalog apps that can back an agent runtime — the replacement for
+  // the old provider-types list. Filtering happens server-side because
+  // the catalog is 600+ entries and no category identifies a runtime
+  // ("ai" is on 62 apps, most of them ordinary integrations).
+  runtimeCatalog: (role: "llm" | "embeddings" | "tts" = "llm") =>
+    request<RuntimeCatalogEntry[]>(
+      "GET",
+      `/integrations/catalog?runtime_role=${encodeURIComponent(role)}`,
+    ),
 
   // Credential-group (suite) catalog — OmniKit, SocialCast, ...
   listGroups: () =>
@@ -1690,6 +1643,57 @@ export const integrations = {
       ...(autoMCP !== undefined ? { auto_mcp: autoMCP } : {}),
     }),
 
+  // ─── Runtime backends (the Models settings tab) ───
+  //
+  // Connections whose catalog entry declares a `runtime` block. These
+  // replace the providers table: same credentials, but resolved through
+  // the catalog instead of a parallel schema.
+
+  /** Runtime-backed connections in the order the agent pool resolves
+   *  them (project scope first, then primary, then id). */
+  runtimeConnections: (projectId?: string) =>
+    request<RuntimeConnection[]>(
+      "GET",
+      `/connections/runtime${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
+    ),
+
+  /** Pick which credential backs the runtime when several exist for one
+   *  provider. Demotes the previous primary server-side. */
+  setPrimary: (connectionId: number) =>
+    request<{ id: number; is_primary: boolean; provider_key: string }>(
+      "PATCH",
+      `/connections/${connectionId}/primary`,
+      {},
+    ),
+
+  /** Merge keys into a connection's runtime config. Send null for a key
+   *  to clear it and fall back to the provider default. */
+  updateRuntimeConfig: (
+    connectionId: number,
+    patch: Record<string, string | null>,
+  ) =>
+    request<Record<string, any>>(
+      "PATCH",
+      `/connections/${connectionId}/runtime-config`,
+      patch,
+    ),
+
+  /** Live model list for a runtime connection. Providers without model
+   *  discovery reject this — callers should fall back to free-text. */
+  connectionModels: (connectionId: number, refresh = false) =>
+    request<ModelInfo[]>(
+      "GET",
+      `/connections/${connectionId}/models${refresh ? "?refresh=1" : ""}`,
+    ),
+
+  /** Subscription quota, polled live from the upstream. Only meaningful
+   *  for connections whose capabilities include "subscription_usage". */
+  connectionUsage: (connectionId: number, refresh = false) =>
+    request<ProviderUsageSnapshot>(
+      "GET",
+      `/connections/${connectionId}/usage${refresh ? "?refresh=1" : ""}`,
+    ),
+
   // Run the per-app health_check probe against the stored
   // credentials of an existing connection. The server replies
   // with { ok, latency_ms, status_code?, error?, skipped?,
@@ -1706,11 +1710,7 @@ export const integrations = {
     ),
 
   /** Move a connection between project and global scope. project_id=""
-   *  → global; an id → that project. Mirror of apps.setScope (v0.14.5)
-   *  but for connections. Returns a summary of what moved (the row
-   *  + its auto-MCP). Refuses for composio-source connections —
-   *  Composio's hosted connected_account is bound to a project on
-   *  their side too. */
+   *  → global; an id → that project. Returns a summary of what moved. */
   setConnectionScope: (connectionId: number, projectId: string) =>
     request<{
       connection_id: number;
@@ -1765,50 +1765,6 @@ export const integrations = {
       `/connections/auth/${encodeURIComponent(sessionId)}`,
     ),
 
-  // Hosted Composio connection — server calls Composio, returns a redirect URL
-  // the dashboard must open in a popup. The connection row is pending until
-  // the user finishes OAuth on Composio's side; poll /connections/:id to flip.
-  connectComposio: (
-    providerId: number,
-    appSlug: string,
-    opts?: {
-      name?: string;
-      projectId?: string;
-      authMode?: string; // API_KEY / OAUTH2 / BASIC ...
-      configCreds?: Record<string, string>; // fields for auth_config creation
-      initCreds?: Record<string, string>; // fields for per-connection init
-    },
-  ) =>
-    request<ConnectCreateResponse>("POST", "/connections", {
-      source: "composio",
-      provider_id: providerId,
-      app_slug: appSlug,
-      name: opts?.name || appSlug,
-      project_id: opts?.projectId || "",
-      composio_auth_mode: opts?.authMode || "",
-      composio_config_creds: opts?.configCreds || {},
-      composio_init_creds: opts?.initCreds || {},
-    }),
-
-  // Per-toolkit detail fetch — returns the credential field schema so the
-  // dashboard can render a form before initiating the connection. Proxied
-  // through apteva-server so the Composio API key never leaves the server.
-  composioToolkit: (providerId: number, slug: string) =>
-    request<ComposioToolkitDetails>(
-      "GET",
-      `/composio/toolkit/${encodeURIComponent(slug)}?provider_id=${providerId}`,
-    ),
-
-  // Manual trigger for Composio MCP server reconciliation. Recreates the
-  // aggregate remote mcp_servers row for a (project, provider) tuple from
-  // the current set of active composio connections. Use this after a
-  // reconcile failure during connection creation.
-  composioReconcile: (providerId: number, projectId?: string) =>
-    request<{ status: string; mcp_server: MCPServer | null }>(
-      "POST",
-      `/composio/reconcile?provider_id=${providerId}${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ""}`,
-    ),
-
   // Single-connection fetch — used by OAuth-flow polling.
   get: (id: number) => request<ConnectionInfo>("GET", `/connections/${id}`),
 
@@ -1823,28 +1779,6 @@ export const integrations = {
 
   rename: (id: number, name: string) =>
     request<ConnectionInfo>("PATCH", `/connections/${id}`, { name }),
-
-  // Composio app catalog (proxied via apteva-server using the user's API key).
-  // Pass a non-empty `search` to use Composio's server-side search instead of
-  // paging through the full catalog.
-  composioApps: (providerId: number, search?: string) => {
-    const q = `?provider_id=${providerId}${search ? `&search=${encodeURIComponent(search)}` : ""}`;
-    return request<ComposioApp[]>("GET", `/composio/apps${q}`);
-  },
-
-  // List every action (tool) a Composio toolkit exposes. Used by the
-  // tool-scope picker so the user can narrow an MCP server row to a
-  // subset. Auto-picks the user's first Composio provider on the server
-  // side — no provider_id needed.
-  composioToolkitActions: (slug: string) =>
-    request<
-      Array<{
-        slug: string;
-        name: string;
-        description: string;
-        toolkit: string;
-      }>
-    >("GET", `/composio/toolkits/${encodeURIComponent(slug)}/actions`),
 
   tools: (id: number) =>
     request<
@@ -1864,25 +1798,6 @@ export const integrations = {
       { tool, input },
     ),
 
-  // List Composio trigger templates for this connection's toolkit.
-  // Returns [] for local-source connections (server responds 404 there,
-  // we fall back to empty in the caller). The trigger config schema is
-  // untyped because it varies per-trigger — the UI renders a dynamic
-  // form from it.
-  triggers: (id: number) =>
-    request<{
-      connection_id: number;
-      toolkit: string;
-      triggers: Array<{
-        slug: string;
-        name: string;
-        description: string;
-        instructions?: string;
-        type: string; // "webhook" | "poll"
-        toolkit: string;
-        config: Record<string, any>;
-      }>;
-    }>("GET", `/connections/${id}/triggers`),
 };
 
 // MCP Servers
@@ -1905,8 +1820,7 @@ export interface MCPServer {
   upstream_id?: string;
   // allowed_tools is the persisted tool filter. Empty/null means "all tools
   // exposed" (legacy). A populated array means only those tools are served
-  // by this MCP server row — enforced server-side for local rows and
-  // forwarded to Composio as `actions` for remote rows.
+  // by this MCP server row.
   allowed_tools?: string[] | null;
   project_id?: string;
   proxy_config?: {
@@ -2051,9 +1965,7 @@ export const mcpServers = {
   tools: (id: number) =>
     request<MCPServerToolsResponse>("GET", `/mcp-servers/${id}/tools`),
 
-  // Overwrite the allowed_tools filter. Pass an empty array to clear
-  // (re-enable all tools). Takes effect immediately for source=local
-  // rows; source=remote (Composio) needs a subsequent /composio/reconcile.
+  // Overwrite the allowed_tools filter. Pass an empty array to clear it.
   setAllowedTools: (id: number, allowed: string[]) =>
     request<{ status: string; allowed_tools: string[] }>(
       "PUT",
@@ -2122,10 +2034,6 @@ export const subscriptions = {
       // must be '<app>:<topic_pattern>' (e.g. 'tables:*') and events
       // can carry one or more app topics/patterns for the same row.
       source?: "webhook" | "app_event";
-      // Composio-source only: which trigger template to instantiate
-      // and its config fields (varies per trigger template).
-      triggerSlug?: string;
-      triggerConfig?: Record<string, any>;
       notifyAgent?: boolean;
     },
   ) =>
@@ -2133,8 +2041,6 @@ export const subscriptions = {
       subscription: SubscriptionInfo;
       webhook_url: string;
       auto_registered: boolean;
-      trigger_id?: string;
-      trigger_slug?: string;
     }>("POST", "/subscriptions", {
       name,
       slug,
@@ -2146,8 +2052,6 @@ export const subscriptions = {
       thread_id: opts?.threadId || "",
       project_id: opts?.projectId || "",
       source: opts?.source || "webhook",
-      trigger_slug: opts?.triggerSlug || "",
-      trigger_config: opts?.triggerConfig || {},
       notify_agent: opts?.notifyAgent || false,
     }),
 

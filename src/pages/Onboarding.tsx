@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { auth, instances, providerTypes, providers, type ProviderTypeInfo } from "../api";
+import {
+  auth,
+  instances,
+  integrations,
+  runtimeEntryAsAppDetail,
+  type RuntimeCatalogEntry,
+} from "../api";
+import { CredentialFields } from "../components/integrations/CredentialFields";
+import { defaultIntegrationAuthType } from "../utils/integrationAuth";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme, type ThemeMode } from "../hooks/useTheme";
 import { usePageTitle } from "../hooks/usePageTitle";
@@ -269,6 +277,16 @@ function ThemeCard({
   );
 }
 
+// isTypeableRuntimeEntry — onboarding only offers providers the operator
+// can connect by pasting a key. OAuth and device-code flows need a popup
+// and a round trip, which is more than a first-run screen should ask for;
+// they stay available in Settings.
+export function isTypeableRuntimeEntry(entry: RuntimeCatalogEntry): boolean {
+  if ((entry.credential_fields || []).length === 0) return false;
+  const authType = defaultIntegrationAuthType(runtimeEntryAsAppDetail(entry));
+  return authType !== "oauth2" && authType !== "oauth1" && authType !== "oauth_device_code";
+}
+
 function ProviderStep({
   setupReady,
   onSaved,
@@ -276,41 +294,32 @@ function ProviderStep({
   setupReady?: boolean;
   onSaved?: () => void | Promise<void>;
 }) {
-  const [types, setTypes] = useState<ProviderTypeInfo[]>([]);
-  const [selected, setSelected] = useState<ProviderTypeInfo | null>(null);
+  const [entries, setEntries] = useState<RuntimeCatalogEntry[]>([]);
+  const [selected, setSelected] = useState<RuntimeCatalogEntry | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    providerTypes
-      .list()
+    // The server filters to runtime-capable apps; asking for the whole
+    // catalog and filtering here would pull 600+ entries on first run.
+    integrations
+      .runtimeCatalog("llm")
       .then((all) => {
-        // Onboarding only offers credentialed LLM providers — that's the
-        // minimum to make an agent run. Browser/embedding/integration
-        // providers can wait for Settings → Providers.
-        const llm = all
-          .filter(
-            (t) =>
-              t.type === "llm" &&
-              t.requires_credentials &&
-              (t.auth_type || "api_key") === "api_key" &&
-              (t.runtime_status || "available") === "available",
-          )
-          .sort((a, b) => a.sort_order - b.sort_order);
-        setTypes(llm);
-        if (llm.length > 0) setSelected(llm[0] ?? null);
+        const typeable = all.filter(isTypeableRuntimeEntry);
+        setEntries(typeable);
+        if (typeable.length > 0) setSelected(typeable[0] ?? null);
       })
-      .catch(() => setTypes([]));
+      .catch(() => setEntries([]));
   }, []);
 
   const onSave = async () => {
     if (!selected) return;
     const trimmed: Record<string, string> = {};
-    for (const f of selected.fields) {
-      const v = (fields[f] || "").trim();
-      if (v) trimmed[f] = v;
+    for (const field of selected.credential_fields || []) {
+      const value = (fields[field.name] || "").trim();
+      if (value) trimmed[field.name] = value;
     }
     if (Object.keys(trimmed).length === 0) {
       setError("Paste a key to save.");
@@ -322,7 +331,21 @@ function ProviderStep({
       // Empty project_id = global scope; the user's auto-created
       // "Default" project picks it up via the unscoped fallback in
       // GetAllProviderEnvVars.
-      await providers.create(selected.type, selected.name, trimmed, selected.id, "");
+      //
+      // auto_mcp stays off: this credential exists to back the agent
+      // runtime, and exposing the provider's REST tools to every agent
+      // in the project is a separate decision the operator can make
+      // later in Integrations.
+      await integrations.connect(
+        selected.slug,
+        selected.name,
+        trimmed,
+        defaultIntegrationAuthType(runtimeEntryAsAppDetail(selected)) || "api_key",
+        "",
+        undefined,
+        "integration",
+        false,
+      );
       setSaved(true);
       await onSaved?.();
     } catch (err: any) {
@@ -345,52 +368,50 @@ function ProviderStep({
         </p>
       </div>
 
-      {types.length === 0 ? (
+      {entries.length === 0 ? (
         <p className="text-text-muted text-sm">No providers available right now. You can configure one later.</p>
       ) : (
         <>
           <div>
             <label className="block text-text-muted text-sm mb-2">Provider</label>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {types.map((t) => (
+              {entries.map((entry) => (
                 <button
-                  key={t.id}
+                  key={entry.slug}
                   onClick={() => {
-                    setSelected(t);
+                    setSelected(entry);
                     setFields({});
                     setSaved(false);
                     setError("");
                   }}
                   className={`px-3 py-2 text-sm rounded border transition-colors ${
-                    selected?.id === t.id
+                    selected?.slug === entry.slug
                       ? "border-accent bg-bg-card text-text"
                       : "border-border text-text-muted hover:text-text hover:border-text-dim"
                   }`}
                 >
-                  {t.name}
+                  {entry.name}
                 </button>
               ))}
             </div>
           </div>
 
-          {selected?.fields.map((f) => (
-            <div key={f}>
-              <label className="block text-text-muted text-sm mb-2">{f}</label>
-              <input
-                type={f.toLowerCase().includes("key") ? "password" : "text"}
-                value={fields[f] || ""}
-                onChange={(e) => {
-                  setFields({ ...fields, [f]: (e.target as HTMLInputElement).value });
-                  setSaved(false);
-                  setError("");
-                }}
-                className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text font-mono focus:outline-none focus:border-accent"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder={f.toLowerCase().includes("key") ? "paste your key" : ""}
-              />
-            </div>
-          ))}
+          {/* Same renderer every other integration uses, so the inputs
+              carry the catalog's labels and descriptions. The old form
+              labelled these with raw env var names ("ANTHROPIC_API_KEY")
+              and guessed password-vs-text by string-matching "key",
+              which rendered OPENAI_BASE_URL as a secret field. */}
+          {selected && (
+            <CredentialFields
+              detail={runtimeEntryAsAppDetail(selected)}
+              credentials={fields}
+              setCredentials={(next) => {
+                setFields(next);
+                setSaved(false);
+                setError("");
+              }}
+            />
+          )}
 
           {error && <div className="text-red text-sm">{error}</div>}
           {saved && (

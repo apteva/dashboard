@@ -19,7 +19,7 @@ import { openOAuthPopup, pollConnection } from "./connectFlow";
 //
 // Used from the wizard's Setup step today; pages/Integrations.tsx
 // will switch to it in a follow-up PR (today still has its own
-// inline flow for the Composio + group-suite paths the modal
+// inline flow for group-suite paths the modal
 // deliberately doesn't try to cover).
 //
 // Closed states:

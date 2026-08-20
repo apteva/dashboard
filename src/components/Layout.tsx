@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { AppIcon } from "@apteva/ui-kit";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
+import { useAudience, type AudienceSection } from "../hooks/useAudience";
 import { AccountMenu } from "./AccountMenu";
 import { NotificationsTray } from "./NotificationsTray";
 import { startChatNotifications } from "../state/chatNotifications";
@@ -32,6 +33,7 @@ const SIDEBAR_APPS_VISIBLE = 5;
 
 export function Layout() {
   const { t } = useTranslation();
+  const { shows } = useAudience();
   const [version, setVersion] = useState("");
   const [versionTip, setVersionTip] = useState("");
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus | null>(
@@ -237,20 +239,26 @@ export function Layout() {
   //                visual cue matches the Apps page.
   //   manageNav  — platform-administration verbs (header: MANAGE).
   //                Things you do TO the platform, not WITH it.
+  //
+  // Entries carrying a `section` are gated by the audience axis (see
+  // hooks/useAudience). Entries without one are visible to everyone.
+  // Routes stay registered either way — hiding a sidebar link never
+  // unmounts a route, so deep links and agent-driven navigation keep
+  // working at every audience.
   const primaryNav = [
     { to: "/", label: t("nav.dashboard") },
     { to: "/build", label: t("nav.build") },
     { to: "/agents", label: t("nav.agents") },
-    { to: "/monitor", label: t("nav.monitor") },
+    { to: "/monitor", label: t("nav.monitor"), section: "nav.monitor" },
     { to: "/chat", label: t("nav.chat") },
-  ];
+  ].filter((item) => !item.section || shows(item.section as AudienceSection));
   const manageNav = [
-    { to: "/integrations", label: t("nav.integrations") },
-    { to: "/apps", label: t("nav.apps") },
-    { to: "/skills", label: t("nav.skills") },
-    { to: "/analytics", label: t("nav.usage") },
+    { to: "/integrations", label: t("nav.integrations"), section: "nav.integrations" },
+    { to: "/apps", label: t("nav.apps"), section: "nav.apps" },
+    { to: "/skills", label: t("nav.skills"), section: "nav.skills" },
+    { to: "/analytics", label: t("nav.usage"), section: "nav.usage" },
     { to: "/settings", label: t("nav.settings") },
-  ];
+  ].filter((item) => !item.section || shows(item.section as AudienceSection));
   // App-contributed entries from any installed app declaring a
   // `provides.ui_panels` entry with slot=project.page. Each one
   // becomes a sidebar link to /apps/<name>/page rendered via
@@ -403,16 +411,21 @@ export function Layout() {
           above the nav rail (not behind a "go to Agents → click +"
           two-step). Filled accent so it stays the focal point of
           the sidebar regardless of which page is selected. */}
-      <div className="px-3 py-3 border-b border-border">
-        <NewAgentButton
-          label={t("nav.newAgent")}
-          onClick={() => {
-            if (mobile) setMobileNavOpen(false);
-          }}
-          className="w-full"
-          title={t("nav.newAgentTitle")}
-        />
-      </div>
+      {/* /agents/new is the expert creation form (directive, safety mode,
+          MCP servers, allowed folders). Personal creates agents by talking
+          to the Helper on /build instead, so the shortcut is gated. */}
+      {shows("nav.agentNew") && (
+        <div className="px-3 py-3 border-b border-border">
+          <NewAgentButton
+            label={t("nav.newAgent")}
+            onClick={() => {
+              if (mobile) setMobileNavOpen(false);
+            }}
+            className="w-full"
+            title={t("nav.newAgentTitle")}
+          />
+        </div>
+      )}
 
       <div className="flex-1 py-3 overflow-y-auto">
         {/* Primary group — the platform's daily-use verbs.

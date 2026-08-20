@@ -12,6 +12,7 @@ function LegacyInstanceRedirect() {
 }
 import { ProjectProvider } from "./hooks/useProjects";
 import { ThemeProvider } from "./hooks/useTheme";
+import { AudienceProvider } from "./hooks/useAudience";
 import { Layout } from "./components/Layout";
 import { RealtimeVoiceProvider } from "./state/RealtimeVoiceContext";
 import { Login } from "./pages/Login";
@@ -65,6 +66,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <ThemeProvider>
+        <AudienceProvider>
         <AuthProvider>
           <Suspense fallback={<RouteFallback />}>
             <Routes>
@@ -120,6 +122,7 @@ export default function App() {
             </Routes>
           </Suspense>
         </AuthProvider>
+        </AudienceProvider>
       </ThemeProvider>
     </BrowserRouter>
   );

@@ -159,7 +159,7 @@ export function MCPPanel({ instanceId, running }: Props) {
             {attachable.length === 0 && (
               <p className="text-text-muted text-sm">
                 No unattached servers in this project. Add one in Settings → MCP Servers,
-                or connect a Composio integration.
+                or connect an integration from the catalog.
               </p>
             )}
             {attachable.map((s) => {
@@ -179,7 +179,7 @@ export function MCPPanel({ instanceId, running }: Props) {
                   <div className="flex items-center gap-2 mb-1">
                     {/* Primary label: the display name (description),
                         falling back to the slug when description is
-                        empty (legacy rows or composio's generic blurb).
+                        empty for legacy rows.
                         The slug itself is shown as a mono pill next to
                         it so users can see exactly what the agent will
                         refer to the server as. */}

@@ -8,6 +8,8 @@ import {
   type ReportMessageRow,
 } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
+import { renderSafeMarkdown } from "../../utils/safeMarkdown";
+import { chatPreviewText } from "../../utils/chatPreview";
 import {
   ApprovalReviewModal,
   parseApprovalReview,
@@ -274,11 +276,12 @@ function InboxRow({
   const createdAt = parseInboxTime(row.message.created_at);
   const relativeTime = formatRelativeInboxTime(createdAt, now);
   const exactTime = createdAt ? formatExactInboxTime(createdAt) : row.message.created_at;
-  const preview = item.kind === "report"
-    ? item.row.summary
-    : item.kind === "approval"
-      ? item.row.body
-      : item.row.body;
+  // Reports and alerts are model-authored markdown; a one-line preview
+  // showing raw table pipes or heading hashes reads as garbage. Flatten
+  // to plain text the same way chat sidebars do.
+  const preview = chatPreviewText(
+    (item.kind === "report" ? item.row.summary : item.row.body) || "",
+  );
   const report = item.kind === "report" ? parseReportProps(props, item.row) : null;
   const approval = item.kind === "approval" ? parseApprovalProps(props, item.row) : null;
   const alert = item.kind === "alert" ? parseAlertProps(props, item.row) : null;
@@ -608,9 +611,7 @@ function ReportModal({
         {report.summary && (
           <section>
             <h3 className="text-[11px] uppercase tracking-wide text-text-dim mb-1">Summary</h3>
-            <p className="text-sm text-text-muted leading-relaxed whitespace-pre-wrap break-words">
-              {report.summary}
-            </p>
+            <InboxMarkdown source={report.summary} />
           </section>
         )}
         {report.sections.length > 0 && (
@@ -622,11 +623,7 @@ function ReportModal({
                     {section.title}
                   </h3>
                 )}
-                {section.body && (
-                  <p className="text-sm text-text-muted leading-relaxed whitespace-pre-wrap break-words">
-                    {section.body}
-                  </p>
-                )}
+                {section.body && <InboxMarkdown source={section.body} />}
               </section>
             ))}
           </div>
@@ -645,6 +642,20 @@ function ReportModal({
         )}
       </div>
     </Modal>
+  );
+}
+
+// Inbox reports and alerts are model-authored markdown (tables, headings,
+// lists), same provenance as chat messages. Render them through the same
+// sanitizer + .chat-md styles instead of whitespace-pre-wrap plain text,
+// which shows raw pipe tables. .chat-md already handles table overflow.
+function InboxMarkdown({ source }: { source: string }) {
+  const html = useMemo(() => renderSafeMarkdown(source), [source]);
+  return (
+    <div
+      className="chat-md text-sm text-text-muted leading-relaxed break-words"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
   );
 }
 
@@ -701,11 +712,7 @@ function AlertModal({
         <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide ${severityTone}`}>
           {alert.severity}
         </span>
-        {alert.body && (
-          <p className="text-sm text-text-muted leading-relaxed whitespace-pre-wrap break-words">
-            {alert.body}
-          </p>
-        )}
+        {alert.body && <InboxMarkdown source={alert.body} />}
       </div>
     </Modal>
   );

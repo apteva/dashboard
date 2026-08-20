@@ -217,7 +217,15 @@
       "themeCleanDescription": "Inter, rounded corners, subtle shadows. Boardroom-ready.",
       "modeAuto": "Auto",
       "modeDark": "Dark",
-      "modeLight": "Light"
+      "modeLight": "Light",
+      "audience": "Interface level",
+      "audienceHint": "Stored locally on this device. Hidden sections stay reachable by direct link — nothing is removed, only tidied out of the way.",
+      "audience_personal": "Personal",
+      "audience_personalDescription": "Just your agents and your tools. Create things by asking the Helper.",
+      "audience_business": "Business",
+      "audience_businessDescription": "Adds connected accounts, the marketplace, costs and team settings.",
+      "audience_developer": "Developer",
+      "audience_developerDescription": "Everything: skills, MCP servers, step controls and diagnostics."
     },
     "providers": {
       "subscriptionUsage": "Subscription usage",
@@ -239,5 +247,21 @@
     "en": "English",
     "fr": "French",
     "es": "Spanish"
+  },
+  "_audienceVocabulary": {
+    "personal": {
+      "nav": {
+        "build": "Create",
+        "dashboard": "Home"
+      }
+    },
+    "business": {
+      "nav": {
+        "integrations": "Connected accounts",
+        "apps": "Marketplace",
+        "monitor": "Activity",
+        "usage": "Costs"
+      }
+    }
   }
 }

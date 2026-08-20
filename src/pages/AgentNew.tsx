@@ -5,7 +5,7 @@ import {
   apps as appsAPI,
   instances,
   integrations as integrationsAPI,
-  providers,
+  integrations,
   type AgentTemplate,
   type AppRow,
   type AppGrantPolicy,
@@ -98,10 +98,10 @@ const INITIAL: WizardState = {
   directive: "",
   mode: "learn",
   unconscious: true,
-  // Locked default — the wizard no longer exposes this toggle because
-  // agents need channels to reply. Operators can disable/re-enable
-  // channels from the agent detail page post-create.
-  includeChannels: true,
+  // Replacement default: the conversations app owns the conversation
+  // surface now, so new agents skip the legacy channels/agent-output
+  // MCPs. Explicit opt-in remains possible from the agent detail page.
+  includeChannels: false,
   boundAppInstallIDs: new Set<number>(),
   boundConnectionIDs: new Set<number>(),
   appAccess: {},
@@ -209,9 +209,9 @@ export function AgentNew() {
     let cancelled = false;
     setInstalledAppsLoaded(false);
     agentTemplates.list().then(setTemplates).catch(() => setTemplates([]));
-    providers
-      .list(currentProject?.id)
-      .then((list) => setHasProvider(list.some((p) => p.type === "llm")))
+    integrations
+      .runtimeConnections(currentProject?.id)
+      .then((list) => setHasProvider(list.some((c) => c.role === "llm")))
       .catch(() => setHasProvider(false));
     appsAPI
       .list(currentProject?.id)

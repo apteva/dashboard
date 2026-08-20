@@ -346,7 +346,8 @@ export function Agents() {
       // a fresh instance consume tokens before the user has had a chance
       // to configure directive / MCPs / channels.
       await instances.create(name.trim(), directive.trim(), createMode, projectId, false, {
-        includeChannels: true,
+        // includeChannels deliberately omitted: the server default is
+        // now false — the conversations app owns the chat surface.
         unconscious: createUnconscious,
       });
       setName("");

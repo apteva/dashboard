@@ -217,7 +217,15 @@
       "themeCleanDescription": "Inter, coins arrondis, ombres discretes. Pret pour une presentation.",
       "modeAuto": "Auto",
       "modeDark": "Sombre",
-      "modeLight": "Clair"
+      "modeLight": "Clair",
+      "audience": "Niveau d'interface",
+      "audienceHint": "Enregistré localement sur cet appareil. Les sections masquées restent accessibles par lien direct — rien n'est supprimé, seulement rangé.",
+      "audience_personal": "Personnel",
+      "audience_personalDescription": "Vos agents et vos outils, rien de plus. Créez en demandant à l'assistant.",
+      "audience_business": "Entreprise",
+      "audience_businessDescription": "Ajoute les comptes connectés, la marketplace, les coûts et les réglages d'équipe.",
+      "audience_developer": "Développeur",
+      "audience_developerDescription": "Tout : compétences, serveurs MCP, contrôles pas à pas et diagnostics."
     },
     "providers": {
       "subscriptionUsage": "Utilisation de l'abonnement",
@@ -239,5 +247,21 @@
     "en": "Anglais",
     "fr": "Francais",
     "es": "Espagnol"
+  },
+  "_audienceVocabulary": {
+    "personal": {
+      "nav": {
+        "build": "Créer",
+        "dashboard": "Accueil"
+      }
+    },
+    "business": {
+      "nav": {
+        "integrations": "Comptes connectés",
+        "apps": "Marketplace",
+        "monitor": "Activité",
+        "usage": "Coûts"
+      }
+    }
   }
 }

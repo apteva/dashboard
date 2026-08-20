@@ -26,6 +26,18 @@ describe("dashboard theme contracts", () => {
     expect(source("./pages/Settings.tsx")).not.toMatch(/\b(?:text|bg|border)-danger\b/);
   });
 
+  test("lets the chat composer follow the active theme's font and geometry", () => {
+    const panel = source("./components/ChatPanel.tsx");
+    const composer = panel.slice(panel.indexOf("<textarea"), panel.indexOf("<textarea") + 1500);
+    // `font-mono` resolves to --font-mono-fixed, which is deliberately never
+    // themed — on the composer it left `clean` typing in JetBrains Mono while
+    // the replies above rendered in Inter.
+    expect(composer).not.toContain("font-mono");
+    // Only sm/md/lg radii are remapped onto the theme; rounded-2xl is
+    // Tailwind's stock 1rem and ignores the theme's geometry.
+    expect(panel).not.toMatch(/className="flex min-h-\[54px\][^"]*rounded-2xl/);
+  });
+
   test("keeps chat Markdown headings and post-list sections visually separated", () => {
     const css = source("./index.css");
     expect(css).toContain("margin: 1rem 0 0.7rem 0;");

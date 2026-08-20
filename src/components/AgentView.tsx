@@ -4,7 +4,7 @@ import {
   core,
   instances,
   mcpServers as mcpServersAPI,
-  providers as providersAPI,
+  integrations,
   telemetry,
   type Agent,
   type AppRow,
@@ -13,8 +13,7 @@ import {
   type MCPServerConfig,
   type ModelInfo,
   type PromptComposition,
-  type Provider,
-  type ProviderDetail,
+  type RuntimeConnection,
   type RealtimeAvailability,
   type Status,
   type TelemetryEvent,
@@ -39,6 +38,7 @@ import { Modal } from "./Modal";
 import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
+import { useAudience } from "../hooks/useAudience";
 import { AppContributionArea, ContributionManager } from "./apps/contributions";
 import {
   appendRuntimeThoughtText,
@@ -1620,6 +1620,7 @@ function AgentRuntimeActionsMenu({
   onReset: () => void;
   onDelete: () => void;
 }) {
+  const { shows } = useAudience();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -1667,13 +1668,21 @@ function AgentRuntimeActionsMenu({
           {instance.status === "running" && (
             <button type="button" role="menuitem" onClick={() => choose(onPause)} className={itemClass}>Pause agent</button>
           )}
+          {(shows("agent.diagnostics") || shows("agent.stepControls")) && (
+            <div className="my-1 border-t border-border" />
+          )}
+          {shows("agent.diagnostics") && (
+            <button type="button" role="menuitem" onClick={() => choose(onDiagnostics)} className={itemClass}>Open diagnostics</button>
+          )}
+          {shows("agent.stepControls") && (
+            <button type="button" role="menuitem" onClick={() => choose(onToggleDeveloperControls)} className={itemClass}>
+              {developerControlsVisible ? "Hide step controls" : "Show step controls"}
+            </button>
+          )}
           <div className="my-1 border-t border-border" />
-          <button type="button" role="menuitem" onClick={() => choose(onDiagnostics)} className={itemClass}>Open diagnostics</button>
-          <button type="button" role="menuitem" onClick={() => choose(onToggleDeveloperControls)} className={itemClass}>
-            {developerControlsVisible ? "Hide step controls" : "Show step controls"}
-          </button>
-          <div className="my-1 border-t border-border" />
-          <button type="button" role="menuitem" onClick={() => choose(onReset)} className={`${itemClass} text-yellow`}>Reset context</button>
+          {shows("agent.resetContext") && (
+            <button type="button" role="menuitem" onClick={() => choose(onReset)} className={`${itemClass} text-yellow`}>Reset context</button>
+          )}
           <button type="button" role="menuitem" onClick={() => choose(onDelete)} className={`${itemClass} text-red`}>Delete agent</button>
         </div>
       )}
@@ -1913,6 +1922,7 @@ function ExecutionControlStrip({
   onBack: () => void | Promise<void>;
   onThreadOpen: (id: string) => void;
 }) {
+  const { shows } = useAudience();
   const mode = status.mode || "auto";
   const view = executionControlView(status);
   const thread = status.active_thread_id || "main";
@@ -1934,6 +1944,10 @@ function ExecutionControlStrip({
       : view.waiting
         ? "text-yellow bg-yellow/10"
         : "text-text-muted bg-bg-hover";
+
+  // Step/run/back controls are a debugging affordance. Non-developer
+  // audiences never drive the loop by hand, so the whole strip goes.
+  if (!shows("agent.stepMode")) return null;
 
   return (
     <div className="flex items-center gap-2 rounded border border-border bg-bg-card/40 px-2 py-1.5">
@@ -3077,6 +3091,7 @@ function RuntimeStream({
 }) {
   type RuntimeFilter = "work" | "all" | RuntimeEventItem["kind"];
   const [filter, setFilter] = useState<RuntimeFilter>("all");
+  const { shows } = useAudience();
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [query, setQuery] = useState("");
   const visible = events
@@ -3123,13 +3138,17 @@ function RuntimeStream({
               {item.label}
             </button>
           ))}
-          <button
-            type="button"
-            onClick={() => setShowAdvancedFilters((visible) => !visible)}
-            className={`rounded px-2 py-1 text-[11px] whitespace-nowrap ${showAdvancedFilters ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
-          >
-            More {showAdvancedFilters ? "−" : "+"}
-          </button>
+          {/* "More" reveals the Technical filter row — raw event kinds
+              that only mean something if you know the runtime. */}
+          {shows("agent.technical") && (
+            <button
+              type="button"
+              onClick={() => setShowAdvancedFilters((visible) => !visible)}
+              className={`rounded px-2 py-1 text-[11px] whitespace-nowrap ${showAdvancedFilters ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
+            >
+              More {showAdvancedFilters ? "−" : "+"}
+            </button>
+          )}
         </div>
         <input
           value={query}
@@ -3307,8 +3326,8 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   instance: Agent;
   onSaved: () => void;
 }) {
-  const [providerList, setProviderList] = useState<Provider[]>([]);
-  const [providerDetails, setProviderDetails] = useState<Record<number, ProviderDetail>>({});
+  const { shows } = useAudience();
+  const [providerList, setProviderList] = useState<RuntimeConnection[]>([]);
   const [availableModels, setAvailableModels] = useState<Record<number, ModelInfo[]>>({});
   const [loadingModels, setLoadingModels] = useState<number | null>(null);
   const [defaultProvider, setDefaultProvider] = useState("");
@@ -3324,18 +3343,6 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   const [realtimeCapabilityOptions, setRealtimeCapabilityOptions] = useState<MCPServerConfig[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-
-  // provKey collapses a Provider's display name to the kebab-case
-  // identifier the backend uses everywhere (createProviderByName,
-  // FetchModels, isLLMKey, config.json's providers[i].name). Without
-  // the space-to-hyphen substitution, "OpenCode Go" lowercased to
-  // "opencode go" — which matches NO case in the core dispatch, so
-  // selecting it as default silently dropped the provider from the pool
-  // and the agent fell back to whatever was first in config order.
-  const provKey = (p: Provider) => {
-    const raw = p.type === "llm" ? p.name : p.type;
-    return raw.toLowerCase().trim().replace(/\s+/g, "-");
-  };
 
   useEffect(() => {
     if (!open) return;
@@ -3369,40 +3376,33 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
       setRealtimeVoiceMCP([]);
     });
 
-    providersAPI.list(instance.project_id).then((list) => {
-      const llm = (list || []).filter((p) => p.type === "llm");
-      setProviderList(llm);
-      for (const p of llm) {
-        providersAPI.get(p.id).then((d) => {
-          setProviderDetails((prev) => ({ ...prev, [p.id]: d }));
-        }).catch(() => {});
-      }
-    }).catch(() => {});
+    integrations
+      .runtimeConnections(instance.project_id)
+      .then((list) => setProviderList((list || []).filter((c) => c.role === "llm")))
+      .catch(() => {});
   }, [open, instance.id]);
 
   // When provider selection changes, load its current model settings
-  const selectedDetail = providerList.find((p) => provKey(p) === defaultProvider);
-  const selectedData = selectedDetail ? providerDetails[selectedDetail.id] : null;
+  const selectedDetail = providerList.find((c) => c.provider_key === defaultProvider);
+  const selectedData = selectedDetail?.runtime_config ?? null;
 
   useEffect(() => {
     if (selectedData) {
-      setModelLarge(selectedData.data.model_large || "");
-      setModelMedium(selectedData.data.model_medium || "");
-      setModelSmall(selectedData.data.model_small || "");
+      setModelLarge(selectedData.model_large || "");
+      setModelMedium(selectedData.model_medium || "");
+      setModelSmall(selectedData.model_small || "");
     } else {
       setModelLarge(""); setModelMedium(""); setModelSmall("");
     }
-  }, [selectedData?.data?.model_large, selectedData?.data?.model_medium, selectedData?.data?.model_small]);
+  }, [selectedData?.model_large, selectedData?.model_medium, selectedData?.model_small]);
 
   // Auto-fetch models when a provider is selected
   useEffect(() => {
     if (!selectedDetail || availableModels[selectedDetail.id]) return;
     setLoadingModels(selectedDetail.id);
-    providersAPI.models(selectedDetail.id)
-      .then(async (m) => {
-        const detail = await providersAPI.get(selectedDetail.id);
+    integrations.connectionModels(selectedDetail.id)
+      .then((m) => {
         setAvailableModels((prev) => ({ ...prev, [selectedDetail.id]: m }));
-        setProviderDetails((prev) => ({ ...prev, [selectedDetail.id]: detail }));
       })
       .catch((err: any) => setError("Failed to fetch models: " + (err.message || "")))
       .finally(() => setLoadingModels(null));
@@ -3412,10 +3412,8 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
     if (!selectedDetail) return;
     setLoadingModels(selectedDetail.id);
     try {
-      const m = await providersAPI.models(selectedDetail.id, true);
-      const detail = await providersAPI.get(selectedDetail.id);
+      const m = await integrations.connectionModels(selectedDetail.id, true);
       setAvailableModels((prev) => ({ ...prev, [selectedDetail.id]: m }));
-      setProviderDetails((prev) => ({ ...prev, [selectedDetail.id]: detail }));
     } catch (err: any) {
       setError("Failed to fetch models: " + (err.message || ""));
     } finally { setLoadingModels(null); }
@@ -3430,20 +3428,22 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
       // providers keep their nested credentials and account state untouched.
       if (selectedDetail && selectedData) {
         if (
-          modelLarge !== (selectedData.data.model_large || "") ||
-          modelMedium !== (selectedData.data.model_medium || "") ||
-          modelSmall !== (selectedData.data.model_small || "")
+          modelLarge !== (selectedData.model_large || "") ||
+          modelMedium !== (selectedData.model_medium || "") ||
+          modelSmall !== (selectedData.model_small || "")
         ) {
-          await providersAPI.updateModels(selectedDetail.id, {
-            large: modelLarge,
-            medium: modelMedium,
-            small: modelSmall,
+          // null clears a tier back to the provider default; an empty
+          // string would be stored as a literal model id.
+          await integrations.updateRuntimeConfig(selectedDetail.id, {
+            model_large: modelLarge || null,
+            model_medium: modelMedium || null,
+            model_small: modelSmall || null,
           });
         }
       }
 
       const provs = defaultProvider
-        ? providerList.map((p) => ({ name: provKey(p), default: provKey(p) === defaultProvider }))
+        ? providerList.map((c) => ({ name: c.provider_key, default: c.provider_key === defaultProvider }))
         : undefined;
       await instances.updateConfig(instance.id, {
         directive: directive || undefined,
@@ -3502,23 +3502,27 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
       <div className="p-6 space-y-5 max-h-[80vh] overflow-y-auto">
         <h3 className="text-text text-base font-bold">Agent Config</h3>
 
-        {/* Default provider */}
-        <div>
-          <label className="text-text-muted text-xs font-bold uppercase tracking-wide block mb-1">Provider</label>
-          <select
-            value={defaultProvider}
-            onChange={(e) => setDefaultProvider(e.target.value)}
-            className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
-          >
-            <option value="">Auto (server default)</option>
-            {providerList.map((p) => (
-              <option key={p.id} value={provKey(p)}>{p.name}</option>
-            ))}
-          </select>
-        </div>
+        {/* Default provider. Gated with Models below: which LLM powers an
+            agent is one concern, and showing the model pickers without the
+            provider they belong to reads as an orphan. */}
+        {shows("agent.provider") && (
+          <div>
+            <label className="text-text-muted text-xs font-bold uppercase tracking-wide block mb-1">Provider</label>
+            <select
+              value={defaultProvider}
+              onChange={(e) => setDefaultProvider(e.target.value)}
+              className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+            >
+              <option value="">Auto (server default)</option>
+              {providerList.map((c) => (
+                <option key={c.id} value={c.provider_key}>{c.app_name}</option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Models */}
-        {selectedDetail && (
+        {shows("agent.provider") && selectedDetail && (
           <div className="border border-border rounded-lg p-3 space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-text-muted text-[10px] font-bold uppercase tracking-wide">Models</span>
@@ -3557,6 +3561,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         </div>
 
         {/* Realtime voice */}
+        {shows("agent.realtimeVoice") && (
         <div className="rounded-lg border border-border p-3">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -3627,6 +3632,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
             </div>
           ) : null}
         </div>
+        )}
 
         {/* Directive */}
         <div>
