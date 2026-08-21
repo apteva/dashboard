@@ -72,7 +72,7 @@ describe("groupRuntimeConnectionsByProvider", () => {
     ]);
     expect(groups.length).toBe(2);
     const [key, group] = groups[0]!;
-    expect(key).toBe("opencode-go");
+    expect(key).toBe("opencode-go:global");
     // A group of more than one is exactly where the primary radio
     // renders; singletons show no control because there is no choice.
     expect(group.map((row) => row.id)).toEqual([54, 56, 58]);
@@ -85,6 +85,18 @@ describe("groupRuntimeConnectionsByProvider", () => {
       connection({ id: 54 }),
     ]);
     expect(groups[0]![1].map((row) => row.id)).toEqual([58, 54]);
+  });
+
+  test("keeps project and global primaries in separate groups", () => {
+    const groups = groupRuntimeConnectionsByProvider([
+      connection({ id: 1, project_id: "project-1", scope: "project", is_primary: true }),
+      connection({ id: 2, project_id: "", scope: "global", is_primary: true }),
+    ]);
+    expect(groups.map(([key]) => key)).toEqual([
+      "opencode-go:project-1",
+      "opencode-go:global",
+    ]);
+    expect(groups.every(([, group]) => group.length === 1)).toBe(true);
   });
 });
 
@@ -110,5 +122,23 @@ describe("availableRuntimeEntries", () => {
 
   test("returns everything when nothing is connected", () => {
     expect(availableRuntimeEntries([catalogEntry()], []).length).toBe(1);
+  });
+
+  test("allows a project override when only a global connection exists", () => {
+    const available = availableRuntimeEntries(
+      [catalogEntry({ slug: "opencode-go", provider_key: "opencode-go" })],
+      [connection({ project_id: "", scope: "global" })],
+      "project-1",
+    );
+    expect(available.map((entry) => entry.slug)).toEqual(["opencode-go"]);
+  });
+
+  test("project connections do not hide the global connect option", () => {
+    const available = availableRuntimeEntries(
+      [catalogEntry({ slug: "opencode-go", provider_key: "opencode-go" })],
+      [connection({ project_id: "project-1", scope: "project" })],
+      "",
+    );
+    expect(available.map((entry) => entry.slug)).toEqual(["opencode-go"]);
   });
 });

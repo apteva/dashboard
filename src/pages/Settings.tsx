@@ -710,17 +710,20 @@ export function primaryRuntimeConnections(
   return out;
 }
 
-// groupRuntimeConnectionsByProvider buckets connections by provider so
-// the Models tab can render one card per provider. A bucket with more
-// than one member is where the operator has to choose a primary.
+// groupRuntimeConnectionsByProvider buckets by provider AND scope. Primary
+// selection is a database invariant within one (project, app) scope; mixing a
+// project row with its global fallback creates two legitimately-checked radios
+// and suggests that selecting global can override project precedence.
 export function groupRuntimeConnectionsByProvider(
   connections: RuntimeConnection[],
 ): Array<[string, RuntimeConnection[]]> {
   const groups = new Map<string, RuntimeConnection[]>();
   for (const connection of connections) {
-    const group = groups.get(connection.provider_key) || [];
+    const scopeKey = connection.project_id || "global";
+    const key = `${connection.provider_key}:${scopeKey}`;
+    const group = groups.get(key) || [];
     group.push(connection);
-    groups.set(connection.provider_key, group);
+    groups.set(key, group);
   }
   return [...groups.entries()];
 }
@@ -732,8 +735,13 @@ export function groupRuntimeConnectionsByProvider(
 export function availableRuntimeEntries(
   catalog: RuntimeCatalogEntry[],
   connected: RuntimeConnection[],
+  targetProjectID = "",
 ): RuntimeCatalogEntry[] {
-  const connectedSlugs = new Set(connected.map((connection) => connection.app_slug));
+  const connectedSlugs = new Set(
+    connected
+      .filter((connection) => connection.project_id === targetProjectID)
+      .map((connection) => connection.app_slug),
+  );
   return catalog.filter((entry) => !connectedSlugs.has(entry.slug));
 }
 
@@ -1274,7 +1282,7 @@ function ProvidersTab() {
     }
   };
 
-  const available = availableRuntimeEntries(catalog, connected);
+  const available = availableRuntimeEntries(catalog, connected, currentProject?.id || "");
 
   return (
     <div className="space-y-8 max-w-4xl">
@@ -1307,13 +1315,13 @@ function ProvidersTab() {
             Connected
           </h3>
           <div className="space-y-3">
-            {providerGroups.map(([providerKey, group]) => (
-              <div key={providerKey} className="border border-border rounded-lg bg-bg-card p-4">
+            {providerGroups.map(([groupKey, group]) => (
+              <div key={groupKey} className="border border-border rounded-lg bg-bg-card p-4">
                 <div className="flex items-center justify-between gap-2 mb-3 min-w-0">
                   <span className="text-text text-sm font-bold truncate">
-                    {group[0]?.app_name || providerKey}
+                    {group[0]?.app_name || group[0]?.provider_key}
                   </span>
-                  <span className="text-[10px] text-text-dim font-mono">{providerKey}</span>
+                  <span className="text-[10px] text-text-dim font-mono">{group[0]?.provider_key}</span>
                 </div>
 
                 <div className="space-y-3">
@@ -1334,7 +1342,7 @@ function ProvidersTab() {
                             {group.length > 1 && (
                               <input
                                 type="radio"
-                                name={`primary-${providerKey}`}
+                                name={`primary-${groupKey}`}
                                 checked={connection.is_primary}
                                 onChange={() => void handleMakePrimary(connection)}
                                 disabled={busy}
