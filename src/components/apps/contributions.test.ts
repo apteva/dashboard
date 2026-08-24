@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   contributionKey,
   contributionsFor,
@@ -61,6 +62,11 @@ const installed: InstalledAppRow[] = [
 ];
 
 describe("generic app contributions", () => {
+  test("forwards the contextual agent as the required component instanceId", () => {
+    const source = readFileSync(new URL("./contributions.tsx", import.meta.url), "utf8");
+    expect(source).toContain("instanceId: agentId");
+  });
+
   test("discovers running app components by slot without app-name special cases", () => {
     const found = contributionsFor(installed, "dashboard.home");
     expect(found.map((item) => item.key)).toEqual([

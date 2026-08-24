@@ -165,6 +165,30 @@ interface ContributionEligibilityResponse {
   }>;
 }
 
+export async function fetchEligibleContributionKeys(
+  projectId: string,
+  slot: string,
+  agentId: number,
+  threadId?: string,
+): Promise<Set<string>> {
+  const params = new URLSearchParams({
+    project_id: projectId,
+    surface: slot,
+    agent_id: String(agentId),
+  });
+  if (threadId) params.set("thread_id", threadId);
+  const response = await fetch(`/api/ui/contributions?${params.toString()}`, {
+    credentials: "same-origin",
+  });
+  if (!response.ok) throw new Error("unable to resolve contributions");
+  const payload = await response.json() as ContributionEligibilityResponse;
+  return new Set(
+    (payload.contributions || [])
+      .filter((item) => item.eligible)
+      .map((item) => contributionKey(item.app, item.component)),
+  );
+}
+
 export function useEligibleContributionKeys(
   projectId: string | null | undefined,
   slot: string,
@@ -178,27 +202,11 @@ export function useEligibleContributionKeys(
       return;
     }
     let cancelled = false;
-    const params = new URLSearchParams({
-      project_id: projectId,
-      surface: slot,
-      agent_id: String(agentId),
-    });
-    if (threadId) params.set("thread_id", threadId);
     const load = () =>
-      fetch(`/api/ui/contributions?${params.toString()}`, {
-        credentials: "same-origin",
-      })
-        .then((response) => {
-          if (!response.ok) throw new Error("unable to resolve contributions");
-          return response.json() as Promise<ContributionEligibilityResponse>;
-        })
-        .then((response) => {
+      fetchEligibleContributionKeys(projectId, slot, agentId, threadId)
+        .then((eligible) => {
           if (cancelled) return;
-          setKeys(new Set(
-            (response.contributions || [])
-              .filter((item) => item.eligible)
-              .map((item) => contributionKey(item.app, item.component)),
-          ));
+          setKeys(eligible);
         })
         .catch(() => {
           if (!cancelled) setKeys(null);
@@ -442,6 +450,7 @@ export function ContributionMount({
           name: contribution.spec.name,
           props: {
             agentId,
+            instanceId: agentId,
             threadId,
             eventRevision,
             slot,
