@@ -13,7 +13,6 @@ import {
   type ProjectUILayout,
 } from "./contributions";
 import type { InstalledAppRow } from "./chatComponents";
-import { mergeLegacyWidgetDefaults } from "./WidgetCanvas";
 
 const installed: InstalledAppRow[] = [
   {
@@ -182,20 +181,4 @@ describe("generic app contributions", () => {
     ]);
   });
 
-  test("merges legacy Home app widgets between native defaults without losing them", () => {
-    const defaults = [
-      { id: "usage", component: "native:usage", size: "full" as const },
-      { id: "inbox", component: "native:inbox", size: "half" as const },
-      { id: "activity", component: "native:activity", size: "full" as const },
-    ];
-    const legacy = [
-      { id: "tasks", component: "tasks:task-overview", size: "half" as const },
-    ];
-    expect(mergeLegacyWidgetDefaults(defaults, legacy).map((item) => item.component)).toEqual([
-      "native:usage",
-      "native:inbox",
-      "tasks:task-overview",
-      "native:activity",
-    ]);
-  });
 });

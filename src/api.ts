@@ -497,11 +497,17 @@ export interface ProjectPresetAgent {
 
 export interface ProjectPreset {
   id: string;
+  kind?: "project_setup";
+  scope?: "personal" | "shared" | "system";
+  source?: "user" | "system";
+  schema_version?: number;
+  owner_id?: number;
   category: "personal" | "work" | "development" | "business";
   name: string;
   description: string;
   agents: ProjectPresetAgent[];
   dashboard?: string[];
+  dashboard_layout?: ProjectPresetWidget[];
 }
 
 export interface ProjectPresetAppPreview {
@@ -539,6 +545,28 @@ export interface ProjectPresetPreview {
 export interface ProjectPresetApplyInput {
   preset_id: string;
   description: string;
+}
+
+export interface ProjectSetupPresetDefinition {
+  category: "personal" | "work" | "development" | "business";
+  match?: string[];
+  agents: ProjectPresetAgent[];
+  dashboard?: string[];
+  dashboard_layout?: ProjectPresetWidget[];
+}
+
+export interface Preset {
+  id: string;
+  kind: "project_setup";
+  scope: "personal" | "shared" | "system";
+  source: "user" | "system";
+  schema_version: number;
+  name: string;
+  description: string;
+  owner_id?: number;
+  definition: ProjectSetupPresetDefinition;
+  created_at?: string;
+  updated_at?: string;
 }
 
 // Agent templates — starter configs surfaced in /agents/new wizard.
@@ -644,11 +672,26 @@ export const projects = {
 };
 
 export const projectPresets = {
-  list: () =>
-    request<{ schema_version: number; presets: ProjectPreset[] }>(
-      "GET",
-      "/project-presets",
-    ),
+  list: async () => {
+    const response = await request<{ presets: Preset[] }>("GET", "/presets");
+    return {
+      schema_version: 2,
+      presets: response.presets.map((preset): ProjectPreset => ({
+        id: preset.id,
+        kind: preset.kind,
+        scope: preset.scope,
+        source: preset.source,
+        schema_version: preset.schema_version,
+        owner_id: preset.owner_id,
+        name: preset.name,
+        description: preset.description,
+        category: preset.definition.category,
+        agents: preset.definition.agents,
+        dashboard: preset.definition.dashboard,
+        dashboard_layout: preset.definition.dashboard_layout,
+      })),
+    };
+  },
   preview: (
     projectId: string,
     input: {
@@ -675,6 +718,33 @@ export const projectPresets = {
       `/projects/${encodeURIComponent(projectId)}/setup/apply`,
       input,
     ),
+};
+
+export const presets = {
+  list: () => request<{ presets: Preset[] }>("GET", "/presets"),
+  get: (id: string) => request<Preset>("GET", `/presets/${encodeURIComponent(id)}`),
+  create: (input: {
+    kind?: "project_setup";
+    scope?: "personal" | "shared";
+    schema_version?: number;
+    name: string;
+    description?: string;
+    definition: ProjectSetupPresetDefinition;
+  }) => request<Preset>("POST", "/presets", input),
+  update: (id: string, input: {
+    scope?: "personal" | "shared";
+    name?: string;
+    description?: string;
+    definition?: ProjectSetupPresetDefinition;
+  }) => request<Preset>("PATCH", `/presets/${encodeURIComponent(id)}`, input),
+  delete: (id: string) => request<{ status: "deleted" }>("DELETE", `/presets/${encodeURIComponent(id)}`),
+  capture: (input: {
+    project_id: string;
+    name: string;
+    description?: string;
+    category: ProjectSetupPresetDefinition["category"];
+    scope?: "personal" | "shared";
+  }) => request<Preset>("POST", "/presets/capture", input),
 };
 
 // ─── Multi-user + roles ────────────────────────────────────────────────
@@ -813,8 +883,24 @@ export interface PlatformHelperCapabilities {
   reset_threads?: number;
 }
 
+export interface PlatformHelperStatus {
+  activated: boolean;
+  state: "inactive" | "stopped" | "running";
+  provider_configured: boolean;
+  conversations_installed: boolean;
+  conversations_install_id?: number;
+  agent?: Agent;
+}
+
 export const platformHelper = {
   get: () => request<Agent>("GET", "/platform/helper"),
+  status: () => request<PlatformHelperStatus>("GET", "/platform/helper/status"),
+  activate: (installConversations = false) =>
+    request<PlatformHelperStatus>("POST", "/platform/helper/activate", {
+      install_conversations: installConversations,
+    }),
+  deactivate: () =>
+    request<PlatformHelperStatus>("POST", "/platform/helper/deactivate", {}),
   capabilities: () =>
     request<PlatformHelperCapabilities>("GET", "/platform/helper/capabilities"),
   updateCapabilities: (mcpServerIds: number[]) =>

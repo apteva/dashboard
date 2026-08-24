@@ -24,7 +24,6 @@ const Connect = lazy(() => import("./pages/Connect").then((m) => ({ default: m.C
 const Onboarding = lazy(() => import("./pages/Onboarding").then((m) => ({ default: m.Onboarding })));
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
 const Build = lazy(() => import("./pages/Build").then((m) => ({ default: m.Build })));
-const Chat = lazy(() => import("./pages/Chat").then((m) => ({ default: m.Chat })));
 const Monitor = lazy(() => import("./pages/Monitor").then((m) => ({ default: m.Monitor })));
 const Agents = lazy(() => import("./pages/Agents").then((m) => ({ default: m.Agents })));
 const Agent = lazy(() => import("./pages/Agent").then((m) => ({ default: m.Agent })));
@@ -99,8 +98,9 @@ export default function App() {
             <Route path="/activity" element={<Navigate to="/monitor?view=activity" replace />} />
             <Route path="/monitor" element={<Monitor />} />
             <Route path="/agents/new" element={<AgentNew />} />
-            <Route path="/chat" element={<Chat />} />
-            <Route path="/chat/:chatId" element={<Chat />} />
+            {/* Keep stale bookmarks safe while the legacy chat UI is hidden. */}
+            <Route path="/chat" element={<Navigate to="/" replace />} />
+            <Route path="/chat/:chatId" element={<Navigate to="/" replace />} />
             <Route path="/agents/:id" element={<Agent />} />
             {/* Phase 3 rename: keep the old /instances URLs working for
                 external bookmarks + any old tab the operator left open.

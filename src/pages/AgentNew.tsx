@@ -660,7 +660,7 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
             setState((s) => ({ ...s, name: (e.target as HTMLInputElement).value }))
           }
           className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
-          placeholder="Inbox triage"
+          placeholder="Support ticket triage"
           autoComplete="off"
         />
       </div>

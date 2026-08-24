@@ -5,6 +5,7 @@ import {
   type Project,
   type ProjectPreset,
 } from "../../api";
+import { useOptionalAuth } from "../../hooks/useAuth";
 
 const CATEGORIES = [
   { id: "personal", label: "Personal" },
@@ -18,15 +19,22 @@ const DEFAULT_CATEGORY: PresetCategory = CATEGORIES[0].id;
 
 const DASHBOARD_LABELS: Record<string, string> = {
   "native:usage": "Usage summary",
-  "native:inbox": "Inbox",
+  "conversations:inbox-overview": "Inbox",
   "native:activity": "Recent activity",
   "tasks:task-overview": "Tasks",
 };
 
+const HIDDEN_DASHBOARD_COMPONENTS = new Set(["native:inbox"]);
+
+function visibleDashboardComponents(preset: ProjectPreset): string[] {
+  const components = preset.dashboard_layout?.map((widget) => widget.component) || preset.dashboard || [];
+  return components.filter((component) => !HIDDEN_DASHBOARD_COMPONENTS.has(component));
+}
+
 function presetCountSummary(preset: ProjectPreset) {
   const agents = preset.agents.length;
   const apps = new Set(preset.agents.flatMap((agent) => agent.apps || [])).size;
-  const widgets = preset.dashboard?.length || 0;
+  const widgets = visibleDashboardComponents(preset).length;
   return `${agents} agent${agents === 1 ? "" : "s"} · ${apps} app${apps === 1 ? "" : "s"} · ${widgets} widget${widgets === 1 ? "" : "s"}`;
 }
 
@@ -47,6 +55,7 @@ export function ProjectPresetSetup({
     createdAgents: Array<{ id: number; name: string; status: string }>;
   }) => void;
 }) {
+  const refreshAuth = useOptionalAuth()?.refresh;
   const [project, setProject] = useState<Project | null>(null);
   const [catalog, setCatalog] = useState<ProjectPreset[]>([]);
   const [category, setCategory] = useState<PresetCategory>(DEFAULT_CATEGORY);
@@ -118,6 +127,7 @@ export function ProjectPresetSetup({
         ? ` ${result.warnings.length} app or widget${result.warnings.length === 1 ? "" : "s"} still need attention.`
         : "";
       setApplied(`Setup created. ${created} agent${created === 1 ? "" : "s"} created${existing ? `, ${existing} already present` : ""}.${warnings}`);
+      await refreshAuth?.().catch(() => {});
       onApplied?.({ created, existing, createdAgents: result.created_agents });
     } catch (err: any) {
       setError(err?.message || "Could not create this setup");
@@ -214,6 +224,7 @@ export function ProjectPresetSetup({
 }
 
 function PresetContentsSummary({ preset }: { preset: ProjectPreset }) {
+  const dashboardComponents = visibleDashboardComponents(preset);
   return (
     <section className="border border-accent/35 bg-accent/5 rounded-lg p-4" aria-label="What this setup includes">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -240,11 +251,12 @@ function PresetContentsSummary({ preset }: { preset: ProjectPreset }) {
         ))}
       </div>
 
-      {(preset.dashboard?.length || 0) > 0 && (
+      {dashboardComponents.length > 0 && (
         <div className="mt-4">
-          <div className="text-text-dim text-[10px] uppercase tracking-wide mb-2">Home dashboard</div>
+          <div className="text-text-dim text-[10px] uppercase tracking-wide mb-1">Home widgets</div>
+          <p className="mb-2 text-[10px] text-text-dim">Added automatically when this preset is selected.</p>
           <div className="flex flex-wrap gap-1.5">
-            {(preset.dashboard || []).map((component) => (
+            {dashboardComponents.map((component) => (
               <span key={component} className="border border-border rounded px-2 py-0.5 text-text-muted text-[11px]">
                 {dashboardLabel(component)}
               </span>

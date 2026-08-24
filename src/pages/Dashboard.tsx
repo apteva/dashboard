@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import { instances, telemetry, type Agent, type InstanceStats } from "../api";
 import { NewAgentButton } from "../components/NewAgentButton";
 import { ActivityFeed } from "../components/dashboard/ActivityFeed";
-import { AptevaInbox } from "../components/dashboard/AptevaInbox";
 import { HomeUsageSummary } from "../components/dashboard/HomePanels";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { useProjects } from "../hooks/useProjects";
@@ -28,7 +27,11 @@ export function Dashboard() {
   const [stats, setStats] = useState<InstanceStats[]>([]);
   const [editingLayout, setEditingLayout] = useState(false);
   const [galleryRequest, setGalleryRequest] = useState(0);
+  const [visibleWidgetComponents, setVisibleWidgetComponents] = useState<string[]>([]);
   const installedApps = useInstalledApps(projectId);
+  const needsOverview = visibleWidgetComponents.some((component) =>
+    component === "native:usage" || component === "native:activity",
+  );
 
   const loadOverview = useCallback(() => {
     Promise.all([
@@ -43,6 +46,11 @@ export function Dashboard() {
   }, [projectId]);
 
   useEffect(() => {
+    if (!needsOverview) {
+      setAgents([]);
+      setStats([]);
+      return;
+    }
     loadOverview();
     const timer = window.setInterval(loadOverview, REFRESH_MS);
     window.addEventListener("apteva.statusMessage", loadOverview);
@@ -50,7 +58,20 @@ export function Dashboard() {
       window.clearInterval(timer);
       window.removeEventListener("apteva.statusMessage", loadOverview);
     };
-  }, [loadOverview]);
+  }, [loadOverview, needsOverview]);
+
+  useEffect(() => {
+    setVisibleWidgetComponents([]);
+    setEditingLayout(false);
+  }, [projectId]);
+
+  const handleVisibleComponentsChange = useCallback((components: string[]) => {
+    setVisibleWidgetComponents((current) =>
+      current.length === components.length && current.every((component, index) => component === components[index])
+        ? current
+        : components,
+    );
+  }, []);
 
   const errorCount = stats.reduce((sum, row) => sum + row.errors, 0);
   const appContributions = useMemo(
@@ -64,15 +85,8 @@ export function Dashboard() {
       description: "Agents, calls, tokens, errors, and cost for the last 24 hours.",
       supportedSizes: ["full"],
       defaultSize: "full",
+      kind: "builtin",
       render: () => <HomeUsageSummary agents={agents} stats={stats} />,
-    },
-    {
-      key: "native:inbox",
-      label: "Inbox",
-      description: "Approvals, reports, and alerts from your agents.",
-      supportedSizes: ["half", "full"],
-      defaultSize: "half",
-      render: () => <AptevaInbox projectId={projectId} limit={5} variant="home" />,
     },
     {
       key: "native:activity",
@@ -80,6 +94,7 @@ export function Dashboard() {
       description: "Significant agent actions and tool events.",
       supportedSizes: ["half", "full"],
       defaultSize: "full",
+      kind: "builtin",
       render: () => <ActivityFeed agents={agents} />,
     },
     ...appContributions.map((contribution): WidgetDefinition => ({
@@ -93,6 +108,8 @@ export function Dashboard() {
       defaultSettings: defaultWidgetSettings(contribution.spec),
       settingsSchema: contribution.spec.settings_schema,
       suggested: contribution.spec.suggested,
+      kind: "app",
+      providerLabel: contribution.app.display_name || contribution.app.name,
       render: (instance) => projectId ? (
         <ContributionMount
           instance={{ ...instance, contribution }}
@@ -103,12 +120,6 @@ export function Dashboard() {
       ) : null,
     })),
   ], [agents, appContributions, installedApps, projectId, stats]);
-  const defaultWidgets = useMemo(() => [
-    { id: "native:usage", component: "native:usage", size: "full" as const },
-    { id: "native:inbox", component: "native:inbox", size: "half" as const },
-    { id: "native:activity", component: "native:activity", size: "full" as const },
-  ], []);
-
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <header className="border-b border-border px-4 py-3 sm:px-6 sm:py-4">
@@ -141,13 +152,15 @@ export function Dashboard() {
             >
               Add widget
             </button>
-            <button
-              type="button"
-              onClick={() => setEditingLayout((value) => !value)}
-              className={`rounded-md border px-3 py-2 text-xs font-semibold ${editingLayout ? "border-accent bg-accent/10 text-accent" : "border-border text-text-muted hover:border-accent hover:text-text"}`}
-            >
-              {editingLayout ? "Done" : "Edit layout"}
-            </button>
+            {(visibleWidgetComponents.length > 0 || editingLayout) && (
+              <button
+                type="button"
+                onClick={() => setEditingLayout((value) => !value)}
+                className={`rounded-md border px-3 py-2 text-xs font-semibold ${editingLayout ? "border-accent bg-accent/10 text-accent" : "border-border text-text-muted hover:border-accent hover:text-text"}`}
+              >
+                {editingLayout ? "Done" : "Edit layout"}
+              </button>
+            )}
             <NewAgentButton />
           </div>
         </div>
@@ -158,10 +171,9 @@ export function Dashboard() {
           projectId={projectId}
           slot="dashboard.home"
           definitions={widgetDefinitions}
-          defaults={defaultWidgets}
           editing={editingLayout}
           onEditingChange={setEditingLayout}
-          mergeLegacyDefaults
+          onVisibleComponentsChange={handleVisibleComponentsChange}
           galleryRequest={galleryRequest}
         />
       </main>

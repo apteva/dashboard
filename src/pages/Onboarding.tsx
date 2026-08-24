@@ -4,6 +4,7 @@ import {
   auth,
   instances,
   integrations,
+  platformHelper,
   runtimeEntryAsAppDetail,
   type RuntimeCatalogEntry,
 } from "../api";
@@ -19,7 +20,7 @@ import { ProjectPresetSetup } from "../components/projects/ProjectPresetSetup";
 // "Finish" button on the last step calls /auth/onboarding/complete,
 // which stamps onboarded_at and lets the user into the dashboard.
 
-export const ONBOARDING_STEP_IDS = ["theme", "setup", "provider"] as const;
+export const ONBOARDING_STEP_IDS = ["theme", "setup", "provider", "helper"] as const;
 type StepId = (typeof ONBOARDING_STEP_IDS)[number];
 
 export async function activateOnboardingPresetAgents(
@@ -43,6 +44,7 @@ const STEPS: StepDef[] = [
   { id: "theme", canSkip: false },
   { id: "setup", canSkip: true },
   { id: "provider", canSkip: true },
+  { id: "helper", canSkip: true },
 ];
 
 export function Onboarding() {
@@ -149,6 +151,7 @@ export function Onboarding() {
               )}
             </>
           )}
+          {step.id === "helper" && <HelperStep providerAdded={providerAdded} />}
 
           <div className="flex justify-between items-center mt-8 pt-6 border-t border-border">
             {step.canSkip ? (
@@ -172,6 +175,88 @@ export function Onboarding() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function HelperStep({ providerAdded }: { providerAdded: boolean }) {
+  const [status, setStatus] = useState<Awaited<ReturnType<typeof platformHelper.status>> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [activating, setActivating] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    platformHelper.status()
+      .then((next) => { if (!cancelled) setStatus(next); })
+      .catch((err: any) => { if (!cancelled) setError(err?.message || "Unable to check Helper availability."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [providerAdded]);
+
+  const activate = async () => {
+    setActivating(true);
+    setError("");
+    try {
+      setStatus(await platformHelper.activate(true));
+      window.dispatchEvent(new Event("apteva:helper-changed"));
+    } catch (err: any) {
+      setError(err?.message || "Unable to activate Apteva Helper.");
+    } finally {
+      setActivating(false);
+    }
+  };
+
+  const providerReady = status?.provider_configured || providerAdded;
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <h2 className="text-text text-lg font-bold">Activate Apteva Helper?</h2>
+        <p className="text-text-muted text-sm mt-1">
+          Helper is optional. It uses Conversations for saved sessions and can help you design and manage agents.
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-border bg-bg-card p-4">
+        {loading ? (
+          <p className="text-sm text-text-muted">Checking Helper requirements…</p>
+        ) : status?.activated ? (
+          <div>
+            <div className="text-sm font-medium text-text">Apteva Helper is active</div>
+            <p className="mt-1 text-xs text-text-muted">You can configure it later in Settings → Helper.</p>
+          </div>
+        ) : !providerReady ? (
+          <div>
+            <div className="text-sm font-medium text-text">An LLM provider is required</div>
+            <p className="mt-1 text-xs text-text-muted">Go back and connect a provider, or skip Helper and activate it later.</p>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <div className="text-sm font-medium text-text">
+                {status?.conversations_installed ? "Conversations is ready" : "Conversations will be installed"}
+              </div>
+              <p className="mt-1 max-w-md text-xs text-text-muted">
+                Activation creates one private platform Helper and starts it. Nothing is created if you skip.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void activate()}
+              disabled={activating}
+              className="rounded bg-accent px-4 py-2 text-sm font-bold text-bg hover:bg-accent-hover disabled:opacity-50"
+            >
+              {activating
+                ? "Activating…"
+                : status?.conversations_installed
+                  ? "Activate Helper"
+                  : "Install Conversations and activate"}
+            </button>
+          </div>
+        )}
+      </div>
+      {error && <p className="text-sm text-red">{error}</p>}
     </div>
   );
 }

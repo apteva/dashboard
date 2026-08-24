@@ -390,7 +390,6 @@ function TabbedBody({ view, onAgentDefaultChanged }: { view: View; onAgentDefaul
   const showTools =
     (s?.mcp_tool_names && s.mcp_tool_names.length > 0) ||
     (s?.http_routes && s.http_routes.length > 0) ||
-    (s?.channel_names && s.channel_names.length > 0) ||
     (view.components && view.components.length > 0);
   const showImports = !!view.imports?.sources?.length;
   const tabs: { key: TabKey; label: string; visible: boolean }[] = [
@@ -752,16 +751,6 @@ function ToolsTab({ view }: { view: View }) {
           <ul className="space-y-1 text-sm font-mono">
             {s.http_routes.map((r) => (
               <li key={r} className="text-text-dim">{r}</li>
-            ))}
-          </ul>
-        </section>
-      )}
-      {s?.channel_names && s.channel_names.length > 0 && (
-        <section>
-          <h3 className="text-text-muted text-xs uppercase tracking-wide mb-2">Channels</h3>
-          <ul className="space-y-1 text-sm font-mono">
-            {s.channel_names.map((c) => (
-              <li key={c} className="text-text-dim">{c}</li>
             ))}
           </ul>
         </section>

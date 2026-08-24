@@ -2,8 +2,6 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { instances, core, type Agent as InstanceType, type Thread } from "../api";
 import { AgentView } from "../components/AgentView";
-import { chatConnections } from "../state/chatConnections";
-import { forgetChat } from "../state/chatNotifications";
 import { usePageTitle } from "../hooks/usePageTitle";
 
 // Agent is the per-id wrapper. Resolves :id from the URL, fetches the
@@ -83,15 +81,6 @@ export function Agent() {
       initialThreadId={searchParams.get("thread") || undefined}
       onDelete={async () => {
         await instances.delete(instance.id);
-        // Drop every dashboard-side trace of the deleted instance:
-        //   · live chat SSE (otherwise the connection 404-retries
-        //     for the rest of the session — bounded now, but still
-        //     wasteful).
-        //   · notifications-tray watermark + any pending badge entry
-        //     for the default chat (otherwise a new instance with the
-        //     same id later would inherit a stale "last seen" point).
-        chatConnections.forgetInstance(instance.id);
-        forgetChat(`default-${instance.id}`);
         navigate("/agents");
       }}
       onReload={load}

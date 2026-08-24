@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { AppRow } from "../api";
-import { selectBuildConversationsContribution } from "./Build";
+import {
+  buildWorkspaceItems,
+  selectBuildConversationsContribution,
+} from "./Build";
 
 function app(over: Partial<AppRow> = {}): AppRow {
   return {
@@ -72,5 +75,46 @@ describe("Build Conversations contribution", () => {
     expect(source).not.toContain("channel-chat");
     expect(source).not.toContain("chat.createConversation");
     expect(source).not.toContain("<iframe");
+  });
+
+  test("keeps dashboard-owned project context beside the app contribution", () => {
+    const source = readFileSync(new URL("./Build.tsx", import.meta.url), "utf8");
+    expect(source).toContain("xl:grid-cols-[minmax(0,1fr)_320px]");
+    expect(source).toContain("<WorkspacePanel");
+    expect(source).toContain('aria-label="Open project workspace"');
+
+    const items = buildWorkspaceItems(
+      [{
+        id: 12,
+        user_id: 1,
+        name: "Builder",
+        directive: "",
+        mode: "autonomous",
+        config: "{}",
+        port: 0,
+        pid: 0,
+        status: "running",
+        project_id: "project-a",
+        kind: "user",
+        created_at: "",
+      }],
+      [app({ install_id: 22 })],
+      [{
+        id: 7,
+        slug: "research",
+        name: "Research",
+        description: "Find sources",
+        body: "Research the topic.",
+        source: "user",
+        project_id: "project-a",
+        enabled: true,
+        version: "1",
+        created_at: "",
+        updated_at: "",
+      }],
+    );
+    expect(items.map((item) => item.kind)).toEqual(["agent", "app", "skill"]);
+    expect(items[0]?.href).toBe("/agents/12");
+    expect(items[2]?.status).toBe("enabled");
   });
 });

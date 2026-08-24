@@ -1,15 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { instances, telemetry, type Agent, type InstanceStats, type Project } from "../api";
-import { AptevaInbox } from "../components/dashboard/AptevaInbox";
-import { useCurrentStatuses } from "../components/dashboard/CurrentStatuses";
 import { MonitorActivity } from "../components/monitor/MonitorActivity";
-import { MonitorStatuses } from "../components/monitor/MonitorStatuses";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { useProjects } from "../hooks/useProjects";
 
 const REFRESH_MS = 30_000;
-type MobileSection = "attention" | "live" | "activity";
 
 export function Monitor() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -22,15 +18,9 @@ export function Monitor() {
   const selectedProject = allProjects ? undefined : requestedProject || currentProject || undefined;
   const projectId = selectedProject?.id;
   const wallboard = searchParams.get("wallboard") === "1";
-  const [mobileSection, setMobileSection] = useState<MobileSection>(() =>
-    searchParams.get("view") === "activity" ? "activity" : "attention",
-  );
   const [agents, setAgents] = useState<Agent[]>([]);
   const [stats, setStats] = useState<InstanceStats[]>([]);
-  const [attentionCount, setAttentionCount] = useState(0);
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
-  const mainRef = useRef<HTMLElement>(null);
-  const statuses = useCurrentStatuses(projectId);
 
   usePageTitle(wallboard ? "Monitor · Wallboard" : "Monitor");
 
@@ -57,10 +47,6 @@ export function Monitor() {
     return () => window.clearInterval(timer);
   }, [loadOverview]);
 
-  useEffect(() => {
-    if (searchParams.get("view") === "activity") setMobileSection("activity");
-  }, [searchParams]);
-
   // Monitor owns the one shared telemetry stream while it is mounted.
   // "*" means the server's all-user-agents stream with no project filter.
   // On exit, restore the normal sidebar-selected project scope.
@@ -71,16 +57,9 @@ export function Monitor() {
     return () => bus.setProjectId(currentProject?.id ?? null);
   }, [allProjects, currentProject?.id, projectId]);
 
-  const legacyCounts = useMemo(() => ({
-    working: statuses.filter((row) => row.state === "working").length,
-    waiting: statuses.filter((row) => row.state === "waiting").length,
-    blocked: statuses.filter((row) => row.state === "blocked").length,
-  }), [statuses]);
   const counts = {
-    active: legacyCounts.working + legacyCounts.waiting + legacyCounts.blocked,
-    running: legacyCounts.working,
-    waiting: legacyCounts.waiting,
-    blocked: legacyCounts.blocked,
+    running: agents.filter((agent) => agent.status === "running").length,
+    stopped: agents.filter((agent) => agent.status !== "running").length,
     errors: stats.reduce((sum, row) => sum + row.errors, 0),
   };
 
@@ -95,13 +74,6 @@ export function Monitor() {
       next.set("project", value);
     }
     setSearchParams(next, { replace: true });
-  };
-
-  const chooseMobileSection = (section: MobileSection) => {
-    setMobileSection(section);
-    window.requestAnimationFrame(() => {
-      if (mainRef.current) mainRef.current.scrollTop = 0;
-    });
   };
 
   const toggleWallboard = async () => {
@@ -134,7 +106,7 @@ export function Monitor() {
               </span>
             </div>
             <p className="mt-1 text-xs text-text-dim">
-              System-wide work, approvals, and significant activity · {scopeLabel}
+              Runtime health and significant activity · {scopeLabel}
               {refreshedAt && <span className="hidden sm:inline"> · synced {new Date(refreshedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>}
             </p>
           </div>
@@ -161,71 +133,29 @@ export function Monitor() {
         </div>
       </header>
 
-      <main ref={mainRef} className={`page-safe-bottom flex-1 overflow-auto ${wallboard ? "p-3" : "p-3 sm:p-4"}`}>
-        <nav className="sticky top-0 z-10 mb-3 grid grid-cols-3 rounded-lg border border-border bg-bg-card p-1 md:hidden" aria-label="Monitor sections">
-          {([
-            ["attention", `Attention${attentionCount ? ` ${attentionCount}` : ""}`],
-            ["live", `Live ${counts.active}`],
-            ["activity", "Activity"],
-          ] as Array<[MobileSection, string]>).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => chooseMobileSection(value)}
-              className={`min-h-9 rounded-md px-2 text-[11px] font-medium ${mobileSection === value ? "bg-bg-hover text-text" : "text-text-muted"}`}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-
+      <main className={`page-safe-bottom flex-1 overflow-auto ${wallboard ? "p-3" : "p-3 sm:p-4"}`}>
         <SummaryStrip
-          active={counts.active}
           running={counts.running}
-          waiting={counts.waiting}
-          blocked={counts.blocked}
+          stopped={counts.stopped}
           errors={counts.errors}
           agents={agents.length}
         />
 
-        <div className="mt-4 grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(360px,0.85fr)]">
-          <div className="space-y-4">
-            <div className={mobileSection === "live" ? "block" : "hidden md:block"}>
-              <MonitorStatuses
-                agents={agents}
-                statuses={statuses}
-                projectNames={projectNames}
-                showProjects={allProjects}
-              />
-            </div>
-            <div className={mobileSection === "activity" ? "block" : "hidden md:block"}>
-              <MonitorActivity
-                agents={agents}
-                scopeKey={scopeKey}
-                projectNames={projectNames}
-                showProjects={allProjects}
-                wallboard={wallboard}
-              />
-            </div>
-          </div>
-
-          <div className={mobileSection === "attention" ? "block" : "hidden md:block"}>
-            <AptevaInbox
-              allProjects={allProjects}
-              projectId={projectId}
-              limit={40}
-              variant="monitor"
-              onCountChange={setAttentionCount}
-            />
-          </div>
+        <div className="mt-4">
+          <MonitorActivity
+            agents={agents}
+            scopeKey={scopeKey}
+            projectNames={projectNames}
+            showProjects={allProjects}
+            wallboard={wallboard}
+          />
         </div>
 
-        <div className={`mt-4 ${mobileSection === "live" ? "block" : "hidden md:block"}`}>
+        <div className="mt-4">
           <ProjectHealth
             projects={allProjects ? projects : selectedProject ? [selectedProject] : []}
             agents={agents}
             stats={stats}
-            statuses={statuses}
             onSelect={chooseScope}
             showProjects={allProjects}
           />
@@ -236,26 +166,20 @@ export function Monitor() {
 }
 
 function SummaryStrip({
-  active,
   running,
-  waiting,
-  blocked,
+  stopped,
   errors,
   agents,
 }: {
-  active: number;
   running: number;
-  waiting: number;
-  blocked: number;
+  stopped: number;
   errors: number;
   agents: number;
 }) {
   return (
-    <section className="grid grid-cols-2 overflow-hidden rounded-lg border border-border bg-bg-card sm:grid-cols-3 xl:grid-cols-6">
-      <SummaryMetric label="Active statuses" value={active} tone={active > 0 ? "accent" : "default"} />
+    <section className="grid grid-cols-2 overflow-hidden rounded-lg border border-border bg-bg-card sm:grid-cols-4">
       <SummaryMetric label="Running" value={running} tone={running > 0 ? "green" : "default"} />
-      <SummaryMetric label="Waiting" value={waiting} tone={waiting > 0 ? "blue" : "default"} />
-      <SummaryMetric label="Blocked" value={blocked} tone={blocked > 0 ? "red" : "default"} />
+      <SummaryMetric label="Stopped" value={stopped} tone="default" />
       <SummaryMetric label="Errors · 24h" value={errors} tone={errors > 0 ? "red" : "default"} />
       <SummaryMetric label="Agents" value={agents} tone="default" />
     </section>
@@ -269,15 +193,11 @@ function SummaryMetric({
 }: {
   label: string;
   value: number;
-  tone: "default" | "accent" | "green" | "blue" | "red";
+  tone: "default" | "green" | "red";
 }) {
-  const valueTone = tone === "accent"
-    ? "text-accent"
-    : tone === "green"
+  const valueTone = tone === "green"
       ? "text-green"
-      : tone === "blue"
-        ? "text-blue"
-        : tone === "red"
+      : tone === "red"
           ? "text-red"
           : "text-text";
   return (
@@ -292,30 +212,26 @@ function ProjectHealth({
   projects,
   agents,
   stats,
-  statuses,
   onSelect,
   showProjects,
 }: {
   projects: Project[];
   agents: Agent[];
   stats: InstanceStats[];
-  statuses: ReturnType<typeof useCurrentStatuses>;
   onSelect: (projectId: string) => void;
   showProjects: boolean;
 }) {
   const cards = projects.map((project) => {
     const projectAgents = agents.filter((agent) => agent.project_id === project.id);
     const projectAgentIds = new Set(projectAgents.map((agent) => agent.id));
-    const projectStatuses = statuses.filter((row) => row.project_id === project.id);
     const projectStats = stats.filter((row) => projectAgentIds.has(row.instance_id));
     return {
       project,
       agents: projectAgents.length,
       running: projectAgents.filter((agent) => agent.status === "running").length,
-      blocked: projectStatuses.filter((row) => row.state === "blocked").length,
       errors: projectStats.reduce((sum, row) => sum + row.errors, 0),
     };
-  }).sort((a, b) => (b.blocked + b.errors) - (a.blocked + a.errors) || a.project.name.localeCompare(b.project.name));
+  }).sort((a, b) => b.errors - a.errors || a.project.name.localeCompare(b.project.name));
 
   return (
     <section className="overflow-hidden rounded-lg border border-border bg-bg-card">
@@ -323,7 +239,7 @@ function ProjectHealth({
         <div>
           <h2 className="text-sm font-bold text-text">Project health</h2>
           <p className="mt-0.5 text-[11px] text-text-dim">
-            Running agents, blocks, and errors during the last 24 hours
+            Running agents and errors during the last 24 hours
           </p>
         </div>
         {showProjects && <span className="text-[11px] tabular-nums text-text-dim">{cards.length} projects</span>}
@@ -333,7 +249,7 @@ function ProjectHealth({
       ) : (
         <div className="grid grid-cols-1 divide-y divide-border sm:grid-cols-2 sm:divide-y-0 xl:grid-cols-4">
           {cards.map((card) => {
-            const needsAttention = card.blocked > 0 || card.errors > 0;
+            const needsAttention = card.errors > 0;
             return (
               <button
                 key={card.project.id}
@@ -347,9 +263,6 @@ function ProjectHealth({
                 </div>
                 <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-text-dim">
                   <span><strong className="text-text-muted">{card.running}</strong> / {card.agents} running</span>
-                  <span className={card.blocked > 0 ? "text-red" : ""}>
-                    {card.blocked} blocked
-                  </span>
                   <span className={card.errors > 0 ? "text-red" : ""}>{card.errors} errors</span>
                 </div>
               </button>

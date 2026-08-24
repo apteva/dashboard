@@ -188,6 +188,7 @@
     "title": "Settings",
     "tabs": {
       "projects": "Projects",
+      "presets": "Presets",
       "helper": "Helper",
       "appearance": "Appearance",
       "channels": "Channels",

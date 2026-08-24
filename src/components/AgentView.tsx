@@ -14,7 +14,6 @@ import {
   type ModelInfo,
   type PromptComposition,
   type RuntimeConnection,
-  type RealtimeAvailability,
   type Status,
   type TelemetryEvent,
   type Thread,
@@ -27,7 +26,6 @@ import { splitToolTelemetryPaintFrame } from "../utils/toolTelemetryPaint";
 
 export type EventListener = (event: TelemetryEvent) => void;
 export type SubscribeFn = (listener: EventListener) => () => void;
-import { AgentConversationPanel } from "./chat/AgentConversationPanel";
 import { ActivityPanel } from "./ActivityPanel";
 import { MemoryPanel } from "./MemoryPanel";
 import { UnconsciousPanel } from "./UnconsciousPanel";
@@ -499,8 +497,8 @@ function restoreCheckpointMs(ev: TelemetryEvent): number {
   return Number.isFinite(ms) ? ms : 0;
 }
 
-// AgentView is the rich per-instance view: chat panel + runtime side panel,
-// lifecycle controls (start/stop/pause/delete), thread detail
+// AgentView is the rich per-instance runtime view with lifecycle controls
+// (start/stop/pause/delete) and a thread detail
 // modal. Used by the /instances/:id route to render whichever instance the
 // user navigated to.
 //
@@ -568,19 +566,6 @@ export function AgentView({
   const [resetFeedback, setResetFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [showConfig, setShowConfig] = useState(false);
   const [view, setView] = useState<RuntimeView>("stream");
-  const [mobilePane, setMobilePane] = useState<"chat" | "runtime">("runtime");
-  // Whether the channels MCP is currently attached to this instance.
-  // When the user detaches it via the MCP panel the chat bridge stops
-  // receiving user messages — we gray out the chat column to make that
-  // state obvious instead of silently dropping typed messages.
-  const [channelsAttached, setChannelsAttached] = useState(true);
-  const [realtime, setRealtime] = useState<RealtimeAvailability>({
-    enabled: false,
-    available: false,
-    voice: "marin",
-    mcp: [],
-    provider: "openai-realtime",
-  });
 
   // Track threads, tools, and active LLM calls for the runtime summary.
   const [graphThreads, setGraphThreads] = useState<Thread[]>(initialThreads);
@@ -709,55 +694,13 @@ export function AgentView({
     pendingRuntimeEventsRef.current = [];
   }, []);
 
-  // Poll instance config for the channels MCP presence so the chat
-  // panel can gray itself out when an operator detaches channels from
-  // the MCP list. 5s cadence matches the MCP panel's own refresh so
-  // the two views stay in sync.
-  useEffect(() => {
-    if (instance.status !== "running") {
-      setChannelsAttached(false);
-      setRealtime((current) => ({ ...current, available: false }));
-      return;
-    }
-    let cancelled = false;
-    const refresh = () => {
-      core.config(instance.id)
-        .then((c) => {
-          if (cancelled) return;
-          const has = (c.mcp_servers || []).some(
-            (s) => s.name === "channels" || s.name === "apteva-channels",
-          );
-          setChannelsAttached(has);
-          const realtimeProvider = (c.providers || []).find((provider) =>
-            provider.name === "openai-realtime" || provider.name.includes("realtime"),
-          );
-          const attached = new Set((c.mcp_servers || []).map((server) => server.name));
-          setRealtime({
-            enabled: !!c.realtime_enabled,
-            available: !!realtimeProvider,
-            voice: c.realtime_voice || realtimeProvider?.realtime_voice || "marin",
-            mcp: (c.realtime_voice_mcp || []).filter((name) => attached.has(name)),
-            provider: realtimeProvider?.name || "openai-realtime",
-          });
-        })
-        .catch(() => {});
-    };
-    refresh();
-    const t = setInterval(refresh, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, [instance.id, instance.status]);
-
-  // Top-level dedup. ChatPanel's EventSource is the single source of truth
-  // for SSE in this view; if the same event.id arrives twice (StrictMode
+  // Top-level dedup. The shared telemetry stream is the source of truth
+  // for this view; if the same event.id arrives twice (StrictMode
   // double-mount, browser EventSource reconnect, etc.) we drop the
   // duplicate here so neither the fan-out subscribers nor the local
   // state mutations below ever see it twice. This is the belt; the
-  // panels (ChatPanel, ActivityPanel) keep their own dedup as
-  // suspenders, since they each have rendering paths that historically
-  // produced visible duplicates.
+  // panels keep their own dedup as suspenders, since they each have
+  // rendering paths that historically produced visible duplicates.
   const handleEvent = (event: TelemetryEvent) => {
     if (event.id) {
       if (!rememberHandledEventID(event.id)) return;
@@ -1175,51 +1118,8 @@ export function AgentView({
       />
 
       {/* Main content */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-        <div className="lg:hidden shrink-0 border-b border-border px-3 py-2 flex items-center gap-2 bg-bg">
-          <button
-            type="button"
-            onClick={() => setMobilePane("chat")}
-            className={`flex-1 rounded border px-3 py-1.5 text-xs font-medium transition-colors ${
-              mobilePane === "chat"
-                ? "border-accent bg-accent/10 text-accent"
-                : "border-border text-text-muted hover:text-text"
-            }`}
-          >
-            Chat
-          </button>
-          <button
-            type="button"
-            onClick={() => setMobilePane("runtime")}
-            className={`flex-1 rounded border px-3 py-1.5 text-xs font-medium transition-colors ${
-              mobilePane === "runtime"
-                ? "border-accent bg-accent/10 text-accent"
-                : "border-border text-text-muted hover:text-text"
-            }`}
-          >
-            Runtime
-          </button>
-        </div>
-        {/* Chat panel */}
-        <div className={`${mobilePane === "chat" ? "flex" : "hidden"} min-h-0 flex-col overflow-hidden border-b border-border lg:flex lg:w-[42%] lg:min-w-[380px] lg:max-w-[680px] lg:border-b-0 lg:border-r`}>
-          {instance.status !== "running" ? (
-            <div className="flex items-center justify-center h-full text-text-muted text-sm">
-              Agent is stopped. Start it to begin chatting.
-            </div>
-          ) : !channelsAttached ? (
-            <div className="flex h-full items-center justify-center p-6">
-              <div className="max-w-xs text-center text-xs text-text-dim bg-bg-card border border-border rounded-lg p-4">
-                Chat is disabled because the <code className="text-text-muted">channels</code> MCP
-                is not attached. Re-attach it from Capabilities → Manage to restore
-                chat.
-              </div>
-            </div>
-          ) : (
-			<AgentConversationPanel instance={instance} subscribe={subscribe} realtime={realtime} />
-          )}
-        </div>
-
-        <div className={`${mobilePane === "runtime" ? "flex" : "hidden"} min-h-0 min-w-0 flex-1 overflow-hidden lg:flex`}>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
           <AgentRuntimePanel
             instance={instance}
             threads={graphThreads}
@@ -3120,7 +3020,6 @@ function RuntimeStream({
   const advancedFilters: Array<{ id: RuntimeFilter; label: string }> = [
     { id: "thought", label: "Thoughts" },
     { id: "thread", label: "Threads" },
-    { id: "channel", label: "Channels" },
   ];
 
   return (
@@ -3272,7 +3171,9 @@ function RuntimeRow({ event }: { event: RuntimeEventItem }) {
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 min-w-0">
-            <span className={`text-[10px] uppercase tracking-wide shrink-0 ${visual.labelClass}`}>{event.kind}</span>
+            <span className={`text-[10px] uppercase tracking-wide shrink-0 ${visual.labelClass}`}>
+              {event.kind === "channel" ? "event" : event.kind}
+            </span>
             <span className="text-xs text-text truncate">{event.label}</span>
           </div>
           {summaryDetail && (

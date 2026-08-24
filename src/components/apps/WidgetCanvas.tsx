@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   reorderWidgetInstances,
-  serializeWidgetInstances,
   useProjectUILayout,
   WidgetSettingsEditor,
   type WidgetInstance,
@@ -21,6 +20,8 @@ export interface WidgetDefinition {
   defaultSettings?: Record<string, unknown>;
   settingsSchema?: Record<string, unknown>;
   suggested?: boolean;
+  kind?: "builtin" | "app";
+  providerLabel?: string;
   render: (instance: WidgetInstance) => ReactNode;
 }
 
@@ -28,20 +29,18 @@ export function WidgetCanvas({
   projectId,
   slot,
   definitions,
-  defaults = [],
   editing,
   onEditingChange,
-  mergeLegacyDefaults = false,
+  onVisibleComponentsChange,
   galleryRequest = 0,
   className = "grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2",
 }: {
   projectId?: string | null;
   slot: string;
   definitions: WidgetDefinition[];
-  defaults?: WidgetInstance[];
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
-  mergeLegacyDefaults?: boolean;
+  onVisibleComponentsChange?: (components: string[]) => void;
   galleryRequest?: number;
   className?: string;
 }) {
@@ -61,12 +60,15 @@ export function WidgetCanvas({
   );
   const stored = explicit && Array.isArray(project.slots?.[slot])
     ? normalizeStoredWidgets(project.slots?.[slot] || [], definitions)
-    : serializeWidgetInstances(defaults);
-  const configured = mergeLegacyDefaults && explicit &&
-    stored.length > 0 && !stored.some((item) => item.component.startsWith("native:"))
-    ? mergeLegacyWidgetDefaults(defaults, stored)
-    : stored;
+    : [];
+  const configured = stored;
   const visible = configured.filter((instance) => byKey.has(instance.component));
+  const visibleComponentsKey = visible.map((instance) => instance.component).join("\u0000");
+
+  useEffect(() => {
+    onVisibleComponentsChange?.(visible.map((instance) => instance.component));
+    if (visible.length === 0 && editing) onEditingChange(false);
+  }, [editing, onEditingChange, onVisibleComponentsChange, visibleComponentsKey]);
 
   const persist = (next: WidgetInstance[]) => {
     if (!projectId) return;
@@ -222,15 +224,7 @@ export function WidgetCanvas({
             );
           })}
         </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setGalleryOpen(true)}
-          className="flex min-h-32 w-full items-center justify-center rounded-lg border border-dashed border-border text-xs text-text-dim hover:border-accent hover:text-accent"
-        >
-          Add your first widget
-        </button>
-      )}
+      ) : null}
 
       {galleryOpen && (
         <WidgetGallery
@@ -278,15 +272,6 @@ function normalizeStoredWidgets(values: unknown[], definitions: WidgetDefinition
   });
 }
 
-export function mergeLegacyWidgetDefaults(defaults: WidgetInstance[], stored: WidgetInstance[]) {
-  if (defaults.length === 0) return stored;
-  return [
-    ...defaults.slice(0, -1),
-    ...stored,
-    defaults[defaults.length - 1],
-  ];
-}
-
 function newWidgetID(component: string) {
   const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
@@ -305,6 +290,8 @@ function WidgetGallery({
   onAdd: (definition: WidgetDefinition) => void;
   onClose: () => void;
 }) {
+  const builtins = definitions.filter((definition) => definition.kind === "builtin" || definition.key.startsWith("native:"));
+  const appWidgets = definitions.filter((definition) => !builtins.includes(definition));
   return (
     <div className="fixed inset-0 z-[110] grid place-items-center p-4" role="dialog" aria-modal="true" aria-label="Widget gallery">
       <button className="absolute inset-0 bg-black/65" onClick={onClose} aria-label="Close widget gallery" />
@@ -316,11 +303,36 @@ function WidgetGallery({
           </div>
           <button type="button" className="ml-auto text-lg text-text-dim hover:text-text" onClick={onClose}>×</button>
         </header>
-        <div className="grid min-h-0 flex-1 gap-3 overflow-auto p-5 sm:grid-cols-2">
-          {definitions.map((definition) => {
-            const count = configured.filter((item) => item.component === definition.key).length;
-            return (
-              <article key={definition.key} className="flex min-h-28 flex-col rounded-lg border border-border bg-bg-subtle p-4 hover:border-accent/55">
+        <div className="min-h-0 flex-1 space-y-5 overflow-auto p-5">
+          <WidgetGalleryGroup label="Built-in" definitions={builtins} configured={configured} onAdd={onAdd} />
+          {appWidgets.length > 0 && (
+            <WidgetGalleryGroup label="Installed apps" definitions={appWidgets} configured={configured} onAdd={onAdd} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WidgetGalleryGroup({
+  label,
+  definitions,
+  configured,
+  onAdd,
+}: {
+  label: string;
+  definitions: WidgetDefinition[];
+  configured: WidgetInstance[];
+  onAdd: (definition: WidgetDefinition) => void;
+}) {
+  return (
+    <section>
+      <h3 className="mb-2 text-[10px] font-bold uppercase tracking-wide text-text-dim">{label}</h3>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {definitions.map((definition) => {
+          const count = configured.filter((item) => item.component === definition.key).length;
+          return (
+            <article key={definition.key} className="flex min-h-28 flex-col rounded-lg border border-border bg-bg-subtle p-4 hover:border-accent/55">
                 <div className="flex items-start gap-3">
                   <AppIcon name={definition.label} src={definition.icon} iconStyle={definition.iconStyle} size="sm" />
                   <div className="min-w-0">
@@ -333,6 +345,9 @@ function WidgetGallery({
                       )}
                     </div>
                     <p className="mt-1 text-[10px] leading-4 text-text-dim">{definition.description || "Dashboard widget"}</p>
+                    {definition.providerLabel && (
+                      <p className="mt-1 text-[9px] text-text-dim">{definition.providerLabel}</p>
+                    )}
                   </div>
                 </div>
                 <button
@@ -342,12 +357,11 @@ function WidgetGallery({
                 >
                   {count ? "Add another" : "Add"}
                 </button>
-              </article>
-            );
-          })}
-        </div>
+            </article>
+          );
+        })}
       </div>
-    </div>
+    </section>
   );
 }
 

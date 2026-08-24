@@ -6,7 +6,6 @@ import { usePageTitle } from "../hooks/usePageTitle";
 import { Modal } from "../components/Modal";
 import { sleepClassName, sleepLabel, sleepTitle, type SleepLike } from "../utils/sleepStatus";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
-import { openAgentConversation } from "../utils/agentConversations";
 import { AppContributionArea, ContributionManager } from "../components/apps/contributions";
 
 type AgentLiveStatus = { threads: number; iter: number; rate: string } & SleepLike;
@@ -79,16 +78,6 @@ export function Agents() {
     }
   });
   const [now, setNow] = useState(Date.now());
-
-  const openChat = async (agent: Agent) => {
-    if (!projectId) return;
-    try {
-      const conversation = await openAgentConversation(projectId, agent);
-      navigate(`/chat/${conversation.id}`);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
-  };
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -533,7 +522,6 @@ export function Agents() {
                       agent={inst}
                       rolloutRunning={rollout?.state === "running"}
                       onOpen={() => navigate(`/agents/${inst.id}`)}
-                      onChat={() => void openChat(inst)}
                       onEdit={() => openEditModal(inst)}
                       onStart={() => handleStart(inst.id)}
                       onStop={() => handleStop(inst.id)}
@@ -597,7 +585,6 @@ export function Agents() {
                         agent={inst}
                         rolloutRunning={rollout?.state === "running"}
                         onOpen={() => navigate(`/agents/${inst.id}`)}
-                        onChat={() => void openChat(inst)}
                         onEdit={() => openEditModal(inst)}
                         onStart={() => handleStart(inst.id)}
                         onStop={() => handleStop(inst.id)}
@@ -994,7 +981,6 @@ function AgentActionsMenu({
   agent,
   rolloutRunning,
   onOpen,
-  onChat,
   onEdit,
   onStart,
   onStop,
@@ -1004,7 +990,6 @@ function AgentActionsMenu({
   agent: Agent;
   rolloutRunning: boolean;
   onOpen: () => void;
-  onChat: () => void;
   onEdit: () => void;
   onStart: () => void;
   onStop: () => void;
@@ -1063,14 +1048,6 @@ function AgentActionsMenu({
             className="flex min-h-10 w-full items-center px-3 text-left text-xs text-text transition-colors hover:bg-bg-hover"
           >
             Open details
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => choose(onChat)}
-            className="flex min-h-10 w-full items-center px-3 text-left text-xs text-text transition-colors hover:bg-bg-hover"
-          >
-            Open chat
           </button>
           <button
             type="button"

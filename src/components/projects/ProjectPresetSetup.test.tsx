@@ -19,7 +19,7 @@ const businessPreset = {
     mode: "cautious" as const,
     apps: ["tasks", "crm"],
   }],
-  dashboard: ["native:inbox"],
+  dashboard: ["native:inbox", "native:activity"],
 };
 
 const personalPreset = {
@@ -38,12 +38,19 @@ const project = {
   created_at: "",
 };
 
+const catalogResponse = (items: Array<typeof businessPreset | typeof personalPreset>) => ({
+  presets: items.map(({ id, name, description, category, agents, dashboard }) => ({
+    id, name, description, kind: "project_setup", scope: "system", source: "system", schema_version: 1,
+    definition: { category, agents, dashboard },
+  })),
+});
+
 describe("ProjectPresetSetup", () => {
   test("always filters the catalog by one selected category", async () => {
     globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith("/api/project-presets")) {
-        return Response.json({ schema_version: 1, presets: [personalPreset, businessPreset] });
+      if (url.endsWith("/api/presets")) {
+		return Response.json(catalogResponse([personalPreset, businessPreset]));
       }
       if (url.endsWith("/api/projects") && (!init?.method || init.method === "GET")) {
         return Response.json([project]);
@@ -56,6 +63,10 @@ describe("ProjectPresetSetup", () => {
     const personal = await screen.findByRole("button", { name: "Personal" });
     expect(screen.getByRole("button", { name: /Personal assistant/ })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Lead-generation business/ })).toBeNull();
+    expect(screen.queryByText("Inbox")).toBeNull();
+    expect(screen.getAllByText(/1 widget/).length).toBeGreaterThan(0);
+    expect(screen.getByText("Added automatically when this preset is selected.")).toBeTruthy();
+    expect(screen.getByText("Recent activity")).toBeTruthy();
 
     fireEvent.click(personal);
     expect(screen.getByRole("button", { name: /Personal assistant/ })).toBeTruthy();
@@ -74,8 +85,8 @@ describe("ProjectPresetSetup", () => {
       const method = init?.method || "GET";
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       calls.push({ url, method, body });
-      if (url.endsWith("/api/project-presets")) {
-        return Response.json({ schema_version: 1, presets: [businessPreset] });
+      if (url.endsWith("/api/presets")) {
+		return Response.json(catalogResponse([businessPreset]));
       }
       if (url.endsWith("/api/projects") && method === "GET") {
         return Response.json([project]);

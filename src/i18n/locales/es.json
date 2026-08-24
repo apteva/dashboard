@@ -188,6 +188,7 @@
     "title": "Configuracion",
     "tabs": {
       "projects": "Proyectos",
+      "presets": "Preajustes",
       "helper": "Asistente",
       "appearance": "Apariencia",
       "channels": "Canales",

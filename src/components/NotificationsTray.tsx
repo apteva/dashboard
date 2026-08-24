@@ -1,17 +1,12 @@
 // NotificationsTray — generic notifications bell + dropdown.
 //
 // Lives in the top-right of the main content area. Renders an
-// unread-count badge, a dropdown list of the latest notifications
-// across all sources, and a small settings menu for desktop alerts.
-//
-// v1 has only chat as a source, but the component knows nothing about
-// chat specifically — it routes by `Notification.ref.kind`.
+// unread-count badge and a dropdown list of the latest notifications
+// across all sources. Source-specific producers and routes live outside
+// this generic shell.
 
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { chat } from "../api";
 import { useNotifications, type Notification } from "../state/notifications";
-import { markChatSeen, setDesktopNotificationsEnabled, desktopNotificationsEnabled } from "../state/chatNotifications";
 import { setUnreadTitleCount } from "../state/documentTitle";
 
 function formatRelative(iso: string): string {
@@ -29,26 +24,20 @@ function formatRelative(iso: string): string {
 }
 
 function sourceLabel(n: Notification): string {
-  if (n.source === "chat") return "Chat";
-  if (n.source === "inbox") return "Inbox";
-  return n.source;
+  return n.source.replace(/[-_]+/g, " ");
 }
 
 export function NotificationsTray() {
-  const { items, remove } = useNotifications();
-  const inboxItems = items.filter((n) => n.source === "inbox");
-  const inboxUnreadCount = inboxItems.reduce((n, it) => n + (it.unread ? 1 : 0), 0);
+  const { items, unreadCount, markRead, remove } = useNotifications();
   const [open, setOpen] = useState(false);
-  const [desktopOn, setDesktopOn] = useState(desktopNotificationsEnabled());
   const ref = useRef<HTMLDivElement>(null);
-  const navigate = useNavigate();
 
   // Reflect unread count into the browser tab title so it composes with
-  // the current route title, e.g. "(3) Chat: Computer - Apteva".
+  // the current route title.
   useEffect(() => {
-    setUnreadTitleCount(inboxUnreadCount);
+    setUnreadTitleCount(unreadCount);
     return () => setUnreadTitleCount(0);
-  }, [inboxUnreadCount]);
+  }, [unreadCount]);
 
   // Click-outside to close the dropdown.
   useEffect(() => {
@@ -60,51 +49,19 @@ export function NotificationsTray() {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
 
-  // Desktop-notification jump: clicking a system toast dispatches an
-  // event the tray honors here so routing stays in one place.
-  useEffect(() => {
-    const onJump = (ev: Event) => {
-      const n = (ev as CustomEvent<Notification>).detail;
-      if (n) routeTo(n);
-    };
-    window.addEventListener("apteva.openNotification", onJump);
-    return () => window.removeEventListener("apteva.openNotification", onJump);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  function routeTo(n: Notification): void {
-    if (n.ref?.kind === "instance-chat") {
-      navigate(`/agents/${n.ref.instanceId}`);
-      const chatId = n.id.startsWith("chat:") ? n.id.slice(5) : "";
-      if (chatId && n.latestId) markChatSeen(chatId, n.latestId);
-    } else if (n.ref?.kind === "inbox") {
-      navigate("/monitor?scope=all");
-    }
+  function acknowledge(n: Notification): void {
+    markRead(n.id);
     setOpen(false);
   }
 
   function dismissNotification(n: Notification): void {
     remove(n.id);
-    if (n.ref?.kind === "inbox") {
-      void chat.messageDismiss(n.ref.messageId).catch(() => {});
-      window.dispatchEvent(new CustomEvent("apteva.inboxMessage"));
-      return;
-    }
-    if (n.id.startsWith("chat:") && n.latestId) {
-      markChatSeen(n.id.slice(5), n.latestId);
-    }
   }
 
-  function dismissAllInbox(): void {
-    for (const n of inboxItems) {
+  function dismissAll(): void {
+    for (const n of items) {
       dismissNotification(n);
     }
-  }
-
-  async function toggleDesktop() {
-    const next = !desktopOn;
-    const ok = await setDesktopNotificationsEnabled(next);
-    setDesktopOn(ok);
   }
 
   return (
@@ -112,13 +69,13 @@ export function NotificationsTray() {
       <button
         onClick={() => setOpen((v) => !v)}
         className="relative p-2 rounded hover:bg-bg-hover text-text-muted hover:text-text transition-colors"
-        title={inboxUnreadCount ? `${inboxUnreadCount} inbox items` : "Notifications"}
+        title={unreadCount ? `${unreadCount} unread notifications` : "Notifications"}
         aria-label="Notifications"
       >
         <BellIcon />
-        {inboxUnreadCount > 0 && (
+        {unreadCount > 0 && (
           <span className="absolute top-1 right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-red text-white text-[10px] font-bold flex items-center justify-center">
-            {inboxUnreadCount > 99 ? "99+" : inboxUnreadCount}
+            {unreadCount > 99 ? "99+" : unreadCount}
           </span>
         )}
       </button>
@@ -127,9 +84,9 @@ export function NotificationsTray() {
         <div className="absolute right-0 mt-2 w-[min(360px,calc(100vw-1rem))] max-h-[480px] overflow-hidden rounded-lg border border-border bg-bg-card shadow-xl z-50 flex flex-col">
           <div className="px-4 py-3 border-b border-border flex items-center justify-between">
             <span className="text-text font-medium text-sm">Notifications</span>
-            {inboxItems.length > 0 && (
+            {items.length > 0 && (
               <button
-                onClick={dismissAllInbox}
+                onClick={dismissAll}
                 className="text-text-muted hover:text-text text-xs"
               >
                 dismiss all
@@ -138,15 +95,15 @@ export function NotificationsTray() {
           </div>
 
           <div className="flex-1 overflow-y-auto">
-            {inboxItems.length === 0 ? (
+            {items.length === 0 ? (
               <div className="px-4 py-8 text-text-dim text-xs text-center">
                 Nothing new.
               </div>
             ) : (
-              inboxItems.map((n) => (
+              items.map((n) => (
                 <button
                   key={n.id}
-                  onClick={() => routeTo(n)}
+                  onClick={() => acknowledge(n)}
                   className={`w-full text-left px-4 py-3 border-b border-border/40 hover:bg-bg-hover transition-colors ${
                     n.unread ? "" : "opacity-60"
                   }`}
@@ -181,18 +138,6 @@ export function NotificationsTray() {
                 </button>
               ))
             )}
-          </div>
-
-          <div className="px-4 py-2 border-t border-border bg-bg-input/40">
-            <label className="flex items-center gap-2 text-text-muted text-xs cursor-pointer">
-              <input
-                type="checkbox"
-                checked={desktopOn}
-                onChange={() => void toggleDesktop()}
-                className="accent-accent"
-              />
-              Desktop notifications when tab is in background
-            </label>
           </div>
         </div>
       )}

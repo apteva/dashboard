@@ -93,14 +93,6 @@ export function AppSurfaceBadges({ surfaces, className }: Props) {
       title: surfaces.http_routes?.join(", ") ?? `${surfaces.http_route_count} HTTP route(s)`,
     });
   }
-  if (surfaces.channel_count > 0) {
-    items.push({
-      label: "channels",
-      count: surfaces.channel_count,
-      className: "bg-amber/15 text-amber-200",
-      title: surfaces.channel_names?.join(", ") ?? `${surfaces.channel_count} channel(s)`,
-    });
-  }
   if (surfaces.worker_count > 0) {
     items.push({
       label: "workers",

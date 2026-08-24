@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppIcon } from "@apteva/ui-kit";
@@ -7,16 +7,7 @@ import { useAuth } from "../hooks/useAuth";
 import { useAudience, type AudienceSection } from "../hooks/useAudience";
 import { AccountMenu } from "./AccountMenu";
 import { NotificationsTray } from "./NotificationsTray";
-import { startChatNotifications } from "../state/chatNotifications";
-import {
-  chatConnections,
-  purgeLegacyChatConnectedKeys,
-} from "../state/chatConnections";
-import { apps, platform, type PlatformStatus } from "../api";
-import {
-  ContextAgentChatWidget,
-  readContextAgentChatOpenDefault,
-} from "./ContextAgentChatWidget";
+import { apps, platform, platformHelper, type PlatformStatus } from "../api";
 import { NewAgentButton } from "./NewAgentButton";
 import { RealtimeVoiceDock } from "../state/RealtimeVoiceContext";
 import {
@@ -39,6 +30,7 @@ export function Layout() {
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus | null>(
     null,
   );
+  const [helperActivated, setHelperActivated] = useState(false);
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   // Sidebar APPS overflow toggle. Default collapsed so a long
   // install list (~22 apps in the boot we saw) doesn't push the
@@ -64,45 +56,9 @@ export function Layout() {
   const { projects, currentProject, setCurrentProject } = useProjects();
   const { project: projectUILayout } = useProjectUILayout(currentProject?.id);
   const [sidebarAppsOpen, setSidebarAppsOpen] = useState(false);
-  const navigate = useNavigate();
   const location = useLocation();
-  const isMobileChatConversation = /^\/chat\/[^/]+/.test(location.pathname);
   const { user, logout } = useAuth();
-  const [agentDrawerOpen, setAgentDrawerOpen] = useState(
-    readContextAgentChatOpenDefault,
-  );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-
-  const openPlatformHelper = useCallback(() => {
-    setAgentDrawerOpen(true);
-  }, []);
-
-  // Conversational build entry points use a short-lived query flag. This
-  // lets /build redirects and buttons on other routes open the same global
-  // helper without introducing a second chat/history surface. Remove the
-  // flag immediately so refreshes do not keep reopening the drawer.
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    if (params.get("helper") !== "build") return;
-
-    openPlatformHelper();
-    params.delete("helper");
-    const search = params.toString();
-    navigate(
-      {
-        pathname: location.pathname,
-        search: search ? `?${search}` : "",
-        hash: location.hash,
-      },
-      { replace: true },
-    );
-  }, [
-    location.hash,
-    location.pathname,
-    location.search,
-    navigate,
-    openPlatformHelper,
-  ]);
 
   // The authenticated dashboard is a viewport shell: pages provide their own
   // scroll containers. Keep the browser document itself locked while Layout is
@@ -119,45 +75,10 @@ export function Layout() {
     };
   }, []);
 
-  // Boot the global notifications source once the user is logged in.
-  //
-  // We deliberately do NOT call chatConnections.stopAll() in cleanup.
-  // React StrictMode in dev double-fires this effect (mount → cleanup →
-  // remount), and tearing down the per-chat SSEs on every cleanup
-  // pass would emit a [chat] user disconnected event to the agent and
-  // immediately reconnect — confusing the agent's channel-availability
-  // reasoning. SSEs are torn down naturally when the browser tab
-  // closes; explicit logout calls chatConnections.stopAll() directly
-  // (see the logout button below).
-  //
-  // Chat-connection intent is tab-scoped in sessionStorage. Restore its one
-  // active stream after refresh; SPA navigation keeps the singleton alive and
-  // needs no reconnect. Legacy localStorage keys are still purged once.
-  //
-  // The notifications driver (startChatNotifications) is safe to bounce
-  // — its cleanup is just an SSE close + localStorage listener removal,
-  // no agent-visible side effects.
-  useEffect(() => {
-    if (!user) return;
-    purgeLegacyChatConnectedKeys();
-    chatConnections.resumeSession();
-    const stopNotifs = startChatNotifications();
-    return () => {
-      stopNotifs();
-    };
-  }, [user]);
-
-  // Logout teardown — when user transitions from authenticated to false,
-  // close every open chat SSE so the agent sees the user as gone.
-  // Distinct from the StrictMode-induced cleanup above which preserves
-  // connections.
   useEffect(() => {
     if (user === false) {
-      chatConnections.stopAll();
-      // Tear down the telemetry SSE on logout for the same reason
-      // we tear down chat: the user is gone, no need to hold a
-      // socket open. setProjectId(null) is the documented
-      // "disconnect" path.
+      // Tear down the telemetry SSE on logout. setProjectId(null) is the
+      // documented disconnect path.
       if (typeof window !== "undefined") {
         window.__aptevaTelemetryBus?.setProjectId(null);
       }
@@ -189,6 +110,25 @@ export function Layout() {
       .then(setPlatformStatus)
       .catch(() => {});
   }, [user]);
+
+  const refreshHelperAvailability = useCallback(() => {
+    if (!user) {
+      setHelperActivated(false);
+      return;
+    }
+    platformHelper
+      .status()
+      .then((status) => setHelperActivated(status.activated))
+      .catch(() => setHelperActivated(false));
+  }, [user]);
+
+  useEffect(() => {
+    refreshHelperAvailability();
+    window.addEventListener("apteva:helper-changed", refreshHelperAvailability);
+    return () => {
+      window.removeEventListener("apteva:helper-changed", refreshHelperAvailability);
+    };
+  }, [refreshHelperAvailability]);
 
   const refreshPlatformStatus = useCallback(async () => {
     setRefreshing(true);
@@ -247,10 +187,9 @@ export function Layout() {
   // working at every audience.
   const primaryNav = [
     { to: "/", label: t("nav.dashboard") },
-    { to: "/build", label: t("nav.build") },
+    ...(helperActivated ? [{ to: "/build", label: t("nav.build") }] : []),
     { to: "/agents", label: t("nav.agents") },
     { to: "/monitor", label: t("nav.monitor"), section: "nav.monitor" },
-    { to: "/chat", label: t("nav.chat") },
   ].filter((item) => !item.section || shows(item.section as AudienceSection));
   const manageNav = [
     { to: "/integrations", label: t("nav.integrations"), section: "nav.integrations" },
@@ -593,7 +532,7 @@ export function Layout() {
             notifications tray; placeholder for future search,
             user-shortcut, or quick-create surfaces. */}
         <div
-          className={`${isMobileChatConversation ? "hidden md:flex" : "flex"} app-topbar-safe border-b border-border items-center justify-between md:justify-end gap-3 px-3 flex-shrink-0 safe-area-x`}
+          className="app-topbar-safe flex border-b border-border items-center justify-between md:justify-end gap-3 px-3 flex-shrink-0 safe-area-x"
         >
           <button
             type="button"
@@ -632,13 +571,6 @@ export function Layout() {
         </div>
       </main>
 
-      {location.pathname !== "/build" && (
-        <ContextAgentChatWidget
-          open={agentDrawerOpen}
-          onOpen={openPlatformHelper}
-          onClose={() => setAgentDrawerOpen(false)}
-        />
-      )}
       <RealtimeVoiceDock />
     </div>
   );

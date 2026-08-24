@@ -188,6 +188,7 @@
     "title": "Parametres",
     "tabs": {
       "projects": "Projets",
+      "presets": "Préréglages",
       "helper": "Assistant",
       "appearance": "Apparence",
       "channels": "Canaux",

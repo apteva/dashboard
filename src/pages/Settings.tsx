@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AppIcon } from "@apteva/ui-kit";
-import { auth, core, platformHelper, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, runtimeEntryAsAppDetail, type RuntimeCatalogEntry, type RuntimeConnection, type ConnectionTestResult, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser } from "../api";
+import { auth, core, platformHelper, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, runtimeEntryAsAppDetail, type RuntimeCatalogEntry, type RuntimeConnection, type ConnectionTestResult, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser, type PlatformHelperStatus } from "../api";
 import { Modal } from "../components/Modal";
 import { ProviderUsageDetails, ProviderUsageSummary } from "../components/ProviderUsage";
 import { CredentialFields } from "../components/integrations/CredentialFields";
@@ -16,6 +16,7 @@ import { DASHBOARD_LANGUAGES, normalizeDashboardLanguage, setDashboardLanguage, 
 import { resolveEffectiveAgentProvider } from "../utils/providerSelection";
 import { MFASetup } from "../components/auth/MFASetup";
 import { ProjectPresetSetup } from "../components/projects/ProjectPresetSetup";
+import { PresetSettings } from "../components/projects/PresetSettings";
 import {
   globalHelperCapabilityInventory,
   helperCapabilityKind,
@@ -39,7 +40,7 @@ interface Key {
 }
 
 
-type Tab = "projects" | "helper" | "appearance" | "channels" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
+type Tab = "projects" | "presets" | "helper" | "appearance" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
 
 // GlobeIcon — Lucide-style outline glyph used for "global" provider
 // scope. Inherits color via currentColor; sized to sit inline next to
@@ -68,7 +69,7 @@ export function Settings() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab") as Tab | null;
   const [tab, setTab] = useState<Tab>(
-    requestedTab && ["projects", "helper", "appearance", "channels", "providers", "mcp", "subscriptions", "api-keys", "data", "account", "server", "users"].includes(requestedTab)
+    requestedTab && ["projects", "presets", "helper", "appearance", "providers", "mcp", "subscriptions", "api-keys", "data", "account", "server", "users"].includes(requestedTab)
       ? requestedTab
       : "projects",
   );
@@ -84,9 +85,9 @@ export function Settings() {
   // a ?tab= deep link still lands — nothing is unmounted, only untabbed.
   const allTabs: { id: Tab; label: string; section?: AudienceSection }[] = [
     { id: "projects", label: t("settings.tabs.projects"), section: "settings.projects" },
+    { id: "presets", label: t("settings.tabs.presets") },
     { id: "helper", label: t("settings.tabs.helper"), section: "settings.helper" },
     { id: "appearance", label: t("settings.tabs.appearance") },
-    { id: "channels", label: t("settings.tabs.channels") },
     { id: "providers", label: t("settings.tabs.providers"), section: "settings.providers" },
     { id: "mcp", label: t("settings.tabs.mcp"), section: "settings.mcp" },
     { id: "subscriptions", label: t("settings.tabs.subscriptions"), section: "settings.subscriptions" },
@@ -151,9 +152,9 @@ export function Settings() {
 
       <div className="page-safe-bottom flex-1 overflow-y-auto p-4 sm:p-6">
         {tab === "projects" && <ProjectsTab />}
+        {tab === "presets" && <PresetSettings />}
         {tab === "helper" && <HelperTab />}
         {tab === "appearance" && <AppearanceTab />}
-        {tab === "channels" && <ChannelsTab />}
         {tab === "providers" && <ProvidersTab />}
         {tab === "mcp" && <MCPServersTab />}
         {tab === "subscriptions" && <SubscriptionsTab />}
@@ -754,6 +755,8 @@ function HelperTab() {
   // legacy type-vs-name normalization.
   const textProviders = primaryRuntimeConnections(runtimeConns);
   const [helper, setHelper] = useState<Agent | null>(null);
+  const [helperStatus, setHelperStatus] = useState<PlatformHelperStatus | null>(null);
+  const [activationBusy, setActivationBusy] = useState(false);
   const [runtimeProvider, setRuntimeProvider] = useState("");
   const [runtimeModels, setRuntimeModels] = useState<HelperModelMapping>(EMPTY_HELPER_MODELS);
   const [selectedProvider, setSelectedProvider] = useState("");
@@ -783,6 +786,10 @@ function HelperTab() {
   }, []);
 
   useEffect(() => {
+    if (!helperStatus?.activated) {
+      setCapabilitiesLoading(false);
+      return;
+    }
     let cancelled = false;
     setCapabilitiesLoading(true);
     setCapabilitiesError("");
@@ -805,7 +812,7 @@ function HelperTab() {
         if (!cancelled) setCapabilitiesLoading(false);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [helperStatus?.activated]);
 
   const savedModelOverride = useCallback((agent: Agent, providerName: string) => {
     try {
@@ -836,8 +843,15 @@ function HelperTab() {
     let cancelled = false;
     setLoading(true);
     setError("");
-    platformHelper.get()
-      .then(async (agent) => {
+    platformHelper.status()
+      .then(async (status) => {
+        if (cancelled) return;
+        setHelperStatus(status);
+        if (!status.activated) {
+          setHelper(null);
+          return;
+        }
+        const agent = await platformHelper.get();
         const config = await core.config(agent.id);
         if (cancelled) return;
         setHelper(agent);
@@ -851,6 +865,40 @@ function HelperTab() {
       });
     return () => { cancelled = true; };
   }, [providerSignature, applyRuntimeConfig]);
+
+  const activateHelper = async () => {
+    setActivationBusy(true);
+    setError("");
+    try {
+      const status = await platformHelper.activate(true);
+      setHelperStatus(status);
+      window.dispatchEvent(new Event("apteva:helper-changed"));
+      const agent = await platformHelper.get();
+      const config = await core.config(agent.id);
+      setHelper(agent);
+      applyRuntimeConfig(agent, config);
+    } catch (err: any) {
+      setError(err?.message || "Unable to activate Apteva Helper.");
+    } finally {
+      setActivationBusy(false);
+    }
+  };
+
+  const deactivateHelper = async () => {
+    setActivationBusy(true);
+    setError("");
+    try {
+      const status = await platformHelper.deactivate();
+      setHelperStatus(status);
+      window.dispatchEvent(new Event("apteva:helper-changed"));
+      setHelper(null);
+      setSelectedCapabilityIDs([]);
+    } catch (err: any) {
+      setError(err?.message || "Unable to deactivate Apteva Helper.");
+    } finally {
+      setActivationBusy(false);
+    }
+  };
 
   const selectedProviderRow = textProviders.find((connection) => connection.provider_key === selectedProvider) || null;
 
@@ -937,6 +985,32 @@ function HelperTab() {
     setCapabilitiesNotice("");
   };
 
+  if (!loading && helperStatus && !helperStatus.activated) {
+    return (
+      <div className="mx-auto max-w-4xl space-y-5">
+        <div>
+          <h2 className="text-base font-bold text-text">Helper</h2>
+          <p className="mt-1 text-sm text-text-muted">Apteva Helper is optional and is not created until you activate it.</p>
+        </div>
+        <section className="rounded-lg border border-border bg-bg-card p-5">
+          <h3 className="text-sm font-bold text-text">Activate Apteva Helper</h3>
+          <p className="mt-2 max-w-2xl text-xs leading-relaxed text-text-muted">
+            Activation requires an LLM provider and Conversations. If Conversations is not installed, it will be installed first.
+          </p>
+          {!helperStatus.provider_configured && (
+            <p className="mt-3 rounded-md border border-dashed border-border p-3 text-xs text-text-muted">Connect a text provider in Providers before activating Helper.</p>
+          )}
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button type="button" onClick={() => void activateHelper()} disabled={activationBusy || !helperStatus.provider_configured} className="h-9 rounded-md bg-accent px-4 text-xs font-bold text-bg hover:bg-accent-hover disabled:opacity-50">
+              {activationBusy ? "Activating…" : helperStatus.conversations_installed ? "Activate Helper" : "Install Conversations and activate"}
+            </button>
+            {error && <span className="text-xs text-red">{error}</span>}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-4xl space-y-5">
       <div>
@@ -953,7 +1027,10 @@ function HelperTab() {
             </div>
             <p className="mt-1 text-xs text-text-muted">Provider and model choices here apply only to the Helper.</p>
           </div>
-          {!loading && helper && <div className="rounded-md bg-bg-hover px-2.5 py-1.5 text-[10px] text-text-muted">Current: <span className="font-semibold text-text">{runtimeProvider || "unknown"}</span> · {runtimeModelSummary}</div>}
+          <div className="flex items-center gap-2">
+            {!loading && helper && <div className="rounded-md bg-bg-hover px-2.5 py-1.5 text-[10px] text-text-muted">Current: <span className="font-semibold text-text">{runtimeProvider || "unknown"}</span> · {runtimeModelSummary}</div>}
+            {helper && <button type="button" onClick={() => void deactivateHelper()} disabled={activationBusy} className="rounded-md border border-border px-2.5 py-1.5 text-[10px] font-semibold text-text-muted hover:text-text disabled:opacity-50">{activationBusy ? "Stopping…" : "Deactivate"}</button>}
+          </div>
         </div>
 
         <div className="p-4 sm:p-5">
@@ -1023,7 +1100,7 @@ function HelperTab() {
 
         <div className="p-4 sm:p-5">
           <div className="mb-4 grid gap-2 sm:grid-cols-3">
-            {["Apteva control", "Channels", "Environments"].map((name) => (
+            {["Apteva control", "Environments"].map((name) => (
               <div key={name} className="flex items-center justify-between rounded-md border border-border-subtle bg-bg-hover px-3 py-2">
                 <span className="text-xs font-medium text-text">{name}</span>
                 <span className="text-[9px] font-bold uppercase tracking-wide text-text-dim">required</span>
@@ -5541,7 +5618,6 @@ function DeleteUserModal({ target, onClose }: { target: UserRow | null; onClose:
             <li>Connections: <span className="text-text">{counts.connections}</span></li>
             <li>MCP servers: <span className="text-text">{counts.mcp_servers}</span></li>
             <li>Subscriptions: <span className="text-text">{counts.subscriptions}</span></li>
-            <li>Channels: <span className="text-text">{counts.channels}</span></li>
           </ul>
         ) : (
           <p className="text-text-dim">Loading preview…</p>

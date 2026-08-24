@@ -22,7 +22,7 @@ function entry(over: Partial<RuntimeCatalogEntry> = {}): RuntimeCatalogEntry {
 
 describe("onboarding journey", () => {
   test("shows project value before asking for an LLM provider", () => {
-    expect([...ONBOARDING_STEP_IDS]).toEqual(["theme", "setup", "provider"]);
+    expect([...ONBOARDING_STEP_IDS]).toEqual(["theme", "setup", "provider", "helper"]);
   });
 
   describe("runtime provider picker", () => {
