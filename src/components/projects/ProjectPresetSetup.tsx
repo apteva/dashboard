@@ -47,8 +47,10 @@ function dashboardLabel(component: string) {
 export function ProjectPresetSetup({
   projectId,
   onApplied,
+  systemOnly = false,
 }: {
   projectId?: string;
+  systemOnly?: boolean;
   onApplied?: (result: {
     created: number;
     existing: number;
@@ -68,7 +70,7 @@ export function ProjectPresetSetup({
 
   useEffect(() => {
     let active = true;
-    Promise.all([projectPresets.list(), projects.list()])
+    Promise.all([projectPresets.list({ systemOnly }), projects.list()])
       .then(([catalogResponse, availableProjects]) => {
         if (!active) return;
         setCatalog(catalogResponse.presets);
@@ -89,7 +91,7 @@ export function ProjectPresetSetup({
     return () => {
       active = false;
     };
-  }, [projectId]);
+  }, [projectId, systemOnly]);
 
   const selectedPreset = useMemo(
     () => catalog.find((preset) => preset.id === presetId) || null,
@@ -106,7 +108,7 @@ export function ProjectPresetSetup({
 
   const apply = async () => {
     if (!project || !selectedPreset) {
-      setError("Choose a preset to continue.");
+      setError("Choose a template to continue.");
       return;
     }
     if (!description.trim()) {
@@ -165,7 +167,7 @@ export function ProjectPresetSetup({
       </div>
 
       <div>
-        <div className="text-text-muted text-sm mb-2">Choose a preset</div>
+        <div className="text-text-muted text-sm mb-2">Choose a template</div>
         <div className="flex flex-wrap gap-2 mb-3">
           {CATEGORIES.map((item) => (
             <button
@@ -254,7 +256,7 @@ function PresetContentsSummary({ preset }: { preset: ProjectPreset }) {
       {dashboardComponents.length > 0 && (
         <div className="mt-4">
           <div className="text-text-dim text-[10px] uppercase tracking-wide mb-1">Home widgets</div>
-          <p className="mb-2 text-[10px] text-text-dim">Added automatically when this preset is selected.</p>
+          <p className="mb-2 text-[10px] text-text-dim">Added automatically when this template is selected.</p>
           <div className="flex flex-wrap gap-1.5">
             {dashboardComponents.map((component) => (
               <span key={component} className="border border-border rounded px-2 py-0.5 text-text-muted text-[11px]">

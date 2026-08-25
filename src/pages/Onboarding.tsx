@@ -82,8 +82,8 @@ export function Onboarding() {
     setPresetAgentsToStart([]);
     setActivationMessage(
       failed === 0
-        ? `${started} preset agent${started === 1 ? " is" : "s are"} online.`
-        : `${started} preset agent${started === 1 ? " is" : "s are"} online; ${failed} still need attention.`,
+        ? `${started} template agent${started === 1 ? " is" : "s are"} online.`
+        : `${started} template agent${started === 1 ? " is" : "s are"} online; ${failed} still need attention.`,
     );
   };
 
@@ -127,6 +127,7 @@ export function Onboarding() {
           {step.id === "theme" && <ThemeStep />}
           {step.id === "setup" && (
             <ProjectPresetSetup
+              systemOnly
               onApplied={(result) => {
                 setSetupApplied(true);
                 setPresetAgentsToStart(

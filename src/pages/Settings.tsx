@@ -22,12 +22,13 @@ import {
   helperCapabilityKind,
   helperCapabilityLabel,
 } from "../utils/helperCapabilities";
+import { serializeSubscriptionFilters, type SubscriptionFilterDraft } from "../subscriptionFilters";
 
-interface Key {
+export interface Key {
   id: number;
   name: string;
   key_prefix: string;
-  kind?: "private" | "public_client";
+  kind?: "private" | "public_client" | "delegated_user" | string;
   project_id?: string;
   scopes?: string;
   allowed_origins?: string;
@@ -37,6 +38,17 @@ interface Key {
   last_used?: string;
   last_used_ip?: string;
   created_at: string;
+}
+
+export function visibleUserManagedKeys(keys: Key[], now = Date.now()): Key[] {
+  return keys.filter((key) => {
+    const kind = key.kind || "private";
+    if (kind !== "private" && kind !== "public_client") return false;
+    if (key.revoked_at) return false;
+    if (!key.expires_at) return true;
+    const expiresAt = Date.parse(key.expires_at);
+    return Number.isFinite(expiresAt) && expiresAt > now;
+  });
 }
 
 
@@ -2829,6 +2841,7 @@ function SubscriptionsTab() {
   const [hmacSecret, setHmacSecret] = useState("");
   const [notifyAgent, setNotifyAgent] = useState(false);
   const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set());
+  const [filterDrafts, setFilterDrafts] = useState<SubscriptionFilterDraft[]>([]);
   const [error, setError] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -2874,11 +2887,23 @@ function SubscriptionsTab() {
     setHmacSecret("");
     setNotifyAgent(false);
     setSelectedEvents(new Set());
+    setFilterDrafts([]);
     setError("");
   };
   useEffect(() => { load(); }, [currentProject?.id]);
 
   const safeConns = connections || [];
+
+  const selectedFilterFieldTypes: Record<string, string> = {};
+  if (adding?.kind === "app") {
+    const app = appsList.find((candidate) => candidate.name === adding.appName);
+    for (const declaration of app?.publishes || []) {
+      if (selectedTopics.size > 0 && !selectedTopics.has("*") && !selectedTopics.has(declaration.name)) continue;
+      for (const [field, type] of Object.entries(declaration.payload || {})) {
+        selectedFilterFieldTypes[field] = type;
+      }
+    }
+  }
 
   const handleSubscribe = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2895,6 +2920,16 @@ function SubscriptionsTab() {
           ? Array.from(selectedTopics)
           : [topicPattern.trim() || "*"];
         const uniqueTopics = Array.from(new Set(topics.map((t) => t.trim()).filter(Boolean)));
+        if (filterDrafts.some((draft) => !draft.field.trim() || !draft.value.trim())) {
+          setError("Complete or remove every filter row");
+          return;
+        }
+        const filterFields = filterDrafts.map((draft) => draft.field.trim());
+        if (new Set(filterFields).size !== filterFields.length) {
+          setError("Each filter field can only be used once");
+          return;
+        }
+        const filters = serializeSubscriptionFilters(filterDrafts, selectedFilterFieldTypes);
         const label = uniqueTopics.length === 1
           ? (uniqueTopics[0] === "*" ? "events" : uniqueTopics[0])
           : `${uniqueTopics.length} events`;
@@ -2907,6 +2942,7 @@ function SubscriptionsTab() {
             events: uniqueTopics.length > 0 ? uniqueTopics : ["*"],
             projectId: currentProject?.id,
             source: "app_event",
+            filters,
             notifyAgent,
           },
         );
@@ -2944,7 +2980,7 @@ function SubscriptionsTab() {
     load();
   };
 
-  const [testingSub, setTestingSub] = useState<any | null>(null);
+  const [testingSub, setTestingSub] = useState<SubscriptionInfo | null>(null);
   const [testEvent, setTestEvent] = useState("");
   const [testPayload, setTestPayload] = useState("{}");
   const [testSending, setTestSending] = useState(false);
@@ -2953,8 +2989,8 @@ function SubscriptionsTab() {
   const openTestModal = (sub: any) => {
     const events = catalog[sub.slug]?.webhook_events;
     setTestingSub(sub);
-    setTestEvent(events?.[0]?.name || "test.event");
-    setTestPayload(JSON.stringify({ message: "Test event", id: 123 }, null, 2));
+    setTestEvent(sub.source === "app_event" ? (sub.events?.[0] || "test.event") : (events?.[0]?.name || "test.event"));
+    setTestPayload(JSON.stringify(sub.filters || { message: "Test event", id: 123 }, null, 2));
     setTestResult(null);
   };
 
@@ -2966,7 +3002,9 @@ function SubscriptionsTab() {
       let payload: Record<string, any> | undefined;
       try { payload = JSON.parse(testPayload); } catch { /* use default */ }
       const res = await subscriptions.test(testingSub.id, { event: testEvent, payload });
-      setTestResult(`Delivered "${res.event}" to instance`);
+      setTestResult(res.matched
+        ? `Matched and delivered "${res.event}" to agent`
+        : "Filtered out — the agent was not woken");
     } catch (e: any) {
       setTestResult(`Failed: ${e.message || "unknown error"}`);
     }
@@ -3051,6 +3089,18 @@ function SubscriptionsTab() {
                       <span className="text-text-dim">all events</span>
                     )}
                   </dd>
+                  {sub.filters && Object.keys(sub.filters).length > 0 && (
+                    <>
+                      <dt className="text-text-dim">Filters</dt>
+                      <dd className="flex flex-wrap gap-1">
+                        {Object.entries(sub.filters).map(([field, value]) => (
+                          <code key={field} className="text-[10px] px-1.5 py-0.5 rounded bg-bg-input text-text font-mono">
+                            {field} = {String(value)}
+                          </code>
+                        ))}
+                      </dd>
+                    </>
+                  )}
                 </dl>
               </div>
               );
@@ -3410,6 +3460,73 @@ function SubscriptionsTab() {
               );
             })()}
 
+            {adding.kind === "app" && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-text-muted text-sm">Filters (optional)</label>
+                    <p className="text-text-dim text-xs mt-0.5">
+                      All fields must match. If an event field is an array, the value may match any item.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFilterDrafts((rows) => [
+                      ...rows,
+                      { field: Object.keys(selectedFilterFieldTypes)[0] || "", value: "" },
+                    ])}
+                    className="text-xs px-2 py-1 border border-border rounded hover:bg-bg-input"
+                  >
+                    + Add filter
+                  </button>
+                </div>
+                {filterDrafts.map((draft, index) => {
+                  const fieldListID = `subscription-filter-fields-${index}`;
+                  return (
+                    <div key={index} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2">
+                      <div>
+                        <input
+                          list={fieldListID}
+                          value={draft.field}
+                          onChange={(e) => setFilterDrafts((rows) => rows.map((row, rowIndex) =>
+                            rowIndex === index ? { ...row, field: e.target.value } : row,
+                          ))}
+                          placeholder="Field, e.g. list_ids"
+                          className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text font-mono focus:outline-none focus:border-accent"
+                        />
+                        <datalist id={fieldListID}>
+                          {Object.keys(selectedFilterFieldTypes).map((field) => (
+                            <option key={field} value={field} />
+                          ))}
+                        </datalist>
+                      </div>
+                      <input
+                        value={draft.value}
+                        onChange={(e) => setFilterDrafts((rows) => rows.map((row, rowIndex) =>
+                          rowIndex === index ? { ...row, value: e.target.value } : row,
+                        ))}
+                        placeholder="Value, e.g. 2"
+                        className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text font-mono focus:outline-none focus:border-accent"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setFilterDrafts((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}
+                        className="px-2 text-text-dim hover:text-red"
+                        aria-label={`Remove filter ${index + 1}`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })}
+                {filterDrafts.length > 0 && (
+                  <p className="text-text-dim text-[11px]">
+                    Events that do not match these field values will not wake the agent.
+                  </p>
+                )}
+              </div>
+            )}
+
             {adding.kind === "webhook" && (() => {
               // Local-source: use the catalog's webhook_events list.
               const events = catalog[adding.conn.app_slug]?.webhook_events;
@@ -3552,7 +3669,7 @@ function SubscriptionsTab() {
             </div>
 
             {testResult && (
-              <div className={`text-sm ${testResult.startsWith("Failed") ? "text-red" : "text-green"}`}>
+              <div className={`text-sm ${testResult.startsWith("Failed") ? "text-red" : testResult.startsWith("Filtered") ? "text-yellow" : "text-green"}`}>
                 {testResult}
               </div>
             )}
@@ -3593,7 +3710,7 @@ function APIKeysTab() {
   const [createError, setCreateError] = useState("");
   const [creating, setCreating] = useState(false);
 
-  const load = () => auth.listKeys().then(setKeys).catch(() => {});
+  const load = () => auth.listKeys().then((rows) => setKeys(visibleUserManagedKeys(rows))).catch(() => {});
   useEffect(() => { load(); }, []);
   useEffect(() => {
     if (!projectId && currentProject?.id) {

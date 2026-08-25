@@ -6,7 +6,6 @@ import {
   type Project,
   type ProjectSetupPresetDefinition,
 } from "../../api";
-import { useAuth } from "../../hooks/useAuth";
 import { Modal } from "../Modal";
 
 const CATEGORIES: Array<{ id: ProjectSetupPresetDefinition["category"]; label: string }> = [
@@ -28,8 +27,6 @@ function presetSummary(preset: Preset) {
 }
 
 export function PresetSettings() {
-  const { user } = useAuth();
-  const isAdmin = !!user && user.role === "admin";
   const [catalog, setCatalog] = useState<Preset[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -37,6 +34,7 @@ export function PresetSettings() {
   const [captureOpen, setCaptureOpen] = useState(false);
   const [editing, setEditing] = useState<Preset | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [targetProjectId, setTargetProjectId] = useState("");
 
   const load = async () => {
     setError("");
@@ -44,8 +42,9 @@ export function PresetSettings() {
       const [presetResult, projectResult] = await Promise.all([presetsAPI.list(), projectsAPI.list()]);
       setCatalog(presetResult.presets);
       setProjects(projectResult);
+      setTargetProjectId((current) => current || projectResult[0]?.id || "");
     } catch (err: any) {
-      setError(err?.message || "Could not load presets");
+      setError(err?.message || "Could not load templates");
     } finally {
       setLoading(false);
     }
@@ -53,24 +52,33 @@ export function PresetSettings() {
 
   useEffect(() => { void load(); }, []);
 
-  const groups = useMemo(() => ([
-    { scope: "personal", title: "Your presets", description: "Visible only to you." },
-    { scope: "shared", title: "Shared presets", description: "Available to everyone on this server." },
-    { scope: "system", title: "Built-in presets", description: "Read-only starting points shipped with Apteva." },
-  ] as const).map((group) => ({ ...group, presets: catalog.filter((preset) => preset.scope === group.scope) })), [catalog]);
+  const groups = useMemo(() => {
+    const projectGroups = projects.map((project) => ({
+      key: project.id,
+      title: project.name,
+      description: "Reusable by members of this project.",
+      presets: catalog.filter((preset) => preset.scope === "project" && preset.owner_project_id === project.id),
+    }));
+    const legacy = catalog.filter((preset) => preset.scope === "personal" || preset.scope === "shared");
+    return [
+      ...projectGroups,
+      ...(legacy.length ? [{ key: "legacy", title: "Unassigned legacy templates", description: "Older templates kept for compatibility; new templates always belong to a project.", presets: legacy }] : []),
+      { key: "system", title: "Built-in templates", description: "Read-only starting points shipped with Apteva.", presets: catalog.filter((preset) => preset.scope === "system") },
+    ];
+  }, [catalog, projects]);
 
   const duplicate = async (preset: Preset) => {
+    if (!targetProjectId) { setError("Choose a destination project first."); return; }
     setError("");
     try {
-      await presetsAPI.create({
+      await presetsAPI.createForProject(targetProjectId, {
         name: `Copy of ${preset.name}`,
         description: preset.description,
-        scope: "personal",
         definition: preset.definition,
       });
       await load();
     } catch (err: any) {
-      setError(err?.message || "Could not duplicate preset");
+      setError(err?.message || "Could not duplicate template");
     }
   };
 
@@ -80,7 +88,7 @@ export function PresetSettings() {
       await presetsAPI.delete(preset.id);
       await load();
     } catch (err: any) {
-      setError(err?.message || "Could not delete preset");
+      setError(err?.message || "Could not delete template");
     }
   };
 
@@ -88,20 +96,21 @@ export function PresetSettings() {
     <div className="max-w-4xl space-y-7">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-base font-bold text-text">Presets</h2>
+          <h2 className="text-base font-bold text-text">Templates</h2>
           <p className="mt-1 max-w-2xl text-sm text-text-muted">
-            Save a project’s agents, app assignments, and Home widgets as a reusable setup. Project data and credentials are never included.
+            Save a project’s agents, app assignments, and Home widgets as a reusable project-owned setup. Project data and credentials are never included.
           </p>
         </div>
         <button type="button" onClick={() => setCaptureOpen(true)} disabled={projects.length === 0}
           className="rounded-lg bg-accent px-4 py-2.5 text-sm font-bold text-bg hover:bg-accent-hover disabled:opacity-50">
-          Save project as preset
+          Save project as template
         </button>
       </div>
 
       {error && <p className="rounded-lg border border-red/40 bg-red/5 p-3 text-sm text-red" role="alert">{error}</p>}
-      {loading ? <p className="text-sm text-text-muted">Loading presets…</p> : groups.map((group) => (
-        <section key={group.scope} className="space-y-3">
+      {!loading && projects.length > 0 && <Field label="Destination for duplicates"><select value={targetProjectId} onChange={(event) => setTargetProjectId(event.target.value)} className={inputClass}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></Field>}
+      {loading ? <p className="text-sm text-text-muted">Loading templates…</p> : groups.map((group) => (
+        <section key={group.key} className="space-y-3">
           <div>
             <h3 className="text-sm font-bold text-text">{group.title}</h3>
             <p className="text-xs text-text-dim">{group.description}</p>
@@ -111,7 +120,7 @@ export function PresetSettings() {
           ) : (
             <div className="grid gap-3 sm:grid-cols-2">
               {group.presets.map((preset) => {
-                const owned = preset.source === "user" && !!user && preset.owner_id === user.id;
+                const owned = preset.source === "user";
                 return (
                   <article key={preset.id} className="rounded-lg border border-border bg-bg-card p-4">
                     <div className="flex items-start gap-3">
@@ -139,8 +148,8 @@ export function PresetSettings() {
         </section>
       ))}
 
-      <CapturePresetModal open={captureOpen} projects={projects} isAdmin={isAdmin} onClose={() => setCaptureOpen(false)} onSaved={load} />
-      {editing && <EditPresetModal preset={editing} isAdmin={isAdmin} onClose={() => setEditing(null)} onSaved={load} />}
+      <CapturePresetModal open={captureOpen} projects={projects} onClose={() => setCaptureOpen(false)} onSaved={load} />
+      {editing && <EditPresetModal preset={editing} onClose={() => setEditing(null)} onSaved={load} />}
     </div>
   );
 }
@@ -160,14 +169,13 @@ function PresetDetails({ preset }: { preset: Preset }) {
   );
 }
 
-function CapturePresetModal({ open, projects, isAdmin, onClose, onSaved }: {
-  open: boolean; projects: Project[]; isAdmin: boolean; onClose: () => void; onSaved: () => Promise<void>;
+function CapturePresetModal({ open, projects, onClose, onSaved }: {
+  open: boolean; projects: Project[]; onClose: () => void; onSaved: () => Promise<void>;
 }) {
   const [projectId, setProjectId] = useState(projects[0]?.id || "");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState<ProjectSetupPresetDefinition["category"]>("work");
-  const [scope, setScope] = useState<"personal" | "shared">("personal");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -177,47 +185,43 @@ function CapturePresetModal({ open, projects, isAdmin, onClose, onSaved }: {
     if (!projectId || !name.trim()) return;
     setBusy(true); setError("");
     try {
-      await presetsAPI.capture({ project_id: projectId, name: name.trim(), description: description.trim(), category, scope });
+      await presetsAPI.capture({ project_id: projectId, name: name.trim(), description: description.trim(), category });
       await onSaved();
-      setName(""); setDescription(""); setScope("personal"); onClose();
-    } catch (err: any) { setError(err?.message || "Could not save preset"); }
+      setName(""); setDescription(""); onClose();
+    } catch (err: any) { setError(err?.message || "Could not save template"); }
     finally { setBusy(false); }
   };
   return (
-    <Modal open={open} onClose={onClose} ariaLabel="Save project as preset">
+    <Modal open={open} onClose={onClose} ariaLabel="Save project as template">
       <form onSubmit={submit} className="space-y-4 p-6">
-        <h3 className="text-base font-bold text-text">Save project as preset</h3>
+        <h3 className="text-base font-bold text-text">Save project as template</h3>
         <p className="text-xs leading-relaxed text-text-muted">Captures agent names, directives, modes, app assignments, and your Home layout. It excludes credentials, connections, memory, conversations, tasks, and runtime state.</p>
         <Field label="Project"><select value={projectId} onChange={(event) => setProjectId(event.target.value)} className={inputClass}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></Field>
         <Field label="Name"><input autoFocus value={name} onChange={(event) => setName(event.target.value)} className={inputClass} placeholder="My project setup" /></Field>
         <Field label="Description"><textarea value={description} onChange={(event) => setDescription(event.target.value)} className={inputClass} rows={2} /></Field>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Category"><select value={category} onChange={(event) => setCategory(event.target.value as typeof category)} className={inputClass}>{CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>
-          <Field label="Visibility"><select value={scope} onChange={(event) => setScope(event.target.value as typeof scope)} className={inputClass}><option value="personal">Only me</option>{isAdmin && <option value="shared">Everyone on this server</option>}</select></Field>
-        </div>
+        <Field label="Category"><select value={category} onChange={(event) => setCategory(event.target.value as typeof category)} className={inputClass}>{CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>
         {error && <p className="text-xs text-red" role="alert">{error}</p>}
-        <div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted">Cancel</button><button type="submit" disabled={busy || !name.trim()} className="rounded-lg bg-accent px-4 py-2 text-sm font-bold text-bg disabled:opacity-50">{busy ? "Saving…" : "Save preset"}</button></div>
+        <div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted">Cancel</button><button type="submit" disabled={busy || !name.trim()} className="rounded-lg bg-accent px-4 py-2 text-sm font-bold text-bg disabled:opacity-50">{busy ? "Saving…" : "Save template"}</button></div>
       </form>
     </Modal>
   );
 }
 
-function EditPresetModal({ preset, isAdmin, onClose, onSaved }: { preset: Preset; isAdmin: boolean; onClose: () => void; onSaved: () => Promise<void> }) {
+function EditPresetModal({ preset, onClose, onSaved }: { preset: Preset; onClose: () => void; onSaved: () => Promise<void> }) {
   const [name, setName] = useState(preset.name);
   const [description, setDescription] = useState(preset.description);
   const [category, setCategory] = useState(preset.definition.category);
-  const [scope, setScope] = useState<"personal" | "shared">(preset.scope === "shared" ? "shared" : "personal");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError("");
     try {
-      await presetsAPI.update(preset.id, { name: name.trim(), description: description.trim(), scope, definition: { ...preset.definition, category } });
+      await presetsAPI.update(preset.id, { name: name.trim(), description: description.trim(), definition: { ...preset.definition, category } });
       await onSaved(); onClose();
-    } catch (err: any) { setError(err?.message || "Could not update preset"); }
+    } catch (err: any) { setError(err?.message || "Could not update template"); }
     finally { setBusy(false); }
   };
-  return <Modal open onClose={onClose} ariaLabel="Edit preset"><form onSubmit={submit} className="space-y-4 p-6"><h3 className="text-base font-bold text-text">Edit preset</h3><Field label="Name"><input value={name} onChange={(event) => setName(event.target.value)} className={inputClass} /></Field><Field label="Description"><textarea value={description} onChange={(event) => setDescription(event.target.value)} className={inputClass} rows={3} /></Field><div className="grid gap-4 sm:grid-cols-2"><Field label="Category"><select value={category} onChange={(event) => setCategory(event.target.value as typeof category)} className={inputClass}>{CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field><Field label="Visibility"><select value={scope} onChange={(event) => setScope(event.target.value as typeof scope)} className={inputClass}><option value="personal">Only me</option>{isAdmin && <option value="shared">Everyone on this server</option>}</select></Field></div>{error && <p className="text-xs text-red">{error}</p>}<div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted">Cancel</button><button type="submit" disabled={busy || !name.trim()} className="rounded-lg bg-accent px-4 py-2 text-sm font-bold text-bg disabled:opacity-50">{busy ? "Saving…" : "Save changes"}</button></div></form></Modal>;
+  return <Modal open onClose={onClose} ariaLabel="Edit template"><form onSubmit={submit} className="space-y-4 p-6"><h3 className="text-base font-bold text-text">Edit template</h3><Field label="Name"><input value={name} onChange={(event) => setName(event.target.value)} className={inputClass} /></Field><Field label="Description"><textarea value={description} onChange={(event) => setDescription(event.target.value)} className={inputClass} rows={3} /></Field><Field label="Category"><select value={category} onChange={(event) => setCategory(event.target.value as typeof category)} className={inputClass}>{CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>{error && <p className="text-xs text-red">{error}</p>}<div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted">Cancel</button><button type="submit" disabled={busy || !name.trim()} className="rounded-lg bg-accent px-4 py-2 text-sm font-bold text-bg disabled:opacity-50">{busy ? "Saving…" : "Save changes"}</button></div></form></Modal>;
 }
 
 const inputClass = "mt-1.5 w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 text-sm text-text focus:border-accent focus:outline-none";

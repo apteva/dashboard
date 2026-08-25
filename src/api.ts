@@ -498,10 +498,12 @@ export interface ProjectPresetAgent {
 export interface ProjectPreset {
   id: string;
   kind?: "project_setup";
-  scope?: "personal" | "shared" | "system";
+  scope?: "personal" | "shared" | "project" | "system";
   source?: "user" | "system";
   schema_version?: number;
   owner_id?: number;
+  owner_project_id?: string;
+  revision?: number;
   category: "personal" | "work" | "development" | "business";
   name: string;
   description: string;
@@ -558,12 +560,14 @@ export interface ProjectSetupPresetDefinition {
 export interface Preset {
   id: string;
   kind: "project_setup";
-  scope: "personal" | "shared" | "system";
+  scope: "personal" | "shared" | "project" | "system";
   source: "user" | "system";
   schema_version: number;
   name: string;
   description: string;
   owner_id?: number;
+  owner_project_id?: string;
+  revision?: number;
   definition: ProjectSetupPresetDefinition;
   created_at?: string;
   updated_at?: string;
@@ -672,17 +676,20 @@ export const projects = {
 };
 
 export const projectPresets = {
-  list: async () => {
-    const response = await request<{ presets: Preset[] }>("GET", "/presets");
+  list: async (options?: { systemOnly?: boolean }) => {
+    const path = options?.systemOnly ? "/templates?system_only=true" : "/templates";
+    const response = await request<{ templates: Preset[] }>("GET", path);
     return {
       schema_version: 2,
-      presets: response.presets.map((preset): ProjectPreset => ({
+      presets: response.templates.map((preset): ProjectPreset => ({
         id: preset.id,
         kind: preset.kind,
         scope: preset.scope,
         source: preset.source,
         schema_version: preset.schema_version,
         owner_id: preset.owner_id,
+        owner_project_id: preset.owner_project_id,
+        revision: preset.revision,
         name: preset.name,
         description: preset.description,
         category: preset.definition.category,
@@ -721,8 +728,11 @@ export const projectPresets = {
 };
 
 export const presets = {
-  list: () => request<{ presets: Preset[] }>("GET", "/presets"),
-  get: (id: string) => request<Preset>("GET", `/presets/${encodeURIComponent(id)}`),
+  list: async () => {
+    const result = await request<{ templates: Preset[] }>("GET", "/templates");
+    return { presets: result.templates };
+  },
+  get: (id: string) => request<Preset>("GET", `/templates/${encodeURIComponent(id)}`),
   create: (input: {
     kind?: "project_setup";
     scope?: "personal" | "shared";
@@ -730,21 +740,28 @@ export const presets = {
     name: string;
     description?: string;
     definition: ProjectSetupPresetDefinition;
-  }) => request<Preset>("POST", "/presets", input),
+  }) => {
+    throw new Error("Custom templates must belong to a project");
+  },
   update: (id: string, input: {
     scope?: "personal" | "shared";
     name?: string;
     description?: string;
     definition?: ProjectSetupPresetDefinition;
-  }) => request<Preset>("PATCH", `/presets/${encodeURIComponent(id)}`, input),
-  delete: (id: string) => request<{ status: "deleted" }>("DELETE", `/presets/${encodeURIComponent(id)}`),
+  }) => request<Preset>("PATCH", `/templates/${encodeURIComponent(id)}`, input),
+  delete: (id: string) => request<{ status: "deleted" }>("DELETE", `/templates/${encodeURIComponent(id)}`),
   capture: (input: {
     project_id: string;
     name: string;
     description?: string;
     category: ProjectSetupPresetDefinition["category"];
     scope?: "personal" | "shared";
-  }) => request<Preset>("POST", "/presets/capture", input),
+  }) => request<Preset>("POST", `/projects/${encodeURIComponent(input.project_id)}/templates/capture`, input),
+  createForProject: (projectId: string, input: {
+    name: string;
+    description?: string;
+    definition: ProjectSetupPresetDefinition;
+  }) => request<Preset>("POST", `/projects/${encodeURIComponent(projectId)}/templates`, input),
 };
 
 // ─── Multi-user + roles ────────────────────────────────────────────────
@@ -2095,6 +2112,7 @@ export interface SubscriptionInfo {
   project_id?: string;
   external_webhook_id?: string;
   source?: "webhook" | "app_event" | string;
+  filters?: Record<string, string | number | boolean | null>;
   last_seq_delivered?: number;
   created_at: string;
 }
@@ -2120,6 +2138,7 @@ export const subscriptions = {
       // must be '<app>:<topic_pattern>' (e.g. 'tables:*') and events
       // can carry one or more app topics/patterns for the same row.
       source?: "webhook" | "app_event";
+      filters?: Record<string, string | number | boolean | null>;
       notifyAgent?: boolean;
     },
   ) =>
@@ -2138,6 +2157,7 @@ export const subscriptions = {
       thread_id: opts?.threadId || "",
       project_id: opts?.projectId || "",
       source: opts?.source || "webhook",
+      filters: opts?.filters || {},
       notify_agent: opts?.notifyAgent || false,
     }),
 
@@ -2156,7 +2176,7 @@ export const subscriptions = {
     id: string,
     opts?: { event?: string; payload?: Record<string, any> },
   ) =>
-    request<{ status: string; event: string; payload: any }>(
+    request<{ status: "delivered" | "filtered"; matched: boolean; event: string; payload: any }>(
       "POST",
       `/subscriptions/${id}/test`,
       opts || {},
