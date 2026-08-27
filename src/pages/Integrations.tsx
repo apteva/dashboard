@@ -33,6 +33,10 @@ function AppLogo({ src, className }: { src?: string | null; className?: string }
   );
 }
 import { Modal } from "../components/Modal";
+import {
+  ConnectionReauthDialog,
+  isConnectionReauthable,
+} from "../components/integrations/ConnectionReauthDialog";
 import { SuiteConnect } from "../components/SuiteConnect";
 import { CredentialValueInput } from "../components/integrations/CredentialFields";
 import { IntegrationExplorerPanel } from "../components/integrations/IntegrationExplorerPanel";
@@ -95,7 +99,7 @@ export function Integrations() {
   // sticky reassurance on the next session.
   const [testResults, setTestResults] = useState<Record<number, ConnectionTestResult>>({});
   const [testInFlight, setTestInFlight] = useState<Set<number>>(new Set());
-  const [reauthInFlight, setReauthInFlight] = useState<Set<number>>(new Set());
+  const [reauthFor, setReauthFor] = useState<ConnectionInfo | null>(null);
   const [openMenuFor, setOpenMenuFor] = useState<number | null>(null);
   const actionMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -357,37 +361,6 @@ export function Integrations() {
     setTimeout(tick, 1500);
   };
 
-  const waitForOAuthPopupResult = (
-    popup: Window | null,
-    onDone: (ok: boolean | null) => void,
-  ) => {
-    let done = false;
-    let onMessage: (event: MessageEvent) => void;
-    let closePoll: number | undefined;
-    const finish = (ok: boolean | null) => {
-      if (done) return;
-      done = true;
-      window.removeEventListener("message", onMessage);
-      if (closePoll != null) window.clearInterval(closePoll);
-      onDone(ok);
-    };
-    onMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin) return;
-      const data = event.data as { type?: string; ok?: boolean } | null;
-      if (!data || data.type !== "apteva-oauth-result") return;
-      finish(!!data.ok);
-    };
-    window.addEventListener("message", onMessage);
-    if (!popup) {
-      finish(false);
-      return;
-    }
-    closePoll = window.setInterval(() => {
-      if (popup.closed) finish(null);
-    }, 500);
-    window.setTimeout(() => finish(false), 180_000);
-  };
-
   const handleAddOAuthAccount = async (c: ConnectionInfo) => {
     setOpenMenuFor(null);
     setError("");
@@ -413,32 +386,6 @@ export function Integrations() {
       setError(err?.message || "Failed to start OAuth");
     } finally {
       setConnecting(false);
-    }
-  };
-
-  const handleReauthConnection = async (c: ConnectionInfo) => {
-    setOpenMenuFor(null);
-    setError("");
-    setReauthInFlight((prev) => new Set(prev).add(c.id));
-    try {
-      const r = await integrations.reauth(c.id);
-      const popup = openOAuthPopup(r.redirect_url || "");
-      waitForOAuthPopupResult(popup, (ok) => {
-        setReauthInFlight((prev) => {
-          const next = new Set(prev);
-          next.delete(c.id);
-          return next;
-        });
-        loadConnections();
-        if (ok === false) setError("OAuth re-auth did not complete");
-      });
-    } catch (err: any) {
-      setReauthInFlight((prev) => {
-        const next = new Set(prev);
-        next.delete(c.id);
-        return next;
-      });
-      setError(err?.message || "Failed to start re-auth");
     }
   };
 
@@ -693,6 +640,7 @@ export function Integrations() {
   const renderConnectionRow = (c: ConnectionInfo) => {
     const isGlobal = !c.project_id;
     const isLocalOAuth = (c.source || "local") === "local" && isBrowserOAuthType(c.auth_type);
+    const isLocalReauthable = (c.source || "local") === "local" && isConnectionReauthable(c.auth_type);
     const canMoveScope = isGlobal ? !!currentProject?.id : true;
     const canExplore = c.app_slug === "bunny-stream" && c.status === "active";
     const menuOpen = openMenuFor === c.id;
@@ -797,7 +745,6 @@ export function Integrations() {
                   {testInFlight.has(c.id) ? "Testing..." : "Test connection"}
                 </button>
                 {isLocalOAuth && (
-                  <>
                     <button
                       className={menuItemClass}
                       disabled={connecting}
@@ -805,14 +752,17 @@ export function Integrations() {
                     >
                       Add account
                     </button>
+                )}
+                {isLocalReauthable && (
                     <button
-                      className={`${menuItemClass} disabled:opacity-50`}
-                      disabled={reauthInFlight.has(c.id)}
-                      onClick={() => handleReauthConnection(c)}
+                      className={menuItemClass}
+                      onClick={() => {
+                        setOpenMenuFor(null);
+                        setReauthFor(c);
+                      }}
                     >
-                      {reauthInFlight.has(c.id) ? "Re-authing..." : "Re-auth"}
+                      Re-auth
                     </button>
-                  </>
                 )}
                 {canMoveScope && (
                   <button
@@ -1635,6 +1585,14 @@ export function Integrations() {
         open={!!explorerFor}
         connection={explorerFor}
         onClose={() => setExplorerFor(null)}
+      />
+      <ConnectionReauthDialog
+        connection={reauthFor}
+        onClose={() => setReauthFor(null)}
+        onComplete={() => {
+          setReauthFor(null);
+          loadConnections();
+        }}
       />
     </div>
   );

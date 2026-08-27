@@ -1,10 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AppIcon } from "@apteva/ui-kit";
-import { auth, core, platformHelper, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, runtimeEntryAsAppDetail, type RuntimeCatalogEntry, type RuntimeConnection, type ConnectionTestResult, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser, type PlatformHelperStatus } from "../api";
+import { auth, core, platformHelper, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, runtimeEntryAsAppDetail, type RuntimeCatalogEntry, type RuntimeConnection, type ConnectionInfo, type ConnectCreateResponse, type DeviceAuthStart, type ConnectionTestResult, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser, type PlatformHelperStatus } from "../api";
 import { Modal } from "../components/Modal";
 import { ProviderUsageDetails, ProviderUsageSummary } from "../components/ProviderUsage";
 import { CredentialFields } from "../components/integrations/CredentialFields";
+import {
+  ConnectionReauthDialog,
+  DeviceCodeAuthPanel,
+  isConnectionReauthable,
+} from "../components/integrations/ConnectionReauthDialog";
 import { defaultIntegrationAuthType, isBrowserOAuthType } from "../utils/integrationAuth";
 import { useProjects } from "../hooks/useProjects";
 import { useAuth } from "../hooks/useAuth";
@@ -1201,6 +1206,8 @@ function ProvidersTab() {
   const [usageLoadingByID, setUsageLoadingByID] = useState<Record<number, boolean>>({});
   const [usageErrorByID, setUsageErrorByID] = useState<Record<number, string>>({});
   const [usageDetails, setUsageDetails] = useState<{ connection: RuntimeConnection; usage: ProviderUsageSnapshot } | null>(null);
+  const [reauthFor, setReauthFor] = useState<RuntimeConnection | null>(null);
+  const [pendingDeviceAuth, setPendingDeviceAuth] = useState<{ connection: ConnectionInfo; auth: DeviceAuthStart } | null>(null);
 
   const load = useCallback(() => {
     integrations
@@ -1282,7 +1289,9 @@ function ProvidersTab() {
       const value = (credentials[field.name] || "").trim();
       if (value) trimmed[field.name] = value;
     }
-    if (Object.keys(trimmed).length === 0) {
+    const authType = defaultIntegrationAuthType(runtimeEntryAsAppDetail(configuring)) || "api_key";
+    const managedAuth = authType === "oauth1" || authType === "oauth2" || authType === "oauth_device_code";
+    if (Object.keys(trimmed).length === 0 && !managedAuth) {
       setError("At least one field is required");
       return;
     }
@@ -1291,16 +1300,45 @@ function ProvidersTab() {
       // auto_mcp off: this credential backs the agent runtime. Exposing
       // the provider's REST tools to every agent is a separate choice,
       // made in Integrations.
-      await integrations.connect(
+      const response = await integrations.connect(
         configuring.slug,
         configuring.name,
         trimmed,
-        defaultIntegrationAuthType(runtimeEntryAsAppDetail(configuring)) || "api_key",
+        authType,
         targetProjectID(),
         undefined,
         "integration",
         false,
       );
+      const flow = response as ConnectCreateResponse;
+      if (flow.device_auth && flow.connection) {
+        setPendingDeviceAuth({ connection: flow.connection, auth: flow.device_auth });
+        setConfiguring(null);
+        return;
+      }
+      if (flow.redirect_url && flow.connection) {
+        const popup = window.open(
+          flow.redirect_url,
+          "apteva-oauth",
+          "width=540,height=680,menubar=no,toolbar=no,location=no",
+        );
+        if (!popup) throw new Error("The sign-in popup was blocked. Allow popups and try again.");
+        let attempts = 0;
+        const poll = async () => {
+          attempts += 1;
+          try {
+            const connection = await integrations.get(flow.connection.id);
+            if (connection.status === "active" || connection.status === "failed") {
+              load();
+              return;
+            }
+          } catch {
+            // A transient read should not abandon an in-progress OAuth flow.
+          }
+          if (attempts < 120) window.setTimeout(poll, 1500);
+        };
+        window.setTimeout(poll, 1500);
+      }
       setConfiguring(null);
       setCredentials({});
       setMakeGlobal(false);
@@ -1525,6 +1563,15 @@ function ProvidersTab() {
                           >
                             {busy ? "Working…" : "Test"}
                           </button>
+                          {isConnectionReauthable(connection.auth_type || "") && (
+                            <button
+                              onClick={() => setReauthFor(connection)}
+                              disabled={busy}
+                              className="text-xs text-text-muted hover:text-accent transition-colors disabled:opacity-50"
+                            >
+                              Re-auth
+                            </button>
+                          )}
                           <button
                             onClick={() => void handleDisconnect(connection)}
                             disabled={busy}
@@ -1670,6 +1717,37 @@ function ProvidersTab() {
             <ProviderUsageDetails usage={usageDetails.usage} />
           </div>
         ) : null}
+      </Modal>
+
+      <ConnectionReauthDialog
+        connection={reauthFor}
+        onClose={() => setReauthFor(null)}
+        onComplete={() => {
+          setReauthFor(null);
+          load();
+        }}
+      />
+      <Modal open={!!pendingDeviceAuth} onClose={() => setPendingDeviceAuth(null)} width="max-w-md" ariaLabel="Complete provider sign-in">
+        <div className="w-full space-y-4 p-5">
+          <div>
+            <h2 className="text-base font-bold text-text">Connect {pendingDeviceAuth?.connection.name}</h2>
+            <p className="mt-1 text-xs text-text-muted">Authorize this provider without changing its project scope or model configuration.</p>
+          </div>
+          {pendingDeviceAuth && (
+            <DeviceCodeAuthPanel
+              auth={pendingDeviceAuth.auth}
+              onConnected={() => {
+                setPendingDeviceAuth(null);
+                load();
+              }}
+              onError={setError}
+            />
+          )}
+          {error && <div className="text-sm text-red">{error}</div>}
+          <div className="flex justify-end border-t border-border pt-3">
+            <button type="button" onClick={() => setPendingDeviceAuth(null)} className="text-sm text-text-muted hover:text-text">Close</button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

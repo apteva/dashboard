@@ -1257,6 +1257,7 @@ export interface RuntimeConnection {
   name: string;
   app_slug: string;
   app_name: string;
+	auth_type?: string;
   /** Name apteva-core uses in config.json. Several connections can share
    *  one provider_key; exactly one of them is primary per scope. */
   provider_key: string;
@@ -1874,7 +1875,7 @@ export const integrations = {
   reauth: (id: number) =>
     request<ConnectCreateResponse>(
       "POST",
-      `/connections/${id}/oauth/reauth`,
+	  `/connections/${id}/reauth`,
       {},
     ),
 
