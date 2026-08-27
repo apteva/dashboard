@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import type { AppRow } from "../api";
 import {
   buildWorkspaceItems,
+  selectBuilderInstall,
   selectBuildConversationsContribution,
 } from "./Build";
 
@@ -48,6 +49,14 @@ function app(over: Partial<AppRow> = {}): AppRow {
 }
 
 describe("Build Conversations contribution", () => {
+  test("requires one running global Builder install", () => {
+    const builder = app({ name: "builder", display_name: "Builder", install_id: 88, ui_components: [] });
+    expect(selectBuilderInstall([builder])?.install_id).toBe(88);
+    expect(selectBuilderInstall([builder, app({ name: "builder", project_id: "project-a" })])?.install_id).toBe(88);
+    expect(selectBuilderInstall([app({ name: "builder", status: "disabled" })])).toBeNull();
+    expect(selectBuilderInstall([app()])).toBeNull();
+  });
+
   test("uses the agent-conversations contribution with project install preference", () => {
     const global = app({ install_id: 10 });
     const project = app({ install_id: 11, project_id: "project-a" });
@@ -69,6 +78,7 @@ describe("Build Conversations contribution", () => {
     const source = readFileSync(new URL("./Build.tsx", import.meta.url), "utf8");
     expect(source).toContain("<ContributionMount");
     expect(source).toContain("fetchEligibleContributionKeys");
+    expect(source).toContain("/api/apps/builder/setup/reconcile");
     expect(source).toContain("agentId={helper.id}");
     expect(source).not.toContain("ChatPanel");
     expect(source).not.toContain("chatConnections");

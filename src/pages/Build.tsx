@@ -51,6 +51,29 @@ interface WorkspaceItem {
 const BUILD_SLOT = "dashboard.build";
 const BUILD_COMPONENT = "agent-conversations";
 
+export function selectBuilderInstall(rows: AppRow[]): AppRow | null {
+  return rows.find(
+    (row) => row.name === "builder" && !row.project_id && row.status === "running",
+  ) || null;
+}
+
+async function reconcileBuilderSetup(builder: AppRow): Promise<void> {
+  const query = new URLSearchParams({ install_id: String(builder.install_id) });
+  const response = await fetch(`/api/apps/builder/setup/reconcile?${query}`, {
+    method: "POST",
+    credentials: "same-origin",
+  });
+  if (response.ok) return;
+  let message = "Builder could not attach its tools to Apteva Helper.";
+  try {
+    const body = await response.json() as { last_error?: string };
+    if (body.last_error) message = body.last_error;
+  } catch {
+    // Keep the stable operator-facing fallback for non-JSON proxy errors.
+  }
+  throw new Error(message);
+}
+
 export function selectBuildConversationsContribution(
   rows: AppRow[],
   projectId: string,
@@ -74,6 +97,7 @@ export function Build() {
   const [helper, setHelper] = useState<Agent | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [needsBuilder, setNeedsBuilder] = useState(false);
   const [needsConversations, setNeedsConversations] = useState(false);
   const [projectAgents, setProjectAgents] = useState<Agent[]>([]);
   const [projectApps, setProjectApps] = useState<AppRow[]>([]);
@@ -115,6 +139,7 @@ export function Build() {
     const load = async () => {
       setLoading(true);
       setError("");
+      setNeedsBuilder(false);
       setNeedsConversations(false);
       setSurface(null);
       setHelper(null);
@@ -130,6 +155,12 @@ export function Build() {
         const rows = await apps.list(projectId);
         if (cancelled) return;
 
+        const builder = selectBuilderInstall(rows);
+        if (!builder) {
+          setNeedsBuilder(true);
+          return;
+        }
+
         const contribution = selectBuildConversationsContribution(rows, projectId);
         if (!contribution) {
           setNeedsConversations(true);
@@ -140,6 +171,8 @@ export function Build() {
         // mandatory scope for the dashboard.build contribution; Conversations
         // uses it to list and create conversations for this Helper only.
         const activeHelper = await platformHelper.get();
+        if (cancelled) return;
+        await reconcileBuilderSetup(builder);
         if (cancelled) return;
         const eligible = await fetchEligibleContributionKeys(
           projectId,
@@ -240,7 +273,7 @@ export function Build() {
         <div className="min-w-0">
           <h1 className="text-lg font-bold text-text">Build</h1>
           <p className="mt-0.5 text-xs text-text-muted">
-            Work with Apteva Helper through Conversations.
+            Set the outcome. Helper plans, builds, verifies, and asks before consequential actions.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -267,6 +300,12 @@ export function Build() {
         <section className="min-h-0 overflow-hidden">
           {loading ? (
             <BuildState title="Loading Build…" detail="Opening Conversations and Apteva Helper." />
+          ) : needsBuilder ? (
+            <BuildState
+              title="Builder is not installed"
+              detail="Install the Builder app to give Apteva Helper durable goals, plans, checks, and managed-resource tracking. Conversations will be installed with it."
+              action={{ to: "/apps", label: "Install Builder" }}
+            />
           ) : needsConversations ? (
             <BuildState
               title="Conversations is unavailable"
