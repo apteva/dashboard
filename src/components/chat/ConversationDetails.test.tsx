@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import "../../i18n";
 import { chat, type ChatRow } from "../../api";
@@ -61,11 +61,11 @@ describe("ConversationDetails", () => {
     expect(screen.queryByDisplayValue("Second conversation")).toBeNull();
     expect(screen.getByRole("button", { name: "Deleting…" }).hasAttribute("disabled")).toBe(true);
 
-    finishDelete();
-
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: "Delete conversation" })).toBeNull();
-      expect(screen.getByDisplayValue("Second conversation")).toBeTruthy();
+    await act(async () => {
+      finishDelete();
     });
+
+    expect(screen.queryByRole("dialog", { name: "Delete conversation" })).toBeNull();
+    expect(screen.getByDisplayValue("Second conversation")).toBeTruthy();
   });
 });
