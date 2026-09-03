@@ -6,15 +6,17 @@ export function NewAgentButton({
   title,
   className = "",
   onClick,
+  to = "/agents/new",
 }: {
   label?: string;
   title?: string;
   className?: string;
   onClick?: MouseEventHandler<HTMLAnchorElement>;
+  to?: string;
 }) {
   return (
     <Link
-      to="/agents/new"
+      to={to}
       onClick={onClick}
       title={title}
       className={`inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-bold text-bg transition-colors hover:bg-accent-hover ${className}`}

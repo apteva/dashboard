@@ -70,6 +70,9 @@ export function Onboarding() {
     if (user && user.onboarded) {
       navigate("/", { replace: true });
     }
+    if (user && user.managedLLM.configured) {
+      setProviderAdded(true);
+    }
   }, [user, navigate]);
 
   const step = STEPS[stepIdx]!;
@@ -88,6 +91,10 @@ export function Onboarding() {
   };
 
   const advance = async () => {
+    if (step.id === "provider" && user && user.managedLLM.configured) {
+      setProviderAdded(true);
+      await activatePresetAgents();
+    }
     if (!isLast) {
       setStepIdx(stepIdx + 1);
       return;
@@ -140,13 +147,29 @@ export function Onboarding() {
           )}
           {step.id === "provider" && (
             <>
-              <ProviderStep
-                setupReady={setupApplied}
-                onSaved={async () => {
-                  setProviderAdded(true);
-                  await activatePresetAgents();
-                }}
-              />
+              {user && user.managedLLM.configured ? (
+                <div className="flex flex-col gap-4">
+                  <div>
+                    <h2 className="text-text text-lg font-bold">Your model provider is ready</h2>
+                    <p className="text-text-muted text-sm mt-1">
+                      This server provides managed model access for your workspace. No provider key is required from you.
+                    </p>
+                  </div>
+                  {user.managedLLM.models.length > 0 && (
+                    <div className="rounded-lg border border-border bg-bg-hover/40 p-4 text-xs text-text-muted">
+                      Available models: <span className="font-mono text-text">{user.managedLLM.models.join(", ")}</span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <ProviderStep
+                  setupReady={setupApplied}
+                  onSaved={async () => {
+                    setProviderAdded(true);
+                    await activatePresetAgents();
+                  }}
+                />
+              )}
               {activationMessage && (
                 <div className="mt-4 text-sm text-accent" role="status">{activationMessage}</div>
               )}

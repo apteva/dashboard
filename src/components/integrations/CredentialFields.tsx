@@ -142,6 +142,21 @@ export function CredentialValueInput({
   placeholder?: string;
 }) {
   const [revealed, setRevealed] = useState(false);
+  if (field.type === "select" && Array.isArray(field.options)) {
+    return (
+      <select
+        value={value || field.default || ""}
+        onChange={(event) => onChange(event.target.value)}
+        required={required}
+        className={className}
+      >
+        {!field.default && <option value="">Select…</option>}
+        {field.options.map((option) => (
+          <option key={option} value={option}>{option}</option>
+        ))}
+      </select>
+    );
+  }
   if (field.type !== "multiline_password") {
     return (
       <input

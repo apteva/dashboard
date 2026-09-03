@@ -131,7 +131,77 @@ function request<T>(
 }
 
 // Server-wide settings (admin-editable, lives in server_settings table).
+export interface AccessPolicy {
+  registration: {
+    mode: "open" | "locked";
+    registrations_per_ip_per_hour: number;
+  };
+  provisioning: {
+    preset_id?: string;
+    project_name: string;
+    project_description: string;
+  };
+  limits: {
+    projects_per_user: number;
+    agents_per_project: number;
+    running_agents_per_project: number;
+    daily_model_calls: number;
+    daily_tokens: number;
+    concurrent_llm_requests: number;
+    global_concurrent_llm_calls: number;
+  };
+  capabilities: {
+    api_keys: boolean;
+    custom_mcp: boolean;
+    provider_management: boolean;
+    app_installation: boolean;
+    invitations: boolean;
+    domains: boolean;
+    backups: boolean;
+    realtime_voice: boolean;
+    autonomous_scheduling: boolean;
+    allowed_apps?: string[];
+    allowed_models?: string[];
+  };
+  workspace_lifecycle: {
+    expires_after?: string;
+    idle_shutdown_after?: string;
+    reset_from_preset: boolean;
+  };
+  managed_llm: {
+    connection_id?: number;
+    configured?: boolean;
+    path?: string;
+    models?: string[];
+  };
+}
+
+export interface HostedAccessState {
+  limits: AccessPolicy["limits"];
+  capabilities: AccessPolicy["capabilities"];
+  usage: {
+    date: string;
+    calls: number;
+    input_tokens: number;
+    output_tokens: number;
+    model_calls_remaining?: number | null;
+    tokens_remaining?: number | null;
+    resets_at?: string;
+  };
+  workspace: {
+    project_id?: string;
+    expires_at?: string;
+  };
+  workspace_lifecycle: AccessPolicy["workspace_lifecycle"];
+  managed_llm: {
+    configured: boolean;
+    models: string[];
+  };
+}
+
 export interface ServerSettings {
+  access_policy: AccessPolicy;
+  managed_llm_usage: HostedAccessState["usage"];
   public_url: {
     value: string; // raw DB value (empty if not set)
     env_value: string; // raw env var value (empty if not set)
@@ -177,6 +247,7 @@ export const serverSettings = {
     geoip_source?: "dbip" | "maxmind" | "test";
     geoip_account_id?: string;
     geoip_license_key?: string;
+    access_policy?: AccessPolicy;
   }) => request<ServerSettings>("PUT", "/settings/server", patch),
 };
 
@@ -305,18 +376,31 @@ export const auth = {
       onboarded: boolean;
       onboarded_at?: string;
       language?: string;
+      interface_level?: InterfaceLevel | null;
       ui_layout?: Record<string, unknown>;
       ui_layout_revision?: number;
       mfa_enabled?: boolean;
       mfa_type?: string;
       mfa_recovery_codes_remaining?: number;
+      limits?: HostedAccessState["limits"];
+      capabilities?: HostedAccessState["capabilities"];
+      usage?: HostedAccessState["usage"];
+      workspace?: HostedAccessState["workspace"];
+      workspace_lifecycle?: HostedAccessState["workspace_lifecycle"];
+      managed_llm?: HostedAccessState["managed_llm"];
     }>("GET", "/auth/me"),
 
   updatePreferences: (patch: {
     language?: string;
+    interface_level?: InterfaceLevel;
     ui_layout?: Record<string, unknown>;
   }) =>
-    request<{ language: string; ui_layout: Record<string, unknown>; ui_layout_revision?: number }>(
+    request<{
+      language: string;
+      interface_level: InterfaceLevel | null;
+      ui_layout: Record<string, unknown>;
+      ui_layout_revision?: number;
+    }>(
       "PUT",
       "/auth/preferences",
       patch,
@@ -484,6 +568,8 @@ export interface Project {
   description: string;
   color: string;
   created_at: string;
+  expires_at?: string;
+  provisioning_preset_id?: string;
 }
 
 export interface ProjectPresetAgent {
@@ -767,6 +853,7 @@ export const presets = {
 // ─── Multi-user + roles ────────────────────────────────────────────────
 
 export type PlatformRole = "user" | "admin";
+export type InterfaceLevel = "personal" | "business" | "developer";
 export type ProjectRole = "viewer" | "editor" | "owner";
 
 export interface ProjectMember {
@@ -1224,8 +1311,11 @@ export interface CredentialField {
   description?: string;
   required?: boolean;
   type?: string;
-  source?: "user" | "oauth";
+  default?: string;
+  options?: string[];
+  source?: "user" | "oauth" | "generated";
   hidden?: boolean;
+  exposure?: "secret" | "public";
 }
 
 // A catalog app that can back an agent runtime (LLM, embeddings, TTS).

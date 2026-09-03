@@ -6,7 +6,13 @@ import {
   type ReactNode,
   createElement,
 } from "react";
-import { auth, setAuthInvalidHandler, type PlatformRole } from "../api";
+import {
+  auth,
+  setAuthInvalidHandler,
+  type InterfaceLevel,
+  type PlatformRole,
+  type HostedAccessState,
+} from "../api";
 import {
   normalizeDashboardLanguage,
   setDashboardLanguage,
@@ -30,11 +36,18 @@ export interface AuthUser {
   // flow. Drives <OnboardingGate> in App.tsx.
   onboarded: boolean;
   language: DashboardLanguage;
+  interfaceLevel: InterfaceLevel | null;
   uiLayout: Record<string, unknown>;
   uiLayoutRevision: number;
   mfaEnabled: boolean;
   mfaType: string;
   mfaRecoveryCodesRemaining: number;
+  limits: HostedAccessState["limits"];
+  capabilities: HostedAccessState["capabilities"];
+  usage: HostedAccessState["usage"];
+  workspace: HostedAccessState["workspace"];
+  workspaceLifecycle: HostedAccessState["workspace_lifecycle"];
+  managedLLM: HostedAccessState["managed_llm"];
 }
 
 interface AuthState {
@@ -74,12 +87,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         createdAt: r.created_at,
         onboarded: r.onboarded,
         language: normalizeDashboardLanguage(r.language),
+        interfaceLevel: r.interface_level ?? null,
         uiLayout:
           r.ui_layout && typeof r.ui_layout === "object" ? r.ui_layout : {},
         uiLayoutRevision: Number(r.ui_layout_revision || 0),
         mfaEnabled: Boolean(r.mfa_enabled),
         mfaType: r.mfa_type || "",
         mfaRecoveryCodesRemaining: Number(r.mfa_recovery_codes_remaining || 0),
+        limits: r.limits || {
+          projects_per_user: 0,
+          agents_per_project: 0,
+          running_agents_per_project: 0,
+          daily_model_calls: 0,
+          daily_tokens: 0,
+          concurrent_llm_requests: 0,
+          global_concurrent_llm_calls: 0,
+        },
+        capabilities: r.capabilities || {
+          api_keys: true,
+          custom_mcp: true,
+          provider_management: true,
+          app_installation: true,
+          invitations: true,
+          domains: true,
+          backups: true,
+          realtime_voice: true,
+          autonomous_scheduling: true,
+        },
+        usage: r.usage || {
+          date: new Date().toISOString().slice(0, 10),
+          calls: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+        },
+        workspace: r.workspace || {},
+        workspaceLifecycle: r.workspace_lifecycle || { reset_from_preset: false },
+        managedLLM: r.managed_llm || { configured: false, models: [] },
       });
       void setDashboardLanguage(r.language);
     } catch {

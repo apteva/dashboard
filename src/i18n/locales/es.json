@@ -190,6 +190,7 @@
       "projects": "Proyectos",
       "presets": "Plantillas",
       "helper": "Asistente",
+      "interface": "Interfaz",
       "appearance": "Apariencia",
       "channels": "Canales",
       "providers": "Proveedores",
@@ -218,15 +219,21 @@
       "themeCleanDescription": "Inter, esquinas redondeadas y sombras sutiles. Listo para presentaciones.",
       "modeAuto": "Auto",
       "modeDark": "Oscuro",
-      "modeLight": "Claro",
-      "audience": "Nivel de interfaz",
-      "audienceHint": "Se guarda localmente en este dispositivo. Las secciones ocultas siguen accesibles por enlace directo: nada se elimina, solo se aparta.",
-      "audience_personal": "Personal",
-      "audience_personalDescription": "Solo tus agentes y tus herramientas. Crea cosas pidiéndoselo al asistente.",
-      "audience_business": "Negocio",
-      "audience_businessDescription": "Añade cuentas conectadas, el marketplace, los costes y los ajustes de equipo.",
-      "audience_developer": "Desarrollador",
-      "audience_developerDescription": "Todo: habilidades, servidores MCP, controles paso a paso y diagnósticos."
+      "modeLight": "Claro"
+    },
+    "interface": {
+      "title": "Interfaz",
+    "description": "Elige tu espacio de trabajo y cuánto detalle técnico muestra el dashboard.",
+      "level": "Nivel de interfaz",
+      "hint": "Se guarda en tu cuenta y se comparte entre dispositivos. Las secciones ocultas siguen accesibles por enlace directo; este ajuste no cambia los permisos.",
+      "personal": "Personal",
+    "personalDescription": "Un espacio centrado en agentes y Conversations, con los controles avanzados fuera del camino.",
+      "business": "Negocio",
+      "businessDescription": "Añade integraciones, apps, actividad, costes y ajustes de equipo.",
+      "developer": "Desarrollador",
+      "developerDescription": "Todo: habilidades, servidores MCP, controles paso a paso y diagnósticos.",
+      "saved": "Nivel de interfaz guardado.",
+      "saveFailed": "No se pudo guardar el nivel de interfaz."
     },
     "providers": {
       "subscriptionUsage": "Uso de la suscripción",
@@ -248,21 +255,5 @@
     "en": "Ingles",
     "fr": "Frances",
     "es": "Espanol"
-  },
-  "_audienceVocabulary": {
-    "personal": {
-      "nav": {
-        "build": "Crear",
-        "dashboard": "Inicio"
-      }
-    },
-    "business": {
-      "nav": {
-        "integrations": "Cuentas conectadas",
-        "apps": "Marketplace",
-        "monitor": "Actividad",
-        "usage": "Costes"
-      }
-    }
   }
 }

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AppIcon } from "@apteva/ui-kit";
-import { auth, core, platformHelper, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, runtimeEntryAsAppDetail, type RuntimeCatalogEntry, type RuntimeConnection, type ConnectionInfo, type ConnectCreateResponse, type DeviceAuthStart, type ConnectionTestResult, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser, type PlatformHelperStatus } from "../api";
+import { auth, core, platformHelper, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, runtimeEntryAsAppDetail, type RuntimeCatalogEntry, type RuntimeConnection, type ConnectionInfo, type ConnectCreateResponse, type DeviceAuthStart, type ConnectionTestResult, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type AccessPolicy, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser, type PlatformHelperStatus } from "../api";
 import { Modal } from "../components/Modal";
 import { ProviderUsageDetails, ProviderUsageSummary } from "../components/ProviderUsage";
 import { CredentialFields } from "../components/integrations/CredentialFields";
@@ -57,7 +57,7 @@ export function visibleUserManagedKeys(keys: Key[], now = Date.now()): Key[] {
 }
 
 
-type Tab = "projects" | "presets" | "helper" | "appearance" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
+type Tab = "projects" | "presets" | "helper" | "interface" | "appearance" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
 
 // GlobeIcon — Lucide-style outline glyph used for "global" provider
 // scope. Inherits color via currentColor; sized to sit inline next to
@@ -86,7 +86,7 @@ export function Settings() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab") as Tab | null;
   const [tab, setTab] = useState<Tab>(
-    requestedTab && ["projects", "presets", "helper", "appearance", "providers", "mcp", "subscriptions", "api-keys", "data", "account", "server", "users"].includes(requestedTab)
+    requestedTab && ["projects", "presets", "helper", "interface", "appearance", "providers", "mcp", "subscriptions", "api-keys", "data", "account", "server", "users"].includes(requestedTab)
       ? requestedTab
       : "projects",
   );
@@ -104,6 +104,7 @@ export function Settings() {
     { id: "projects", label: t("settings.tabs.projects"), section: "settings.projects" },
     { id: "presets", label: t("settings.tabs.presets") },
     { id: "helper", label: t("settings.tabs.helper"), section: "settings.helper" },
+    { id: "interface", label: t("settings.tabs.interface") },
     { id: "appearance", label: t("settings.tabs.appearance") },
     { id: "providers", label: t("settings.tabs.providers"), section: "settings.providers" },
     { id: "mcp", label: t("settings.tabs.mcp"), section: "settings.mcp" },
@@ -114,7 +115,15 @@ export function Settings() {
     { id: "account", label: t("settings.tabs.account") },
     ...(isAdmin ? [{ id: "users" as Tab, label: t("settings.tabs.users"), section: "settings.users" as AudienceSection }] : []),
   ];
-  const tabs = allTabs.filter((item) => !item.section || shows(item.section));
+  const tabs = allTabs.filter((item) => {
+    if (item.section && !shows(item.section)) return false;
+    if (!user || user.role === "admin") return true;
+    if (item.id === "providers" && !user.capabilities.provider_management) return false;
+    if (item.id === "mcp" && !user.capabilities.custom_mcp) return false;
+    if (item.id === "api-keys" && !user.capabilities.api_keys) return false;
+    if (item.id === "server") return false;
+    return true;
+  });
   // The default tab (projects) is audience-gated, so an unqualified
   // /settings visit at a narrow audience falls through to the first
   // tab that audience can actually see.
@@ -171,6 +180,7 @@ export function Settings() {
         {tab === "projects" && <ProjectsTab />}
         {tab === "presets" && <PresetSettings />}
         {tab === "helper" && <HelperTab />}
+        {tab === "interface" && <InterfaceTab />}
         {tab === "appearance" && <AppearanceTab />}
         {tab === "providers" && <ProvidersTab />}
         {tab === "mcp" && <MCPServersTab />}
@@ -196,7 +206,6 @@ export function Settings() {
 
 function AppearanceTab() {
   const { theme, mode, resolvedMode, setTheme, setMode } = useTheme();
-  const { audience, setAudience } = useAudience();
   const { user, refresh } = useAuth();
   const { t, i18n } = useTranslation();
   const [savingLanguage, setSavingLanguage] = useState(false);
@@ -281,32 +290,6 @@ function AppearanceTab() {
       </section>
 
       <section>
-        <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">{t("settings.appearance.audience")}</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-3xl">
-          {AUDIENCES.map((value) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setAudience(value)}
-              className={`text-left border rounded-lg p-3 transition-colors ${
-                audience === value
-                  ? "border-accent bg-accent/5"
-                  : "border-border hover:border-text-dim"
-              }`}
-            >
-              <div className="text-text text-sm font-bold">
-                {t(`settings.appearance.audience_${value}`)}
-              </div>
-              <div className="text-text-muted text-xs mt-1 leading-relaxed">
-                {t(`settings.appearance.audience_${value}Description`)}
-              </div>
-            </button>
-          ))}
-        </div>
-        <p className="text-text-dim text-xs mt-2">{t("settings.appearance.audienceHint")}</p>
-      </section>
-
-      <section>
         <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">{t("settings.appearance.language")}</h3>
         <div className="flex flex-wrap gap-2">
           {DASHBOARD_LANGUAGES.map((language) => (
@@ -328,6 +311,61 @@ function AppearanceTab() {
         {languageMessage && (
           <p className="text-text-muted text-xs mt-2">{languageMessage}</p>
         )}
+      </section>
+    </div>
+  );
+}
+
+function InterfaceTab() {
+  const { audience, saving, setAudience } = useAudience();
+  const { t } = useTranslation();
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function chooseAudience(value: (typeof AUDIENCES)[number]) {
+    if (value === audience || saving) return;
+    setMessage(null);
+    try {
+      await setAudience(value);
+      setMessage(t("settings.interface.saved"));
+    } catch {
+      setMessage(t("settings.interface.saveFailed"));
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-8 max-w-3xl">
+      <div>
+        <h2 className="text-text font-medium mb-1">{t("settings.interface.title")}</h2>
+        <p className="text-text-muted text-sm">{t("settings.interface.description")}</p>
+      </div>
+      <section>
+        <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">
+          {t("settings.interface.level")}
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-3xl">
+          {AUDIENCES.map((value) => (
+            <button
+              key={value}
+              type="button"
+              disabled={saving}
+              onClick={() => void chooseAudience(value)}
+              className={`text-left border rounded-lg p-3 transition-colors disabled:opacity-60 ${
+                audience === value
+                  ? "border-accent bg-accent/5"
+                  : "border-border hover:border-text-dim"
+              }`}
+            >
+              <div className="text-text text-sm font-bold">
+                {t(`settings.interface.${value}`)}
+              </div>
+              <div className="text-text-muted text-xs mt-1 leading-relaxed">
+                {t(`settings.interface.${value}Description`)}
+              </div>
+            </button>
+          ))}
+        </div>
+        <p className="text-text-dim text-xs mt-2">{t("settings.interface.hint")}</p>
+        {message && <p className="text-text-muted text-xs mt-2">{message}</p>}
       </section>
     </div>
   );
@@ -4209,11 +4247,9 @@ function DataTab() {
 
 // ─── Server Tab ───
 //
-// Admin-editable server-wide settings. Today: just `public_url`, the URL
-// the public internet uses to reach this server (Google, GitHub, etc., for
-// OAuth callbacks; webhook providers for delivery). Stored in
-// server_settings table so it survives container redeploys and doesn't
-// require a server restart to change.
+// Admin-editable server-wide settings, including the generic hosted-access
+// policy. Everything is stored through the existing server_settings API so
+// deployments do not need a parallel config file or restart-only mode.
 
 function ServerTab() {
   const { user } = useAuth();
@@ -4233,6 +4269,9 @@ function ServerTab() {
   const [geoIPAccountID, setGeoIPAccountID] = useState("");
   const [geoIPLicenseKey, setGeoIPLicenseKey] = useState("");
   const [geoIPSaving, setGeoIPSaving] = useState(false);
+  const [accessPolicy, setAccessPolicy] = useState<AccessPolicy | null>(null);
+  const [accessSaving, setAccessSaving] = useState(false);
+  const [llmConnections, setLLMConnections] = useState<RuntimeConnection[]>([]);
 
   const load = () => {
     serverSettings
@@ -4247,8 +4286,14 @@ function ServerTab() {
         setGeoIPEnabled(d.geoip.enabled);
         if (d.geoip.source === "dbip" || d.geoip.source === "maxmind" || d.geoip.source === "test") setGeoIPSource(d.geoip.source);
         setGeoIPAccountID(d.geoip.account_id || "");
+        setAccessPolicy(d.access_policy);
       })
       .catch((err) => setError(err?.message || "Failed to load"));
+    if (isAdmin) {
+      integrations.runtimeConnections().then((connections) => {
+        setLLMConnections(connections.filter((connection) => connection.role === "llm"));
+      }).catch(() => setLLMConnections([]));
+    }
   };
 
   useEffect(() => {
@@ -4329,6 +4374,25 @@ function ServerTab() {
       setError(err?.message || "Failed to save country lookup settings");
     } finally {
       setGeoIPSaving(false);
+    }
+  };
+
+  const handleAccessSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!accessPolicy) return;
+    setError("");
+    setSaved(false);
+    setAccessSaving(true);
+    try {
+      const updated = await serverSettings.update({ access_policy: accessPolicy });
+      setData(updated);
+      setAccessPolicy(updated.access_policy);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err: any) {
+      setError(err?.message || "Failed to save access policy");
+    } finally {
+      setAccessSaving(false);
     }
   };
 
@@ -4425,6 +4489,134 @@ function ServerTab() {
           )}
         </div>
       </form>
+
+      {isAdmin && accessPolicy && <form onSubmit={handleAccessSave} className="border border-border rounded-lg p-5 bg-bg-card space-y-5">
+        <div>
+          <h3 className="text-text text-sm font-bold">Hosted access</h3>
+          <p className="mt-1 text-xs leading-relaxed text-text-muted">
+            One generic policy for public registration, account provisioning, resource limits, and the platform-managed model connection. A value of 0 means unlimited.
+          </p>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="block">
+            <span className="block text-xs font-bold text-text mb-2">Registration</span>
+            <select
+              value={accessPolicy.registration.mode}
+              onChange={(e) => setAccessPolicy({ ...accessPolicy, registration: { ...accessPolicy.registration, mode: e.target.value as "open" | "locked" } })}
+              className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 text-sm text-text focus:border-accent focus:outline-none"
+            >
+              <option value="locked">Invite only</option>
+              <option value="open">Open registration</option>
+            </select>
+          </label>
+          <PolicyNumberField label="Registrations / IP / hour" value={accessPolicy.registration.registrations_per_ip_per_hour} min={1} onChange={(value) => setAccessPolicy({ ...accessPolicy, registration: { ...accessPolicy.registration, registrations_per_ip_per_hour: value } })} />
+          <label className="block">
+            <span className="block text-xs font-bold text-text mb-2">Initial project name</span>
+            <input value={accessPolicy.provisioning.project_name} onChange={(e) => setAccessPolicy({ ...accessPolicy, provisioning: { ...accessPolicy.provisioning, project_name: e.target.value } })} className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 text-sm text-text focus:border-accent focus:outline-none" />
+          </label>
+          <label className="block">
+            <span className="block text-xs font-bold text-text mb-2">Provisioning preset ID</span>
+            <input value={accessPolicy.provisioning.preset_id || ""} onChange={(e) => setAccessPolicy({ ...accessPolicy, provisioning: { ...accessPolicy.provisioning, preset_id: e.target.value } })} placeholder="Optional" className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 font-mono text-sm text-text focus:border-accent focus:outline-none" />
+          </label>
+        </div>
+
+        <div>
+          <h4 className="mb-3 text-xs font-bold text-text">Limits</h4>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <PolicyNumberField label="Projects per user" value={accessPolicy.limits.projects_per_user} onChange={(value) => setAccessPolicy({ ...accessPolicy, limits: { ...accessPolicy.limits, projects_per_user: value } })} />
+            <PolicyNumberField label="Agents per project" value={accessPolicy.limits.agents_per_project} onChange={(value) => setAccessPolicy({ ...accessPolicy, limits: { ...accessPolicy.limits, agents_per_project: value } })} />
+            <PolicyNumberField label="Running agents per project" value={accessPolicy.limits.running_agents_per_project} onChange={(value) => setAccessPolicy({ ...accessPolicy, limits: { ...accessPolicy.limits, running_agents_per_project: value } })} />
+            <PolicyNumberField label="Daily model calls" value={accessPolicy.limits.daily_model_calls} onChange={(value) => setAccessPolicy({ ...accessPolicy, limits: { ...accessPolicy.limits, daily_model_calls: value } })} />
+            <PolicyNumberField label="Daily tokens" value={accessPolicy.limits.daily_tokens} onChange={(value) => setAccessPolicy({ ...accessPolicy, limits: { ...accessPolicy.limits, daily_tokens: value } })} />
+            <PolicyNumberField label="Concurrent calls / workspace" value={accessPolicy.limits.concurrent_llm_requests} onChange={(value) => setAccessPolicy({ ...accessPolicy, limits: { ...accessPolicy.limits, concurrent_llm_requests: value } })} />
+            <PolicyNumberField label="Concurrent calls / server" value={accessPolicy.limits.global_concurrent_llm_calls} onChange={(value) => setAccessPolicy({ ...accessPolicy, limits: { ...accessPolicy.limits, global_concurrent_llm_calls: value } })} />
+          </div>
+        </div>
+
+        <div>
+          <h4 className="mb-3 text-xs font-bold text-text">Platform-managed model provider</h4>
+          <p className="mb-3 text-[11px] text-text-dim">
+            Today: {data.managed_llm_usage.calls.toLocaleString()} calls · {(data.managed_llm_usage.input_tokens + data.managed_llm_usage.output_tokens).toLocaleString()} tokens across the server.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="block">
+              <span className="block text-xs font-bold text-text mb-2">Connection</span>
+              <select
+                value={accessPolicy.managed_llm.connection_id || 0}
+                onChange={(e) => setAccessPolicy({ ...accessPolicy, managed_llm: { ...accessPolicy.managed_llm, connection_id: Number(e.target.value) } })}
+                className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 text-sm text-text focus:border-accent focus:outline-none"
+              >
+                <option value={0}>Disabled</option>
+                {llmConnections.map((connection) => <option key={connection.id} value={connection.id}>{connection.name} ({connection.app_name})</option>)}
+              </select>
+              <p className="mt-2 text-[11px] text-text-dim">Create the credential in Models first. Users never receive its secret.</p>
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-text mb-2">Allowed model IDs</span>
+              <input
+                value={(accessPolicy.managed_llm.models || []).join(", ")}
+                onChange={(e) => setAccessPolicy({ ...accessPolicy, managed_llm: { ...accessPolicy.managed_llm, models: e.target.value.split(",").map((value) => value.trim()).filter(Boolean) } })}
+                placeholder="model-a, model-b"
+                className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 font-mono text-sm text-text focus:border-accent focus:outline-none"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <h4 className="mb-3 text-xs font-bold text-text">Workspace lifecycle</h4>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="block">
+              <span className="block text-xs font-bold text-text mb-2">Expire after</span>
+              <input value={accessPolicy.workspace_lifecycle.expires_after || ""} onChange={(e) => setAccessPolicy({ ...accessPolicy, workspace_lifecycle: { ...accessPolicy.workspace_lifecycle, expires_after: e.target.value } })} placeholder="Optional, e.g. 24h" className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 font-mono text-sm text-text focus:border-accent focus:outline-none" />
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-text mb-2">Stop idle agents after</span>
+              <input value={accessPolicy.workspace_lifecycle.idle_shutdown_after || ""} onChange={(e) => setAccessPolicy({ ...accessPolicy, workspace_lifecycle: { ...accessPolicy.workspace_lifecycle, idle_shutdown_after: e.target.value } })} placeholder="Optional, e.g. 15m" className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 font-mono text-sm text-text focus:border-accent focus:outline-none" />
+            </label>
+          </div>
+          <label className="mt-3 flex items-center gap-2 text-xs text-text">
+            <input type="checkbox" checked={accessPolicy.workspace_lifecycle.reset_from_preset} onChange={(e) => setAccessPolicy({ ...accessPolicy, workspace_lifecycle: { ...accessPolicy.workspace_lifecycle, reset_from_preset: e.target.checked } })} className="accent-accent" />
+            Create a fresh workspace from the provisioning preset after expiration
+          </label>
+        </div>
+
+        <div>
+          <h4 className="mb-3 text-xs font-bold text-text">User capabilities</h4>
+          <label className="mb-4 block">
+            <span className="block text-xs font-bold text-text mb-2">Allowed app slugs</span>
+            <input
+              value={(accessPolicy.capabilities.allowed_apps || []).join(", ")}
+              onChange={(e) => setAccessPolicy({ ...accessPolicy, capabilities: { ...accessPolicy.capabilities, allowed_apps: e.target.value.split(",").map((value) => value.trim()).filter(Boolean) } })}
+              placeholder="Empty allows any already-installed app"
+              className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 font-mono text-sm text-text focus:border-accent focus:outline-none"
+            />
+          </label>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {([
+              ["api_keys", "Create API keys"],
+              ["custom_mcp", "Add custom MCP servers"],
+              ["provider_management", "Manage model providers"],
+              ["app_installation", "Install apps"],
+              ["invitations", "Invite project members"],
+              ["domains", "Manage domains"],
+              ["backups", "Create backups"],
+              ["realtime_voice", "Use realtime voice"],
+              ["autonomous_scheduling", "Use autonomous scheduling"],
+            ] as const).map(([key, label]) => (
+              <label key={key} className="flex items-center gap-2 text-xs text-text">
+                <input type="checkbox" checked={accessPolicy.capabilities[key]} onChange={(e) => setAccessPolicy({ ...accessPolicy, capabilities: { ...accessPolicy.capabilities, [key]: e.target.checked } })} className="accent-accent" />
+                {label}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <button type="submit" disabled={accessSaving} className="px-5 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50">
+          {accessSaving ? "Saving…" : "Save hosted access"}
+        </button>
+      </form>}
 
       {isAdmin && <form onSubmit={handleGeoIPSave} className="border border-border rounded-lg p-5 bg-bg-card space-y-4">
         <div className="flex items-start justify-between gap-4">
@@ -4588,6 +4780,15 @@ function ServerTab() {
   );
 }
 
+function PolicyNumberField({ label, value, min = 0, onChange }: { label: string; value: number; min?: number; onChange: (value: number) => void }) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-bold text-text mb-2">{label}</span>
+      <input type="number" min={min} value={value} onChange={(e) => onChange(Math.max(min, Number(e.target.value) || 0))} className="w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 font-mono text-sm text-text focus:border-accent focus:outline-none" />
+    </label>
+  );
+}
+
 // ─── Account Tab ───
 
 function AccountTab() {
@@ -4637,6 +4838,34 @@ function AccountTab() {
           </>)}
         </dl>
       </div>
+
+      {(user.managedLLM.configured || user.limits.daily_model_calls > 0 || user.limits.daily_tokens > 0 || user.workspace.expires_at) && (
+        <div className="border border-border rounded-lg p-5 bg-bg-card space-y-3">
+          <div>
+            <h3 className="text-text text-sm font-bold">Usage and workspace</h3>
+            <p className="mt-1 text-xs text-text-muted">Your projects are private and visible only to their members.</p>
+          </div>
+          <dl className="grid grid-cols-[minmax(130px,1fr)_auto] gap-x-4 gap-y-2 text-sm">
+            {user.limits.daily_model_calls > 0 && (<>
+              <dt className="text-text-muted">Model calls today</dt>
+              <dd className="text-text font-mono">{user.usage.calls.toLocaleString()} / {user.limits.daily_model_calls.toLocaleString()}</dd>
+            </>)}
+            {user.limits.daily_tokens > 0 && (<>
+              <dt className="text-text-muted">Tokens today</dt>
+              <dd className="text-text font-mono">{(user.usage.input_tokens + user.usage.output_tokens).toLocaleString()} / {user.limits.daily_tokens.toLocaleString()}</dd>
+            </>)}
+            {user.limits.agents_per_project > 0 && (<>
+              <dt className="text-text-muted">Agent limit</dt>
+              <dd className="text-text font-mono">{user.limits.agents_per_project} / project</dd>
+            </>)}
+            {user.workspace.expires_at && (<>
+              <dt className="text-text-muted">Workspace expires</dt>
+              <dd className="text-text">{new Date(user.workspace.expires_at).toLocaleString()}</dd>
+            </>)}
+          </dl>
+          {(user.limits.daily_model_calls > 0 || user.limits.daily_tokens > 0) && <p className="text-[11px] text-text-dim">Daily allowances reset at 00:00 UTC.</p>}
+        </div>
+      )}
 
       {/* Password — change via the same flow the sidebar AccountMenu
           uses. Other sessions get revoked; the current session stays
@@ -4931,6 +5160,7 @@ const PROJECT_COLORS = ["#6366f1", "#ec4899", "#f59e0b", "#10b981", "#3b82f6", "
 
 function ProjectsTab() {
   const { projects, currentProject, setCurrentProject, reload } = useProjects();
+  const { user } = useAuth();
   const [showCreate, setShowCreate] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -4969,6 +5199,8 @@ function ProjectsTab() {
     setDescription(p.description);
     setColor(p.color);
   };
+  const ownedProjectCount = user ? projects.filter((project) => project.user_id === user.id).length : 0;
+  const canCreateProject = !!user && (user.role === "admin" || user.limits.projects_per_user === 0 || ownedProjectCount < user.limits.projects_per_user);
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -4980,10 +5212,12 @@ function ProjectsTab() {
       </div>
       <button
         onClick={() => { setShowCreate(true); setEditingId(null); setName(""); setDescription(""); setColor(PROJECT_COLORS[0]); }}
-        className="px-4 py-2.5 bg-accent text-bg rounded-lg text-sm font-bold hover:bg-accent-hover transition-colors"
+        disabled={!canCreateProject}
+        className="px-4 py-2.5 bg-accent text-bg rounded-lg text-sm font-bold hover:bg-accent-hover transition-colors disabled:opacity-50"
       >
         New Project
       </button>
+      {!canCreateProject && user && <p className="text-xs text-text-dim">This account has reached its project limit.</p>}
 
       {projects.length === 0 && (
         <p className="text-text-dim text-sm">No projects yet. Create one to get started.</p>
@@ -5130,6 +5364,7 @@ function ProjectMembersPane({
         || (user.role === "admin" ? "owner" : null))
     : null;
   const canManage = myRole === "owner";
+  const canInvite = canManage && !!user && (isAdmin || user.capabilities.invitations);
 
   const load = async () => {
     setLoading(true);
@@ -5296,7 +5531,7 @@ function ProjectMembersPane({
                         {inv.role} · expires {new Date(inv.expires_at).toLocaleDateString()}
                       </div>
                     </div>
-                    {canManage && (
+                    {canInvite && (
                       <div className="flex items-center gap-2 shrink-0">
                         <button
                           onClick={() => copyInviteLink(inv.id)}
@@ -5319,7 +5554,7 @@ function ProjectMembersPane({
             </div>
           )}
 
-          {canManage && pickable.length > 0 && (
+          {canInvite && pickable.length > 0 && (
             <div className="border-t border-border pt-4 space-y-2">
               <h4 className="text-text-muted text-xs uppercase tracking-wide">Add an existing user</h4>
               <div className="space-y-1.5">
@@ -5364,7 +5599,7 @@ function ProjectMembersPane({
             </div>
           )}
 
-          {canManage && (
+          {canInvite && (
             <form onSubmit={submitInvite} className="border-t border-border pt-4 space-y-2">
               <h4 className="text-text-muted text-xs uppercase tracking-wide">{pickable.length > 0 ? "Invite someone new" : "Add or invite someone"}</h4>
               <div className="flex gap-2">

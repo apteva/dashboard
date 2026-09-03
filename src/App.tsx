@@ -12,7 +12,7 @@ function LegacyInstanceRedirect() {
 }
 import { ProjectProvider } from "./hooks/useProjects";
 import { ThemeProvider } from "./hooks/useTheme";
-import { AudienceProvider } from "./hooks/useAudience";
+import { AudienceProvider, useAudience } from "./hooks/useAudience";
 import { Layout } from "./components/Layout";
 import { RealtimeVoiceProvider } from "./state/RealtimeVoiceContext";
 import { Login } from "./pages/Login";
@@ -23,6 +23,7 @@ import { Login } from "./pages/Login";
 const Connect = lazy(() => import("./pages/Connect").then((m) => ({ default: m.Connect })));
 const Onboarding = lazy(() => import("./pages/Onboarding").then((m) => ({ default: m.Onboarding })));
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
+const Personal = lazy(() => import("./pages/Personal").then((m) => ({ default: m.Personal })));
 const Build = lazy(() => import("./pages/Build").then((m) => ({ default: m.Build })));
 const Monitor = lazy(() => import("./pages/Monitor").then((m) => ({ default: m.Monitor })));
 const Agents = lazy(() => import("./pages/Agents").then((m) => ({ default: m.Agents })));
@@ -61,12 +62,21 @@ function OnboardingGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// The home route is stable at every interface level. Personal gets a focused
+// agent-and-conversations workspace; Business and Developer retain the
+// operational dashboard. This is presentation only — both routes remain
+// reachable and authorization continues to live on the server.
+function InterfaceHome() {
+  const { audience } = useAudience();
+  return audience === "personal" ? <Personal /> : <Dashboard />;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <ThemeProvider>
-        <AudienceProvider>
         <AuthProvider>
+          <AudienceProvider>
           <Suspense fallback={<RouteFallback />}>
             <Routes>
           <Route path="/login" element={<Login />} />
@@ -92,7 +102,7 @@ export default function App() {
               </ProtectedRoute>
             }
           >
-            <Route path="/" element={<Dashboard />} />
+            <Route path="/" element={<InterfaceHome />} />
             <Route path="/build" element={<Build />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/activity" element={<Navigate to="/monitor?view=activity" replace />} />
@@ -121,8 +131,8 @@ export default function App() {
           </Route>
             </Routes>
           </Suspense>
+          </AudienceProvider>
         </AuthProvider>
-        </AudienceProvider>
       </ThemeProvider>
     </BrowserRouter>
   );

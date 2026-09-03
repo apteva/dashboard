@@ -12,6 +12,29 @@ const privateKeyField: CredentialField = {
 };
 
 describe("CredentialValueInput", () => {
+  test("renders closed credential choices as a select with its catalog default", () => {
+    const html = renderToStaticMarkup(
+      <CredentialValueInput
+        field={{
+          name: "api_host",
+          label: "API environment",
+          type: "select",
+          options: ["api.pinterest.com", "api-sandbox.pinterest.com"],
+          default: "api.pinterest.com",
+        }}
+        value=""
+        onChange={() => {}}
+        className="credential"
+        required
+      />,
+    );
+
+    expect(html).toContain("<select");
+    expect(html).toContain('value="api.pinterest.com" selected=""');
+    expect(html).toContain("api-sandbox.pinterest.com");
+    expect(html).not.toContain('type="password"');
+  });
+
   test("preserves multiline private keys in a masked textarea", () => {
     const value =
       "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----";

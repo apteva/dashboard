@@ -1,19 +1,8 @@
 // useAudience — controls how much of the product a given user sees.
 //
-// The third appearance axis, alongside useTheme's theme (identity) and
-// mode (palette):
-//
-//   data-theme    terminal | clean       font, radii, shadows
-//   data-mode     dark | light           palette
-//   data-audience personal | business | developer   surface density
-//
-// Orthogonal by design: a personal user can still run terminal-dark.
-// Presets suggest a pairing; they never couple the two.
-//
-// Unlike theme, audience changes what is *mounted*, not just how it's
-// painted, so the React context — not the DOM attribute — is the source
-// of truth. The attribute is set anyway so CSS can key off it later
-// (density, chrome weight) without another provider.
+// This is a presentation preference: it hides or reveals registered navigation
+// and controls, and Personal selects a focused home shell. It never changes
+// capabilities, registered routes, or authorization.
 //
 // Nesting: the three tiers are strictly nested — everything personal
 // sees, business sees; everything business sees, developer sees. So a
@@ -26,17 +15,16 @@
 // Default is "developer": the dashboard behaves exactly as it did
 // before this hook existed until someone opts into a narrower view.
 //
-// Storage: localStorage under `apteva.audience`, mirroring useTheme's
-// device-local persistence and cross-tab sync. The proposal's
-// destination is users.preferences so it follows an account across
-// devices and can be seeded once from the onboarding preset — that
-// needs a server column, so it is deliberately a later step.
+// Storage: the authenticated user's server-side preferences are the source of
+// truth. `apteva.audience` is read only to migrate the former device-local
+// setting for legacy accounts, then removed after the first successful save.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { applyAudienceVocabulary } from "../i18n";
+import { auth, type InterfaceLevel } from "../api";
+import { useAuth } from "./useAuth";
 
-export type Audience = "personal" | "business" | "developer";
+export type Audience = InterfaceLevel;
 
 const RANK: Record<Audience, number> = { personal: 0, business: 1, developer: 2 };
 
@@ -51,13 +39,13 @@ export const AUDIENCES: Audience[] = ["personal", "business", "developer"];
 // sync. Adding a key here without referencing it — or referencing one
 // that isn't here — fails that test.
 export const AUDIENCE_SECTIONS = {
-  // Sidebar entries. Dashboard, Chat, Agents, Build and Settings are
-  // unlisted: every audience sees them. Integrations and Apps can hide
-  // at personal because the capability stays reachable — the platform
-  // MCP gateway gives the Helper create_connection / list_integrations
-  // / apps_install / apps_marketplace, so "connect my Gmail" works as
-  // a conversation on /build.
-  "nav.agentNew": "business",
+  // Sidebar entries. Personal uses the same Layout shell but replaces the
+  // operational links with its agent list. Routes stay registered, and the
+  // platform gateway keeps advanced work reachable through Conversations.
+  "nav.dashboard": "business",
+  "nav.build": "business",
+  "nav.agents": "business",
+  "nav.appPages": "business",
   "nav.monitor": "business",
   "nav.integrations": "business",
   "nav.apps": "business",
@@ -93,7 +81,8 @@ const DEFAULT: Audience = "developer";
 
 interface AudienceCtx {
   audience: Audience;
-  setAudience: (next: Audience) => void;
+  saving: boolean;
+  setAudience: (next: Audience) => Promise<void>;
   /** True when the current audience is allowed to see `section`. */
   shows: (section: AudienceSection) => boolean;
 }
@@ -104,13 +93,19 @@ function isAudience(value: unknown): value is Audience {
   return value === "personal" || value === "business" || value === "developer";
 }
 
-function readStored(): Audience {
+function readLegacyStored(): Audience | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return isAudience(raw) ? raw : DEFAULT;
+    return isAudience(raw) ? raw : null;
   } catch {
-    return DEFAULT;
+    return null;
   }
+}
+
+function clearLegacyStored() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {}
 }
 
 /** Pure form of `shows`, so tests and non-React callers can use it. */
@@ -119,42 +114,66 @@ export function audienceShows(audience: Audience, section: AudienceSection): boo
 }
 
 export function AudienceProvider({ children }: { children: ReactNode }) {
-  const [audience, setAudienceState] = useState<Audience>(readStored);
+  const { user, refresh } = useAuth();
+  const [audience, setAudienceState] = useState<Audience>(() => readLegacyStored() ?? DEFAULT);
+  const [saving, setSaving] = useState(false);
+  const [pending, setPending] = useState(false);
+  const migrationAttempted = useRef<number | null>(null);
+  const serverAudience =
+    user && isAudience(user.interfaceLevel) ? user.interfaceLevel : null;
+  const effectiveAudience = pending ? audience : serverAudience ?? audience;
 
+  // A valid server value always wins. Legacy accounts return null so the first
+  // browser they use can import the old local value; absent one, developer
+  // preserves the interface they saw before levels were introduced.
   useEffect(() => {
-    document.documentElement.setAttribute("data-audience", audience);
-    // Vocabulary is part of the audience: business sees "Connected
-    // accounts" where developer sees "Integrations", through the same
-    // t() keys. Deterministic rebuild, so flipping back restores base.
-    applyAudienceVocabulary(audience);
-  }, [audience]);
+    if (!user) return;
+    if (serverAudience) {
+      setAudienceState(serverAudience);
+      clearLegacyStored();
+      return;
+    }
+    if (migrationAttempted.current === user.id) return;
+    migrationAttempted.current = user.id;
+    const migrated = readLegacyStored() ?? DEFAULT;
+    setAudienceState(migrated);
+    setPending(true);
+    void auth
+      .updatePreferences({ interface_level: migrated })
+      .then(async () => {
+        clearLegacyStored();
+        await refresh();
+      })
+      .catch(() => {})
+      .finally(() => setPending(false));
+  }, [user, serverAudience, refresh]);
 
-  useEffect(() => {
+  const setAudience = useCallback(async (next: Audience) => {
+    if (!user) throw new Error("Sign in to save interface preferences");
+    const previous = effectiveAudience;
+    setAudienceState(next);
+    setPending(true);
+    setSaving(true);
     try {
-      localStorage.setItem(STORAGE_KEY, audience);
-    } catch {}
-  }, [audience]);
-
-  // Cross-tab sync, same contract as useTheme: an Appearance change in
-  // one window updates the others immediately.
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key !== STORAGE_KEY || !e.newValue) return;
-      if (isAudience(e.newValue)) setAudienceState(e.newValue);
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
-
-  const setAudience = useCallback((next: Audience) => setAudienceState(next), []);
+      await auth.updatePreferences({ interface_level: next });
+      clearLegacyStored();
+      await refresh();
+    } catch (error) {
+      setAudienceState(previous);
+      throw error;
+    } finally {
+      setPending(false);
+      setSaving(false);
+    }
+  }, [effectiveAudience, refresh, user]);
   const shows = useCallback(
-    (section: AudienceSection) => audienceShows(audience, section),
-    [audience],
+    (section: AudienceSection) => audienceShows(effectiveAudience, section),
+    [effectiveAudience],
   );
 
   const value = useMemo<AudienceCtx>(
-    () => ({ audience, setAudience, shows }),
-    [audience, setAudience, shows],
+    () => ({ audience: effectiveAudience, saving, setAudience, shows }),
+    [effectiveAudience, saving, setAudience, shows],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -169,7 +188,8 @@ export function useAudience(): AudienceCtx {
     // rather than silently hiding surfaces.
     return {
       audience: DEFAULT,
-      setAudience: () => {},
+      saving: false,
+      setAudience: async () => {},
       shows: (section) => audienceShows(DEFAULT, section),
     };
   }

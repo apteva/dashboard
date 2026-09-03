@@ -82,89 +82,62 @@ describe("audience never unmounts a route", () => {
 
   test("gated nav entries carry a section key rather than being deleted", () => {
     const layout = source("./components/Layout.tsx");
+    expect(layout).toContain('section: "nav.dashboard"');
     expect(layout).toContain('section: "nav.monitor"');
     expect(layout).toContain('section: "nav.skills"');
-    expect(layout).toContain('shows("nav.agentNew")');
+    expect(layout).toContain('shows("nav.appPages")');
+  });
+
+  test("interface level does not alter vocabulary or authorization", () => {
+    const hook = source("./hooks/useAudience.tsx");
+    const i18n = source("./i18n/index.ts");
+    expect(hook).not.toContain("data-audience");
+    expect(hook).not.toContain("applyAudienceVocabulary");
+    expect(i18n).not.toContain("audienceVocabulary");
+  });
+
+  test("personal home uses the shared Layout shell without gating routes", () => {
+    const app = source("./App.tsx");
+    const layout = source("./components/Layout.tsx");
+    const personal = source("./pages/Personal.tsx");
+    expect(app).toContain('audience === "personal" ? <Personal /> : <Dashboard />');
+    expect(layout).toContain("<SidebarAgentLink");
+    expect(layout).toContain("{renderSidebar(false)}");
+    expect(layout).not.toContain("isPersonalHome");
+    expect(personal).not.toContain("<aside");
+  });
+
+  test("server preferences replace device-local persistence", () => {
+    const hook = source("./hooks/useAudience.tsx");
+    expect(hook).toContain("updatePreferences({ interface_level:");
+    expect(hook).toContain("localStorage.removeItem(STORAGE_KEY)");
+    expect(hook).not.toContain("localStorage.setItem(STORAGE_KEY");
   });
 });
 
-describe("appearance copy", () => {
+describe("interface settings copy", () => {
   const LOCALES = ["en", "fr", "es"];
 
   test("every audience has a label and description in every locale", () => {
     for (const locale of LOCALES) {
-      const appearance = JSON.parse(source(`./i18n/locales/${locale}.json`)).settings.appearance;
+      const interfaceSettings = JSON.parse(source(`./i18n/locales/${locale}.json`)).settings.interface;
       for (const audience of AUDIENCES) {
-        expect(appearance[`audience_${audience}`]).toBeTruthy();
-        expect(appearance[`audience_${audience}Description`]).toBeTruthy();
+        expect(interfaceSettings[audience]).toBeTruthy();
+        expect(interfaceSettings[`${audience}Description`]).toBeTruthy();
       }
-      expect(appearance.audience).toBeTruthy();
-      expect(appearance.audienceHint).toBeTruthy();
-    }
-  });
-});
-
-describe("audience vocabulary", () => {
-  const LOCALES = ["en", "fr", "es"];
-
-  const leafPaths = (node: unknown, prefix = ""): string[] => {
-    if (!node || typeof node !== "object" || Array.isArray(node)) return [prefix];
-    return Object.entries(node as Record<string, unknown>).flatMap(([key, value]) =>
-      leafPaths(value, prefix ? `${prefix}.${key}` : key),
-    );
-  };
-  const lookup = (node: unknown, path: string): unknown =>
-    path.split(".").reduce<unknown>(
-      (cursor, key) =>
-        cursor && typeof cursor === "object" ? (cursor as Record<string, unknown>)[key] : undefined,
-      node,
-    );
-
-  test("every override shadows a real base key in every locale", () => {
-    // An override whose path doesn't exist in the base bundle is dead
-    // config at best and a typo hiding a missing rename at worst.
-    for (const locale of LOCALES) {
-      const bundle = JSON.parse(source(`./i18n/locales/${locale}.json`));
-      const vocabulary = bundle._audienceVocabulary ?? {};
-      for (const [audience, overrides] of Object.entries(vocabulary)) {
-        expect(AUDIENCES).toContain(audience as Audience);
-        for (const path of leafPaths(overrides)) {
-          expect(`${locale}/${audience}: ${path} = ${lookup(bundle, path)}`).not.toInclude("undefined");
-        }
-      }
-    }
-  });
-
-  test("locales agree on which audiences they override", () => {
-    const shapes = LOCALES.map((locale) => {
-      const vocabulary = JSON.parse(source(`./i18n/locales/${locale}.json`))._audienceVocabulary ?? {};
-      return Object.entries(vocabulary)
-        .map(([audience, overrides]) => `${audience}:${leafPaths(overrides).sort().join(",")}`)
-        .sort()
-        .join(" | ");
-    });
-    expect(new Set(shapes).size).toBe(1);
-  });
-
-  test("Agents keeps its name in every audience and locale", () => {
-    // The product's core noun is exempt from vocabulary: renaming it
-    // per audience would fork docs, support, and muscle memory.
-    for (const locale of LOCALES) {
-      const vocabulary = JSON.parse(source(`./i18n/locales/${locale}.json`))._audienceVocabulary ?? {};
-      for (const overrides of Object.values(vocabulary)) {
-        expect(lookup(overrides, "nav.agents")).toBeUndefined();
-      }
+      expect(interfaceSettings.level).toBeTruthy();
+      expect(interfaceSettings.hint).toBeTruthy();
     }
   });
 });
 
 describe("settings tabs", () => {
   test("every audience keeps at least the ungated core tabs", () => {
-    // appearance, channels, data and account carry no section key, so
+    // interface, appearance, channels, data and account carry no section key, so
     // even personal retains a working Settings page. If someone gates
     // all of them the page becomes an empty shell — fail loudly here.
     const settings = source("./pages/Settings.tsx");
-    for (const core of ['id: "appearance"', 'id: "channels"', 'id: "data"', 'id: "account"']) {
+    for (const core of ['id: "interface"', 'id: "appearance"', 'id: "channels"', 'id: "data"', 'id: "account"']) {
       const line = settings.split("\n").find((l) => l.includes(core)) ?? "";
       expect(line).not.toInclude("section:");
     }

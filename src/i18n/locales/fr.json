@@ -190,6 +190,7 @@
       "projects": "Projets",
       "presets": "Modèles",
       "helper": "Assistant",
+      "interface": "Interface",
       "appearance": "Apparence",
       "channels": "Canaux",
       "providers": "Fournisseurs",
@@ -218,15 +219,21 @@
       "themeCleanDescription": "Inter, coins arrondis, ombres discretes. Pret pour une presentation.",
       "modeAuto": "Auto",
       "modeDark": "Sombre",
-      "modeLight": "Clair",
-      "audience": "Niveau d'interface",
-      "audienceHint": "Enregistré localement sur cet appareil. Les sections masquées restent accessibles par lien direct — rien n'est supprimé, seulement rangé.",
-      "audience_personal": "Personnel",
-      "audience_personalDescription": "Vos agents et vos outils, rien de plus. Créez en demandant à l'assistant.",
-      "audience_business": "Entreprise",
-      "audience_businessDescription": "Ajoute les comptes connectés, la marketplace, les coûts et les réglages d'équipe.",
-      "audience_developer": "Développeur",
-      "audience_developerDescription": "Tout : compétences, serveurs MCP, contrôles pas à pas et diagnostics."
+      "modeLight": "Clair"
+    },
+    "interface": {
+      "title": "Interface",
+    "description": "Choisissez votre espace de travail et le niveau de détail technique affiché par le tableau de bord.",
+      "level": "Niveau d'interface",
+      "hint": "Enregistré dans votre compte et partagé entre vos appareils. Les sections masquées restent accessibles par lien direct ; ce réglage ne modifie pas les autorisations.",
+      "personal": "Personnel",
+    "personalDescription": "Un espace ciblé pour les agents et Conversations, avec les contrôles avancés mis de côté.",
+      "business": "Entreprise",
+      "businessDescription": "Ajoute les intégrations, les apps, l'activité, les coûts et les réglages d'équipe.",
+      "developer": "Développeur",
+      "developerDescription": "Tout : compétences, serveurs MCP, contrôles pas à pas et diagnostics.",
+      "saved": "Niveau d'interface enregistré.",
+      "saveFailed": "Impossible d'enregistrer le niveau d'interface."
     },
     "providers": {
       "subscriptionUsage": "Utilisation de l'abonnement",
@@ -248,21 +255,5 @@
     "en": "Anglais",
     "fr": "Francais",
     "es": "Espagnol"
-  },
-  "_audienceVocabulary": {
-    "personal": {
-      "nav": {
-        "build": "Créer",
-        "dashboard": "Accueil"
-      }
-    },
-    "business": {
-      "nav": {
-        "integrations": "Comptes connectés",
-        "apps": "Marketplace",
-        "monitor": "Activité",
-        "usage": "Coûts"
-      }
-    }
   }
 }

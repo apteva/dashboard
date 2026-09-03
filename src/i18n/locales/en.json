@@ -190,6 +190,7 @@
       "projects": "Projects",
       "presets": "Templates",
       "helper": "Helper",
+      "interface": "Interface",
       "appearance": "Appearance",
       "channels": "Channels",
       "providers": "Providers",
@@ -218,15 +219,21 @@
       "themeCleanDescription": "Inter, rounded corners, subtle shadows. Boardroom-ready.",
       "modeAuto": "Auto",
       "modeDark": "Dark",
-      "modeLight": "Light",
-      "audience": "Interface level",
-      "audienceHint": "Stored locally on this device. Hidden sections stay reachable by direct link — nothing is removed, only tidied out of the way.",
-      "audience_personal": "Personal",
-      "audience_personalDescription": "Just your agents and your tools. Create things by asking the Helper.",
-      "audience_business": "Business",
-      "audience_businessDescription": "Adds connected accounts, the marketplace, costs and team settings.",
-      "audience_developer": "Developer",
-      "audience_developerDescription": "Everything: skills, MCP servers, step controls and diagnostics."
+      "modeLight": "Light"
+    },
+    "interface": {
+      "title": "Interface",
+    "description": "Choose your workspace experience and how much technical detail the dashboard shows.",
+      "level": "Interface level",
+      "hint": "Saved to your account and shared across devices. Hidden sections remain reachable by direct link; this setting does not change permissions.",
+      "personal": "Personal",
+    "personalDescription": "A focused agent and Conversations workspace with advanced controls out of the way.",
+      "business": "Business",
+      "businessDescription": "Adds integrations, apps, activity, costs and team settings.",
+      "developer": "Developer",
+      "developerDescription": "Everything: skills, MCP servers, step controls and diagnostics.",
+      "saved": "Interface level saved.",
+      "saveFailed": "Failed to save interface level."
     },
     "providers": {
       "subscriptionUsage": "Subscription usage",
@@ -248,21 +255,5 @@
     "en": "English",
     "fr": "French",
     "es": "Spanish"
-  },
-  "_audienceVocabulary": {
-    "personal": {
-      "nav": {
-        "build": "Create",
-        "dashboard": "Home"
-      }
-    },
-    "business": {
-      "nav": {
-        "integrations": "Connected accounts",
-        "apps": "Marketplace",
-        "monitor": "Activity",
-        "usage": "Costs"
-      }
-    }
   }
 }

@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppIcon } from "@apteva/ui-kit";
@@ -7,8 +7,16 @@ import { useAuth } from "../hooks/useAuth";
 import { useAudience, type AudienceSection } from "../hooks/useAudience";
 import { AccountMenu } from "./AccountMenu";
 import { NotificationsTray } from "./NotificationsTray";
-import { apps, platform, platformHelper, type PlatformStatus } from "../api";
+import {
+  apps,
+  instances,
+  platform,
+  platformHelper,
+  type Agent,
+  type PlatformStatus,
+} from "../api";
 import { NewAgentButton } from "./NewAgentButton";
+import { AgentMark } from "./AgentMark";
 import { RealtimeVoiceDock } from "../state/RealtimeVoiceContext";
 import {
   preferredSidebarAppNames,
@@ -24,7 +32,7 @@ const SIDEBAR_APPS_VISIBLE = 5;
 
 export function Layout() {
   const { t } = useTranslation();
-  const { shows } = useAudience();
+  const { audience, shows } = useAudience();
   const [version, setVersion] = useState("");
   const [versionTip, setVersionTip] = useState("");
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus | null>(
@@ -59,6 +67,28 @@ export function Layout() {
   const location = useLocation();
   const { user, logout } = useAuth();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [sidebarAgents, setSidebarAgents] = useState<Agent[]>([]);
+
+  const refreshSidebarAgents = useCallback(() => {
+    if (audience !== "personal" || !currentProject?.id) {
+      setSidebarAgents([]);
+      return;
+    }
+    instances
+      .list(currentProject.id)
+      .then((rows) => setSidebarAgents(rows || []))
+      .catch(() => setSidebarAgents([]));
+  }, [audience, currentProject?.id]);
+
+  useEffect(() => {
+    refreshSidebarAgents();
+    window.addEventListener("apteva:agents-changed", refreshSidebarAgents);
+    const timer = window.setInterval(refreshSidebarAgents, 10_000);
+    return () => {
+      window.removeEventListener("apteva:agents-changed", refreshSidebarAgents);
+      window.clearInterval(timer);
+    };
+  }, [refreshSidebarAgents]);
 
   // The authenticated dashboard is a viewport shell: pages provide their own
   // scroll containers. Keep the browser document itself locked while Layout is
@@ -186,9 +216,9 @@ export function Layout() {
   // unmounts a route, so deep links and agent-driven navigation keep
   // working at every audience.
   const primaryNav = [
-    { to: "/", label: t("nav.dashboard") },
-    ...(helperActivated ? [{ to: "/build", label: t("nav.build") }] : []),
-    { to: "/agents", label: t("nav.agents") },
+    { to: "/", label: t("nav.dashboard"), section: "nav.dashboard" },
+    ...(helperActivated ? [{ to: "/build", label: t("nav.build"), section: "nav.build" }] : []),
+    { to: "/agents", label: t("nav.agents"), section: "nav.agents" },
     { to: "/monitor", label: t("nav.monitor"), section: "nav.monitor" },
   ].filter((item) => !item.section || shows(item.section as AudienceSection));
   const manageNav = [
@@ -197,7 +227,12 @@ export function Layout() {
     { to: "/skills", label: t("nav.skills"), section: "nav.skills" },
     { to: "/analytics", label: t("nav.usage"), section: "nav.usage" },
     { to: "/settings", label: t("nav.settings") },
-  ].filter((item) => !item.section || shows(item.section as AudienceSection));
+  ].filter((item) => {
+    if (item.section && !shows(item.section as AudienceSection)) return false;
+    if (!user || user.role === "admin") return true;
+    if (item.to === "/apps" && !user.capabilities.app_installation) return false;
+    return true;
+  });
   // App-contributed entries from any installed app declaring a
   // `provides.ui_panels` entry with slot=project.page. Each one
   // becomes a sidebar link to /apps/<name>/page rendered via
@@ -292,6 +327,9 @@ export function Layout() {
     preferredSidebarAppNames(appNav, projectUILayout),
   );
   const pinnedAppNav = appNav.filter((item) => pinnedAppNames.has(item.name));
+  const sidebarQuery = new URLSearchParams(location.search);
+  const selectedSidebarAgentID = sidebarQuery.get("agent");
+  const creatingPersonalAgent = sidebarQuery.get("new") === "1";
 
   // Flat list — only used for "is this entry's path a prefix of
   // another's" active-link disambiguation. Doesn't change rendering.
@@ -299,12 +337,20 @@ export function Layout() {
 
   useEffect(() => {
     setMobileNavOpen(false);
-  }, [location.pathname]);
+  }, [location.pathname, location.search]);
 
   const renderSidebar = (mobile = false) => (
     <>
       <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-        <span className="text-accent font-bold text-lg">Apteva</span>
+        <Link
+          to="/"
+          onClick={() => {
+            if (mobile) setMobileNavOpen(false);
+          }}
+          className="text-accent font-bold text-lg"
+        >
+          Apteva
+        </Link>
         {mobile && (
           <button
             type="button"
@@ -350,21 +396,19 @@ export function Layout() {
           above the nav rail (not behind a "go to Agents → click +"
           two-step). Filled accent so it stays the focal point of
           the sidebar regardless of which page is selected. */}
-      {/* /agents/new is the expert creation form (directive, safety mode,
-          MCP servers, allowed folders). Personal creates agents by talking
-          to the Helper on /build instead, so the shortcut is gated. */}
-      {shows("nav.agentNew") && (
-        <div className="px-3 py-3 border-b border-border">
-          <NewAgentButton
-            label={t("nav.newAgent")}
-            onClick={() => {
-              if (mobile) setMobileNavOpen(false);
-            }}
-            className="w-full"
-            title={t("nav.newAgentTitle")}
-          />
-        </div>
-      )}
+      {/* One shared CTA slot. Personal points it at the focused creation
+          state; Business and Developer point at the advanced wizard. */}
+      <div className="px-3 py-3 border-b border-border">
+        <NewAgentButton
+          to={audience === "personal" ? "/?new=1" : "/agents/new"}
+          label={t("nav.newAgent")}
+          onClick={() => {
+            if (mobile) setMobileNavOpen(false);
+          }}
+          className="w-full"
+          title={t("nav.newAgentTitle")}
+        />
+      </div>
 
       <div className="flex-1 py-3 overflow-y-auto">
         {/* Primary group — the platform's daily-use verbs.
@@ -378,6 +422,27 @@ export function Layout() {
           />
         ))}
 
+        {audience === "personal" && (
+          <>
+            <SidebarSectionHeader label={t("nav.agents")} />
+            {sidebarAgents.map((agent) => (
+              <SidebarAgentLink
+                key={agent.id}
+                agent={agent}
+                active={
+                  location.pathname === "/" &&
+                  selectedSidebarAgentID === String(agent.id) &&
+                  !creatingPersonalAgent
+                }
+                onNavigate={mobile ? () => setMobileNavOpen(false) : undefined}
+              />
+            ))}
+            {sidebarAgents.length === 0 && (
+              <div className="px-5 py-2 text-xs text-text-dim">No agents yet</div>
+            )}
+          </>
+        )}
+
         {/* Apps group — only rendered when >=1 installed app has a
             project.page panel. Header label tells the user these are
             contributed by sidecars, and each entry carries the app's
@@ -387,7 +452,7 @@ export function Layout() {
             below the fold. Anything beyond the cap collapses behind
             a "More apps (N)" toggle. Preferred apps are stored in the
             current project's generic UI layout. */}
-        {appNav.length > 0 &&
+        {shows("nav.appPages") && appNav.length > 0 &&
           (() => {
             const visibleApps = showAllApps
               ? pinnedAppNav
@@ -740,6 +805,41 @@ function SidebarLink({
       )}
       <span className="truncate">{item.label}</span>
     </NavLink>
+  );
+}
+
+function SidebarAgentLink({
+  agent,
+  active,
+  onNavigate,
+}: {
+  agent: Agent;
+  active: boolean;
+  onNavigate?: () => void;
+}) {
+  return (
+    <Link
+      to={`/?agent=${agent.id}`}
+      onClick={onNavigate}
+      className={`mx-2 mb-1 flex items-center gap-2.5 rounded-lg px-3 py-2 transition-colors ${
+        active
+          ? "bg-bg-hover text-text"
+          : "text-text-muted hover:bg-bg-hover hover:text-text"
+      }`}
+    >
+      <AgentMark size="sm" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-xs font-medium">{agent.name}</span>
+        <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-text-dim">
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              agent.status === "running" ? "bg-green" : "bg-text-dim"
+            }`}
+          />
+          {agent.status === "running" ? "Ready" : agent.status}
+        </span>
+      </span>
+    </Link>
   );
 }
 
