@@ -82,6 +82,7 @@ interface WizardState {
   unconscious: boolean;
   includeChannels: boolean;
   recommendedApps: string[]; // surface-only, no install in this flow
+  highlights: string[];
   // Setup-step explicit selections. Operator picks which existing
   // apps + integration connections attach to this agent as MCP
   // servers. Defaults at template-pick time to "every running
@@ -106,6 +107,7 @@ const INITIAL: WizardState = {
   boundConnectionIDs: new Set<number>(),
   appAccess: {},
   recommendedApps: [],
+  highlights: [],
 };
 
 function defaultAppAccessDraft(): AppAccessDraft {
@@ -375,6 +377,7 @@ export function AgentNew() {
       mode: t.mode as Mode,
       unconscious: t.unconscious,
       recommendedApps: t.recommended_apps || [],
+      highlights: t.highlights || [],
     }));
   };
 
@@ -566,7 +569,7 @@ function TemplateStep({ templates, selectedID, onSelect, onSkipWizard }: Templat
       <div>
         <h2 className="text-text text-lg font-bold">Pick a starting point</h2>
         <p className="text-text-muted text-sm mt-1">
-          Each template comes with a starter directive, a recommended safety mode, and a hint about which apps pair well with it. You can adjust everything in the next steps.
+          Start with what you want to accomplish. You can review and adjust the underlying agent, connections, and safety settings next.
         </p>
       </div>
 
@@ -592,6 +595,16 @@ function TemplateStep({ templates, selectedID, onSelect, onSkipWizard }: Templat
                 )}
               </div>
               <p className="text-text-muted text-xs leading-relaxed">{t.description}</p>
+              {t.highlights && t.highlights.length > 0 && (
+                <ul className="mt-3 space-y-1.5">
+                  {t.highlights.slice(0, 3).map((highlight) => (
+                    <li key={highlight} className="flex gap-2 text-[11px] leading-relaxed text-text">
+                      <span className="mt-1 text-accent">✓</span>
+                      <span>{highlight}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
               {t.resolved_logos && t.resolved_logos.length > 0 && (
                 <LogoRow logos={t.resolved_logos} className="mt-3" />
               )}
@@ -885,7 +898,7 @@ function SetupStep({
   return (
     <div className="flex flex-col gap-5">
       <div>
-        <h2 className="text-text text-lg font-bold">MCP servers</h2>
+        <h2 className="text-text text-lg font-bold">Connections and tools</h2>
         <p className="text-text-muted text-sm mt-1">
           Review the integrations and apps this agent will receive. Project defaults are preselected, and you can opt out of any of them before creation.
         </p>
@@ -1476,6 +1489,9 @@ function ReviewStep({ state, hasProvider, onEdit, installProgress }: ReviewStepP
 
       <dl className="border border-border rounded-lg divide-y divide-border">
         <Row label="Name"        value={state.name}                       onEdit={() => onEdit(1)} />
+        {state.highlights.length > 0 && (
+          <Row label="What it can do" value={`• ${state.highlights.join("\n• ")}`} multiline onEdit={() => onEdit(0)} />
+        )}
         <Row label="Directive"   value={directivePreview} multiline       onEdit={() => onEdit(1)} />
         <Row label="Mode"        value={state.mode}                       onEdit={() => onEdit(1)} />
         <Row label="Background"  value={state.unconscious ? "On (unconscious thread)" : "Off (stateless)"} onEdit={() => onEdit(1)} />

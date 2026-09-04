@@ -158,6 +158,15 @@ function PresetDetails({ preset }: { preset: Preset }) {
   const widgets = preset.definition.dashboard_layout?.map((widget) => widget.component) || preset.definition.dashboard || [];
   return (
     <div className="mt-4 space-y-3 rounded-lg bg-bg-input p-3 text-xs">
+      {preset.definition.highlights?.length ? (
+        <div>
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-text-dim">What it enables</div>
+          <ul className="space-y-1 text-text">
+            {preset.definition.highlights.map((highlight) => <li key={highlight}>✓ {highlight}</li>)}
+          </ul>
+        </div>
+      ) : null}
+      <div className="border-t border-border pt-3 text-[10px] font-bold uppercase tracking-wide text-text-dim">Included setup</div>
       {preset.definition.agents.map((agent) => (
         <div key={agent.key}>
           <div className="font-semibold text-text">{agent.name} <span className="font-normal text-text-dim">· {agent.mode}</span></div>
@@ -176,6 +185,7 @@ function CapturePresetModal({ open, projects, onClose, onSaved }: {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState<ProjectSetupPresetDefinition["category"]>("work");
+  const [highlights, setHighlights] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -185,9 +195,9 @@ function CapturePresetModal({ open, projects, onClose, onSaved }: {
     if (!projectId || !name.trim()) return;
     setBusy(true); setError("");
     try {
-      await presetsAPI.capture({ project_id: projectId, name: name.trim(), description: description.trim(), category });
+      await presetsAPI.capture({ project_id: projectId, name: name.trim(), description: description.trim(), category, highlights: highlightLines(highlights) });
       await onSaved();
-      setName(""); setDescription(""); onClose();
+      setName(""); setDescription(""); setHighlights(""); onClose();
     } catch (err: any) { setError(err?.message || "Could not save template"); }
     finally { setBusy(false); }
   };
@@ -199,6 +209,7 @@ function CapturePresetModal({ open, projects, onClose, onSaved }: {
         <Field label="Project"><select value={projectId} onChange={(event) => setProjectId(event.target.value)} className={inputClass}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></Field>
         <Field label="Name"><input autoFocus value={name} onChange={(event) => setName(event.target.value)} className={inputClass} placeholder="My project setup" /></Field>
         <Field label="Description"><textarea value={description} onChange={(event) => setDescription(event.target.value)} className={inputClass} rows={2} /></Field>
+        <Field label="What this template can do (one highlight per line, up to 6)"><textarea value={highlights} onChange={(event) => setHighlights(event.target.value)} className={inputClass} rows={3} placeholder="Turn meeting notes into an action plan" /></Field>
         <Field label="Category"><select value={category} onChange={(event) => setCategory(event.target.value as typeof category)} className={inputClass}>{CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>
         {error && <p className="text-xs text-red" role="alert">{error}</p>}
         <div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted">Cancel</button><button type="submit" disabled={busy || !name.trim()} className="rounded-lg bg-accent px-4 py-2 text-sm font-bold text-bg disabled:opacity-50">{busy ? "Saving…" : "Save template"}</button></div>
@@ -211,17 +222,22 @@ function EditPresetModal({ preset, onClose, onSaved }: { preset: Preset; onClose
   const [name, setName] = useState(preset.name);
   const [description, setDescription] = useState(preset.description);
   const [category, setCategory] = useState(preset.definition.category);
+  const [highlights, setHighlights] = useState((preset.definition.highlights || []).join("\n"));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError("");
     try {
-      await presetsAPI.update(preset.id, { name: name.trim(), description: description.trim(), definition: { ...preset.definition, category } });
+      await presetsAPI.update(preset.id, { name: name.trim(), description: description.trim(), definition: { ...preset.definition, category, highlights: highlightLines(highlights) } });
       await onSaved(); onClose();
     } catch (err: any) { setError(err?.message || "Could not update template"); }
     finally { setBusy(false); }
   };
-  return <Modal open onClose={onClose} ariaLabel="Edit template"><form onSubmit={submit} className="space-y-4 p-6"><h3 className="text-base font-bold text-text">Edit template</h3><Field label="Name"><input value={name} onChange={(event) => setName(event.target.value)} className={inputClass} /></Field><Field label="Description"><textarea value={description} onChange={(event) => setDescription(event.target.value)} className={inputClass} rows={3} /></Field><Field label="Category"><select value={category} onChange={(event) => setCategory(event.target.value as typeof category)} className={inputClass}>{CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>{error && <p className="text-xs text-red">{error}</p>}<div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted">Cancel</button><button type="submit" disabled={busy || !name.trim()} className="rounded-lg bg-accent px-4 py-2 text-sm font-bold text-bg disabled:opacity-50">{busy ? "Saving…" : "Save changes"}</button></div></form></Modal>;
+  return <Modal open onClose={onClose} ariaLabel="Edit template"><form onSubmit={submit} className="space-y-4 p-6"><h3 className="text-base font-bold text-text">Edit template</h3><Field label="Name"><input value={name} onChange={(event) => setName(event.target.value)} className={inputClass} /></Field><Field label="Description"><textarea value={description} onChange={(event) => setDescription(event.target.value)} className={inputClass} rows={3} /></Field><Field label="What this template can do (one highlight per line, up to 6)"><textarea value={highlights} onChange={(event) => setHighlights(event.target.value)} className={inputClass} rows={3} /></Field><Field label="Category"><select value={category} onChange={(event) => setCategory(event.target.value as typeof category)} className={inputClass}>{CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></Field>{error && <p className="text-xs text-red">{error}</p>}<div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted">Cancel</button><button type="submit" disabled={busy || !name.trim()} className="rounded-lg bg-accent px-4 py-2 text-sm font-bold text-bg disabled:opacity-50">{busy ? "Saving…" : "Save changes"}</button></div></form></Modal>;
+}
+
+function highlightLines(value: string): string[] {
+  return value.split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
 const inputClass = "mt-1.5 w-full rounded-lg border border-border bg-bg-input px-3 py-2.5 text-sm text-text focus:border-accent focus:outline-none";

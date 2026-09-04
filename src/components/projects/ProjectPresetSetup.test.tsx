@@ -12,6 +12,7 @@ const businessPreset = {
   category: "business" as const,
   name: "Lead-generation business",
   description: "Operate lead research and CRM follow-up.",
+  highlights: ["Research and qualify prospects", "Draft outreach for approval"],
   agents: [{
     key: "lead-ops",
     name: "Lead Operations Agent",
@@ -39,9 +40,9 @@ const project = {
 };
 
 const catalogResponse = (items: Array<typeof businessPreset | typeof personalPreset>) => ({
-  templates: items.map(({ id, name, description, category, agents, dashboard }) => ({
+  templates: items.map(({ id, name, description, category, highlights, agents, dashboard }) => ({
     id, name, description, kind: "project_setup", scope: "system", source: "system", schema_version: 1,
-    definition: { category, agents, dashboard },
+    definition: { category, highlights, agents, dashboard },
   })),
 });
 
@@ -65,7 +66,8 @@ describe("ProjectPresetSetup", () => {
     expect(screen.queryByRole("button", { name: /Lead-generation business/ })).toBeNull();
     expect(screen.queryByText("Inbox")).toBeNull();
     expect(screen.getAllByText(/1 widget/).length).toBeGreaterThan(0);
-    expect(screen.getByText("Added automatically when this template is selected.")).toBeTruthy();
+    expect(screen.getAllByText("Research and qualify prospects").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText(/Included setup/));
     expect(screen.getByText("Recent activity")).toBeTruthy();
 
     fireEvent.click(personal);
@@ -109,7 +111,9 @@ describe("ProjectPresetSetup", () => {
     fireEvent.change(await screen.findByLabelText("What should these agents help with?"), {
       target: { value: "Qualify medical clinic leads and prepare outreach for review" },
     });
-    expect(screen.getByRole("region", { name: "What this setup includes" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "What this template can do" })).toBeTruthy();
+    expect(screen.getAllByText("Draft outreach for approval").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText(/Included setup/));
     expect(screen.getByText("Lead Operations Agent")).toBeTruthy();
     expect(screen.getByText("crm", { selector: "span" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Create setup" }));

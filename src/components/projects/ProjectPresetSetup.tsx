@@ -202,6 +202,15 @@ export function ProjectPresetSetup({
             >
               <div className="text-text text-sm font-bold">{preset.name}</div>
               <div className="text-text-muted text-xs mt-1 leading-relaxed">{preset.description}</div>
+              {preset.highlights && preset.highlights.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {preset.highlights.slice(0, 2).map((highlight) => (
+                    <li key={highlight} className="flex gap-1.5 text-[11px] leading-relaxed text-text">
+                      <span className="text-accent">✓</span><span>{highlight}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <div className="text-text-dim text-[11px] mt-2">{presetCountSummary(preset)}</div>
             </button>
           ))}
@@ -228,44 +237,52 @@ export function ProjectPresetSetup({
 function PresetContentsSummary({ preset }: { preset: ProjectPreset }) {
   const dashboardComponents = visibleDashboardComponents(preset);
   return (
-    <section className="border border-accent/35 bg-accent/5 rounded-lg p-4" aria-label="What this setup includes">
+    <section className="border border-accent/35 bg-accent/5 rounded-lg p-4" aria-label="What this template can do">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h3 className="text-text text-sm font-bold">What this setup creates</h3>
-          <p className="text-text-muted text-xs mt-1">Each agent receives the available apps listed beneath it.</p>
+          <h3 className="text-text text-sm font-bold">What this template can do</h3>
+          <p className="text-text-muted text-xs mt-1">A practical starting point you can refine after setup.</p>
         </div>
-        <span className="text-text-dim text-[11px]">{presetCountSummary(preset)}</span>
       </div>
 
-      <div className="space-y-3 mt-4">
-        {preset.agents.map((agent) => (
-          <div key={agent.key} className="border border-border rounded-lg p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-text text-xs font-bold">{agent.name}</div>
-              <div className="text-text-dim text-[10px] uppercase tracking-wide">{agent.mode}</div>
-            </div>
-            <div className="flex flex-wrap gap-1.5 mt-2">
-              {(agent.apps || []).map((app) => (
-                <span key={app} className="border border-border rounded px-2 py-0.5 text-text-muted text-[11px]">{app}</span>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
+      {preset.highlights && preset.highlights.length > 0 ? (
+        <ul className="mt-4 grid gap-2 sm:grid-cols-2">
+          {preset.highlights.map((highlight) => (
+            <li key={highlight} className="flex gap-2 rounded-lg border border-accent/20 bg-bg-card p-3 text-xs leading-relaxed text-text">
+              <span className="text-accent">✓</span><span>{highlight}</span>
+            </li>
+          ))}
+        </ul>
+      ) : <p className="mt-4 text-xs leading-relaxed text-text-muted">{preset.description}</p>}
 
-      {dashboardComponents.length > 0 && (
-        <div className="mt-4">
-          <div className="text-text-dim text-[10px] uppercase tracking-wide mb-1">Home widgets</div>
-          <p className="mb-2 text-[10px] text-text-dim">Added automatically when this template is selected.</p>
-          <div className="flex flex-wrap gap-1.5">
-            {dashboardComponents.map((component) => (
-              <span key={component} className="border border-border rounded px-2 py-0.5 text-text-muted text-[11px]">
-                {dashboardLabel(component)}
-              </span>
-            ))}
-          </div>
+      <details className="mt-4 border-t border-border pt-3">
+        <summary className="cursor-pointer text-xs text-text-muted hover:text-text">Included setup · {presetCountSummary(preset)}</summary>
+        <div className="space-y-3 mt-3">
+          {preset.agents.map((agent) => (
+            <div key={agent.key} className="border border-border rounded-lg p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-text text-xs font-bold">{agent.name}</div>
+                <div className="text-text-dim text-[10px] uppercase tracking-wide">{agent.mode}</div>
+              </div>
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {(agent.apps || []).map((app) => (
+                  <span key={app} className="border border-border rounded px-2 py-0.5 text-text-muted text-[11px]">{app}</span>
+                ))}
+              </div>
+            </div>
+          ))}
+          {dashboardComponents.length > 0 && (
+            <div>
+              <div className="text-text-dim text-[10px] uppercase tracking-wide mb-1">Home widgets</div>
+              <div className="flex flex-wrap gap-1.5">
+                {dashboardComponents.map((component) => (
+                  <span key={component} className="border border-border rounded px-2 py-0.5 text-text-muted text-[11px]">{dashboardLabel(component)}</span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </details>
     </section>
   );
 }

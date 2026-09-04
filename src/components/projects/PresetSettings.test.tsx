@@ -12,7 +12,7 @@ const project = { id: "project-1", user_id: 1, name: "Operations", description: 
 const systemPreset = {
   id: "work-ops", kind: "project_setup", scope: "system", source: "system", schema_version: 1,
   name: "Operations starter", description: "A starting point.",
-  definition: { category: "work", agents: [{ key: "operator", name: "Operator", directive: "Operate.", mode: "cautious", apps: ["notes"] }], dashboard: ["native:usage"] },
+  definition: { category: "work", highlights: ["Turn requests into an operating plan"], agents: [{ key: "operator", name: "Operator", directive: "Operate.", mode: "cautious", apps: ["notes"] }], dashboard: ["native:usage"] },
 };
 
 function renderSettings() {
@@ -34,16 +34,17 @@ describe("PresetSettings", () => {
       return new Response("not found", { status: 404 });
     }) as unknown as typeof fetch;
 
-	renderSettings();
-	const saveProject = await screen.findByRole("button", { name: "Save project as template" });
-	await waitFor(() => expect(saveProject.hasAttribute("disabled")).toBe(false));
-	fireEvent.click(saveProject);
+    renderSettings();
+    const saveProject = await screen.findByRole("button", { name: "Save project as template" });
+    await waitFor(() => expect(saveProject.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(saveProject);
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "My operations" } });
+    fireEvent.change(screen.getByLabelText(/What this template can do/), { target: { value: "Coordinate daily work\nPrepare a status summary" } });
     fireEvent.click(screen.getByRole("button", { name: "Save template" }));
 
     await waitFor(() => expect(calls.some((call) => call.url.endsWith("/api/projects/project-1/templates/capture") && call.method === "POST")).toBe(true));
     const capture = calls.find((call) => call.url.endsWith("/api/projects/project-1/templates/capture"));
-    expect(capture?.body).toEqual({ project_id: "project-1", name: "My operations", description: "", category: "work" });
+    expect(capture?.body).toEqual({ project_id: "project-1", name: "My operations", description: "", category: "work", highlights: ["Coordinate daily work", "Prepare a status summary"] });
   });
 
   test("duplicates a built-in template into the selected project", async () => {

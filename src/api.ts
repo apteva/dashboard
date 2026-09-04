@@ -593,6 +593,7 @@ export interface ProjectPreset {
   category: "personal" | "work" | "development" | "business";
   name: string;
   description: string;
+  highlights?: string[];
   agents: ProjectPresetAgent[];
   dashboard?: string[];
   dashboard_layout?: ProjectPresetWidget[];
@@ -638,6 +639,7 @@ export interface ProjectPresetApplyInput {
 export interface ProjectSetupPresetDefinition {
   category: "personal" | "work" | "development" | "business";
   match?: string[];
+  highlights?: string[];
   agents: ProjectPresetAgent[];
   dashboard?: string[];
   dashboard_layout?: ProjectPresetWidget[];
@@ -707,6 +709,7 @@ export interface AgentTemplate {
   // fall back to a generic neutral glyph.
   icon?: string;
   description: string;
+  highlights?: string[];
   directive: string;
   mode: "autonomous" | "cautious" | "learn";
   unconscious: boolean;
@@ -779,6 +782,7 @@ export const projectPresets = {
         name: preset.name,
         description: preset.description,
         category: preset.definition.category,
+        highlights: preset.definition.highlights,
         agents: preset.definition.agents,
         dashboard: preset.definition.dashboard,
         dashboard_layout: preset.definition.dashboard_layout,
@@ -841,6 +845,7 @@ export const presets = {
     name: string;
     description?: string;
     category: ProjectSetupPresetDefinition["category"];
+    highlights?: string[];
     scope?: "personal" | "shared";
   }) => request<Preset>("POST", `/projects/${encodeURIComponent(input.project_id)}/templates/capture`, input),
   createForProject: (projectId: string, input: {
