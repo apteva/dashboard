@@ -226,3 +226,14 @@ describe("useAppEvents", () => {
     unmount();
   });
 });
+
+
+test("connection establishment announces authoritative refresh for its project", () => {
+  const received:string[]=[];
+  const listener=(event:Event)=>received.push((event as CustomEvent).detail.projectId);
+  window.addEventListener("apteva:app-events-connected",listener);
+  const {unmount}=renderHook(()=>useAppEvents("tables","refresh-project",()=>{}));
+  act(()=>{lastES!.onopen?.(new Event("open"));lastES!.onopen?.(new Event("open"));});
+  expect(received).toEqual(["refresh-project","refresh-project"]);
+  unmount();window.removeEventListener("apteva:app-events-connected",listener);
+});

@@ -114,6 +114,7 @@ function openConnection(projectId: string, ch: Channel): void {
   es.onopen = () => {
     ch.reconnectAttempts = 0; // successful connect resets the budget
     dbg("EventSource open", { projectId });
+    window.dispatchEvent(new CustomEvent("apteva:app-events-connected", {detail:{projectId}}));
   };
   es.onmessage = (e) => {
     try {

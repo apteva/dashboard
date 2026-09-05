@@ -8,7 +8,7 @@
 // sidecar — same trust boundary the v1 panels relied on.
 
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { apps, type AppRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
@@ -30,7 +30,18 @@ export function loadedAppMatchesRoute(
 
 export function AppProjectPage() {
   const { name } = useParams<{ name: string }>();
-  const { currentProject } = useProjects();
+  const { projects, currentProject, setCurrentProject } = useProjects();
+  const [search, setSearch] = useSearchParams();
+  const linkedProjectID = search.get("project_id");
+  const linkedProject = projects.find(project => project.id === linkedProjectID);
+  const linkError = linkedProjectID && currentProject && !linkedProject ? "The linked project is unavailable." : "";
+  useEffect(() => {
+    if (!linkedProjectID || !linkedProject) return;
+    setCurrentProject(linkedProject);
+    // Consume routing context once, retaining the table and row deep link.
+    // Subsequent manual project switches must not be reversed by an old URL.
+    setSearch(previous => {const next = new URLSearchParams(previous);next.delete("project_id");return next;}, {replace:true});
+  }, [linkedProjectID, linkedProject]);
   const [loaded, setLoaded] = useState<LoadedApp | null>(null);
   const [error, setError] = useState("");
   const app = loaded?.app ?? null;
@@ -38,7 +49,7 @@ export function AppProjectPage() {
 
   useEffect(() => {
     const projectId = currentProject?.id;
-    if (!name || !projectId) {
+    if (!name || !projectId || linkedProjectID) {
       setLoaded(null);
       return;
     }
@@ -80,18 +91,18 @@ export function AppProjectPage() {
     return () => {
       cancelled = true;
     };
-  }, [name, currentProject?.id]);
+  }, [name, currentProject?.id, linkedProjectID]);
 
-  if (error) {
+  if (error || linkError) {
     return (
       <div className="p-6">
         <div className="border border-border rounded-lg p-8 text-center">
-          <p className="text-text-muted text-sm">{error}</p>
+          <p className="text-text-muted text-sm">{linkError || error}</p>
         </div>
       </div>
     );
   }
-  if (!loaded || !app) {
+  if (linkedProjectID || !loaded || !app) {
     return <div className="p-6 text-text-dim text-sm">Loading…</div>;
   }
   // Effects run after render. During a project or route switch, refuse to
