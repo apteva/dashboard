@@ -69,23 +69,31 @@ export function Layout() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [sidebarAgents, setSidebarAgents] = useState<Agent[]>([]);
 
+  const sidebarScope = useRef(currentProject?.id);
+  sidebarScope.current = currentProject?.id;
+  const sidebarPending = useRef(new Set<string>());
   const refreshSidebarAgents = useCallback(() => {
     if (audience !== "personal" || !currentProject?.id) {
       setSidebarAgents([]);
       return;
     }
-    instances
-      .list(currentProject.id)
-      .then((rows) => setSidebarAgents(rows || []))
-      .catch(() => setSidebarAgents([]));
+    const id = currentProject.id;
+    if (document.hidden || sidebarPending.current.has(id)) return;
+    sidebarPending.current.add(id);
+    instances.list(id)
+      .then((rows) => { if (sidebarScope.current === id) setSidebarAgents(rows || []); })
+      .catch(() => { if (sidebarScope.current === id) setSidebarAgents([]); })
+      .finally(() => sidebarPending.current.delete(id));
   }, [audience, currentProject?.id]);
 
   useEffect(() => {
     refreshSidebarAgents();
     window.addEventListener("apteva:agents-changed", refreshSidebarAgents);
+ document.addEventListener("visibilitychange", refreshSidebarAgents);
     const timer = window.setInterval(refreshSidebarAgents, 10_000);
     return () => {
       window.removeEventListener("apteva:agents-changed", refreshSidebarAgents);
+ document.removeEventListener("visibilitychange", refreshSidebarAgents);
       window.clearInterval(timer);
     };
   }, [refreshSidebarAgents]);

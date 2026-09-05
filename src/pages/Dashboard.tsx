@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { instances, telemetry, type Agent, type InstanceStats } from "../api";
 import { NewAgentButton } from "../components/NewAgentButton";
@@ -33,16 +33,20 @@ export function Dashboard() {
     component === "native:usage" || component === "native:activity",
   );
 
+  const overviewScope = useRef(projectId);
+  overviewScope.current = projectId;
+  const overviewPending = useRef(new Set<string | undefined>());
   const loadOverview = useCallback(() => {
+    if (overviewPending.current.has(projectId) || document.hidden) return;
+    overviewPending.current.add(projectId);
     Promise.all([
       instances.list(projectId).catch(() => [] as Agent[]),
-      telemetry
-        .projectStats(projectId, "24h")
-        .catch(() => [] as InstanceStats[]),
+      telemetry.projectStats(projectId, "24h").catch(() => [] as InstanceStats[]),
     ]).then(([nextAgents, nextStats]) => {
+      if (overviewScope.current !== projectId) return;
       setAgents(nextAgents);
       setStats(nextStats);
-    });
+    }).finally(() => { overviewPending.current.delete(projectId); });
   }, [projectId]);
 
   useEffect(() => {
@@ -54,9 +58,11 @@ export function Dashboard() {
     loadOverview();
     const timer = window.setInterval(loadOverview, REFRESH_MS);
     window.addEventListener("apteva.statusMessage", loadOverview);
+ document.addEventListener("visibilitychange", loadOverview);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener("apteva.statusMessage", loadOverview);
+ document.removeEventListener("visibilitychange", loadOverview);
     };
   }, [loadOverview, needsOverview]);
 

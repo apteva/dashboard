@@ -2928,6 +2928,8 @@ export const telemetry = {
       }>
     >("GET", `/telemetry/timeline?instance_id=${instanceId}&period=${period}`),
 
+  projectActivity: (projectId: string, limit = 80) => request<TelemetryEvent[]>("GET", `/telemetry/project-activity?${new URLSearchParams({ project_id: projectId, limit: String(limit) })}`),
+
   // Project-scoped aggregate — ranks every instance in the project by
   // cost/tokens/errors over the period. Empty projectId scopes to every
   // instance the current user owns.

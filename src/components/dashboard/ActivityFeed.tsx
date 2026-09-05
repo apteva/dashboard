@@ -5,7 +5,7 @@ import { useProjects } from "../../hooks/useProjects";
 import { useTelemetryEvents } from "../../hooks/useTelemetryBus";
 
 const MAX_ROWS = 80;
-const HISTORY_PER_AGENT = 10;
+
 const HIDDEN_SYSTEM_TOOLS = new Set([
   "pace",
   "done",
@@ -40,6 +40,8 @@ export function ActivityFeed({
     [agents],
   );
 
+  const agentIDs = agents.map((agent) => agent.id).sort((a, b) => a - b).join(",");
+
   useEffect(() => {
     let cancelled = false;
     setRows([]);
@@ -49,21 +51,18 @@ export function ActivityFeed({
     }
 
     setLoading(true);
-    Promise.all(
-      agents.map((agent) => telemetry.query(agent.id, undefined, HISTORY_PER_AGENT).catch(() => [] as TelemetryEvent[])),
-    ).then((history) => {
+    telemetry.projectActivity(projectId, MAX_ROWS).catch(() => [] as TelemetryEvent[]).then((history) => {
       if (cancelled) return;
       const initial = history
-        .flat()
         .map(toSignificantRow)
         .filter((row): row is Row => row !== null);
-      setRows(mergeRows([], initial));
+      setRows((previous) => mergeRows(previous, initial));
     }).finally(() => {
       if (!cancelled) setLoading(false);
     });
 
     return () => { cancelled = true; };
-  }, [agents, projectId]);
+  }, [agentIDs, projectId]);
 
   useTelemetryEvents(projectId ? null : undefined, (event: TelemetryEvent) => {
     const row = toSignificantRow(event);
