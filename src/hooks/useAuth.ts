@@ -1,6 +1,7 @@
 import {
   useState,
   useEffect,
+  useCallback,
   createContext,
   useContext,
   type ReactNode,
@@ -68,6 +69,7 @@ interface AuthState {
   ) => Promise<any>;
   logout: () => void;
   // Refresh the user profile after a settings change (email edit, etc.).
+  // Transient failures reject without discarding the current session.
   refresh: () => Promise<void>;
 }
 
@@ -77,7 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // null → probing, false → unauthenticated, AuthUser → authenticated.
   const [user, setUser] = useState<AuthUser | null | false>(null);
 
-  const loadMe = async () => {
+  const loadMe = useCallback(async (preserveOnError = false) => {
     try {
       const r = await auth.me();
       setUser({
@@ -125,10 +127,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         managedLLM: r.managed_llm || { configured: false, models: [] },
       });
       void setDashboardLanguage(r.language);
-    } catch {
+    } catch (error) {
+      if (preserveOnError) throw error;
       setUser(false);
     }
-  };
+  }, []);
+
+  const refresh = useCallback(() => loadMe(true), [loadMe]);
 
   useEffect(() => {
     loadMe();
@@ -170,7 +175,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       auth.logout();
       setUser(false);
     },
-    refresh: loadMe,
+    refresh,
   };
 
   return createElement(AuthContext.Provider, { value }, children);

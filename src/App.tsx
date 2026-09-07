@@ -103,6 +103,7 @@ export default function App() {
             }
           >
             <Route path="/" element={<InterfaceHome />} />
+            <Route path="/conversations" element={<Personal />} />
             <Route path="/build" element={<Build />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/activity" element={<Navigate to="/monitor?view=activity" replace />} />

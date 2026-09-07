@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { usePageTitle } from "../hooks/usePageTitle";
@@ -27,7 +27,8 @@ export function Login() {
   const [setupToken, setSetupToken] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const { login, verifyMFA, register, authenticated } = useAuth();
+  const { login, verifyMFA, register, authenticated, refresh } = useAuth();
+  const acceptingInvite = useRef(false);
   const navigate = useNavigate();
 
   // ?invite=<token> handling. When present:
@@ -80,15 +81,18 @@ export function Login() {
   // token, immediately accept it and bounce to the dashboard. This
   // covers the "open the invite link while logged in" path.
   useEffect(() => {
-    if (authenticated === true && inviteToken) {
+    if (authenticated === true && inviteToken && !acceptingInvite.current) {
+      acceptingInvite.current = true;
       projectInvites
         .accept(inviteToken)
+        .then(() => refresh())
         .then(() => navigate("/", { replace: true }))
         .catch((e: any) => {
+          acceptingInvite.current = false;
           setInviteErr(e?.message || "Failed to accept invite");
         });
     }
-  }, [authenticated, inviteToken, navigate]);
+  }, [authenticated, inviteToken, navigate, refresh]);
 
   // Detect server state on mount. We only care about distinguishing
   // setup from non-setup — open vs locked just toggles the register button
@@ -157,15 +161,8 @@ export function Login() {
         setMode("mfa");
         return;
       }
-      // If this login came via an invite link, also accept the invite
-      // so the project_members row gets written. Best-effort: a
-      // failure here lands the user inside the dashboard without
-      // the invited project — they can be re-invited.
-      if (inviteToken) {
-        try { await projectInvites.accept(inviteToken); } catch (e: any) {
-          setInviteErr(e?.message || "Logged in, but failed to accept invite");
-        }
-      }
+      // The authenticated invite effect accepts and refreshes before navigation.
+      if (inviteToken) return;
       console.log("[login] login() resolved, calling navigate('/')");
       navigate("/");
       console.log("[login] navigate('/') called, new url=", window.location.pathname);
@@ -183,11 +180,7 @@ export function Login() {
     setBusy(true);
     try {
       await verifyMFA(mfaCode);
-      if (inviteToken) {
-        try { await projectInvites.accept(inviteToken); } catch (e: any) {
-          setInviteErr(e?.message || "Signed in, but failed to accept invite");
-        }
-      }
+      if (inviteToken) return;
       navigate("/");
     } catch (err: any) {
       setError(err?.message === "unauthorized" ? "That authentication code is invalid or expired." : err?.message || "Verification failed");

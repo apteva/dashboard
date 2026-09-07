@@ -3,6 +3,8 @@
 // This is a presentation preference: it hides or reveals registered navigation
 // and controls, and Personal selects a focused home shell. It never changes
 // capabilities, registered routes, or authorization.
+// Selecting Personal or Business also prepares their Conversations dependency
+// on the server before exposing the new interface.
 //
 // Nesting: the three tiers are strictly nested — everything personal
 // sees, business sees; everything business sees, developer sees. So a
@@ -151,13 +153,14 @@ export function AudienceProvider({ children }: { children: ReactNode }) {
   const setAudience = useCallback(async (next: Audience) => {
     if (!user) throw new Error("Sign in to save interface preferences");
     const previous = effectiveAudience;
-    setAudienceState(next);
-    setPending(true);
     setSaving(true);
     try {
       await auth.updatePreferences({ interface_level: next });
+      setAudienceState(next);
+      setPending(true);
       clearLegacyStored();
       await refresh();
+      window.dispatchEvent(new Event("apteva:apps-changed"));
     } catch (error) {
       setAudienceState(previous);
       throw error;

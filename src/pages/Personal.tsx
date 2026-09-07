@@ -18,6 +18,7 @@ import {
 import { AgentMark } from "../components/AgentMark";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { useProjects } from "../hooks/useProjects";
+import { useAudience } from "../hooks/useAudience";
 
 const CONVERSATIONS_SLOT = "dashboard.build";
 const CONVERSATIONS_COMPONENT = "agent-conversations";
@@ -41,8 +42,10 @@ export function selectPersonalConversationsContribution(
 export function Personal() {
   usePageTitle("Home");
   const { currentProject } = useProjects();
+  const { audience } = useAudience();
   const projectId = currentProject?.id || "";
   const [searchParams, setSearchParams] = useSearchParams();
+  const initialConversationId = searchParams.get("chat") || "";
   const [agents, setAgents] = useState<Agent[]>([]);
   const [appRows, setAppRows] = useState<AppRow[]>([]);
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
@@ -131,6 +134,9 @@ export function Personal() {
           contribution,
           size: "full",
           settings: {
+            experience: "personal",
+            welcome_audience: audience,
+            initial_conversation_id: initialConversationId,
             display_mode: "single",
             show_new_conversation: true,
           },
@@ -143,7 +149,7 @@ export function Personal() {
     return () => {
       cancelled = true;
     };
-  }, [contribution, createOpen, projectId, selectedAgent]);
+  }, [contribution, createOpen, projectId, selectedAgent, audience, initialConversationId]);
 
   const openAgent = (agent: Agent) => {
     setError("");

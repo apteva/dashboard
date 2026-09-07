@@ -48,9 +48,11 @@ export function ProjectPresetSetup({
   projectId,
   onApplied,
   systemOnly = false,
+  onStateChange,
 }: {
   projectId?: string;
   systemOnly?: boolean;
+  onStateChange?: (state: { busy: boolean; ready: boolean }) => void;
   onApplied?: (result: {
     created: number;
     existing: number;
@@ -67,6 +69,10 @@ export function ProjectPresetSetup({
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState("");
   const [applied, setApplied] = useState("");
+
+  useEffect(() => {
+    onStateChange?.({ busy: applying, ready: Boolean(applied) });
+  }, [applying, applied, onStateChange]);
 
   useEffect(() => {
     let active = true;
@@ -125,7 +131,7 @@ export function ProjectPresetSetup({
       });
       const created = result.created_agents.length;
       const existing = result.existing_agents.length;
-      const warnings = result.warnings.length
+      const warnings = result.warnings?.length
         ? ` ${result.warnings.length} app or widget${result.warnings.length === 1 ? "" : "s"} still need attention.`
         : "";
       setApplied(`Setup created. ${created} agent${created === 1 ? "" : "s"} created${existing ? `, ${existing} already present` : ""}.${warnings}`);
@@ -141,7 +147,7 @@ export function ProjectPresetSetup({
   if (loading) return <p className="text-text-muted text-sm">Loading setup options…</p>;
 
   return (
-    <div className="space-y-6">
+    <fieldset disabled={applying} className="space-y-6 min-w-0">
       <div>
         <h2 className="text-text text-lg font-bold">Set up your project</h2>
         <p className="text-text-muted text-sm mt-1">
@@ -230,7 +236,7 @@ export function ProjectPresetSetup({
 
       {error && <div className="text-red text-sm">{error}</div>}
       {applied && <div className="border border-green/40 bg-green/5 text-green rounded-lg p-4 text-sm">{applied}</div>}
-    </div>
+    </fieldset>
   );
 }
 

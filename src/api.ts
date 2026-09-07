@@ -288,6 +288,12 @@ export const agentCoreRollouts = {
 
 // Auth
 export const auth = {
+  onboardingStatus: () => request<{
+    project_id: string;
+    provider_configured: boolean;
+    can_manage_provider: boolean;
+    starter_agent_id?: number;
+  }>("GET", "/auth/onboarding/status"),
   status: () =>
     request<{ reg_mode: string; needs_setup: boolean }>("GET", "/auth/status"),
 
@@ -809,7 +815,7 @@ export const projectPresets = {
       preset_id: string;
       created_agents: Array<{ id: number; name: string; status: string }>;
       existing_agents: Array<{ id: number; name: string; status: string }>;
-      warnings: string[];
+      warnings: string[] | null;
     }>(
       "POST",
       `/projects/${encodeURIComponent(projectId)}/setup/apply`,
@@ -1037,6 +1043,7 @@ export const instances = {
     projectId?: string,
     start?: boolean,
     opts?: {
+      idempotencyKey?: string;
       includeChannels?: boolean;
       unconscious?: boolean;
       // Setup-step selections — explicit lists of apps + integration
@@ -1055,6 +1062,7 @@ export const instances = {
       directive: directive || "",
       mode: mode || "autonomous",
       project_id: projectId || "",
+      ...(opts?.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
       // Server default is start=true; pass explicit false to create stopped.
       ...(start === false ? { start: false } : {}),
       ...(opts?.includeChannels !== undefined

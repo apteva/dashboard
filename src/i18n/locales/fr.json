@@ -232,6 +232,7 @@
       "businessDescription": "Ajoute les intégrations, les apps, l'activité, les coûts et les réglages d'équipe.",
       "developer": "Développeur",
       "developerDescription": "Tout : compétences, serveurs MCP, contrôles pas à pas et diagnostics.",
+      "preparing": "Préparation de votre espace de travail…",
       "saved": "Niveau d'interface enregistré.",
       "saveFailed": "Impossible d'enregistrer le niveau d'interface."
     },

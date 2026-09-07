@@ -1,543 +1,170 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  auth,
-  instances,
-  integrations,
-  platformHelper,
-  runtimeEntryAsAppDetail,
-  type RuntimeCatalogEntry,
-} from "../api";
+import { auth, integrations, runtimeEntryAsAppDetail, type InterfaceLevel, type RuntimeCatalogEntry } from "../api";
 import { CredentialFields } from "../components/integrations/CredentialFields";
 import { defaultIntegrationAuthType } from "../utils/integrationAuth";
+import { prepareOnboardingConversation } from "../utils/onboarding";
 import { useAuth } from "../hooks/useAuth";
-import { useTheme, type ThemeMode } from "../hooks/useTheme";
+import { useAudience } from "../hooks/useAudience";
 import { usePageTitle } from "../hooks/usePageTitle";
-import { ProjectPresetSetup } from "../components/projects/ProjectPresetSetup";
 
-// Welcome flow gated on users.onboarded_at being NULL (see
-// <OnboardingGate> in App.tsx). Skip is allowed at every step; the
-// "Finish" button on the last step calls /auth/onboarding/complete,
-// which stamps onboarded_at and lets the user into the dashboard.
+export const ONBOARDING_STEP_IDS = ["usage", "provider"] as const;
+type SetupStatus = Awaited<ReturnType<typeof auth.onboardingStatus>>;
 
-export const ONBOARDING_STEP_IDS = ["theme", "setup", "provider", "helper"] as const;
-type StepId = (typeof ONBOARDING_STEP_IDS)[number];
-
-export async function activateOnboardingPresetAgents(
-  agentIds: number[],
-  startAgent: (id: number) => Promise<unknown> = instances.start,
-) {
-  const results = await Promise.allSettled(agentIds.map((id) => startAgent(id)));
-  const started = results.filter((result) => result.status === "fulfilled").length;
-  return { started, failed: results.length - started };
+export function isTypeableRuntimeEntry(entry: RuntimeCatalogEntry): boolean {
+  if (!entry.credential_fields?.length) return false;
+  const type = defaultIntegrationAuthType(runtimeEntryAsAppDetail(entry));
+  return type !== "oauth2" && type !== "oauth1" && type !== "oauth_device_code";
 }
-
-interface StepDef {
-  id: StepId;
-  // Whether the step exposes an explicit "Skip" link in addition to
-  // its primary CTA. A step has no skip if there's nothing to opt out
-  // of (theme always has a default).
-  canSkip: boolean;
-}
-
-const STEPS: StepDef[] = [
-  { id: "theme", canSkip: false },
-  { id: "setup", canSkip: true },
-  { id: "provider", canSkip: true },
-  { id: "helper", canSkip: true },
-];
 
 export function Onboarding() {
-  const [stepIdx, setStepIdx] = useState(0);
-  usePageTitle("Onboarding");
-  const [finishing, setFinishing] = useState(false);
-  // providerAdded — flipped by ProviderStep when it successfully
-  // saves a key. Drives the post-onboarding redirect: with a provider,
-  // the user can usefully build an agent next, so we route to the
-  // /agents/new wizard. Without one, we route to / and let them poke
-  // around the dashboard first.
-  const [providerAdded, setProviderAdded] = useState(false);
-  const [setupApplied, setSetupApplied] = useState(false);
-  const [presetAgentsToStart, setPresetAgentsToStart] = useState<number[]>([]);
-  const [activationMessage, setActivationMessage] = useState("");
+  usePageTitle("Welcome");
+  const { user, refresh } = useAuth();
+  const { setAudience } = useAudience();
   const navigate = useNavigate();
-  const { refresh, user } = useAuth();
-
-  // Belt-and-braces: the gate already bounces onboarded users back to
-  // /, but a manual visit to /onboarding from the URL bar would render
-  // this page anyway. Send them home.
-  useEffect(() => {
-    if (user && user.onboarded) {
-      navigate("/", { replace: true });
-    }
-    if (user && user.managedLLM.configured) {
-      setProviderAdded(true);
-    }
-  }, [user, navigate]);
-
-  const step = STEPS[stepIdx]!;
-  const isLast = stepIdx === STEPS.length - 1;
-
-  const activatePresetAgents = async () => {
-    if (presetAgentsToStart.length === 0) return;
-    setActivationMessage("Starting your new agents…");
-    const { started, failed } = await activateOnboardingPresetAgents(presetAgentsToStart);
-    setPresetAgentsToStart([]);
-    setActivationMessage(
-      failed === 0
-        ? `${started} template agent${started === 1 ? " is" : "s are"} online.`
-        : `${started} template agent${started === 1 ? " is" : "s are"} online; ${failed} still need attention.`,
-    );
-  };
-
-  const advance = async () => {
-    if (step.id === "provider" && user && user.managedLLM.configured) {
-      setProviderAdded(true);
-      await activatePresetAgents();
-    }
-    if (!isLast) {
-      setStepIdx(stepIdx + 1);
-      return;
-    }
-    setFinishing(true);
-    // If the operator saved a provider during onboarding, drop them
-    // straight into the build-an-agent wizard. Otherwise the
-    // dashboard's empty state with its "Build your first agent →"
-    // CTA is a fine landing — they can come back when they're ready
-    // to wire up an LLM key.
-    const dest = setupApplied ? "/" : providerAdded ? "/agents/new" : "/";
-    try {
-      await auth.completeOnboarding();
-      await refresh();
-      navigate(dest, { replace: true });
-    } catch {
-      // Best-effort: even if the server call fails, still let the user
-      // through. They'll re-onboard on next reload, which is annoying
-      // but better than wedging them on this page.
-      navigate(dest, { replace: true });
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-bg flex items-center justify-center px-6 py-10">
-      <div className="w-full max-w-2xl">
-        <div className="text-center mb-8">
-          <h1 className="text-text text-3xl font-bold">Welcome to Apteva</h1>
-          <p className="text-text-muted text-base mt-2">
-            A couple of quick choices and you're ready to go.
-          </p>
-        </div>
-
-        <Progress current={stepIdx} total={STEPS.length} />
-
-        <div className="border border-border rounded-lg p-8 bg-bg-card mt-6">
-          {step.id === "theme" && <ThemeStep />}
-          {step.id === "setup" && (
-            <ProjectPresetSetup
-              systemOnly
-              onApplied={(result) => {
-                setSetupApplied(true);
-                setPresetAgentsToStart(
-                  result.createdAgents
-                    .filter((agent) => agent.status !== "running")
-                    .map((agent) => agent.id),
-                );
-              }}
-            />
-          )}
-          {step.id === "provider" && (
-            <>
-              {user && user.managedLLM.configured ? (
-                <div className="flex flex-col gap-4">
-                  <div>
-                    <h2 className="text-text text-lg font-bold">Your model provider is ready</h2>
-                    <p className="text-text-muted text-sm mt-1">
-                      This server provides managed model access for your workspace. No provider key is required from you.
-                    </p>
-                  </div>
-                  {user.managedLLM.models.length > 0 && (
-                    <div className="rounded-lg border border-border bg-bg-hover/40 p-4 text-xs text-text-muted">
-                      Available models: <span className="font-mono text-text">{user.managedLLM.models.join(", ")}</span>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <ProviderStep
-                  setupReady={setupApplied}
-                  onSaved={async () => {
-                    setProviderAdded(true);
-                    await activatePresetAgents();
-                  }}
-                />
-              )}
-              {activationMessage && (
-                <div className="mt-4 text-sm text-accent" role="status">{activationMessage}</div>
-              )}
-            </>
-          )}
-          {step.id === "helper" && <HelperStep providerAdded={providerAdded} />}
-
-          <div className="flex justify-between items-center mt-8 pt-6 border-t border-border">
-            {step.canSkip ? (
-              <button
-                onClick={advance}
-                disabled={finishing}
-                className="text-text-muted text-sm hover:text-text transition-colors disabled:opacity-50"
-              >
-                Skip for now
-              </button>
-            ) : (
-              <span />
-            )}
-            <button
-              onClick={advance}
-              disabled={finishing}
-              className="px-5 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
-            >
-              {finishing ? "…" : isLast ? "Finish" : "Continue"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function HelperStep({ providerAdded }: { providerAdded: boolean }) {
-  const [status, setStatus] = useState<Awaited<ReturnType<typeof platformHelper.status>> | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [activating, setActivating] = useState(false);
+  const [step, setStep] = useState<"usage" | "provider">("usage");
+  const [choice, setChoice] = useState<InterfaceLevel | null>(null);
+  const [status, setStatus] = useState<SetupStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
+  const destination = useRef("/");
+  const inFlight = useRef(false);
 
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    platformHelper.status()
-      .then((next) => { if (!cancelled) setStatus(next); })
-      .catch((err: any) => { if (!cancelled) setError(err?.message || "Unable to check Helper availability."); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [providerAdded]);
+    if (user && user.onboarded && !busy) navigate(destination.current, { replace: true });
+  }, [user, busy, navigate]);
 
-  const activate = async () => {
-    setActivating(true);
-    setError("");
-    try {
-      setStatus(await platformHelper.activate(true));
-      window.dispatchEvent(new Event("apteva:helper-changed"));
-    } catch (err: any) {
-      setError(err?.message || "Unable to activate Apteva Helper.");
-    } finally {
-      setActivating(false);
-    }
+  const finish = async (next: SetupStatus, selected: InterfaceLevel) => {
+    if (!user) throw new Error("Please sign in again.");
+    setProgress("Opening your conversation…");
+    destination.current = selected === "developer" ? "/agents/new" : await prepareOnboardingConversation(user.id, next.project_id, selected, next.starter_agent_id);
+    await auth.completeOnboarding();
+    await refresh();
+    window.dispatchEvent(new Event("apteva:agents-changed"));
+    navigate(destination.current, { replace: true });
   };
 
-  const providerReady = status?.provider_configured || providerAdded;
-  return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h2 className="text-text text-lg font-bold">Activate Apteva Helper?</h2>
-        <p className="text-text-muted text-sm mt-1">
-          Helper is optional. It uses Conversations for saved sessions and can help you design and manage agents.
-        </p>
-      </div>
+  const run = async (action: () => Promise<void>) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    setError("");
+    try { await action(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Could not finish setup. Please try again."); }
+    finally { inFlight.current = false; setBusy(false); }
+  };
 
-      <div className="rounded-lg border border-border bg-bg-card p-4">
-        {loading ? (
-          <p className="text-sm text-text-muted">Checking Helper requirements…</p>
-        ) : status?.activated ? (
-          <div>
-            <div className="text-sm font-medium text-text">Apteva Helper is active</div>
-            <p className="mt-1 text-xs text-text-muted">You can configure it later in Settings → Helper.</p>
-          </div>
-        ) : !providerReady ? (
-          <div>
-            <div className="text-sm font-medium text-text">An LLM provider is required</div>
-            <p className="mt-1 text-xs text-text-muted">Go back and connect a provider, or skip Helper and activate it later.</p>
-          </div>
-        ) : (
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <div className="text-sm font-medium text-text">
-                {status?.conversations_installed ? "Conversations is ready" : "Conversations will be installed"}
-              </div>
-              <p className="mt-1 max-w-md text-xs text-text-muted">
-                Activation creates one private platform Helper and starts it. Nothing is created if you skip.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => void activate()}
-              disabled={activating}
-              className="rounded bg-accent px-4 py-2 text-sm font-bold text-bg hover:bg-accent-hover disabled:opacity-50"
-            >
-              {activating
-                ? "Activating…"
-                : status?.conversations_installed
-                  ? "Activate Helper"
-                  : "Install Conversations and activate"}
-            </button>
-          </div>
-        )}
-      </div>
-      {error && <p className="text-sm text-red">{error}</p>}
-    </div>
-  );
-}
+  const choose = (selected = choice) => {
+    if (!selected) return;
+    setChoice(selected);
+    void run(async () => {
+      setProgress("Preparing your workspace…");
+      await setAudience(selected);
+      const next = await auth.onboardingStatus();
+      setStatus(next);
+      if (next.provider_configured) await finish(next, selected);
+      else setStep("provider");
+    });
+  };
 
-function Progress({ current, total }: { current: number; total: number }) {
-  return (
-    <div className="flex gap-2 justify-center">
-      {Array.from({ length: total }).map((_, i) => (
-        <div
-          key={i}
-          className={`h-1.5 w-12 rounded-full transition-colors ${
-            i <= current ? "bg-accent" : "bg-border"
-          }`}
-        />
-      ))}
-    </div>
-  );
-}
+  const checkAndFinish = async () => {
+    const next = await auth.onboardingStatus();
+    setStatus(next);
+    if (!next.provider_configured) throw new Error("AI access is not connected yet. Please connect a provider to continue.");
+    await finish(next, choice!);
+  };
 
-function ThemeStep() {
-  const { theme, mode, resolvedMode, setTheme, setMode } = useTheme();
-  return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h2 className="text-text text-lg font-bold">Pick a theme</h2>
-        <p className="text-text-muted text-sm mt-1">
-          Changes apply instantly. You can switch later in Settings → Appearance.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <ThemeCard
-          label="Terminal"
-          description="Monospace, sharp corners, a workshop look. The default."
-          selected={theme === "terminal"}
-          onSelect={() => setTheme("terminal")}
-        />
-        <ThemeCard
-          label="Clean"
-          description="Inter, rounded corners, subtle shadows. Boardroom-ready."
-          selected={theme === "clean"}
-          onSelect={() => setTheme("clean")}
-        />
-      </div>
-
-      <div>
-        <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">Mode</h3>
-        <div className="flex flex-wrap gap-2">
-          {(["auto", "dark", "light"] as ThemeMode[]).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={`px-4 py-2 text-sm rounded border transition-colors ${
-                mode === m
-                  ? "border-accent text-text bg-bg-card"
-                  : "border-border text-text-muted hover:text-text hover:border-text-dim"
-              }`}
-            >
-              {m === "auto" ? "Auto" : m === "dark" ? "Dark" : "Light"}
-              {m === "auto" && (
-                <span className="ml-2 text-text-dim text-xs">
-                  (currently {resolvedMode})
-                </span>
-              )}
-            </button>
-          ))}
+  return <main className="min-h-screen bg-bg px-6 py-12 flex items-center justify-center">
+    <div className="w-full max-w-xl">
+      <p className="mb-3 text-xs font-medium uppercase tracking-wide text-text-muted">Welcome to Apteva</p>
+      {step === "usage" ? <>
+        <h1 className="text-3xl font-semibold text-text">How will you use Apteva?</h1>
+        <p className="mt-3 text-sm leading-6 text-text-muted">Choose a starting point. You can change this later.</p>
+        <div className="mt-8 grid gap-3 sm:grid-cols-2">
+          {(["personal", "business"] as const).map((value) => <button key={value} disabled={busy} aria-pressed={choice === value} onClick={() => setChoice(value)} className={`rounded-xl border p-5 text-left disabled:opacity-60 ${choice === value ? "border-accent bg-accent/5" : "border-border bg-bg-card hover:border-accent/50"}`}>
+            <span className="block text-base font-semibold text-text">{value === "personal" ? "For myself" : "For my business"}</span>
+            <span className="mt-2 block text-sm leading-6 text-text-muted">{value === "personal" ? "An assistant for everyday tasks and personal projects." : "An assistant to help with your business tasks."}</span>
+          </button>)}
         </div>
-      </div>
+        <button disabled={!choice || busy} onClick={() => choose()} className="mt-6 w-full rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-40">{busy ? progress : "Continue"}</button>
+        <button disabled={busy} onClick={() => choose("developer")} className="mt-4 text-xs text-text-muted underline underline-offset-4 disabled:opacity-40">Developer setup</button>
+      </> : <>
+        <button disabled={busy} onClick={() => { setStep("usage"); setError(""); }} className="mb-5 text-sm text-text-muted disabled:opacity-40">← Back</button>
+        <h1 className="text-3xl font-semibold text-text">Connect your AI</h1>
+        <p className="mt-3 text-sm leading-6 text-text-muted">Connect a model so your assistant can help in your first conversation.</p>
+        {status?.provider_configured ? <div className="mt-6">
+          <p className="text-sm text-text-muted">Your AI connection is ready.</p>
+          <button disabled={busy} onClick={() => void run(checkAndFinish)} className="mt-5 rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-40">{busy ? progress : "Open my conversation"}</button>
+        </div> : status?.can_manage_provider ? <ProviderStep busy={busy} onConnect={(connect) => void run(async () => {
+          setProgress("Checking your connection…");
+          await connect();
+          await checkAndFinish();
+        })} /> : <div className="mt-6 rounded-xl border border-border bg-bg-card p-5">
+          <p className="text-sm leading-6 text-text-muted">Your workspace administrator needs to connect AI. Once they do, you can continue here without adding your own key.</p>
+          <button disabled={busy} onClick={() => void run(checkAndFinish)} className="mt-4 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:opacity-40">{busy ? progress : "Check again"}</button>
+        </div>}
+        {choice === "developer" && <button disabled={busy} onClick={() => void run(async () => finish(status!, "developer"))} className="mt-5 text-xs text-text-muted underline">Set up AI later</button>}
+      </>}
+      {error && <p role="alert" className="mt-5 text-sm text-red">{error}</p>}
+      {busy && <p role="status" className="mt-4 text-sm text-text-muted">{progress}</p>}
     </div>
-  );
+  </main>;
 }
 
-function ThemeCard({
-  label,
-  description,
-  selected,
-  onSelect,
-}: {
-  label: string;
-  description: string;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      onClick={onSelect}
-      className={`text-left border rounded-lg p-4 transition-colors ${
-        selected
-          ? "border-accent bg-bg-card"
-          : "border-border hover:border-text-dim"
-      }`}
-    >
-      <div className="flex items-center gap-2 mb-2">
-        <div
-          className={`w-3 h-3 rounded-full border ${
-            selected ? "bg-accent border-accent" : "border-border"
-          }`}
-        />
-        <span className="text-text font-medium">{label}</span>
-      </div>
-      <p className="text-text-muted text-xs leading-relaxed">{description}</p>
-    </button>
-  );
-}
-
-// isTypeableRuntimeEntry — onboarding only offers providers the operator
-// can connect by pasting a key. OAuth and device-code flows need a popup
-// and a round trip, which is more than a first-run screen should ask for;
-// they stay available in Settings.
-export function isTypeableRuntimeEntry(entry: RuntimeCatalogEntry): boolean {
-  if ((entry.credential_fields || []).length === 0) return false;
-  const authType = defaultIntegrationAuthType(runtimeEntryAsAppDetail(entry));
-  return authType !== "oauth2" && authType !== "oauth1" && authType !== "oauth_device_code";
-}
-
-function ProviderStep({
-  setupReady,
-  onSaved,
-}: {
-  setupReady?: boolean;
-  onSaved?: () => void | Promise<void>;
-}) {
+function ProviderStep({ busy, onConnect }: { busy: boolean; onConnect: (connect: () => Promise<void>) => void }) {
   const [entries, setEntries] = useState<RuntimeCatalogEntry[]>([]);
   const [selected, setSelected] = useState<RuntimeCatalogEntry | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  const savedConnection = useRef<number | null>(null);
 
   useEffect(() => {
-    // The server filters to runtime-capable apps; asking for the whole
-    // catalog and filtering here would pull 600+ entries on first run.
-    integrations
-      .runtimeCatalog("llm")
-      .then((all) => {
-        const typeable = all.filter(isTypeableRuntimeEntry);
-        setEntries(typeable);
-        if (typeable.length > 0) setSelected(typeable[0] ?? null);
-      })
-      .catch(() => setEntries([]));
-  }, []);
+    let active = true;
+    setLoading(true);
+    setLoadError("");
+    integrations.runtimeCatalog("llm").then((all) => {
+      if (!active) return;
+      const available = all.filter(isTypeableRuntimeEntry);
+      setEntries(available);
+      setSelected(available.find((entry) => entry.slug === "openai-api") || available[0] || null);
+    }).catch(() => { if (active) setLoadError("Could not load connection options. Please try again."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [attempt]);
 
-  const onSave = async () => {
-    if (!selected) return;
-    const trimmed: Record<string, string> = {};
+  const connect = async () => {
+    if (!selected) throw new Error("Choose a provider.");
+    const credentials: Record<string, string> = {};
     for (const field of selected.credential_fields || []) {
-      const value = (fields[field.name] || "").trim();
-      if (value) trimmed[field.name] = value;
+      const value = (fields[field.name] || field.default || "").trim();
+      if (field.required && !value) throw new Error(`Enter ${field.label || field.name}.`);
+      if (value) credentials[field.name] = value;
     }
-    if (Object.keys(trimmed).length === 0) {
-      setError("Paste a key to save.");
-      return;
+    if (!Object.keys(credentials).length) throw new Error("Enter your provider key.");
+    if (!savedConnection.current) {
+      const result = await integrations.connect(selected.slug, selected.name, credentials, defaultIntegrationAuthType(runtimeEntryAsAppDetail(selected)) || "api_key", "", undefined, "integration", false);
+      savedConnection.current = "connection" in result ? result.connection.id : result.id;
     }
-    setError("");
-    setSaving(true);
-    try {
-      // Empty project_id = global scope; the user's auto-created
-      // "Default" project picks it up via the unscoped fallback in
-      // GetAllProviderEnvVars.
-      //
-      // auto_mcp stays off: this credential exists to back the agent
-      // runtime, and exposing the provider's REST tools to every agent
-      // in the project is a separate decision the operator can make
-      // later in Integrations.
-      await integrations.connect(
-        selected.slug,
-        selected.name,
-        trimmed,
-        defaultIntegrationAuthType(runtimeEntryAsAppDetail(selected)) || "api_key",
-        "",
-        undefined,
-        "integration",
-        false,
-      );
-      setSaved(true);
-      await onSaved?.();
-    } catch (err: any) {
-      setError(err?.message || "Failed to save provider");
-    } finally {
-      setSaving(false);
+    const test = await integrations.testConnection(savedConnection.current);
+    if (!test.ok) throw new Error(test.error || test.reason || "The connection did not work. Please check your key.");
+    if (test.skipped) {
+      const models = await integrations.connectionModels(savedConnection.current, true);
+      if (!models.length) throw new Error("No models are available through this connection. Please check your provider account.");
     }
   };
 
-  return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h2 className="text-text text-lg font-bold">
-          {setupReady ? "Bring your agents online" : "Add an LLM provider key"}
-        </h2>
-        <p className="text-text-muted text-sm mt-1">
-          {setupReady
-            ? "Your workspace is ready. Connect a model to start its agents — you can change providers later in Settings."
-            : "Your agents need a model to think with. Paste a key from a provider — you can add or change keys later in Settings → Providers."}
-        </p>
-      </div>
-
-      {entries.length === 0 ? (
-        <p className="text-text-muted text-sm">No providers available right now. You can configure one later.</p>
-      ) : (
-        <>
-          <div>
-            <label className="block text-text-muted text-sm mb-2">Provider</label>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {entries.map((entry) => (
-                <button
-                  key={entry.slug}
-                  onClick={() => {
-                    setSelected(entry);
-                    setFields({});
-                    setSaved(false);
-                    setError("");
-                  }}
-                  className={`px-3 py-2 text-sm rounded border transition-colors ${
-                    selected?.slug === entry.slug
-                      ? "border-accent bg-bg-card text-text"
-                      : "border-border text-text-muted hover:text-text hover:border-text-dim"
-                  }`}
-                >
-                  {entry.name}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Same renderer every other integration uses, so the inputs
-              carry the catalog's labels and descriptions. The old form
-              labelled these with raw env var names ("ANTHROPIC_API_KEY")
-              and guessed password-vs-text by string-matching "key",
-              which rendered OPENAI_BASE_URL as a secret field. */}
-          {selected && (
-            <CredentialFields
-              detail={runtimeEntryAsAppDetail(selected)}
-              credentials={fields}
-              setCredentials={(next) => {
-                setFields(next);
-                setSaved(false);
-                setError("");
-              }}
-            />
-          )}
-
-          {error && <div className="text-red text-sm">{error}</div>}
-          {saved && (
-            <div className="text-accent text-sm">Saved — you're ready to continue.</div>
-          )}
-
-          {selected && !saved && (
-            <button
-              onClick={onSave}
-              disabled={saving}
-              className="self-start px-4 py-2 border border-accent text-accent rounded-lg text-sm font-bold hover:bg-bg-card transition-colors disabled:opacity-50"
-            >
-              {saving ? "Saving…" : "Save key"}
-            </button>
-          )}
-        </>
-      )}
+  if (loading) return <p role="status" className="mt-6 text-sm text-text-muted">Loading connection options…</p>;
+  if (loadError || !selected) return <div className="mt-6"><p role="alert" className="text-sm text-red">{loadError || "No connection options are available. Please contact your administrator."}</p><button disabled={busy} onClick={() => setAttempt(attempt + 1)} className="mt-3 text-sm text-accent">Try again</button></div>;
+  return <fieldset disabled={busy} className="mt-7 min-w-0 space-y-5">
+    <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
+      <h2 className="text-base font-semibold text-text">{selected.name}</h2>
+      <CredentialFields detail={runtimeEntryAsAppDetail(selected)} credentials={fields} setCredentials={(next) => { setFields(next); savedConnection.current = null; }} />
+      {entries.length > 1 && <details className="text-sm text-text-muted"><summary className="cursor-pointer">Use another provider</summary><label className="mt-3 block">Provider<select value={selected.slug} onChange={(event) => { setSelected(entries.find((entry) => entry.slug === event.target.value) || null); setFields({}); savedConnection.current = null; }} className="mt-2 block w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-text">{entries.map((entry) => <option key={entry.slug} value={entry.slug}>{entry.name}</option>)}</select></label></details>}
     </div>
-  );
+    <button onClick={() => onConnect(connect)} className="w-full rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-40">{busy ? "Connecting…" : "Connect and get started"}</button>
+    <p className="text-xs leading-5 text-text-muted">Your provider may charge for AI usage. You can manage this connection later in Settings.</p>
+  </fieldset>;
 }

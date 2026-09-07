@@ -232,6 +232,7 @@
       "businessDescription": "Adds integrations, apps, activity, costs and team settings.",
       "developer": "Developer",
       "developerDescription": "Everything: skills, MCP servers, step controls and diagnostics.",
+      "preparing": "Preparing your workspace…",
       "saved": "Interface level saved.",
       "saveFailed": "Failed to save interface level."
     },

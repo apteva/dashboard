@@ -322,13 +322,13 @@ function InterfaceTab() {
   const [message, setMessage] = useState<string | null>(null);
 
   async function chooseAudience(value: (typeof AUDIENCES)[number]) {
-    if (value === audience || saving) return;
-    setMessage(null);
+    if (saving) return;
+    setMessage(value === "developer" ? null : t("settings.interface.preparing"));
     try {
       await setAudience(value);
       setMessage(t("settings.interface.saved"));
-    } catch {
-      setMessage(t("settings.interface.saveFailed"));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : t("settings.interface.saveFailed"));
     }
   }
 
