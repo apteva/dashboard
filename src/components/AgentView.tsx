@@ -1,3 +1,4 @@
+import { behaviorDescriptions, behaviorExplanation } from "../agentBehavior";
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import {
   apps as appsAPI,
@@ -3254,6 +3255,8 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
     setDefaultProvider("");
 
     core.config(instance.id).then((config) => {
+      setDirective(config.directive);
+      setMode(config.mode);
       setDefaultProvider(resolveEffectiveAgentProvider(instance.config || "{}", config.providers));
       const realtimeProvider = (config.providers || []).find((provider) =>
         provider.name === "openai-realtime" || provider.name.includes("realtime"),
@@ -3346,7 +3349,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
       const provs = defaultProvider
         ? providerList.map((c) => ({ name: c.provider_key, default: c.provider_key === defaultProvider }))
         : undefined;
-      await instances.updateConfig(instance.id, {
+      const result = await instances.updateConfig(instance.id, {
         directive: directive || undefined,
         mode: mode || undefined,
         providers: provs,
@@ -3355,6 +3358,10 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         realtimeVoiceMCP,
       });
       onSaved();
+      if (result.behavior_sync?.pending) {
+        setError("Saved. Behavior is still pending for some workers; active voice sessions will continue until they can accept the change.");
+        return;
+      }
       onClose();
     } catch (err: any) {
       setError(err.message || "Failed to save");
@@ -3460,6 +3467,8 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
             ))}
           </div>
         </div>
+
+        <p className="text-xs text-text-muted">{behaviorDescriptions[mode as keyof typeof behaviorDescriptions]} {behaviorExplanation}</p>
 
         {/* Realtime voice */}
         {shows("agent.realtimeVoice") && (

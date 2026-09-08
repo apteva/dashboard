@@ -44,9 +44,16 @@ export function resolveMarketplaceCategory(
   return categories.includes(current) ? current : "";
 }
 
+// /api/apps also carries integration components for chat discovery. Those
+// rows have no installation and must never enter app management flows.
+export function isManagedAppInstall(app: AppRow): boolean {
+  return app.source !== "integration" && app.install_id > 0;
+}
+
 export function appHasUpdate(app: AppRow): boolean {
   return (
-    app.status !== "pending"
+    isManagedAppInstall(app)
+    && app.status !== "pending"
     && !app.deprecated
     && !!app.available_version
     && !!app.version
@@ -81,6 +88,7 @@ export async function upgradeAppsSequentially(
     onProgress?: (app: AppRow, completed: number, total: number) => void;
   },
 ): Promise<AppBatchUpgradeResult> {
+  targets = targets.filter(isManagedAppInstall);
   const result: AppBatchUpgradeResult = {
     updated: [],
     permissions: [],
@@ -150,6 +158,7 @@ export function Apps() {
   const [tab, setTab] = useState<Tab>("installed");
   usePageTitle(["Apps", tab === "marketplace" ? "Marketplace" : "Installed"]);
   const [rows, setRows] = useState<AppRow[]>([]);
+  const installedRows = useMemo(() => rows.filter(isManagedAppInstall), [rows]);
   const [marketplace, setMarketplace] = useState<MarketplaceEntry[]>([]);
   const [marketplaceTotal, setMarketplaceTotal] = useState(0);
   const [marketplaceCategories, setMarketplaceCategories] = useState<Record<string, number>>({});
@@ -292,7 +301,7 @@ export function Apps() {
   // project's pending installs from scratch.
   useEffect(() => {
     if (tab !== "installed") return;
-    const anyPending = rows.some((r) => r.status === "pending");
+    const anyPending = installedRows.some((r) => r.status === "pending");
     if (!anyPending) return;
     let cancelled = false;
     const projectId = currentProject?.id;
@@ -313,7 +322,7 @@ export function Apps() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [tab, rows, currentProject?.id]);
+  }, [tab, installedRows, currentProject?.id]);
 
   // Keep the installed-app side panel bound to the freshest row. List
   // polling updates `rows`, but the panel stores the row object that was
@@ -321,19 +330,19 @@ export function Apps() {
   // open panel still shows the old version until a full page reload.
   useEffect(() => {
     if (!detailInstall) return;
-    const fresh = rows.find((r) => r.install_id === detailInstall.install_id);
-    if (fresh && fresh !== detailInstall) {
-      setDetailInstall(fresh);
+    const fresh = installedRows.find((r) => r.install_id === detailInstall.install_id);
+    if (fresh !== detailInstall) {
+      setDetailInstall(fresh ?? null);
     }
-  }, [rows, detailInstall]);
+  }, [installedRows, detailInstall]);
 
   const filteredInstalled = useMemo(
-    () => filterInstalledApps(rows, installedSearch),
-    [rows, installedSearch],
+    () => filterInstalledApps(installedRows, installedSearch),
+    [installedRows, installedSearch],
   );
   const projectUpdates = useMemo(
-    () => projectAppsWithUpdates(rows, currentProject?.id),
-    [rows, currentProject?.id],
+    () => projectAppsWithUpdates(installedRows, currentProject?.id),
+    [installedRows, currentProject?.id],
   );
 
   const openUpdateAll = () => {
@@ -431,7 +440,7 @@ export function Apps() {
       {tab === "installed" ? (
         loading ? (
           <div className="text-text-dim text-sm">Loading…</div>
-        ) : rows.length === 0 ? (
+        ) : installedRows.length === 0 ? (
           <div className="border border-border rounded-lg p-8 text-center max-w-2xl mx-auto">
             <p className="text-text-muted text-sm">No apps installed yet.</p>
             <p className="text-text-dim text-xs mt-1">
@@ -476,7 +485,7 @@ export function Apps() {
                 )}
               </label>
               <span className="px-1 text-[11px] tabular-nums text-text-dim sm:ml-auto sm:shrink-0">
-                {installedSearch.trim() ? `${filteredInstalled.length} of ${rows.length}` : `${rows.length}`} installed
+                {installedSearch.trim() ? `${filteredInstalled.length} of ${installedRows.length}` : `${installedRows.length}`} installed
               </span>
               <button
                 type="button"
@@ -600,7 +609,7 @@ export function Apps() {
         install={detailInstall ?? undefined}
         onClose={() => setDetailInstall(null)}
         onUninstall={async () => {
-          if (!detailInstall) return;
+          if (!detailInstall || !isManagedAppInstall(detailInstall)) return;
           if (!confirm(`Uninstall ${detailInstall.display_name || detailInstall.name}?`)) return;
           try {
             await apps.uninstall(detailInstall.install_id);
@@ -631,9 +640,9 @@ export function Apps() {
 
 export function filterInstalledApps(rows: AppRow[], query: string): AppRow[] {
   const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  if (terms.length === 0) return rows;
-
   return rows.filter((app) => {
+    if (!isManagedAppInstall(app)) return false;
+    if (terms.length === 0) return true;
     const scope = app.project_id ? "project" : "global";
     const searchable = [
       app.display_name,

@@ -1,3 +1,4 @@
+import { behaviorDescriptions, behaviorExplanation } from "../agentBehavior";
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -23,7 +24,7 @@ import { structureDirectiveDraft } from "../utils/directiveMarkdown";
 //
 //   1. Pick a starting template (or "Empty" to start blank).
 //   2. Name + directive (prefilled from template, editable).
-//   3. Behavior — safety mode, unconscious thread, system MCPs.
+//   3. Behavior — behavior mode, unconscious thread, system MCPs.
 //   4. Review + create — single POST to /agents with all gathered fields.
 //
 // Templates are fetched from the server (/agent-templates). Builtin
@@ -40,7 +41,7 @@ type StepId = "template" | "details" | "setup" | "review";
 
 const STEPS: { id: StepId; label: string }[] = [
   { id: "template", label: "Template" },
-  // Details combines name, directive, safety mode, and background-
+  // Details combines name, directive, behavior mode, and background-
   // memory toggle. Used to be two separate steps (Details +
   // Behavior) but the Behavior step was thin once System MCPs got
   // hardcoded — folding them keeps the wizard tighter (5 steps
@@ -631,7 +632,7 @@ interface DetailsStepProps {
 }
 
 // DetailsStep — single merged step covering everything the operator
-// authors about the agent itself: name, directive, safety mode,
+// authors about the agent itself: name, directive, behavior mode,
 // background memory. Was two steps (Details + Behavior) until the
 // Behavior step thinned out enough that combining was cleaner than
 // keeping a tab with two controls.
@@ -640,17 +641,17 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
     {
       id: "learn",
       label: "Learn",
-      description: "Soft gate — agent asks before any tool it hasn't used this session. Recommended for new agents while you tune the directive.",
+      description: behaviorDescriptions.learn + " " + behaviorExplanation,
     },
     {
       id: "cautious",
       label: "Cautious",
-      description: "Pauses before any tool call that mutates state (sends, writes, executes). Reads stay free.",
+      description: behaviorDescriptions.cautious + " " + behaviorExplanation,
     },
     {
       id: "autonomous",
       label: "Autonomous",
-      description: "Full speed — agent takes actions without asking. Best after you've watched it work for a while.",
+      description: behaviorDescriptions.autonomous + " " + behaviorExplanation,
     },
   ];
   const selectedMode = modes.find((m) => m.id === state.mode) || modes[0]!;

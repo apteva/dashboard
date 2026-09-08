@@ -1,3 +1,4 @@
+import { behaviorDescriptions, behaviorExplanation } from "../agentBehavior";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { instances, core, instanceSkills, agentCoreRollouts, type Agent, type AgentCoreRollout, type InstanceSkill, type MCPServerConfig, type RunMode } from "../api";
@@ -803,11 +804,11 @@ export function Agents() {
             </div>
             <div className="text-text-dim text-xs leading-snug mt-2">
               {createMode === "learn" &&
-                "Asks before every new kind of action and remembers your answers. Best for first-time setup."}
+                behaviorDescriptions.learn + " " + behaviorExplanation}
               {createMode === "cautious" &&
-                "Asks before any state-changing action (exec, write, delete, external send). Read-only tools are free."}
+                behaviorDescriptions.cautious + " " + behaviorExplanation}
               {createMode === "autonomous" &&
-                "Acts independently. Only informs you before irreversible or high-blast-radius actions."}
+                behaviorDescriptions.autonomous + " " + behaviorExplanation}
             </div>
           </div>
           <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-bg-hover/30 p-3">
@@ -860,12 +861,7 @@ function ModeBadge({ mode }: { mode: RunMode }) {
       : mode === "cautious"
         ? "bg-blue/20 text-blue"
         : "bg-accent/20 text-accent";
-  const title =
-    mode === "learn"
-      ? "Learn mode — asks before each new kind of action"
-      : mode === "cautious"
-        ? "Cautious mode — asks before state-changing actions"
-        : "Autonomous mode — acts independently";
+  const title = (behaviorDescriptions[mode as keyof typeof behaviorDescriptions] || behaviorDescriptions.autonomous) + " " + behaviorExplanation;
   return (
     <span title={title} className={`rounded px-1.5 py-0.5 uppercase tracking-wide ${color}`}>
       {mode}

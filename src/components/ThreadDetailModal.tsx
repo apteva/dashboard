@@ -401,7 +401,6 @@ function CompositionPanel({ composition }: { composition: PromptComposition }) {
     { label: "MCP tool docs", bytes: sys.mcp_tool_docs, color: "#0ea5e9", hint: "Full per-tool MCP descriptions" },
     { label: "Providers", bytes: sys.providers, color: "#84cc16", hint: "[AVAILABLE PROVIDERS]" },
     { label: "Active threads", bytes: sys.active_threads, color: "#a855f7", hint: "Live sub-thread list" },
-    { label: "Safety mode", bytes: sys.safety_mode, color: "#f97316", hint: "Autonomous/cautious/learn prose" },
     { label: "Skills", bytes: sys.skills, color: "#eab308", hint: "skills/*.md content" },
     { label: "Blob hint", bytes: sys.blob_hint, color: "#14b8a6", hint: "[FILE HANDLES] explainer" },
     { label: "Previous context", bytes: sys.previous_context, color: "#8b5cf6", hint: "Session tail summary" },

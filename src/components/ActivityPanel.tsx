@@ -294,6 +294,8 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
   // threadId#iteration so the expansion survives re-renders even as
   // the thoughts array grows and the slice(-6) window slides.
   const [expandedThoughts, setExpandedThoughts] = useState<Set<string>>(new Set());
+  const [behaviorNotice, setBehaviorNotice] = useState<string | null>(null);
+  const [behaviorPending, setBehaviorPending] = useState(false);
   const [mode, setMode] = useState<RunMode>(
     (instance.mode as RunMode) || "autonomous",
   );
@@ -331,6 +333,8 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
   // Reset state when instance changes
   useEffect(() => {
     setStatus(null);
+    setBehaviorNotice(null);
+    setBehaviorPending(false);
     setThreads([]);
     setThoughts([]);
     setTools([]);
@@ -366,7 +370,7 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
   // Poll status + threads (works for both running and stopped instances)
   useEffect(() => {
     const poll = () => {
-      core.status(instance.id).then((s) => { setStatus(s); setMode(s.mode); }).catch(() => {});
+      core.status(instance.id).then((s) => { setStatus(s); setMode(s.mode); setBehaviorPending(!!s.behavior_sync?.pending); }).catch(() => {});
       core.threads(instance.id).then(setThreads).catch(() => {});
     };
     poll();
@@ -745,10 +749,6 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
       }
     }
 
-    if (event.type === "mode.changed" && data.mode) {
-      setMode(data.mode as RunMode);
-    }
-
     if (event.type === "directive.evolved") {
       onReloadRef.current();
     }
@@ -803,7 +803,7 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
           <div className="ml-auto flex gap-2">
             <button
               onClick={async () => {
-                // Cycle through all three modes the core supports.
+                // Cycle the server-owned behavior instruction choices.
                 // autonomous → cautious → learn → autonomous.
                 const next: Record<RunMode, RunMode> = {
                   autonomous: "cautious",
@@ -811,18 +811,28 @@ export function ActivityPanel({ instance, subscribe, onReload, onThreadOpen }: P
                   learn: "autonomous",
                 };
                 const newMode = next[mode] ?? "autonomous";
-                await instances.updateConfig(instance.id, { mode: newMode });
-                setMode(newMode);
+                try {
+                  const result = await instances.updateConfig(instance.id, { mode: newMode });
+                  setMode(result.mode || newMode);
+                  setBehaviorNotice(null);
+                  setBehaviorPending(!!result.behavior_sync?.pending);
+                  core.status(instance.id).then(setStatus).catch(() => {});
+                } catch (err) {
+                  setBehaviorNotice(err instanceof Error ? err.message : "Could not apply behavior update.");
+                }
               }}
               className={`px-2 py-0.5 rounded border text-[10px] transition-colors ${
                 mode !== "autonomous" ? "border-accent text-accent" : "border-border text-text-muted hover:border-accent"
               }`}
-              title="click to cycle safety mode: autonomous → cautious → learn"
+              title="Cycle behavior instructions: autonomous → cautious → learn. These are not enforced approval gates."
             >
               {mode}
             </button>
           </div>
         </div>
+        {(behaviorNotice || behaviorPending || status?.behavior_sync?.pending) && (
+          <p role="status" className="text-xs text-text-muted">{behaviorNotice || "Behavior update pending. Active voice sessions continue until they can accept the change."}</p>
+        )}
         {status && (
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-text-muted">
             <span>iter</span><span className="text-text">{status.iteration}</span>

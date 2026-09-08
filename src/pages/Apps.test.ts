@@ -63,8 +63,18 @@ describe("filterInstalledApps", () => {
     expect(filterInstalledApps(rows, "global files.read").map((row) => row.install_id)).toEqual([2]);
   });
 
-  test("returns the original inventory for an empty query", () => {
-    expect(filterInstalledApps(rows, "  ")).toBe(rows);
+  test("returns all real installs for an empty query", () => {
+    expect(filterInstalledApps(rows, "  ")).toEqual(rows);
+  });
+
+  test("excludes integration discovery rows with and without a search", () => {
+    const github = app({ install_id: 0, name: "github", display_name: "GitHub", source: "integration" });
+    const mixed = [...rows, github, app({ install_id: 0 }), app({ install_id: -1 }), app({ install_id: 99, source: "integration" })];
+    expect(filterInstalledApps(mixed, "")).toEqual(rows);
+    expect(filterInstalledApps(mixed, "github")).toEqual([]);
+    expect(filterInstalledApps([github], "")).toEqual([]);
+    expect(mixed).toHaveLength(6);
+    expect(mixed[2]).toBe(github);
   });
 });
 
@@ -91,6 +101,19 @@ describe("marketplace category selection", () => {
 });
 
 describe("project app updates", () => {
+  test("never queues lifecycle actions for discovery rows", async () => {
+    const github = app({ install_id: 0, name: "github", source: "integration", available_version: "2.0.0" });
+    const code = app({ install_id: 7, name: "code", available_version: "2.0.0" });
+    const invalid = app({ install_id: 0, available_version: "2.0.0" });
+    expect(appHasUpdate(github)).toBe(false);
+    expect(appHasUpdate(invalid)).toBe(false);
+    expect(projectAppsWithUpdates([github, code, invalid], "project-1")).toEqual([code]);
+    const calls: number[] = [];
+    const result = await upgradeAppsSequentially([github, code, invalid], async (id) => { calls.push(id); });
+    expect(calls).toEqual([7]);
+    expect(result.updated).toEqual([code]);
+  });
+
   test("selects only ready updates owned by the current project", () => {
     const rows = [
       app({ install_id: 1, available_version: "1.1.0" }),

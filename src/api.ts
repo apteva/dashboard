@@ -960,7 +960,16 @@ export const adminUsers = {
 };
 
 // Agents
-// Agent safety mode. Source of truth: core/config.go.
+// Server-owned behavior instruction choice. Core receives directive text.
+export interface BehaviorSync {
+  revision: number;
+  main_revision: number;
+  applied_revision: number;
+  version: number;
+  pending: boolean;
+  error?: string;
+}
+
 export type RunMode = "autonomous" | "cautious" | "learn";
 
 export interface Agent {
@@ -1136,7 +1145,7 @@ export const instances = {
       realtimeVoiceMCP?: string[];
     },
   ) =>
-    request<Agent>("PUT", `/agents/${id}/config`, {
+    request<Agent & { behavior_sync?: BehaviorSync }>("PUT", `/agents/${id}/config`, {
       ...(opts.directive ? { directive: opts.directive } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
       ...(opts.providers ? { providers: opts.providers } : {}),
@@ -2313,6 +2322,7 @@ export interface Status {
   memories: number;
   paused: boolean;
   mode: RunMode;
+  behavior_sync?: BehaviorSync;
   pending_approval: PendingApproval | null;
   execution_control?: ExecutionControlStatus;
   execution_checkpoints?: ExecutionCheckpointMeta[];
@@ -2444,7 +2454,7 @@ export interface SystemBreakdown {
   mcp_tool_docs: number;
   providers: number;
   active_threads: number;
-  safety_mode: number;
+  safety_mode?: number; // Legacy core response; current behavior text is counted in directive.
   skills: number;
   blob_hint: number;
   previous_context: number;
@@ -2641,7 +2651,8 @@ export const core = {
   config: (instanceId: number) =>
     request<{
       directive: string;
-      mode: string;
+      mode: RunMode;
+      behavior_sync?: BehaviorSync;
       provider?: {
         name: string;
         models?: Partial<Record<"large" | "medium" | "small", string>>;

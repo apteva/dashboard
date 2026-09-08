@@ -5,8 +5,8 @@ import { Modal } from "./Modal";
 // MemoryPanel — viewer + editor for what the agent has remembered.
 //
 // Memories are auto-recalled by vector similarity, so this panel is
-// where users actually *manage* the learn-mode safety profile: see
-// what the agent picked up, correct badly-worded rules, prune noise.
+// where users can review remembered information, correct instructions,
+// and prune noise. Learn mode has no dedicated safety-profile storage.
 //
 // Layout: filter bar on top, row-per-memory below. Each row exposes
 // persistent edit and delete actions so management works just as well
