@@ -1,5 +1,9 @@
+import { PickerOption } from "../components/PickerOption";
+import { ProactivityControl } from "../components/ProactivityControl";
+import { defaultProactivity, proactivityLabel } from "../agentBehavior";
 import { behaviorDescriptions, behaviorExplanation } from "../agentBehavior";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { AppIcon } from "@apteva/ui-kit";
 import { useNavigate } from "react-router-dom";
 import {
   agentTemplates,
@@ -14,9 +18,11 @@ import {
   type AppSummary,
   type ConnectionInfo,
   type MarketplaceEntry,
+  type Requirement,
 } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
+import { Modal } from "../components/Modal";
 import { ConnectIntegrationModal } from "../components/integrations/ConnectIntegrationModal";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
 
@@ -75,30 +81,29 @@ interface AppAccessDraft {
   delete: boolean;
 }
 
-interface WizardState {
+export interface WizardState {
   templateID: string | null;
   name: string;
   directive: string;
   mode: Mode;
+  proactivity: number;
   unconscious: boolean;
   includeChannels: boolean;
   recommendedApps: string[]; // surface-only, no install in this flow
   highlights: string[];
-  // Setup-step explicit selections. Operator picks which existing
-  // apps + integration connections attach to this agent as MCP
-  // servers. Defaults at template-pick time to "every running
-  // installed app" + "every connected integration" — the wizard
-  // populates these once both inventories load (see effects below).
+  // Explicit selections; project app defaults seed once, template connections
+  // seed once per template, and subsequent edits belong to the operator.
   boundAppInstallIDs: Set<number>;
   boundConnectionIDs: Set<number>;
   appAccess: Record<number, AppAccessDraft>;
 }
 
-const INITIAL: WizardState = {
+export const INITIAL: WizardState = {
   templateID: null,
   name: "",
   directive: "",
   mode: "learn",
+  proactivity: defaultProactivity,
   unconscious: true,
   // Replacement default: the conversations app owns the conversation
   // surface now, so new agents skip the legacy channels/agent-output
@@ -136,6 +141,25 @@ export function effectiveAgentAppInstallIDs(
     }
   }
   return Array.from(effective);
+}
+
+export function requirementSlugs(requirement: Requirement): string[] {
+  if (requirement.compatible_slugs?.length) return requirement.compatible_slugs;
+  return requirement.slug ? [requirement.slug] : [];
+}
+
+export function templateAgentConnectionIDs(template: AgentTemplate | null, connections: ConnectionInfo[], projectId?: string): Set<number> {
+  const ids = new Set<number>();
+  for (const requirement of template?.requirements || []) {
+    if (requirement.kind !== "integration" || !requirement.required) continue;
+    const slugs = requirementSlugs(requirement);
+    const eligible = connections.filter((connection) => connection.status === "active" && slugs.includes(connection.app_slug));
+    // Choose one compatible account, preferring this project's connection.
+    // Never attach every account merely because they share a provider.
+    const match = eligible.find((connection) => !!projectId && connection.project_id === projectId) || eligible[0];
+    if (match) ids.add(match.id);
+  }
+  return ids;
 }
 
 function folderGrantResource(folder: string): string {
@@ -204,6 +228,9 @@ export function AgentNew() {
   // step to satisfy template requirements. Refetched when the
   // operator returns from /integrations via the Refresh button.
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
+  const [connectionsLoaded, setConnectionsLoaded] = useState(false);
+  const seededConnectionsTemplate = useRef<string | null>(null);
+  const connectionInventoryProject = useRef<string | null>(null);
   // Inline status the Review step renders during create — one line
   // per app the wizard is installing on the user's behalf.
   const [installProgress, setInstallProgress] = useState<Record<string, string>>({});
@@ -211,6 +238,9 @@ export function AgentNew() {
   useEffect(() => {
     let cancelled = false;
     setInstalledAppsLoaded(false);
+    setConnectionsLoaded(false);
+    seededConnectionsTemplate.current = null;
+    connectionInventoryProject.current = null;
     agentTemplates.list().then(setTemplates).catch(() => setTemplates([]));
     integrations
       .runtimeConnections(currentProject?.id)
@@ -243,24 +273,32 @@ export function AgentNew() {
       .catch(() => setMarketplace([]));
     integrationsAPI
       .connections(currentProject?.id)
-      .then(setConnections)
-      .catch(() => setConnections([]));
+      .then((list) => { if (!cancelled) { connectionInventoryProject.current = currentProject?.id || ""; setConnections(list); setConnectionsLoaded(true); } })
+      .catch(() => { if (!cancelled) { connectionInventoryProject.current = currentProject?.id || ""; setConnections([]); setConnectionsLoaded(true); } });
     return () => {
       cancelled = true;
     };
   }, [currentProject?.id]);
 
-  // App defaults are a creation-time starting point only. Once loaded, the
-  // operator owns the selection and can uncheck every app before creating.
+  useEffect(() => {
+    if (!connectionsLoaded || connectionInventoryProject.current !== (currentProject?.id || "") || !state.templateID || seededConnectionsTemplate.current === state.templateID) return;
+    const template = templates.find((t) => t.id === state.templateID);
+    if (!template) return;
+    seededConnectionsTemplate.current = template.id;
+    setState((current) => ({ ...current, boundConnectionIDs: templateAgentConnectionIDs(template, connections, currentProject?.id) }));
+  }, [connectionsLoaded, connections, templates, state.templateID, currentProject?.id]);
 
-  // refreshConnections is called from the Setup step's "I just
-  // connected something" Refresh button so the operator doesn't
-  // have to leave the wizard after completing OAuth in /integrations.
-  const refreshConnections = () => {
-    integrationsAPI
-      .connections(currentProject?.id)
-      .then(setConnections)
-      .catch(() => {});
+  // Refresh inventories without reapplying defaults or undoing explicit removals.
+  const refreshConnections = async () => {
+    const [appList, connectionList] = await Promise.all([
+      appsAPI.list(currentProject?.id),
+      integrationsAPI.connections(currentProject?.id),
+    ]);
+    setInstalledApps(appList);
+    setInstalledAppsLoaded(true);
+    connectionInventoryProject.current = currentProject?.id || "";
+    setConnections(connectionList);
+    setConnectionsLoaded(true);
   };
 
   const step = STEPS[stepIdx]!;
@@ -286,27 +324,34 @@ export function AgentNew() {
   // (or throws on first install error). Parallel POSTs are safe —
   // apps_loader serializes the build step server-side via semaphore.
   const installRequiredApps = async (tpl: AgentTemplate): Promise<AppRow[]> => {
-    const installedSlugs = new Set(installedApps.map((a) => a.name));
-    const slugs = tpl.requirements
+    // Re-read status at submission: an existing row may still be queued or
+    // have failed since the wizard loaded. Presence alone is not readiness.
+    const currentApps = await appsAPI.list(currentProject?.id);
+    const slugs = [...new Set(tpl.requirements
       .filter((r) => r.kind === "app" && r.required && r.slug)
-      .map((r) => r.slug!)
-      .filter((slug) => !installedSlugs.has(slug));
-    if (slugs.length === 0) return installedApps;
+      .map((r) => r.slug!))];
+    if (slugs.length === 0) return currentApps;
 
     const installIDs: Record<string, number> = {};
-    await Promise.all(
-      slugs.map(async (slug) => {
-        const m = marketplace.find((x) => x.name === slug);
-        if (!m) throw new Error(`${slug}: not in marketplace`);
-        if (m.deprecated) throw new Error(`${slug}: deprecated and can no longer be installed`);
-        setInstallProgress((p) => ({ ...p, [slug]: "Starting…" }));
-        const res = await appsAPI.install({
-          manifestUrl: m.manifest_url,
-          projectId: currentProject?.id,
-        });
-        installIDs[slug] = res.install_id;
-      }),
-    );
+    for (const slug of slugs) {
+      const candidates = currentApps.filter((app) => app.name === slug);
+      const row = candidates.find((app) => app.status === "running")
+        || candidates.find((app) => app.status === "pending") || candidates[0];
+      if (row) {
+        if (row.status === "error" || row.status === "disabled") {
+          throw new Error(`${slug}: ${row.error_message || "required app is not running"}. Fix it in Apps, then try again.`);
+        }
+        installIDs[slug] = row.install_id;
+      }
+    }
+    await Promise.all(slugs.filter((slug) => !installIDs[slug]).map(async (slug) => {
+      const m = marketplace.find((x) => x.name === slug);
+      if (!m) throw new Error(`${slug}: not in marketplace`);
+      if (m.deprecated) throw new Error(`${slug}: deprecated and can no longer be installed`);
+      setInstallProgress((p) => ({ ...p, [slug]: "Starting…" }));
+      const res = await appsAPI.install({ manifestUrl: m.manifest_url, projectId: currentProject?.id });
+      installIDs[slug] = res.install_id;
+    }));
 
     const deadline = Date.now() + 5 * 60 * 1000;
     while (Date.now() < deadline) {
@@ -319,8 +364,8 @@ export function AgentNew() {
           setInstallProgress((p) => ({ ...p, [slug]: "Queued…" }));
           continue;
         }
-        if (row.status === "error") {
-          throw new Error(`${slug}: ${row.error_message || "install failed"}`);
+        if (row.status === "error" || row.status === "disabled") {
+          throw new Error(`${slug}: ${row.error_message || "required app is not running"}. Fix it in Apps, then try again.`);
         }
         if (row.status !== "running") {
           allDone = false;
@@ -407,7 +452,7 @@ export function AgentNew() {
       );
 
       const startNow = hasProvider !== false;
-      const boundAppGrants = buildAppGrantPolicies(state);
+      const boundAppGrants = buildAppGrantPolicies({ ...state, boundAppInstallIDs: new Set(effectiveAppInstallIDs) });
       const created = await instances.create(
         state.name.trim(),
         state.directive,
@@ -415,6 +460,7 @@ export function AgentNew() {
         currentProject?.id,
         startNow,
         {
+          proactivity: state.proactivity,
           includeChannels: state.includeChannels,
           unconscious: state.unconscious,
           boundAppInstallIDs: effectiveAppInstallIDs,
@@ -436,18 +482,18 @@ export function AgentNew() {
   };
 
   return (
-    <div className="h-full overflow-y-auto scroll-safe-bottom">
-      <div className="mx-auto w-full max-w-6xl px-4 py-4 sm:px-8 sm:py-10">
-        <header className="mb-5 sm:mb-8">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6" key={step.id}>
+        <header className="mb-5">
           <h1 className="text-text text-2xl font-bold sm:text-3xl">Build your agent</h1>
           <p className="text-text-muted text-sm mt-1.5 sm:mt-2 sm:text-base">
-            A short guided setup. You can change everything later from the agent's detail page.
+            Choose a starting point, make it yours, and connect the tools it needs.
           </p>
         </header>
 
         <Progress current={stepIdx} steps={STEPS} />
 
-        <div className="border border-border rounded-lg p-4 bg-bg-card mt-4 sm:mt-6 sm:p-8">
+        <div className="mt-5">
           {step.id === "template" && (
             <TemplateStep
               templates={templates}
@@ -468,6 +514,7 @@ export function AgentNew() {
               state={state}
               setState={setState}
               onRefresh={refreshConnections}
+              onConnected={(connection) => setConnections((previous) => [...previous.filter((c) => c.id !== connection.id), connection])}
               projectId={currentProject?.id}
             />
           )}
@@ -475,6 +522,10 @@ export function AgentNew() {
             <ReviewStep
               state={state}
               hasProvider={hasProvider}
+              installedApps={installedApps}
+              connections={connections}
+              template={templates.find((t) => t.id === state.templateID) || null}
+              marketplace={marketplace}
               onEdit={(i) => setStepIdx(i)}
               installProgress={creating ? installProgress : {}}
             />
@@ -486,31 +537,36 @@ export function AgentNew() {
             </div>
           )}
 
-          <div className="page-safe-bottom sticky bottom-0 z-20 -mx-4 -mb-4 mt-8 flex items-center justify-between gap-3 border-t border-border bg-bg-card/95 px-4 py-3 backdrop-blur sm:static sm:mx-0 sm:mb-0 sm:bg-transparent sm:px-0 sm:pt-6 sm:pb-0">
-            <button
-              onClick={back}
-              disabled={stepIdx === 0 || creating}
-              className="touch-target rounded-lg px-3 text-text-muted text-sm hover:bg-bg-hover hover:text-text transition-colors disabled:opacity-30"
-            >
-              ← Back
-            </button>
-            <button
-              onClick={advance}
-              disabled={creating}
-              className="touch-target min-w-[132px] px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50 sm:px-5"
-            >
-              {creating
-                ? Object.keys(installProgress).length > 0
-                  ? "Installing apps…"
-                  : "Creating…"
-                : isLast
-                  ? hasProvider === false
-                    ? "Create (stopped — no provider yet)"
-                    : "Create agent →"
-                  : "Continue"}
-            </button>
-          </div>
         </div>
+      </div>
+      <div className="page-safe-bottom z-20 flex shrink-0 items-center justify-between gap-3 border-t border-border bg-bg-card px-4 py-3 sm:px-6">
+        <button
+          onClick={back}
+          disabled={stepIdx === 0 || creating}
+          className="touch-target rounded-lg px-3 text-text-muted text-sm hover:bg-bg-hover hover:text-text transition-colors disabled:opacity-30"
+        >
+          ← Back
+        </button>
+        <p className="hidden min-w-0 flex-1 truncate text-center text-xs text-text-muted sm:block" aria-live="polite">
+          {step.id === "template"
+            ? state.templateID ? `Selected: ${templates.find((t) => t.id === state.templateID)?.name || "template"}` : "Choose a template to continue"
+            : `Step ${stepIdx + 1} of ${STEPS.length} · ${STEPS[stepIdx + 1]?.label ? `Next: ${STEPS[stepIdx + 1].label}` : "Ready to create"}`}
+        </p>
+        <button
+          onClick={advance}
+          disabled={creating || (step.id === "template" && !state.templateID)}
+          className="touch-target min-w-[132px] px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50 sm:px-5"
+        >
+          {creating
+            ? Object.keys(installProgress).length > 0
+              ? "Installing apps…"
+              : "Creating…"
+            : isLast
+              ? hasProvider === false
+                ? "Create (stopped — no provider yet)"
+                : "Create agent →"
+              : `Continue to ${STEPS[stepIdx + 1]?.label.toLowerCase()} →`}
+        </button>
       </div>
     </div>
   );
@@ -531,9 +587,9 @@ function Progress({ current, steps }: { current: number; steps: typeof STEPS }) 
         <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${((current + 1) / steps.length) * 100}%` }} />
       </div>
     </div>
-    <ol className="hidden items-center justify-center gap-2 text-xs sm:flex">
+    <ol aria-label="Agent setup progress" className="hidden grid-cols-4 gap-3 text-sm sm:grid">
       {steps.map((s, i) => (
-        <li key={s.id} className="flex items-center gap-2">
+        <li key={s.id} aria-current={i === current ? "step" : undefined} className={`flex items-center gap-3 rounded-lg border px-3 py-3 ${i === current ? "border-accent bg-accent/5" : "border-border bg-bg-card"}`}>
           <span
             className={`w-6 h-6 rounded-full border flex items-center justify-center font-bold ${
               i < current
@@ -543,10 +599,9 @@ function Progress({ current, steps }: { current: number; steps: typeof STEPS }) 
                   : "border-border text-text-muted"
             }`}
           >
-            {i + 1}
+            {i < current ? "✓" : i + 1}
           </span>
           <span className={i === current ? "text-text" : "text-text-muted"}>{s.label}</span>
-          {i < steps.length - 1 && <span className="text-text-muted">→</span>}
         </li>
       ))}
     </ol>
@@ -561,65 +616,132 @@ interface TemplateStepProps {
   onSkipWizard: () => void;
 }
 
-function TemplateStep({ templates, selectedID, onSelect, onSkipWizard }: TemplateStepProps) {
-  // Empty template sits last in the grid as the "I'll fill it in"
-  // option for users who want to write everything themselves but
-  // still go through the wizard's mode/MCP steps.
+export function TemplateStep({ templates, selectedID, onSelect, onSkipWizard }: TemplateStepProps) {
+  const [query, setQuery] = useState("");
+  const selected = templates.find((template) => template.id === selectedID);
+  const filtered = templates.filter((template) =>
+    [template.name, template.description, ...(template.resolved_logos || []).map((logo) => logo.label)]
+      .join(" ").toLowerCase().includes(query.trim().toLowerCase()),
+  );
+
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h2 className="text-text text-lg font-bold">Pick a starting point</h2>
-        <p className="text-text-muted text-sm mt-1">
-          Start with what you want to accomplish. You can review and adjust the underlying agent, connections, and safety settings next.
-        </p>
+    <div className="flex flex-col gap-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-text text-lg font-bold">What should your agent do?</h2>
+          <p className="text-text-muted text-sm mt-1">Choose a template or start from scratch. You can customize everything next.</p>
+        </div>
+        <input
+          type="search"
+          aria-label="Search templates"
+          placeholder="Search templates or apps…"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          className="w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-sm text-text focus:outline-none focus:border-accent sm:w-72 sm:shrink-0"
+        />
       </div>
 
-      {templates.length === 0 ? (
-        <p className="text-text-muted text-sm">Loading templates…</p>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {templates.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => onSelect(t)}
-              className={`text-left border rounded-lg p-4 transition-colors ${
-                selectedID === t.id
-                  ? "border-accent bg-bg-card"
-                  : "border-border hover:border-text-dim"
-              }`}
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <TemplateIcon name={t.icon} className="text-accent shrink-0" />
-                <span className="text-text font-medium">{t.name}</span>
-                {t.source === "app" && (
-                  <span className="text-xs text-text-muted ml-auto">via {t.source_ref}</span>
-                )}
-              </div>
-              <p className="text-text-muted text-xs leading-relaxed">{t.description}</p>
-              {t.highlights && t.highlights.length > 0 && (
-                <ul className="mt-3 space-y-1.5">
-                  {t.highlights.slice(0, 3).map((highlight) => (
-                    <li key={highlight} className="flex gap-2 text-[11px] leading-relaxed text-text">
-                      <span className="mt-1 text-accent">✓</span>
-                      <span>{highlight}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {t.resolved_logos && t.resolved_logos.length > 0 && (
-                <LogoRow logos={t.resolved_logos} className="mt-3" />
-              )}
-            </button>
-          ))}
+      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
+        <div>
+          {templates.length === 0 ? (
+            <p className="text-text-muted text-sm">Loading templates…</p>
+          ) : filtered.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border p-8 text-center">
+              <p className="text-sm text-text-muted">No templates match “{query}”. Try an app name or a different task.</p>
+              <button onClick={() => setQuery("")} className="mt-3 text-sm text-accent hover:underline">Clear search</button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,250px),1fr))] gap-3">
+              {filtered.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => onSelect(t)}
+                  aria-pressed={selectedID === t.id}
+                  className={`flex h-full flex-col gap-3 text-left border rounded-lg p-4 transition-colors focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 ${
+                    selectedID === t.id
+                      ? "border-accent bg-accent/5"
+                      : "border-border bg-bg-card hover:border-text-dim hover:bg-bg-hover"
+                  }`}
+                >
+                  <div className="flex w-full items-start gap-2.5">
+                    <TemplateIcon name={t.icon} className="mt-0.5 text-accent shrink-0" />
+                    <span className="flex-1 text-sm font-semibold text-text">{t.name}</span>
+                    <span aria-hidden="true" className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-xs ${selectedID === t.id ? "border-accent bg-accent text-bg" : "border-border"}`}>
+                      {selectedID === t.id ? "✓" : ""}
+                    </span>
+                  </div>
+                  <p className="text-text-muted text-xs leading-relaxed">{t.description}</p>
+                  {selectedID === t.id && !!t.highlights?.length && (
+                    <ul className="space-y-2 border-t border-border pt-3 xl:hidden">
+                      {t.highlights.map((highlight) => (
+                        <li key={highlight} className="flex gap-2 text-xs leading-relaxed text-text">
+                          <span className="text-accent">✓</span><span>{highlight}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {t.source === "app" && <span className="text-xs text-text-muted">By {t.source_ref}</span>}
+                  <div className="mt-auto pt-1">
+                    {t.resolved_logos && t.resolved_logos.length > 0 ? (
+                      <LogoRow logos={t.resolved_logos} />
+                    ) : <span className="text-xs text-text-muted">Customize your tools next</span>}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
-      )}
 
-      <div className="text-right">
-        <button
-          onClick={onSkipWizard}
-          className="text-text-muted text-xs hover:text-text underline-offset-2 hover:underline transition-colors"
-        >
-          Advanced — skip the wizard and use the classic form
+        <aside className="hidden rounded-lg border border-border bg-bg-card p-5 xl:sticky xl:top-0 xl:block" aria-label="Template preview">
+          {selected ? (
+            <>
+              <div className="text-xs font-semibold text-accent">Selected template</div>
+              <h3 className="mt-2 text-lg font-bold text-text">{selected.name}</h3>
+              <p className="mt-2 text-sm leading-relaxed text-text-muted">{selected.description}</p>
+              {!!selected.highlights?.length && (
+                <>
+                  <h4 className="mt-5 text-xs font-semibold text-text">What it can help with</h4>
+                  <ul className="mt-3 space-y-3">
+                    {selected.highlights.map((highlight) => (
+                      <li key={highlight} className="flex gap-2 text-xs leading-relaxed text-text">
+                        <span className="text-accent">✓</span><span>{highlight}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {!!selected.resolved_logos?.length && (
+                <>
+                  <h4 className="mt-5 text-xs font-semibold text-text">Apps & integrations</h4>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {selected.resolved_logos.map((logo) => (
+                      <span key={`${logo.kind}:${logo.slug}`} className="inline-flex items-center gap-2 rounded-md border border-border px-2 py-1 text-xs text-text">
+                        <LogoPill logo={logo} isApp={logo.kind === "app"} />{logo.label}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
+              <p className="mt-5 border-t border-border pt-4 text-xs leading-relaxed text-text-muted">Next, give your agent a name and instructions. You’ll review connections and app access before creating it.</p>
+            </>
+          ) : (
+            <>
+              <h3 className="font-semibold text-text">Start with a task</h3>
+              <p className="mt-2 text-sm leading-relaxed text-text-muted">Select a template to see what it does and which apps it uses.</p>
+              <ol className="mt-5 space-y-4 text-xs leading-relaxed text-text-muted">
+                <li><span className="font-semibold text-text">1. Make it yours</span><br />Set a name, instructions, and behavior.</li>
+                <li><span className="font-semibold text-text">2. Connect your tools</span><br />Choose the apps and accounts it can use.</li>
+                <li><span className="font-semibold text-text">3. Review and create</span><br />Check the setup before your agent starts.</li>
+              </ol>
+            </>
+          )}
+        </aside>
+      </div>
+
+      <div>
+        <button onClick={onSkipWizard} className="text-text-muted text-xs hover:text-text underline-offset-2 hover:underline transition-colors">
+          Advanced: use the classic form →
         </button>
       </div>
     </div>
@@ -657,17 +779,20 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
   const selectedMode = modes.find((m) => m.id === state.mode) || modes[0]!;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <div>
         <h2 className="text-text text-lg font-bold">Details</h2>
         <p className="text-text-muted text-xs mt-1">
-          Name, directive, and how the agent should behave at runtime.
+          Give your agent clear instructions and choose how independently it can act.
         </p>
       </div>
 
+      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+      <section className="min-w-0 space-y-5 rounded-lg border border-border bg-bg-card p-5">
       <div>
-        <label className="block text-text-muted text-xs mb-1.5">Name</label>
+        <label htmlFor="agent-name" className="block text-text-muted text-xs mb-1.5">Name</label>
         <input
+          id="agent-name"
           type="text"
           value={state.name}
           onChange={(e) =>
@@ -681,7 +806,7 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
 
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <label className="block text-text-muted text-xs">Directive</label>
+          <label htmlFor="agent-directive" className="block text-text-muted text-xs">Instructions</label>
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -698,6 +823,7 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
           </div>
         </div>
         <textarea
+          id="agent-directive"
           value={state.directive}
           onChange={(e) =>
             setState((s) => ({
@@ -705,16 +831,19 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
               directive: (e.target as HTMLTextAreaElement).value,
             }))
           }
-          rows={9}
+          rows={16}
           className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text font-mono leading-relaxed focus:outline-none focus:border-accent resize-y"
           placeholder={"# Role\nYou are...\n\n# Goals\n- ..."}
           spellCheck={false}
         />
         <p className="text-text-muted text-xs mt-1.5">
-          Markdown headings make later self-edits and focused updates land in the right section.
+          Describe its role, goals, and any rules it should follow. Use headings to organize longer instructions.
         </p>
       </div>
 
+      </section>
+      <div className="min-w-0 space-y-5">
+      <section className="min-w-0 space-y-5 rounded-lg border border-border bg-bg-card p-5">
       <div>
         <label className="block text-text-muted text-xs mb-1.5">Safety mode</label>
         {/* Segmented control — three tabs in one row. Selected
@@ -741,23 +870,31 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
         </p>
       </div>
 
-      <div>
-        <label className="flex items-start gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={state.unconscious}
-            onChange={(e) =>
-              setState((s) => ({ ...s, unconscious: (e.target as HTMLInputElement).checked }))
-            }
-            className="mt-1"
-          />
-          <div>
-            <div className="text-text text-sm font-medium">Background memory (unconscious)</div>
-            <div className="text-text-muted text-xs leading-relaxed mt-0.5">
-              Spawns a second thread that consolidates main's activity into typed memories — preferences, decisions, names, open questions — so the agent remembers across sessions. Off keeps it stateless.
-            </div>
-          </div>
-        </label>
+      <ProactivityControl value={state.proactivity} onChange={(proactivity) => setState((s) => ({ ...s, proactivity }))} />
+      </section>
+
+      <section aria-labelledby="agent-memory-label" className="rounded-lg border border-border bg-bg-card p-5">
+        <div className="flex items-center justify-between gap-4">
+          <h3 id="agent-memory-label" className="text-sm font-semibold text-text">Activate memory</h3>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={state.unconscious}
+            aria-labelledby="agent-memory-label"
+            aria-describedby="agent-memory-description"
+            onClick={() => setState((s) => ({ ...s, unconscious: !s.unconscious }))}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+          >
+            <span aria-hidden="true" className={`relative h-6 w-11 rounded-full transition-colors ${state.unconscious ? "bg-accent" : "bg-border"}`}>
+              <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${state.unconscious ? "translate-x-5" : "translate-x-0"}`} />
+            </span>
+          </button>
+        </div>
+        <p id="agent-memory-description" className="mt-2 text-xs leading-relaxed text-text-muted">
+          Enable the agent’s memory system to learn from its activity, retain useful knowledge, and draw on past context in future work.
+        </p>
+      </section>
+      </div>
       </div>
     </div>
   );
@@ -770,23 +907,20 @@ interface SetupStepProps {
   connections: ConnectionInfo[];
   state: WizardState;
   setState: React.Dispatch<React.SetStateAction<WizardState>>;
-  onRefresh: () => void;
+  onRefresh: () => Promise<void>;
+  onConnected: (connection: ConnectionInfo) => void;
   /** Scope for any newly-minted connection from the inline
    *  ConnectIntegrationModal — matches the agent's own scope. */
   projectId?: string;
 }
 
-// SetupStep — surfaces the template's requirements as a checklist
-// the operator can act on. Required apps auto-install at create
-// time, so they show as informational rows ("✓ Will be installed").
-// Required integrations check the operator's existing connection
-// pool by compatible_slugs; unmatched requirements get a deep-link
-// to /integrations (new tab) plus a Refresh button so the operator
-// doesn't have to leave the wizard once OAuth completes.
-//
-// The step is skippable. Missing integrations are called out before
-// creation so the operator understands what the live agent can reach.
-function SetupStep({
+const ESSENTIAL_APPS: Record<string, string> = {
+  conversations: "Give your agent a place to talk with you.",
+  tasks: "Let your agent track and complete tasks.",
+  storage: "Keep files and results in one place.",
+};
+
+export function SetupStep({
   template,
   installedApps,
   marketplace,
@@ -794,88 +928,156 @@ function SetupStep({
   state,
   setState,
   onRefresh,
+  onConnected,
   projectId,
 }: SetupStepProps) {
-  // Inline catalog browse. Lazy fetch on first focus so the wizard
-  // doesn't make the call until the operator actually wants to
-  // discover something new.
+  const [picker, setPicker] = useState<"apps" | "integrations" | null>(null);
+  const [query, setQuery] = useState("");
+  const [integrationTab, setIntegrationTab] = useState<"connected" | "catalog">(
+    "connected",
+  );
+  const [pickerSlugs, setPickerSlugs] = useState<string[] | null>(null);
   const [catalog, setCatalog] = useState<AppSummary[] | null>(null);
-  const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(false);
-  // Inline connect modal — opens when the operator clicks Set up
-  // on a catalog row. Single-slug at a time; on success we refetch
-  // connections + auto-attach the new one so the operator's
-  // selection trail is intact without leaving the wizard.
+  const [catalogError, setCatalogError] = useState("");
   const [connectSlug, setConnectSlug] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
+  const [permissionCatalogs, setPermissionCatalogs] = useState<
+    Record<number, AppPermissionCatalog | null>
+  >({});
+  const requestedPermissions = useRef(new Set<number>());
+
+  const requirements = template?.requirements || [];
+  const requiredApps = requirements.filter(
+    (r) => r.kind === "app" && r.required && r.slug,
+  );
+  const integrationRequirements = requirements.filter(
+    (r) => r.kind === "integration",
+  );
+  const requiredSlugs = new Set(requiredApps.map((r) => r.slug!));
+  const effectiveIDs = effectiveAgentAppInstallIDs(
+    state.boundAppInstallIDs,
+    installedApps,
+    requiredSlugs,
+  );
+  const selectedIDs = new Set(effectiveIDs);
+  const selectedApps = installedApps.filter((app) =>
+    selectedIDs.has(app.install_id),
+  );
+  const selectedConnections = connections.filter((connection) =>
+    state.boundConnectionIDs.has(connection.id),
+  );
+  const missingApps = requiredApps.filter(
+    (r) => !selectedApps.some((app) => app.name === r.slug),
+  );
+  const unmetIntegrations = integrationRequirements.filter(
+    (r) =>
+      !selectedConnections.some(
+        (c) =>
+          c.status === "active" && requirementSlugs(r).includes(c.app_slug),
+      ),
+  );
+  const availableApps = installedApps.filter(
+    (app) =>
+      app.status === "running" ||
+      app.status === "pending" ||
+      selectedIDs.has(app.install_id),
+  );
+  const essentials = Object.keys(ESSENTIAL_APPS).flatMap((name) => {
+    if (selectedApps.some((app) => app.name === name)) return [];
+    const candidates = availableApps.filter(
+      (app) => app.name === name && app.status === "running",
+    );
+    const best =
+      candidates.find((app) => !!projectId && app.project_id === projectId) ||
+      candidates[0];
+    return best ? [best] : [];
+  });
+  const matches = (...values: (string | undefined)[]) =>
+    values.join(" ").toLowerCase().includes(query.trim().toLowerCase());
+  const filteredApps = availableApps
+    .filter((app) => matches(app.display_name, app.name, app.description))
+    .sort(
+      (a, b) =>
+        Number(!!ESSENTIAL_APPS[b.name]) - Number(!!ESSENTIAL_APPS[a.name]) ||
+        a.display_name.localeCompare(b.display_name),
+    );
+  const filteredConnections = connections.filter(
+    (c) =>
+      (!pickerSlugs || pickerSlugs.includes(c.app_slug)) &&
+      matches(c.app_name, c.app_slug, c.name),
+  );
+  const filteredCatalog = (catalog || []).filter(
+    (app) =>
+      (!pickerSlugs || pickerSlugs.includes(app.slug)) &&
+      matches(app.name, app.slug, app.description),
+  );
+
+  useEffect(() => {
+    for (const id of effectiveIDs) {
+      if (requestedPermissions.current.has(id)) continue;
+      requestedPermissions.current.add(id);
+      appsAPI
+        .permissions(id)
+        .then((result) =>
+          setPermissionCatalogs((previous) => ({ ...previous, [id]: result })),
+        )
+        .catch(() =>
+          setPermissionCatalogs((previous) => ({ ...previous, [id]: null })),
+        );
+    }
+  }, [effectiveIDs.join(",")]);
+
+  const refresh = async () => {
+    setRefreshing(true);
+    setRefreshError("");
+    try {
+      await onRefresh();
+    } catch {
+      setRefreshError("Couldn’t refresh apps and connections. Try again.");
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const loadCatalog = () => {
     if (catalog !== null || catalogLoading) return;
     setCatalogLoading(true);
+    setCatalogError("");
     integrationsAPI
       .catalog()
       .then(setCatalog)
-      .catch(() => setCatalog([]))
+      .catch(() => setCatalogError("Couldn’t load the integration catalog."))
       .finally(() => setCatalogLoading(false));
   };
-  // Slugs the operator has already connected — used to grey out
-  // catalog rows that are already "in use" so they don't try to
-  // double-connect from the wizard.
-  const connectedSlugs = useMemo(
-    () => new Set(connections.map((c) => c.app_slug)),
-    [connections],
-  );
-  const filteredCatalog = useMemo(() => {
-    if (!catalog) return [];
-    const q = catalogQuery.trim().toLowerCase();
-    if (!q) return catalog.slice(0, 8); // a few "popular" rows visible by default
-    return catalog
-      .filter((a) => a.name.toLowerCase().includes(q) || a.slug.toLowerCase().includes(q))
-      .slice(0, 12);
-  }, [catalog, catalogQuery]);
-
-  const requirements = template?.requirements || [];
-  const installedSlugs = new Set(installedApps.map((a) => a.name));
-  const marketplaceByName: Record<string, MarketplaceEntry> = {};
-  for (const m of marketplace) marketplaceByName[m.name] = m;
-  const connectionsBySlug: Record<string, ConnectionInfo[]> = {};
-  for (const c of connections) {
-    (connectionsBySlug[c.app_slug] ??= []).push(c);
-  }
-  const reqApps = requirements.filter((r) => r.kind === "app");
-  const reqInts = requirements.filter((r) => r.kind === "integration");
-  const missingIntegrations = reqInts.filter(
-    (r) =>
-      r.required &&
-      !(r.compatible_slugs || []).some((slug) => connectionsBySlug[slug]?.length),
-  );
-
-  const runningInstalledApps = installedApps.filter((a) => a.status === "running" || a.status === "pending");
-  const [permissionCatalogs, setPermissionCatalogs] = useState<Record<number, AppPermissionCatalog | null>>({});
-
-  useEffect(() => {
-    for (const id of state.boundAppInstallIDs) {
-      if (permissionCatalogs[id] !== undefined) continue;
-      appsAPI
-        .permissions(id)
-        .then((catalog) => {
-          setPermissionCatalogs((prev) => ({ ...prev, [id]: catalog }));
-        })
-        .catch(() => {
-          setPermissionCatalogs((prev) => ({ ...prev, [id]: null }));
-        });
-    }
-  }, [state.boundAppInstallIDs, permissionCatalogs]);
-
-  const toggleConnection = (id: number) => {
-    setState((s) => {
-      const next = new Set(s.boundConnectionIDs);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return { ...s, boundConnectionIDs: next };
-    });
+  const openPicker = (
+    kind: "apps" | "integrations",
+    slugs: string[] | null = null,
+  ) => {
+    setQuery("");
+    setPickerSlugs(slugs);
+    setPicker(kind);
+    const hasAccount =
+      !slugs || connections.some((c) => slugs.includes(c.app_slug));
+    setIntegrationTab(hasAccount ? "connected" : "catalog");
+    if (kind === "integrations" && !hasAccount) loadCatalog();
   };
+  const toggleConnection = (id: number) =>
+    setState((current) => {
+      const next = new Set(current.boundConnectionIDs);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return { ...current, boundConnectionIDs: next };
+    });
   const toggleApp = (id: number) => {
-    setState((s) => {
-      const next = new Set(s.boundAppInstallIDs);
-      const appAccess = { ...s.appAccess };
+    if (
+      installedApps.some(
+        (app) => app.install_id === id && requiredSlugs.has(app.name),
+      )
+    )
+      return;
+    setState((current) => {
+      const next = new Set(current.boundAppInstallIDs);
+      const appAccess = { ...current.appAccess };
       if (next.has(id)) {
         next.delete(id);
         delete appAccess[id];
@@ -883,314 +1085,685 @@ function SetupStep({
         next.add(id);
         appAccess[id] = appAccess[id] || defaultAppAccessDraft();
       }
-      return { ...s, boundAppInstallIDs: next, appAccess };
+      return { ...current, boundAppInstallIDs: next, appAccess };
     });
   };
-  const updateAppAccess = (id: number, patch: Partial<AppAccessDraft>) => {
-    setState((s) => ({
-      ...s,
+  const updateAppAccess = (id: number, patch: Partial<AppAccessDraft>) =>
+    setState((current) => ({
+      ...current,
       appAccess: {
-        ...s.appAccess,
-        [id]: { ...(s.appAccess[id] || defaultAppAccessDraft()), ...patch },
+        ...current.appAccess,
+        [id]: {
+          ...(current.appAccess[id] || defaultAppAccessDraft()),
+          ...patch,
+        },
       },
     }));
+  const connect = (slug: string) => {
+    setPicker(null);
+    setConnectSlug(slug);
   };
+  const buttonClass =
+    "touch-target shrink-0 rounded-lg border border-border px-3 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent transition-colors";
+  const badgeClass =
+    "rounded bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent";
+  const gridClass = "grid gap-3 sm:grid-cols-2 2xl:grid-cols-3";
+  const connectionIcon = (c: ConnectionInfo) => (
+    <AppIcon
+      src={
+        c.logo ||
+        template?.resolved_logos?.find((logo) => logo.slug === c.app_slug)
+          ?.icon_url
+      }
+      name={c.app_name || c.app_slug}
+      size="md"
+      framed={false}
+      className="rounded-md bg-white text-gray-800"
+    />
+  );
 
   return (
-    <div className="flex flex-col gap-5">
-      <div>
-        <h2 className="text-text text-lg font-bold">Connections and tools</h2>
-        <p className="text-text-muted text-sm mt-1">
-          Review the integrations and apps this agent will receive. Project defaults are preselected, and you can opt out of any of them before creation.
-        </p>
+    <div className="space-y-7">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-bold text-text">
+            Choose apps and integrations
+          </h2>
+          <p className="mt-1 text-sm text-text-muted">
+            Start with the template’s tools, then add what your agent needs.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={refreshing}
+          className={buttonClass}
+        >
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
       </div>
+      {refreshError && (
+        <p role="alert" className="text-sm text-red">
+          {refreshError}
+        </p>
+      )}
 
-      {/* Template-required gates stay at the top so missing
-          required integrations are unmissable. Selection of
-          connections + apps below is the operator's call. */}
-      {requirements.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <h3 className="text-text-muted text-xs uppercase tracking-wide flex items-center gap-2">
-            Required by template
-            <button
-              onClick={onRefresh}
-              className="text-accent text-[10px] hover:underline normal-case"
-              title="I just connected an integration — re-check"
+      <section aria-labelledby="setup-apps-heading" className="space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3
+              id="setup-apps-heading"
+              className="text-base font-semibold text-text"
             >
-              ↻ Refresh
+              Apps{" "}
+              <span className="ml-2 text-xs font-normal text-text-muted">
+                {selectedApps.length + missingApps.length} selected
+              </span>
+            </h3>
+            <p className="mt-1 text-xs text-text-muted">
+              Give your agent the tools and skills to get work done.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => openPicker("apps")}
+            className={buttonClass}
+          >
+            + Add apps
+          </button>
+        </div>
+        <div className={gridClass}>
+          {selectedApps.map((app) => {
+            const required = requiredSlugs.has(app.name);
+            const permissionCatalog = permissionCatalogs[app.install_id];
+            const scoped =
+              !!permissionCatalog?.permissions?.length &&
+              !!permissionCatalog?.resources?.length;
+            return (
+              <article
+                key={app.install_id}
+                className="min-w-0 rounded-lg border border-border bg-bg-card p-4"
+              >
+                <div className="flex items-start gap-3">
+                  <AppIcon
+                    src={app.icon}
+                    iconStyle={app.icon_style}
+                    name={app.display_name || app.name}
+                    size="md"
+                    className="text-accent"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <h4 className="text-sm font-semibold text-text">
+                      {app.display_name || app.name}
+                    </h4>
+                    <p className="mt-1 text-[11px] text-text-muted">
+                      {app.project_id ? "Project app" : "Global app"} ·{" "}
+                      {app.surfaces?.mcp_tool_count || 0} tools
+                    </p>
+                  </div>
+                  {!required && (
+                    <button
+                      type="button"
+                      aria-label={`Remove ${app.display_name || app.name}`}
+                      onClick={() => toggleApp(app.install_id)}
+                      className="rounded p-1 text-text-muted hover:text-red"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+                <p className="mt-3 line-clamp-2 text-xs leading-relaxed text-text-muted">
+                  {ESSENTIAL_APPS[app.name] || app.description}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {required && (
+                    <span className={badgeClass}>Required by template</span>
+                  )}
+                  {ESSENTIAL_APPS[app.name] && (
+                    <span className={badgeClass}>Essential</span>
+                  )}
+                  {app.default_for_new_agents && !required && (
+                    <span className="text-[10px] text-text-muted">
+                      Default app
+                    </span>
+                  )}
+                  {app.status !== "running" && (
+                    <span className="text-[10px] text-amber">
+                      {app.status === "pending"
+                        ? "Starting…"
+                        : `Unavailable · ${app.status}`}
+                    </span>
+                  )}
+                </div>
+                {scoped && (
+                  <details className="mt-3 border-t border-border pt-3">
+                    <summary className="cursor-pointer text-xs text-accent">
+                      App access ·{" "}
+                      {state.appAccess[app.install_id]?.mode === "limited"
+                        ? "Limited"
+                        : "Full"}
+                    </summary>
+                    <ul className="mt-3">
+                      <ScopedAppAccess
+                        app={app}
+                        catalog={permissionCatalog}
+                        draft={
+                          state.appAccess[app.install_id] ||
+                          defaultAppAccessDraft()
+                        }
+                        onChange={(patch) =>
+                          updateAppAccess(app.install_id, patch)
+                        }
+                      />
+                    </ul>
+                  </details>
+                )}
+              </article>
+            );
+          })}
+          {missingApps.map((requirement) => {
+            const entry = marketplace.find(
+              (app) => app.name === requirement.slug,
+            );
+            const existing = installedApps.find(
+              (app) => app.name === requirement.slug,
+            );
+            const canInstall = !existing && !!entry && !entry.deprecated;
+            return (
+              <article
+                key={requirement.slug}
+                className="rounded-lg border border-dashed border-border bg-bg-card p-4"
+              >
+                <div className="flex items-center gap-3">
+                  <AppIcon
+                    src={existing?.icon || entry?.icon}
+                    iconStyle={existing?.icon_style || entry?.icon_style}
+                    name={entry?.display_name || requirement.slug!}
+                    size="md"
+                    className="text-accent"
+                  />
+                  <h4 className="text-sm font-semibold text-text">
+                    {existing?.display_name ||
+                      entry?.display_name ||
+                      requirement.slug}
+                  </h4>
+                </div>
+                <p className="mt-3 text-xs leading-relaxed text-text-muted">
+                  {requirement.reason ||
+                    "This app is required by the selected template."}
+                </p>
+                <p
+                  className={`mt-3 text-xs ${canInstall ? "text-accent" : "text-amber"}`}
+                >
+                  {canInstall
+                    ? "Will install when you create the agent"
+                    : existing?.status === "pending"
+                      ? "Starting — refresh when ready"
+                      : "Unavailable — check this app before creating"}
+                </p>
+                {!canInstall && (
+                  <a
+                    href="/apps"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-2 inline-block text-xs text-accent hover:underline"
+                  >
+                    Manage app →
+                  </a>
+                )}
+              </article>
+            );
+          })}
+        </div>
+        {selectedApps.length + missingApps.length === 0 && (
+          <p className="rounded-lg border border-dashed border-border p-5 text-sm text-text-muted">
+            No apps selected yet. Add the tools this agent should use.
+          </p>
+        )}
+        {essentials.length > 0 && (
+          <div className="rounded-lg border border-border p-4">
+            <h4 className="text-xs font-semibold text-text">
+              Useful essentials{" "}
+              <span className="ml-2 font-normal text-text-muted">
+                Already installed
+              </span>
+            </h4>
+            <div className="mt-3 flex flex-wrap gap-3">
+              {essentials.map((app) => (
+                <button
+                  type="button"
+                  key={app.install_id}
+                  onClick={() => toggleApp(app.install_id)}
+                  className="flex items-center gap-3 rounded-lg bg-bg-card px-3 py-2 text-left hover:bg-bg-hover"
+                  aria-label={`Add ${app.display_name || app.name}`}
+                >
+                  <AppIcon
+                    src={app.icon}
+                    iconStyle={app.icon_style}
+                    name={app.display_name || app.name}
+                    size="sm"
+                    className="text-accent"
+                  />
+                  <span>
+                    <span className="block text-xs font-semibold text-text">
+                      {app.display_name || app.name}
+                    </span>
+                    <span className="block text-[11px] text-text-muted">
+                      {app.project_id ? "Project" : "Global"} ·{" "}
+                      {ESSENTIAL_APPS[app.name]}
+                    </span>
+                  </span>
+                  <span className="text-accent">+</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section
+        aria-labelledby="setup-integrations-heading"
+        className="space-y-4 border-t border-border pt-6"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3
+              id="setup-integrations-heading"
+              className="text-base font-semibold text-text"
+            >
+              Integrations{" "}
+              <span className="ml-2 text-xs font-normal text-text-muted">
+                {selectedConnections.length} selected
+              </span>
+            </h3>
+            <p className="mt-1 text-xs text-text-muted">
+              Choose the accounts your agent can use.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => openPicker("integrations")}
+            className={buttonClass}
+          >
+            + Add integrations
+          </button>
+        </div>
+        <div className={gridClass}>
+          {selectedConnections.map((connection) => (
+            <article
+              key={connection.id}
+              className="rounded-lg border border-border bg-bg-card p-4"
+            >
+              <div className="flex items-start gap-3">
+                {connectionIcon(connection)}
+                <div className="min-w-0 flex-1">
+                  <h4 className="text-sm font-semibold text-text">
+                    {connection.app_name || connection.app_slug}
+                  </h4>
+                  <p className="mt-1 break-words text-xs text-text-muted">
+                    {connection.name} ·{" "}
+                    {connection.project_id ? "Project" : "Global"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label={`Remove ${connection.name}`}
+                  onClick={() => toggleConnection(connection.id)}
+                  className="rounded p-1 text-text-muted hover:text-red"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span
+                  className={`text-xs ${connection.status === "active" ? "text-green" : "text-amber"}`}
+                >
+                  {connection.status === "active"
+                    ? "Connected"
+                    : "Needs attention"}
+                </span>
+                {integrationRequirements.some((r) =>
+                  requirementSlugs(r).includes(connection.app_slug),
+                ) && <span className={badgeClass}>From template</span>}
+              </div>
+            </article>
+          ))}
+          {unmetIntegrations.map((requirement, index) => {
+            const slugs = requirementSlugs(requirement);
+            const logo = template?.resolved_logos?.find((item) =>
+              slugs.includes(item.slug),
+            );
+            const names = slugs
+              .map(
+                (slug) =>
+                  connections.find((c) => c.app_slug === slug)?.app_name ||
+                  template?.resolved_logos?.find((item) => item.slug === slug)
+                    ?.label ||
+                  slug,
+              )
+              .join(" / ");
+            return (
+              <article
+                key={`${slugs.join(":")}:${index}`}
+                className="rounded-lg border border-dashed border-border bg-bg-card p-4"
+              >
+                <div className="flex items-center gap-3">
+                  <AppIcon
+                    src={logo?.icon_url}
+                    name={names || "Integration"}
+                    size="md"
+                    framed={false}
+                    className="rounded-md bg-white text-gray-800"
+                  />
+                  <h4 className="text-sm font-semibold text-text">
+                    {names || requirement.role || "Integration"}
+                  </h4>
+                </div>
+                <p className="mt-3 text-xs leading-relaxed text-text-muted">
+                  {requirement.reason ||
+                    "Choose a compatible account for this template."}
+                </p>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <span
+                    className={`text-xs ${requirement.required ? "text-amber" : "text-text-muted"}`}
+                  >
+                    {requirement.required
+                      ? "Needed for template"
+                      : "Optional for template"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      openPicker("integrations", slugs.length ? slugs : null)
+                    }
+                    className="text-xs font-semibold text-accent"
+                  >
+                    Choose account →
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+        {selectedConnections.length + unmetIntegrations.length === 0 && (
+          <p className="rounded-lg border border-dashed border-border p-5 text-sm text-text-muted">
+            No integrations selected. Add an account when your agent needs an
+            external service.
+          </p>
+        )}
+        {unmetIntegrations.some((r) => r.required) && (
+          <p className="text-xs text-amber">
+            Template integrations still need an account. Your agent won’t be
+            able to use them until connected and selected.
+          </p>
+        )}
+      </section>
+
+      <Modal
+        open={picker !== null}
+        onClose={() => setPicker(null)}
+        width="max-w-3xl"
+        ariaLabel={picker === "apps" ? "Choose apps" : "Choose integrations"}
+      >
+        <div className="space-y-4 border-b border-border p-5">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-lg font-bold text-text">
+              {picker === "apps" ? "Choose apps" : "Choose integrations"}
+            </h3>
+            <button
+              type="button"
+              onClick={() => setPicker(null)}
+              aria-label="Close picker"
+              className="rounded p-1 text-text-muted hover:text-text"
+            >
+              ✕
             </button>
-          </h3>
-          <ul className="flex flex-col gap-1.5">
-            {reqApps.map((r) => {
-              const alreadyInstalled = !!r.slug && installedSlugs.has(r.slug);
-              const inMarketplace = !!r.slug && !!marketplaceByName[r.slug];
-              const status = alreadyInstalled
-                ? "Installed"
-                : inMarketplace
-                  ? r.required ? "Will be installed" : "Available"
-                  : "Not in marketplace";
-              return (
-                <RequirementRow
-                  key={`app-${r.slug}`}
-                  label={marketplaceByName[r.slug || ""]?.display_name || r.slug || ""}
-                  reason={r.reason}
-                  badge={status}
-                  ok={alreadyInstalled || (inMarketplace && r.required)}
-                  optional={!r.required}
-                />
-              );
-            })}
-            {reqInts.map((r) => {
-              const slugs = r.compatible_slugs || [];
-              const match = slugs.find((s) => connectionsBySlug[s]?.length);
-              const ok = !!match;
-              return (
-                <RequirementRow
-                  key={`int-${slugs.join(",")}`}
-                  label={ok ? `${match} connected` : `${slugs.join(" / ")} — not connected`}
-                  reason={r.reason}
-                  badge={ok ? "Connected" : r.required ? "Required" : "Optional"}
-                  ok={ok}
-                  optional={!r.required}
-                  action={
-                    !ok ? (
-                      <a
-                        href={`/integrations?app=${encodeURIComponent(slugs[0] || "")}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-accent text-xs hover:underline"
-                      >
-                        Set up →
-                      </a>
-                    ) : null
-                  }
-                />
-              );
-            })}
-          </ul>
-          {missingIntegrations.length > 0 && (
-            <div className="text-xs text-amber border-l-2 border-amber pl-3 mt-1">
-              {missingIntegrations.length} required integration{missingIntegrations.length === 1 ? "" : "s"} not connected. The live agent will not reach them until they are set up.
+          </div>
+          <input
+            type="search"
+            aria-label={
+              picker === "apps"
+                ? "Search installed apps"
+                : "Search integrations"
+            }
+            placeholder={
+              picker === "apps"
+                ? "Search installed apps…"
+                : "Search integrations or accounts…"
+            }
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
+          />
+          {picker === "integrations" && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIntegrationTab("connected")}
+                aria-pressed={integrationTab === "connected"}
+                className={`rounded-md px-3 py-1.5 text-xs ${integrationTab === "connected" ? "bg-accent text-bg" : "text-text-muted hover:bg-bg-hover"}`}
+              >
+                Your connections
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIntegrationTab("catalog");
+                  loadCatalog();
+                }}
+                aria-pressed={integrationTab === "catalog"}
+                className={`rounded-md px-3 py-1.5 text-xs ${integrationTab === "catalog" ? "bg-accent text-bg" : "text-text-muted hover:bg-bg-hover"}`}
+              >
+                Connect new
+              </button>
+              {pickerSlugs && (
+                <button
+                  type="button"
+                  className="ml-auto text-xs text-accent"
+                  onClick={() => setPickerSlugs(null)}
+                >
+                  Show all integrations
+                </button>
+              )}
             </div>
           )}
         </div>
-      )}
-
-      {/* ─── Integrations ─── */}
-      <div className="flex flex-col gap-2">
-        <h3 className="text-text-muted text-xs uppercase tracking-wide flex items-center justify-between">
-          <span>
-            Integrations
-            {connections.length > 0 && (
-              <span className="text-text-muted normal-case ml-1">
-                — {state.boundConnectionIDs.size}/{connections.length} attached
-              </span>
-            )}
-          </span>
-        </h3>
-        {connections.length === 0 ? (
-          <p className="text-text-muted text-xs px-3 py-2 border border-border border-dashed rounded-lg">
-            No integrations connected yet. Use the search below to find one and{" "}
-            <a href="/integrations" target="_blank" rel="noreferrer" className="text-accent hover:underline">
-              connect →
-            </a>
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-px bg-border border border-border rounded-lg overflow-hidden">
-            {connections.map((c) => {
-              const checked = state.boundConnectionIDs.has(c.id);
-              return (
-                <SelectableRow
-                  key={c.id}
-                  checked={checked}
-                  onToggle={() => toggleConnection(c.id)}
-                  label={c.app_name || c.app_slug}
-                  meta={c.name}
-                  badge={`MCP: ${c.app_slug}`}
-                  statusDot={c.status === "active" ? "green" : "amber"}
-                  hint={c.project_id ? undefined : "global"}
-                />
-              );
-            })}
-          </ul>
-        )}
-
-        {/* Inline catalog browse — search any of the 400+ catalog
-            apps. Set-up links open /integrations in a new tab; the
-            wizard's Refresh-on-return button (above) re-checks
-            after the operator finishes OAuth. */}
-        <details
-          className="border border-border rounded-lg"
-          onToggle={(e) => {
-            if ((e.target as HTMLDetailsElement).open) loadCatalog();
-          }}
+        <div
+          className="min-h-0 flex-1 overflow-y-auto p-3"
+          style={{ maxHeight: "min(55vh, 520px)" }}
         >
-          <summary className="cursor-pointer px-3 py-2 text-text-muted text-xs hover:text-text flex items-center justify-between">
-            <span>+ Browse + connect more integrations</span>
-            {catalog && <span className="text-text-dim">{catalog.length} available</span>}
-          </summary>
-          <div className="border-t border-border p-3 flex flex-col gap-2">
-            <input
-              type="text"
-              value={catalogQuery}
-              onChange={(e) => setCatalogQuery((e.target as HTMLInputElement).value)}
-              placeholder="Search apps (slack, stripe, notion…)"
-              className="w-full bg-bg-input border border-border rounded px-2.5 py-1.5 text-sm text-text focus:outline-none focus:border-accent"
-              autoComplete="off"
-            />
-            {catalogLoading ? (
-              <p className="text-text-muted text-xs">Loading catalog…</p>
-            ) : (
-              <ul className="flex flex-col gap-px max-h-72 overflow-y-auto">
-                {filteredCatalog.map((a) => {
-                  const already = connectedSlugs.has(a.slug);
-                  return (
-                    <li key={a.slug} className="flex items-center gap-2 px-2 py-1.5 hover:bg-bg-card rounded">
-                      <span className="flex-1 min-w-0 text-sm text-text truncate">
-                        {a.name}
-                        <span className="text-text-dim text-xs ml-1.5">{a.slug}</span>
-                      </span>
-                      {already ? (
-                        <span className="text-green text-xs shrink-0">connected</span>
-                      ) : (
-                        <button
-                          onClick={() => setConnectSlug(a.slug)}
-                          className="text-accent text-xs hover:underline shrink-0"
-                        >
-                          Set up →
-                        </button>
-                      )}
-                    </li>
-                  );
-                })}
-                {filteredCatalog.length === 0 && catalogQuery && (
-                  <li className="text-text-muted text-xs px-2 py-1.5">No matches.</li>
-                )}
-              </ul>
+          {picker === "apps" ? (
+            <div className="space-y-1">
+              {filteredApps.map((app) => (
+                <PickerOption
+                  key={app.install_id}
+                  selected={selectedIDs.has(app.install_id)}
+                  disabled={requiredSlugs.has(app.name)}
+                  onToggle={() => toggleApp(app.install_id)}
+                  name={app.display_name || app.name}
+                  description={`${app.project_id ? "Project" : "Global"} · v${app.version}${ESSENTIAL_APPS[app.name] ? ` · ${ESSENTIAL_APPS[app.name]}` : app.description ? ` · ${app.description}` : ""}`}
+                  badge={
+                    requiredSlugs.has(app.name)
+                      ? "Required by template"
+                      : ESSENTIAL_APPS[app.name]
+                        ? "Essential"
+                        : undefined
+                  }
+                  icon={
+                    <AppIcon
+                      src={app.icon}
+                      iconStyle={app.icon_style}
+                      name={app.display_name || app.name}
+                      size="md"
+                      className="text-accent"
+                    />
+                  }
+                />
+              ))}
+              {filteredApps.length === 0 && (
+                <p className="p-5 text-sm text-text-muted">
+                  {query
+                    ? "No installed apps match your search."
+                    : "No available apps installed yet."}
+                </p>
+              )}
+            </div>
+          ) : integrationTab === "connected" ? (
+            <div className="space-y-1">
+              {filteredConnections.map((connection) => (
+                <PickerOption
+                  key={connection.id}
+                  selected={state.boundConnectionIDs.has(connection.id)}
+                  disabled={
+                    connection.status !== "active" &&
+                    !state.boundConnectionIDs.has(connection.id)
+                  }
+                  onToggle={() => toggleConnection(connection.id)}
+                  name={connection.app_name || connection.app_slug}
+                  description={`${connection.name} · ${connection.project_id ? "Project" : "Global"}`}
+                  badge={
+                    connection.status === "active"
+                      ? undefined
+                      : "Needs attention"
+                  }
+                  icon={connectionIcon(connection)}
+                />
+              ))}
+              {filteredConnections.length === 0 && (
+                <div className="space-y-3 p-5 text-sm text-text-muted">
+                  <p>
+                    No connections match. Connect a new account or change your
+                    search.
+                  </p>
+                  <button
+                    type="button"
+                    className="text-accent"
+                    onClick={() => {
+                      setIntegrationTab("catalog");
+                      loadCatalog();
+                    }}
+                  >
+                    Connect a new account →
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : catalogLoading ? (
+            <p className="p-5 text-sm text-text-muted">Loading integrations…</p>
+          ) : catalogError ? (
+            <div role="alert" className="p-5 text-sm text-red">
+              {catalogError}{" "}
+              <button
+                type="button"
+                onClick={loadCatalog}
+                className="text-accent"
+              >
+                Retry
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {filteredCatalog.map((app) => (
+                <div
+                  key={app.slug}
+                  className="flex items-center gap-3 rounded-lg p-3 hover:bg-bg-hover"
+                >
+                  <AppIcon
+                    src={app.logo || undefined}
+                    name={app.name}
+                    size="md"
+                    framed={false}
+                    className="rounded-md bg-white text-gray-800"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-text">
+                      {app.name}
+                    </div>
+                    <p className="line-clamp-2 text-xs text-text-muted">
+                      {app.description}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => connect(app.slug)}
+                    className={buttonClass}
+                  >
+                    Connect
+                  </button>
+                </div>
+              ))}
+              {filteredCatalog.length === 0 && (
+                <p className="p-5 text-sm text-text-muted">
+                  No integrations match your search.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border p-4">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-text-muted">
+            <span>
+              {picker === "apps"
+                ? selectedApps.length
+                : selectedConnections.length}{" "}
+              selected
+            </span>
+            {picker === "apps" && (
+              <a
+                href="/apps"
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent hover:underline"
+              >
+                Install more apps ↗
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={refresh}
+              disabled={refreshing}
+              className="text-accent"
+            >
+              {refreshing ? "Refreshing…" : "Refresh"}
+            </button>
+            {refreshError && (
+              <span role="alert" className="text-red">
+                {refreshError}
+              </span>
             )}
           </div>
-        </details>
-      </div>
-
-      {/* ─── Apps ─── */}
-      <div className="flex flex-col gap-2">
-        <h3 className="text-text-muted text-xs uppercase tracking-wide flex items-center justify-between">
-          <span>
-            Apps
-            {runningInstalledApps.length > 0 && (
-              <span className="text-text-muted normal-case ml-1">
-                — {Array.from(state.boundAppInstallIDs).filter((id) => runningInstalledApps.some((a) => a.install_id === id)).length}/{runningInstalledApps.length} attached
-              </span>
-            )}
-          </span>
-          <a
-            href="/apps"
-            target="_blank"
-            rel="noreferrer"
-            className="text-accent text-[10px] hover:underline normal-case"
+          <button
+            type="button"
+            onClick={() => setPicker(null)}
+            className="touch-target rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-bg hover:bg-accent-hover"
           >
-            + Install more →
-          </a>
-        </h3>
-        <p className="text-text-muted text-[11px]">
-          Binding an app gives this agent its tools and its skills (playbooks).
-        </p>
-        {runningInstalledApps.length === 0 ? (
-          <p className="text-text-muted text-xs px-3 py-2 border border-border border-dashed rounded-lg">
-            No apps installed in this project.{" "}
-            <a href="/apps" target="_blank" rel="noreferrer" className="text-accent hover:underline">
-              Browse the marketplace →
-            </a>
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-px bg-border border border-border rounded-lg overflow-hidden">
-            {runningInstalledApps.map((a) => {
-              const checked = state.boundAppInstallIDs.has(a.install_id);
-              const toolCount = a.surfaces?.mcp_tool_count || 0;
-              const skillCount = a.surfaces?.skill_count || 0;
-              const isDefault = !!a.default_for_new_agents;
-              const catalog = permissionCatalogs[a.install_id];
-              const hasScopedAccess = !!catalog?.permissions?.length && !!catalog?.resources?.length;
-              // What binding this app brings the agent: its tools (via the
-              // gateway) + its skills (attached on bind, server-side).
-              const parts: string[] = [];
-              if (toolCount > 0) parts.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
-              if (skillCount > 0) parts.push(`${skillCount} skill${skillCount === 1 ? "" : "s"}`);
-              const surfaceBadge = parts.length > 0 ? parts.join(" · ") : "MCP";
-              return (
-                <React.Fragment key={a.install_id}>
-                  <SelectableRow
-                    checked={checked}
-                    onToggle={() => toggleApp(a.install_id)}
-                    label={a.display_name || a.name}
-                    meta={`v${a.version}`}
-                    badge={hasScopedAccess ? `${surfaceBadge} · scoped` : surfaceBadge}
-                    statusDot={a.status === "running" ? "green" : "amber"}
-                    hint={isDefault
-                      ? (a.project_id ? "default for this project" : "global default")
-                      : (a.project_id ? undefined : "global")}
-                  />
-                  {checked && hasScopedAccess && (
-                    <ScopedAppAccess
-                      app={a}
-                      catalog={catalog}
-                      draft={state.appAccess[a.install_id] || defaultAppAccessDraft()}
-                      onChange={(patch) => updateAppAccess(a.install_id, patch)}
-                    />
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-
-      {/* AI suggestions slot — placeholder for the meta-agent
-          classifier+suggester landing in a follow-up. */}
-      <div className="border border-border border-dashed rounded-lg px-3 py-2">
-        <div className="text-text-muted text-xs flex items-center gap-2">
-          <span className="inline-block w-1.5 h-1.5 rounded-full bg-text-dim shrink-0" />
-          <span>
-            The meta-agent will suggest integrations + apps based on your directive.{" "}
-            <span className="text-text-dim italic">Coming soon.</span>
-          </span>
+            Done
+          </button>
         </div>
-      </div>
-
-      <p className="text-text-muted text-[11px] italic">
-        Custom MCP server URLs can be added from the agent's detail page after creation.
-      </p>
-
-      {/* Inline connect modal. The Set-up button on each catalog
-          row opens it; on success the new connection lands in the
-          local connections list and we auto-attach it to the agent
-          so the operator doesn't have to scroll back up to tick a
-          box for what they literally just connected. */}
+      </Modal>
       {connectSlug && (
         <ConnectIntegrationModal
-          open={connectSlug !== null}
+          open
           slug={connectSlug}
           projectId={projectId}
           onCancel={() => setConnectSlug(null)}
-          onConnected={(conn) => {
+          onConnected={(connection) => {
             setConnectSlug(null);
-            // Auto-attach: the wizard's least-privilege default
-            // (nothing pre-selected) doesn't fight the user
-            // intent here — they explicitly just connected this
-            // integration FROM the wizard, so they want it on
-            // this agent.
-            setState((s) => {
-              const next = new Set(s.boundConnectionIDs);
-              next.add(conn.id);
-              return { ...s, boundConnectionIDs: next };
-            });
-            onRefresh();
+            onConnected(connection);
+            setState((current) => ({
+              ...current,
+              boundConnectionIDs: new Set([
+                ...current.boundConnectionIDs,
+                connection.id,
+              ]),
+            }));
           }}
         />
       )}
     </div>
   );
 }
+
 
 function ScopedAppAccess({
   app,
@@ -1289,170 +1862,11 @@ function ScopedAppAccess({
   );
 }
 
-// SelectableRow — compact list row with a themed selection visual.
-// Used by both the integrations + apps inventories in the Setup
-// step. Clicking the row anywhere toggles selection.
-//
-// Visual design: avoids the native <input type="checkbox"> (which
-// inherits the OS chrome and looks out of place against the
-// dashboard's dark theme). Replaces it with a span styled as a
-// rounded square — empty border when unchecked, accent-filled
-// with a check glyph when checked — plus a left accent bar that
-// fades in for selected rows so the operator can eye-scan their
-// picks at a glance.
-//
-// A visually-hidden checkbox input still rides along for screen
-// readers + keyboard form semantics.
-function SelectableRow({
-  checked,
-  onToggle,
-  label,
-  meta,
-  badge,
-  statusDot,
-  hint,
-}: {
-  checked: boolean;
-  onToggle: () => void;
-  label: string;
-  meta?: string;
-  badge?: string;
-  statusDot: "green" | "amber" | "red" | "dim";
-  hint?: string;
-}) {
-  const dotColor =
-    statusDot === "green"
-      ? "bg-green"
-      : statusDot === "amber"
-        ? "bg-yellow"
-        : statusDot === "red"
-          ? "bg-red"
-          : "bg-text-dim";
-  return (
-    <li
-      className={`group relative flex items-center gap-3 pl-3.5 pr-3 py-2 text-sm cursor-pointer select-none transition-colors ${
-        checked
-          ? "bg-accent/10 hover:bg-accent/15"
-          : "bg-bg hover:bg-bg-card"
-      }`}
-      onClick={onToggle}
-      role="checkbox"
-      aria-checked={checked}
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onToggle();
-        }
-      }}
-    >
-      {/* Left accent bar — invisible by default, slides in as a
-          1.5px stripe along the row's left edge when selected. */}
-      <span
-        aria-hidden="true"
-        className={`absolute left-0 top-0 bottom-0 w-[2px] transition-colors ${
-          checked ? "bg-accent" : "bg-transparent"
-        }`}
-      />
-      {/* Themed checkbox: rounded square. Border-only when off,
-          accent-filled with a check glyph when on. */}
-      <span
-        aria-hidden="true"
-        className={`inline-flex items-center justify-center w-4 h-4 rounded shrink-0 border transition-colors ${
-          checked
-            ? "bg-accent border-accent text-bg"
-            : "bg-bg border-border group-hover:border-text-dim"
-        }`}
-      >
-        {checked && (
-          <svg
-            width="10"
-            height="10"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M3 8.5 L7 12 L13 5" />
-          </svg>
-        )}
-      </span>
-      {/* Hidden native input for form semantics + screen readers. */}
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={() => {}}
-        className="sr-only"
-        tabIndex={-1}
-        aria-hidden="true"
-      />
-      <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${dotColor}`} />
-      <span className={`truncate flex-1 min-w-0 ${checked ? "text-text font-medium" : "text-text"}`}>
-        {label}
-      </span>
-      {meta && <span className="text-text-muted text-xs shrink-0">{meta}</span>}
-      {badge && (
-        <span
-          className={`text-[10px] font-mono px-1.5 py-0.5 rounded shrink-0 ${
-            checked ? "bg-accent/15 text-accent" : "bg-bg text-text-muted"
-          }`}
-        >
-          {badge}
-        </span>
-      )}
-      {hint && (
-        <span className="text-text-muted text-[10px] uppercase tracking-wide bg-border px-1.5 py-0.5 rounded shrink-0">
-          {hint}
-        </span>
-      )}
-    </li>
-  );
-}
-
-// RequirementRow is one entry in the Setup step's checklist. Used
-// for both apps and integrations; ok=true renders the green check,
-// optional collapses the status badge to a quieter tone.
-function RequirementRow({
-  label,
-  reason,
-  badge,
-  ok,
-  optional,
-  action,
-}: {
-  label: string;
-  reason?: string;
-  badge: string;
-  ok: boolean;
-  optional: boolean;
-  action?: React.ReactNode;
-}) {
-  return (
-    <li className="flex items-start gap-3 border border-border rounded-lg px-3 py-2">
-      <span
-        className={`inline-block w-2.5 h-2.5 rounded-full mt-1.5 shrink-0 ${
-          ok ? "bg-green" : optional ? "bg-text-muted" : "bg-amber"
-        }`}
-      />
-      <div className="flex-1 min-w-0">
-        <div className="text-text text-sm">{label}</div>
-        {reason && <div className="text-text-muted text-xs mt-0.5">{reason}</div>}
-      </div>
-      <span
-        className={`text-xs shrink-0 ${
-          ok ? "text-green" : optional ? "text-text-muted" : "text-amber"
-        }`}
-      >
-        {badge}
-      </span>
-      {action && <div className="shrink-0">{action}</div>}
-    </li>
-  );
-}
-
- interface ReviewStepProps {
+interface ReviewStepProps {
+  installedApps: AppRow[];
+  connections: ConnectionInfo[];
+  template: AgentTemplate | null;
+  marketplace: MarketplaceEntry[];
   state: WizardState;
   hasProvider: boolean | null;
   onEdit: (stepIdx: number) => void;
@@ -1462,7 +1876,15 @@ function RequirementRow({
   installProgress: Record<string, string>;
 }
 
-function ReviewStep({ state, hasProvider, onEdit, installProgress }: ReviewStepProps) {
+function ReviewStep({ state, hasProvider, onEdit, installProgress, installedApps, connections, template, marketplace }: ReviewStepProps) {
+  const requiredSlugs = (template?.requirements || []).filter((r) => r.kind === "app" && r.required && r.slug).map((r) => r.slug!);
+  const appIDs = new Set(effectiveAgentAppInstallIDs(state.boundAppInstallIDs, installedApps, requiredSlugs));
+  const selectedApps = installedApps.filter((app) => appIDs.has(app.install_id));
+  const appNames = selectedApps.map((app) => app.display_name || app.name);
+  for (const slug of requiredSlugs) {
+    if (!selectedApps.some((app) => app.name === slug)) appNames.push(`${marketplace.find((app) => app.name === slug)?.display_name || slug} (template requirement)`);
+  }
+  const connectionNames = connections.filter((c) => state.boundConnectionIDs.has(c.id)).map((c) => `${c.app_name || c.app_slug} — ${c.name}`);
   const directivePreview = useMemo(() => {
     const d = state.directive.trim();
     if (!d) return "(blank — server will fill in a placeholder)";
@@ -1495,15 +1917,10 @@ function ReviewStep({ state, hasProvider, onEdit, installProgress }: ReviewStepP
         )}
         <Row label="Directive"   value={directivePreview} multiline       onEdit={() => onEdit(1)} />
         <Row label="Mode"        value={state.mode}                       onEdit={() => onEdit(1)} />
-        <Row label="Background"  value={state.unconscious ? "On (unconscious thread)" : "Off (stateless)"} onEdit={() => onEdit(1)} />
-        {state.recommendedApps.length > 0 && (
-          <Row
-            label="Recommended apps"
-            value={state.recommendedApps.join(", ")}
-            hint="Install these later from the Apps page if you don't have them already."
-            onEdit={() => onEdit(0)}
-          />
-        )}
+        <Row label="Proactivity" value={`${state.proactivity}% — ${proactivityLabel(state.proactivity)}`} onEdit={() => onEdit(1)} />
+        <Row label="Memory" value={state.unconscious ? "Active" : "Inactive"} onEdit={() => onEdit(1)} />
+        <Row label="Apps" value={appNames.join(", ") || "None selected"} onEdit={() => onEdit(2)} />
+        <Row label="Integrations" value={connectionNames.join(", ") || "None selected"} onEdit={() => onEdit(2)} />
       </dl>
 
       {Object.keys(installProgress).length > 0 && (
@@ -1601,7 +2018,7 @@ function TemplateIcon({
 // LogoRow — renders the server-resolved logos for a template card.
 // Each entry is either a remote logo URL (integrations catalog, app
 // marketplace) or — when the catalog has no logo for the slug — a
-// short text pill with the slug initials. The row caps at 5 icons
+// short text pill with the slug initials. The row caps at 6 icons
 // and shows "+N" overflow.
 function LogoRow({
   logos,
@@ -1643,44 +2060,20 @@ function LogoRow({
   );
 }
 
-// LogoPill renders a single resolved-logo entry. The registry's icon
-// URLs aren't all live (most apteva apps don't have an icon.png
-// committed yet), so we attempt the <img> and fall back to text
-// initials on load error. The fallback styling mirrors the no-url
-// path so a missing icon doesn't reflow the row.
-function LogoPill({
-  logo,
-  isApp,
-}: {
-  logo: import("../api").TemplateLogo;
-  isApp: boolean;
-}) {
-  const [imgFailed, setImgFailed] = useState(false);
-  const showImg = !!logo.icon_url && !imgFailed;
+// Use the same icon renderer as the Apps page: monochrome SVGs inherit
+// the theme color, image logos retain their colors, and failed URLs get initials.
+function LogoPill({ logo, isApp }: { logo: import("../api").TemplateLogo; isApp: boolean }) {
   return (
-    <span
-      title={
-        isApp
-          ? `${logo.label} — local Apteva app`
-          : `${logo.label}${logo.source === "derived" ? ` (via ${logo.via})` : ""}`
-      }
-      className={`inline-flex items-center justify-center w-5 h-5 rounded-sm overflow-hidden ${
-        isApp ? "bg-accent/10 ring-1 ring-accent/40 p-0.5" : "bg-bg"
-      } ${logo.source === "derived" ? "opacity-60" : ""}`}
-    >
-      {showImg ? (
-        <img
-          src={logo.icon_url}
-          alt=""
-          className="w-full h-full object-contain"
-          loading="lazy"
-          onError={() => setImgFailed(true)}
-        />
-      ) : (
-        <span className={`text-[8px] leading-none ${isApp ? "text-accent" : "text-text-muted"}`}>
-          {(logo.label || logo.slug).slice(0, 2).toUpperCase()}
-        </span>
-      )}
+    <span title={`${logo.label}${logo.source === "derived" ? ` (via ${logo.via})` : ""}`}>
+      <AppIcon
+        src={logo.icon_url}
+        iconStyle={logo.icon_style}
+        name={logo.label || logo.slug}
+        size="sm"
+        framed={isApp}
+        decorative={false}
+        className={isApp ? "text-accent" : "rounded-md bg-white text-gray-800"}
+      />
     </span>
   );
 }

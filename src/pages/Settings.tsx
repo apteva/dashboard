@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AppIcon } from "@apteva/ui-kit";
 import { auth, core, platformHelper, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, runtimeEntryAsAppDetail, type RuntimeCatalogEntry, type RuntimeConnection, type ConnectionInfo, type ConnectCreateResponse, type DeviceAuthStart, type ConnectionTestResult, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type AccessPolicy, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser, type PlatformHelperStatus } from "../api";
+import { useNewAgentProviderDefault } from "../hooks/useNewAgentProviderDefault";
 import { Modal } from "../components/Modal";
 import { ProviderUsageDetails, ProviderUsageSummary } from "../components/ProviderUsage";
 import { CredentialFields } from "../components/integrations/CredentialFields";
@@ -33,6 +34,7 @@ export interface Key {
   id: number;
   name: string;
   key_prefix: string;
+  access?: "read_only" | "read_write";
   kind?: "private" | "public_client" | "delegated_user" | string;
   project_id?: string;
   scopes?: string;
@@ -1225,12 +1227,18 @@ function HelperTab() {
   );
 }
 
-function ProvidersTab() {
+export function ProvidersTab() {
   const { currentProject } = useProjects();
   const { t } = useTranslation();
   const [catalog, setCatalog] = useState<RuntimeCatalogEntry[]>([]);
   const [connected, setConnected] = useState<RuntimeConnection[]>([]);
-  const [configuring, setConfiguring] = useState<RuntimeCatalogEntry | null>(null);
+  const defaults = useNewAgentProviderDefault(currentProject?.id, connected);
+  const [showAddProvider, setShowAddProvider] = useState(false);
+  const [providerSearch, setProviderSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [configuring, setConfiguring] = useState<RuntimeCatalogEntry | null>(
+    null,
+  );
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [busyID, setBusyID] = useState<number | null>(null);
@@ -1239,52 +1247,78 @@ function ProvidersTab() {
   // win over globals when both exist, so this is a sharing choice rather
   // than a precedence one.
   const [makeGlobal, setMakeGlobal] = useState(false);
-  const [testResultByID, setTestResultByID] = useState<Record<number, ConnectionTestResult>>({});
-  const [usageByID, setUsageByID] = useState<Record<number, ProviderUsageSnapshot>>({});
-  const [usageLoadingByID, setUsageLoadingByID] = useState<Record<number, boolean>>({});
-  const [usageErrorByID, setUsageErrorByID] = useState<Record<number, string>>({});
-  const [usageDetails, setUsageDetails] = useState<{ connection: RuntimeConnection; usage: ProviderUsageSnapshot } | null>(null);
+  const [testResultByID, setTestResultByID] = useState<
+    Record<number, ConnectionTestResult>
+  >({});
+  const [usageByID, setUsageByID] = useState<
+    Record<number, ProviderUsageSnapshot>
+  >({});
+  const [usageLoadingByID, setUsageLoadingByID] = useState<
+    Record<number, boolean>
+  >({});
+  const [usageErrorByID, setUsageErrorByID] = useState<Record<number, string>>(
+    {},
+  );
+  const [usageDetails, setUsageDetails] = useState<{
+    connection: RuntimeConnection;
+    usage: ProviderUsageSnapshot;
+  } | null>(null);
   const [reauthFor, setReauthFor] = useState<RuntimeConnection | null>(null);
-  const [pendingDeviceAuth, setPendingDeviceAuth] = useState<{ connection: ConnectionInfo; auth: DeviceAuthStart } | null>(null);
+  const [pendingDeviceAuth, setPendingDeviceAuth] = useState<{
+    connection: ConnectionInfo;
+    auth: DeviceAuthStart;
+  } | null>(null);
 
   const load = useCallback(() => {
+    setLoading(true);
     integrations
       .runtimeConnections(currentProject?.id)
       .then(setConnected)
-      .catch(() => setConnected([]));
+      .catch(() => setError("Could not load connected providers."))
+      .finally(() => setLoading(false));
     integrations
       .runtimeCatalog("llm")
       .then(setCatalog)
       .catch(() => setCatalog([]));
   }, [currentProject?.id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  const loadUsage = useCallback(async (connectionID: number, refresh = false) => {
-    setUsageLoadingByID((current) => ({ ...current, [connectionID]: true }));
-    try {
-      const usage = await integrations.connectionUsage(connectionID, refresh);
-      setUsageByID((current) => ({ ...current, [connectionID]: usage }));
-      setUsageErrorByID((current) => {
-        if (!current[connectionID]) return current;
-        const next = { ...current };
-        delete next[connectionID];
-        return next;
-      });
-    } catch (err: any) {
-      setUsageErrorByID((current) => ({
-        ...current,
-        [connectionID]: err?.message || "Usage unavailable",
-      }));
-    } finally {
-      setUsageLoadingByID((current) => ({ ...current, [connectionID]: false }));
-    }
-  }, []);
+  const loadUsage = useCallback(
+    async (connectionID: number, refresh = false) => {
+      setUsageLoadingByID((current) => ({ ...current, [connectionID]: true }));
+      try {
+        const usage = await integrations.connectionUsage(connectionID, refresh);
+        setUsageByID((current) => ({ ...current, [connectionID]: usage }));
+        setUsageErrorByID((current) => {
+          if (!current[connectionID]) return current;
+          const next = { ...current };
+          delete next[connectionID];
+          return next;
+        });
+      } catch (err: any) {
+        setUsageErrorByID((current) => ({
+          ...current,
+          [connectionID]: err?.message || "Usage unavailable",
+        }));
+      } finally {
+        setUsageLoadingByID((current) => ({
+          ...current,
+          [connectionID]: false,
+        }));
+      }
+    },
+    [],
+  );
 
   // Poll quota for subscription-backed connections only. Capability now
   // comes from the catalog's runtime block instead of provider_types.
   const usageEligibleIDs = connected
-    .filter((connection) => connection.capabilities?.includes("subscription_usage"))
+    .filter((connection) =>
+      connection.capabilities?.includes("subscription_usage"),
+    )
     .map((connection) => connection.id)
     .join(",");
 
@@ -1313,6 +1347,7 @@ function ProvidersTab() {
     makeGlobal || !currentProject ? "" : currentProject.id;
 
   const openConnect = (entry: RuntimeCatalogEntry) => {
+    setShowAddProvider(false);
     setConfiguring(entry);
     setCredentials({});
     setMakeGlobal(false);
@@ -1327,8 +1362,13 @@ function ProvidersTab() {
       const value = (credentials[field.name] || "").trim();
       if (value) trimmed[field.name] = value;
     }
-    const authType = defaultIntegrationAuthType(runtimeEntryAsAppDetail(configuring)) || "api_key";
-    const managedAuth = authType === "oauth1" || authType === "oauth2" || authType === "oauth_device_code";
+    const authType =
+      defaultIntegrationAuthType(runtimeEntryAsAppDetail(configuring)) ||
+      "api_key";
+    const managedAuth =
+      authType === "oauth1" ||
+      authType === "oauth2" ||
+      authType === "oauth_device_code";
     if (Object.keys(trimmed).length === 0 && !managedAuth) {
       setError("At least one field is required");
       return;
@@ -1350,7 +1390,10 @@ function ProvidersTab() {
       );
       const flow = response as ConnectCreateResponse;
       if (flow.device_auth && flow.connection) {
-        setPendingDeviceAuth({ connection: flow.connection, auth: flow.device_auth });
+        setPendingDeviceAuth({
+          connection: flow.connection,
+          auth: flow.device_auth,
+        });
         setConfiguring(null);
         return;
       }
@@ -1360,13 +1403,19 @@ function ProvidersTab() {
           "apteva-oauth",
           "width=540,height=680,menubar=no,toolbar=no,location=no",
         );
-        if (!popup) throw new Error("The sign-in popup was blocked. Allow popups and try again.");
+        if (!popup)
+          throw new Error(
+            "The sign-in popup was blocked. Allow popups and try again.",
+          );
         let attempts = 0;
         const poll = async () => {
           attempts += 1;
           try {
             const connection = await integrations.get(flow.connection.id);
-            if (connection.status === "active" || connection.status === "failed") {
+            if (
+              connection.status === "active" ||
+              connection.status === "failed"
+            ) {
               load();
               return;
             }
@@ -1399,7 +1448,11 @@ function ProvidersTab() {
     } catch (err: any) {
       setTestResultByID((current) => ({
         ...current,
-        [connection.id]: { ok: false, latency_ms: 0, error: String(err?.message || "test failed") },
+        [connection.id]: {
+          ok: false,
+          latency_ms: 0,
+          error: String(err?.message || "test failed"),
+        },
       }));
     } finally {
       setBusyID(null);
@@ -1431,7 +1484,11 @@ function ProvidersTab() {
     }
   };
 
-  const handlePinModel = async (connection: RuntimeConnection, tier: string, model: string) => {
+  const handlePinModel = async (
+    connection: RuntimeConnection,
+    tier: string,
+    model: string,
+  ) => {
     setBusyID(connection.id);
     try {
       // Empty string means "provider default" — send null so the key is
@@ -1447,239 +1504,417 @@ function ProvidersTab() {
     }
   };
 
-  const available = availableRuntimeEntries(catalog, connected, currentProject?.id || "");
+  const filteredCatalog = catalog.filter((entry) =>
+    `${entry.name} ${entry.provider_key} ${entry.description}`
+      .toLowerCase()
+      .includes(providerSearch.trim().toLowerCase()),
+  );
+  const effectiveConnections = primaryRuntimeConnections(connected);
+  const providerName = (key: string) =>
+    catalog.find((entry) => entry.provider_key === key)?.name || key;
 
   return (
-    <div className="space-y-8 max-w-4xl">
-      <div>
-        <h2 className="text-text text-base font-bold">Providers</h2>
-        <p className="text-text-muted text-sm mt-1">
-          Model providers your agents think with. Each one is a connection, so it
-          shares the credential store, health checks, and usage tracking with
-          every other integration.
-          {currentProject ? (
-            <>
-              {" "}
-              Showing providers connected in <b>{currentProject.name}</b> plus any{" "}
-              <span className="inline-flex items-center gap-1 px-1.5 py-0 rounded bg-bg-hover text-text-muted text-[10px] align-middle">
-                <GlobeIcon /> global
-              </span>{" "}
-              ones shared across your projects.
-            </>
-          ) : (
-            <> Without a selected project, new providers are global by default.</>
-          )}
-        </p>
+    <div className="space-y-5 max-w-4xl">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 className="text-text text-lg font-bold">Providers</h2>
+          <p className="text-text-muted text-sm mt-1">
+            {currentProject
+              ? `Model providers for ${currentProject.name}, including shared global connections.`
+              : "Your model providers, across all projects."}
+          </p>
+          <p className="text-text-dim text-xs mt-1">
+            Set the default on a card to use it for new agents. Existing agents
+            keep their provider.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setProviderSearch("");
+            setShowAddProvider(true);
+          }}
+          className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-bold text-bg hover:bg-accent-hover"
+        >
+          <span aria-hidden="true">+</span> Add provider
+        </button>
       </div>
 
-      {error && <div className="text-red text-sm">{error}</div>}
+      {error && (
+        <div role="alert" className="text-red text-sm">
+          {error}
+        </div>
+      )}
+      {defaults.error && (
+        <div role="alert" className="text-red text-sm">
+          {defaults.error}{" "}
+          <button onClick={defaults.retry} className="underline">
+            Retry
+          </button>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-muted">
+        <span>
+          {loading
+            ? "Loading connections…"
+            : `${providerGroups.length} connected provider${providerGroups.length === 1 ? "" : "s"}`}
+        </span>
+        {defaults.settings?.provider && (
+          <button
+            type="button"
+            disabled={defaults.busy}
+            onClick={() => void defaults.save("")}
+            className="underline underline-offset-4 hover:text-text disabled:opacity-50"
+          >
+            {currentProject
+              ? "Use account default"
+              : "Choose default automatically"}
+          </button>
+        )}
+        <span role="status" className="text-accent">
+          {defaults.busy
+            ? "Saving default…"
+            : defaults.saved
+              ? "Default saved"
+              : ""}
+        </span>
+        {defaults.settings?.provider &&
+          !defaults.settings.available_providers.includes(
+            defaults.settings.provider,
+          ) && (
+            <span>
+              Saved default unavailable. Using{" "}
+              {providerName(defaults.settings.effective_provider)}.
+            </span>
+          )}
+      </div>
 
-      {connected.length > 0 && (
-        <section>
-          <h3 className="text-text-muted text-sm font-bold mb-3 uppercase tracking-wide">
-            Connected
+      {!loading && connected.length === 0 && (
+        <div className="py-16 text-center">
+          <h3 className="text-text font-semibold">
+            Connect your first provider
           </h3>
-          <div className="space-y-3">
-            {providerGroups.map(([groupKey, group]) => (
-              <div key={groupKey} className="border border-border rounded-lg bg-bg-card p-4">
-                <div className="flex items-center justify-between gap-2 mb-3 min-w-0">
-                  <span className="text-text text-sm font-bold truncate">
-                    {group[0]?.app_name || group[0]?.provider_key}
+          <p className="mt-2 text-sm text-text-muted">
+            Add a model provider to get your agents thinking.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setProviderSearch("");
+              setShowAddProvider(true);
+            }}
+            className="mt-4 text-sm text-accent hover:underline"
+          >
+            Choose a provider
+          </button>
+        </div>
+      )}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        {providerGroups.map(([groupKey, group]) => {
+          const first = group[0]!;
+          const entry = catalog.find(
+            (entry) => entry.provider_key === first.provider_key,
+          );
+          const effective = effectiveConnections.find(
+            (connection) => connection.provider_key === first.provider_key,
+          );
+          const activeScope = effective?.id === first.id;
+          const isDefault =
+            activeScope &&
+            defaults.settings?.effective_provider === first.provider_key;
+          const canSelectDefault =
+            activeScope &&
+            defaults.settings?.available_providers.includes(first.provider_key);
+          return (
+            <section
+              key={groupKey}
+              aria-label={`${first.app_name || first.provider_key} ${first.scope} provider`}
+              className={`min-w-0 rounded-xl border p-4 ${isDefault ? "border-accent/60" : "border-border"}`}
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <AppIcon
+                  src={entry?.logo || undefined}
+                  name={first.app_name || first.provider_key}
+                  size="md"
+                  framed={false}
+                />
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-text text-sm font-bold truncate">
+                    {first.app_name || first.provider_key}
+                  </h3>
+                  <span className="text-xs text-text-muted">
+                    {first.scope === "global"
+                      ? "Shared across projects"
+                      : currentProject?.name || "Project connection"}
+                    {group.length > 1 ? ` · ${group.length} credentials` : ""}
                   </span>
-                  <span className="text-[10px] text-text-dim font-mono">{group[0]?.provider_key}</span>
                 </div>
-
-                <div className="space-y-3">
-                  {group.map((connection) => {
-                    const busy = busyID === connection.id;
-                    const result = testResultByID[connection.id];
-                    const supportsUsage = !!connection.capabilities?.includes("subscription_usage");
-                    return (
-                      <div
-                        key={connection.id}
-                        className="rounded-md border border-border p-3"
-                      >
-                        <div className="flex items-center justify-between gap-2 mb-2 min-w-0">
-                          <div className="flex items-center gap-2 min-w-0">
-                            {/* Only render the choice when there IS one.
-                                A lone credential has nothing to pick
-                                between, so the control would be noise. */}
-                            {group.length > 1 && (
-                              <input
-                                type="radio"
-                                name={`primary-${groupKey}`}
-                                checked={connection.is_primary}
-                                onChange={() => void handleMakePrimary(connection)}
-                                disabled={busy}
-                                className="accent-accent"
-                                aria-label={`Use ${connection.name} for agents`}
-                                title="Use this credential for agents"
-                              />
-                            )}
-                            <span className="text-text text-sm truncate">{connection.name}</span>
-                          </div>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {connection.scope === "global" ? (
-                              <span
-                                className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-muted flex items-center gap-1"
-                                title="Global — shared with every project."
-                              >
-                                <GlobeIcon />
-                                global
-                              </span>
-                            ) : (
-                              <span
-                                className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-muted"
-                                title={`Scoped to project ${connection.project_id}`}
-                              >
-                                project
-                              </span>
-                            )}
-                            {/* Only meaningful alongside siblings. A lone
-                                credential is trivially the default, so
-                                badging it says nothing and competes with
-                                the scope badge for attention. */}
-                            {connection.is_primary && group.length > 1 && (
-                              <span
-                                className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-accent"
-                                title="Agents in this scope use this credential."
-                              >
-                                default
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        {supportsUsage && (
-                          <div className="mb-2">
-                            <ProviderUsageSummary
-                              usage={usageByID[connection.id]}
-                              loading={usageLoadingByID[connection.id]}
-                              refreshing={usageLoadingByID[connection.id] && !!usageByID[connection.id]}
-                              error={usageErrorByID[connection.id]}
-                              onRefresh={() => void loadUsage(connection.id, true)}
-                              onOpenDetails={() => {
-                                const usage = usageByID[connection.id];
-                                if (usage) setUsageDetails({ connection, usage });
-                              }}
-                            />
-                          </div>
-                        )}
-
-                        <div className="flex flex-wrap items-center gap-2 mb-2">
-                          {(["large", "medium", "small"] as const).map((tier) => (
-                            <label key={tier} className="flex items-center gap-1.5">
-                              <span className="text-[10px] uppercase tracking-wide text-text-dim">
-                                {tier}
-                              </span>
-                              <input
-                                type="text"
-                                defaultValue={connection.runtime_config?.[`model_${tier}`] || ""}
-                                placeholder="provider default"
-                                onBlur={(event) => {
-                                  const next = (event.target as HTMLInputElement).value;
-                                  const current = connection.runtime_config?.[`model_${tier}`] || "";
-                                  if (next.trim() !== String(current).trim()) {
-                                    void handlePinModel(connection, tier, next);
-                                  }
-                                }}
-                                disabled={busy}
-                                spellCheck={false}
-                                className="bg-bg-input border border-border rounded px-2 py-1 text-xs font-mono text-text focus:outline-none focus:border-accent"
-                                style={{ width: "11rem" }}
-                              />
-                            </label>
+              </div>
+              <div className="divide-y divide-border">
+                {group.map((connection, index) => {
+                  const busy = busyID === connection.id;
+                  const result = testResultByID[connection.id];
+                  const content = (
+                    <div className="space-y-3 pb-3">
+                      {group.length > 1 && (
+                        <label className="flex items-center gap-2 text-xs text-text-muted">
+                          <input
+                            type="radio"
+                            name={`primary-${groupKey}`}
+                            checked={connection.is_primary}
+                            onChange={() => void handleMakePrimary(connection)}
+                            disabled={busy}
+                            className="accent-accent"
+                            aria-label={`Use ${connection.name} as the primary credential`}
+                          />
+                          Use this credential for{" "}
+                          {first.app_name || first.provider_key}
+                        </label>
+                      )}
+                      {!!connection.capabilities?.includes(
+                        "subscription_usage",
+                      ) && (
+                        <ProviderUsageSummary
+                          usage={usageByID[connection.id]}
+                          loading={usageLoadingByID[connection.id]}
+                          refreshing={
+                            usageLoadingByID[connection.id] &&
+                            !!usageByID[connection.id]
+                          }
+                          error={usageErrorByID[connection.id]}
+                          onRefresh={() => void loadUsage(connection.id, true)}
+                          onOpenDetails={() => {
+                            const usage = usageByID[connection.id];
+                            if (usage) setUsageDetails({ connection, usage });
+                          }}
+                        />
+                      )}
+                      {connection.runtime_config?.model_selection_errors && (
+                        <div role="alert" className="text-xs text-red-400 space-y-1">
+                          {Object.entries(connection.runtime_config.model_selection_errors).map(([tier, message]) => (
+                            <p key={tier}>{String(message)}</p>
                           ))}
                         </div>
-
-                        <div className="flex items-center gap-3">
-                          <button
-                            onClick={() => void handleTest(connection)}
-                            disabled={busy}
-                            className="text-xs text-text-muted hover:text-accent transition-colors disabled:opacity-50"
-                            title="Probe the upstream with the saved credentials"
+                      )}
+                      <div className="space-y-1.5">
+                        {(["large", "medium", "small"] as const).map((tier) => (
+                          <label
+                            key={tier}
+                            className="flex items-center gap-3 min-w-0"
                           >
-                            {busy ? "Working…" : "Test"}
-                          </button>
-                          {isConnectionReauthable(connection.auth_type || "") && (
-                            <button
-                              onClick={() => setReauthFor(connection)}
-                              disabled={busy}
-                              className="text-xs text-text-muted hover:text-accent transition-colors disabled:opacity-50"
-                            >
-                              Re-auth
-                            </button>
-                          )}
-                          <button
-                            onClick={() => void handleDisconnect(connection)}
-                            disabled={busy}
-                            className="text-xs text-text-muted hover:text-red transition-colors disabled:opacity-50"
-                          >
-                            Disconnect
-                          </button>
-                          {result && (
-                            <span
-                              className={`text-xs ${result.ok ? "text-green" : "text-red"}`}
-                              title={result.error || ""}
-                            >
-                              {result.ok
-                                ? `✓ ok (${result.latency_ms}ms)`
-                                : `✗ ${result.error || "failed"}`}
+                            <span className="w-12 shrink-0 text-xs capitalize text-text-muted">
+                              {tier}
                             </span>
-                          )}
-                        </div>
+                            <input
+                              type="text"
+                              key={`${connection.id}-${tier}-${connection.runtime_config?.[`model_${tier}`] || ""}`}
+                              defaultValue={
+                                connection.runtime_config?.[`model_${tier}`] ||
+                                ""
+                              }
+                              placeholder="Provider default"
+                              onBlur={(event) => {
+                                const next = event.target.value;
+                                const current =
+                                  connection.runtime_config?.[
+                                    `model_${tier}`
+                                  ] || "";
+                                if (next.trim() !== String(current).trim())
+                                  void handlePinModel(connection, tier, next);
+                              }}
+                              disabled={busy}
+                              spellCheck={false}
+                              className="min-w-0 w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs text-text focus:outline-none focus:border-accent"
+                            />
+                          </label>
+                        ))}
                       </div>
-                    );
-                  })}
-                </div>
+                      <div className="flex flex-wrap items-center gap-4">
+                        <button
+                          onClick={() => void handleTest(connection)}
+                          disabled={busy}
+                          className="text-xs text-text-muted hover:text-accent disabled:opacity-50"
+                        >
+                          {busy ? "Working…" : "Test connection"}
+                        </button>
+                        {isConnectionReauthable(connection.auth_type || "") && (
+                          <button
+                            onClick={() => setReauthFor(connection)}
+                            disabled={busy}
+                            className="text-xs text-text-muted hover:text-accent disabled:opacity-50"
+                          >
+                            Re-auth
+                          </button>
+                        )}
+                        <button
+                          onClick={() => void handleDisconnect(connection)}
+                          disabled={busy}
+                          className="ml-auto text-xs text-text-dim hover:text-red disabled:opacity-50"
+                        >
+                          Disconnect
+                        </button>
+                      </div>
+                      {result && (
+                        <p
+                          className={`text-xs break-words ${result.ok ? "text-green" : "text-red"}`}
+                        >
+                          {result.ok
+                            ? `✓ Connected (${result.latency_ms}ms)`
+                            : result.error || "Connection failed"}
+                        </p>
+                      )}
+                    </div>
+                  );
+                  return group.length > 1 ? (
+                    <details
+                      key={connection.id}
+                      open={index === 0}
+                      className="pt-2 first:pt-0"
+                    >
+                      <summary className="cursor-pointer text-xs text-text mb-3">
+                        {connection.name}
+                        {connection.is_primary && (
+                          <span className="ml-2 text-text-muted">
+                            Primary credential
+                          </span>
+                        )}
+                      </summary>
+                      {content}
+                    </details>
+                  ) : (
+                    <div key={connection.id}>
+                      {connection.name !== first.app_name && (
+                        <p className="text-xs text-text-muted mb-3 truncate">
+                          {connection.name}
+                        </p>
+                      )}
+                      {content}
+                    </div>
+                  );
+                })}
               </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      <section>
-        <h3 className="text-text-muted text-sm font-bold mb-3 uppercase tracking-wide">
-          Available
-        </h3>
-        {available.length === 0 ? (
-          <p className="text-text-muted text-sm">
-            Every model provider in the catalog is connected.
-          </p>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {available.map((entry) => (
-              <div
-                key={entry.slug}
-                className="border border-border bg-bg-card rounded-lg p-4 transition-colors cursor-pointer hover:border-accent"
-                onClick={() => openConnect(entry)}
-              >
-                <div className="flex items-center justify-between mb-1 gap-2 min-w-0">
-                  <span className="text-text text-sm font-bold truncate">{entry.name}</span>
-                  <span className="text-[10px] text-text-dim font-mono shrink-0">
-                    {entry.provider_key}
+              <div className="border-t border-border pt-3">
+                {canSelectDefault ? (
+                  <button
+                    type="button"
+                    aria-label={`Make ${first.app_name || first.provider_key} the default for new agents`}
+                    aria-pressed={!!isDefault}
+                    disabled={
+                      defaults.busy ||
+                      (isDefault &&
+                        defaults.settings?.provider === first.provider_key)
+                    }
+                    onClick={() => void defaults.save(first.provider_key)}
+                    className={`text-xs font-semibold disabled:cursor-default ${isDefault ? "text-accent" : "text-text-muted hover:text-accent"} ${defaults.busy ? "opacity-50" : ""}`}
+                  >
+                    {isDefault
+                      ? "✓ Default for new agents"
+                      : "Make default for new agents"}
+                  </button>
+                ) : (
+                  <span className="text-xs text-text-dim">
+                    {!defaults.settings
+                      ? "Loading default…"
+                      : !activeScope
+                        ? "Project credentials take priority"
+                        : "Unavailable for new agents"}
                   </span>
-                </div>
-                <p className="text-text-muted text-xs leading-relaxed mb-2 line-clamp-3">
-                  {entry.description}
-                </p>
-                <span className="text-xs text-accent">
-                  {isBrowserOAuthType(defaultIntegrationAuthType(runtimeEntryAsAppDetail(entry)))
-                    ? "Connect"
-                    : "Configure"}
-                </span>
+                )}
               </div>
-            ))}
+            </section>
+          );
+        })}
+      </div>
+
+      <Modal
+        open={showAddProvider}
+        onClose={() => setShowAddProvider(false)}
+        ariaLabel="Add provider"
+        width="max-w-2xl"
+      >
+        <div className="flex items-start justify-between gap-4 p-5 pb-4">
+          <div>
+            <h3 className="text-base text-text font-bold">Add provider</h3>
+            <p className="text-sm text-text-muted mt-1">
+              Connect a new provider or add another credential.
+            </p>
           </div>
-        )}
-      </section>
+          <button
+            type="button"
+            onClick={() => setShowAddProvider(false)}
+            aria-label="Close add provider"
+            className="text-text-muted hover:text-text text-xl"
+          >
+            ×
+          </button>
+        </div>
+        <div className="px-5 pb-4">
+          <input
+            autoFocus
+            type="search"
+            aria-label="Search providers"
+            placeholder="Search providers…"
+            value={providerSearch}
+            onChange={(event) => setProviderSearch(event.target.value)}
+            className="w-full rounded-lg border border-border bg-transparent px-3 py-2.5 text-sm text-text focus:outline-none focus:border-accent"
+          />
+        </div>
+        <div className="overflow-y-auto px-5 pb-5 space-y-1">
+          {filteredCatalog.map((entry) => (
+            <button
+              type="button"
+              key={entry.slug}
+              onClick={() => openConnect(entry)}
+              className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-bg-hover transition-colors"
+            >
+              <AppIcon
+                src={entry.logo || undefined}
+                name={entry.name}
+                size="md"
+                framed={false}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-text">
+                  {entry.name}
+                </span>
+                <span className="block text-xs text-text-muted line-clamp-2 mt-1">
+                  {entry.description}
+                </span>
+              </span>
+              <span className="shrink-0 text-xs text-accent">
+                {connected.some(
+                  (connection) => connection.app_slug === entry.slug,
+                )
+                  ? "Add another"
+                  : "Connect"}
+              </span>
+            </button>
+          ))}
+          {filteredCatalog.length === 0 && (
+            <p className="py-8 text-center text-sm text-text-muted">
+              {catalog.length
+                ? "No providers match your search."
+                : "No providers available."}
+            </p>
+          )}
+        </div>
+      </Modal>
 
       {/* Credential form. Same renderer as every other integration, so
           inputs carry the catalog's labels rather than env var names. */}
-      <Modal open={!!configuring} onClose={() => setConfiguring(null)}>
+      <Modal
+        open={!!configuring}
+        onClose={() => setConfiguring(null)}
+        ariaLabel="Connect provider"
+      >
         {configuring && (
-          <form onSubmit={handleConnect} className="p-6 space-y-4">
-            <h3 className="text-text text-base font-bold">{configuring.name}</h3>
+          <form
+            onSubmit={handleConnect}
+            className="p-6 space-y-4 overflow-y-auto"
+          >
+            <h3 className="text-text text-base font-bold">
+              {configuring.name}
+            </h3>
             <p className="text-text-muted text-sm">{configuring.description}</p>
 
             <CredentialFields
@@ -1697,7 +1932,9 @@ function ProvidersTab() {
                   className="mt-1 accent-accent"
                 />
                 <span className="text-sm text-text-muted leading-snug">
-                  <span className="text-text">Make global</span> — share these credentials with every project, not just <b>{currentProject.name}</b>.
+                  <span className="text-text">Make global</span> — share these
+                  credentials with every project, not just{" "}
+                  <b>{currentProject.name}</b>.
                   <br />
                   <span className="text-[11px] text-text-dim">
                     Project-scoped credentials override globals when both exist.
@@ -1736,10 +1973,14 @@ function ProvidersTab() {
           <div className="p-6">
             <div className="flex items-start justify-between gap-4 mb-5">
               <div>
-                <h3 className="text-text text-base font-bold">{t("settings.providers.usageDetails")}</h3>
+                <h3 className="text-text text-base font-bold">
+                  {t("settings.providers.usageDetails")}
+                </h3>
                 <p className="text-xs text-text-muted mt-1">
                   {usageDetails.connection.name}
-                  {usageDetails.usage.plan ? ` · ${usageDetails.usage.plan}` : ""}
+                  {usageDetails.usage.plan
+                    ? ` · ${usageDetails.usage.plan}`
+                    : ""}
                 </p>
               </div>
               <button
@@ -1765,11 +2006,21 @@ function ProvidersTab() {
           load();
         }}
       />
-      <Modal open={!!pendingDeviceAuth} onClose={() => setPendingDeviceAuth(null)} width="max-w-md" ariaLabel="Complete provider sign-in">
+      <Modal
+        open={!!pendingDeviceAuth}
+        onClose={() => setPendingDeviceAuth(null)}
+        width="max-w-md"
+        ariaLabel="Complete provider sign-in"
+      >
         <div className="w-full space-y-4 p-5">
           <div>
-            <h2 className="text-base font-bold text-text">Connect {pendingDeviceAuth?.connection.name}</h2>
-            <p className="mt-1 text-xs text-text-muted">Authorize this provider without changing its project scope or model configuration.</p>
+            <h2 className="text-base font-bold text-text">
+              Connect {pendingDeviceAuth?.connection.name}
+            </h2>
+            <p className="mt-1 text-xs text-text-muted">
+              Authorize this provider without changing its project scope or
+              model configuration.
+            </p>
           </div>
           {pendingDeviceAuth && (
             <DeviceCodeAuthPanel
@@ -1783,7 +2034,13 @@ function ProvidersTab() {
           )}
           {error && <div className="text-sm text-red">{error}</div>}
           <div className="flex justify-end border-t border-border pt-3">
-            <button type="button" onClick={() => setPendingDeviceAuth(null)} className="text-sm text-text-muted hover:text-text">Close</button>
+            <button
+              type="button"
+              onClick={() => setPendingDeviceAuth(null)}
+              className="text-sm text-text-muted hover:text-text"
+            >
+              Close
+            </button>
           </div>
         </div>
       </Modal>
@@ -3809,9 +4066,11 @@ function SubscriptionsTab() {
 
 // ─── API Keys Tab ───
 
-function APIKeysTab() {
+export function APIKeysTab() {
   const { projects, currentProject } = useProjects();
   const [keys, setKeys] = useState<Key[]>([]);
+  const [keyAccess, setKeyAccess] = useState<"read_only" | "read_write">("read_only");
+  const [newKeyAccess, setNewKeyAccess] = useState<"read_only" | "read_write">("read_only");
   const [newKeyName, setNewKeyName] = useState("");
   const [newKey, setNewKey] = useState<string | null>(null);
   const [newKeyKind, setNewKeyKind] = useState<"private" | "public_client">("private");
@@ -3900,12 +4159,14 @@ function APIKeysTab() {
     try {
       const options: {
         kind?: "private" | "public_client";
+        access?: "read_only" | "read_write";
         project_id?: string;
         scopes?: unknown;
         allowed_origins?: string[];
         rate_limit_per_minute?: number;
         expires_at?: string;
       } = { kind: keyKind };
+      if (keyKind === "private") options.access = keyAccess;
       if (keyKind === "public_client") {
         if (!projectId) {
           throw new Error("Choose a project for this scoped client key.");
@@ -3934,6 +4195,7 @@ function APIKeysTab() {
       }
       const result = await auth.createKey(newKeyName.trim(), options);
       setNewKey(result.key);
+      setNewKeyAccess(result.access || "read_write");
       setNewKeyKind(result.kind === "public_client" ? "public_client" : "private");
       setNewKeyName("");
       load();
@@ -4001,9 +4263,24 @@ function APIKeysTab() {
         </div>
 
         {keyKind === "private" ? (
-          <p className="text-text-muted text-sm">
-            Private keys keep the existing behavior: full server API access as your user. Do not put them in static sites.
-          </p>
+          <div className="space-y-2">
+            <label htmlFor="api-key-access" className="block text-text-muted text-xs font-bold uppercase tracking-wide">Permissions</label>
+            <select
+              id="api-key-access"
+              value={keyAccess}
+              onChange={(e) => setKeyAccess(e.target.value as "read_only" | "read_write")}
+              className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-text focus:outline-none focus:border-accent"
+            >
+              <option value="read_only">Read only</option>
+              <option value="read_write">Read &amp; write</option>
+            </select>
+            <p className="text-text-muted text-sm">
+              {keyAccess === "read_only"
+                ? "Inspect agents, status, saved settings, and telemetry within your existing access. Changes, commands, tool execution, and credential exports are blocked."
+                : "Read and change server data within your existing user permissions."}
+              {" "}Keep private keys on your server, never in public sites.
+            </p>
+          </div>
         ) : (
           <div className="grid md:grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -4120,7 +4397,7 @@ function APIKeysTab() {
       {newKey && (
         <div className="border border-accent rounded-lg p-4 bg-bg-card">
           <p className="text-accent text-sm mb-2">
-            Save this {newKeyKind === "public_client" ? "scoped client" : "private"} key — it won't be shown again:
+            Save this {newKeyKind === "public_client" ? "scoped client" : newKeyAccess === "read_only" ? "read-only private" : "read-write private"} key — it won't be shown again:
           </p>
           <code className="text-text text-sm select-all block bg-bg-input rounded px-3 py-2">{newKey}</code>
           <button
@@ -4156,7 +4433,7 @@ function APIKeysTab() {
                   {k.expires_at ? <span>expires {new Date(k.expires_at).toLocaleString()}</span> : null}
                 </div>
               ) : (
-                <p className="text-text-muted text-sm mt-1">Full server API access</p>
+                <p className="text-text-muted text-sm mt-1">{k.access === "read_only" ? "Read only" : "Read & write"} · Your user permissions apply</p>
               )}
               {k.last_used && <p className="text-text-muted text-xs mt-1">Last used {new Date(k.last_used).toLocaleString()}</p>}
             </div>

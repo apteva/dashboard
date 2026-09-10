@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { apps, auth, instances, integrations, type InterfaceLevel } from "../api";
+import { apps, auth, instances, integrations, invites, type InterfaceLevel } from "../api";
 import { AuthProvider, useAuth } from "../hooks/useAuth";
 import { AudienceProvider } from "../hooks/useAudience";
 import { Onboarding } from "./Onboarding";
 
-const originals = [auth, apps, instances, integrations].map((target) => ({ target, values: { ...target } }));
+const originals = [auth, apps, instances, integrations, invites].map((target) => ({ target, values: { ...target } }));
 const originalFetch = globalThis.fetch;
 let onboarded = false;
 let configured = false;
@@ -51,6 +51,12 @@ beforeEach(() => {
   integrations.runtimeCatalog = mock(async () => [{ slug: "test-provider", name: "Test provider", description: "", logo: null, role: "llm" as const, provider_key: "test", auth_types: ["api_key"], credential_fields: [{ name: "api_key", label: "API Key", required: true }] }]);
   integrations.connect = mock(async () => { configured = true; return { id: 9 } as Awaited<ReturnType<typeof integrations.connect>>; });
   integrations.testConnection = mock(async () => ({ ok: true, latency_ms: 1 }));
+  integrations.connections = mock(async () => []);
+  integrations.runtimeConnections = mock(async () => configured ? [{id:9,role:"llm",provider_key:"test",app_slug:"test-provider"}] as any : []);
+  integrations.newAgentProvider = mock(async () => ({effective_provider:"test"}) as any);
+  integrations.setNewAgentProvider = mock(async (provider) => ({effective_provider:provider}) as any);
+  invites.create = mock(async () => ({token:"fixture-replacement-token"}) as any);
+  invites.fulfill = mock(async () => ({status:"updated" as const,connection_id:9}));
   globalThis.fetch = mock(async () => Response.json({ id: "chat-first" })) as unknown as typeof fetch;
 });
 afterEach(() => {
@@ -157,4 +163,130 @@ test("developer setup keeps the optional AI path and agent wizard", async () => 
   await screen.findByText("Conversation ready");
   expect(instances.create).not.toHaveBeenCalled();
   expect(instances.start).toHaveBeenCalledWith(11);
+});
+
+
+test("corrects saved credentials on the same connection before verification", async () => {
+ integrations.testConnection = mock(async () => ({ok:true, skipped:true, latency_ms:1}));
+ integrations.connectionModels = mock(async () => []);
+ await mount(); await choose(); await fillKey(); connect();
+ await screen.findByText(/No models are available/);
+ fireEvent.change(document.querySelector('input[type="password"]')!, {target:{value:"corrected-test-key"}});
+ integrations.connectionModels = mock(async () => [{id:"model-a"}] as any);
+ connect();
+ await screen.findByText("Conversation ready");
+ expect(integrations.connect).toHaveBeenCalledTimes(1);
+ expect(invites.create).toHaveBeenCalledWith({app_slug:"test-provider",connection_id:9,ttl_seconds:60});
+ expect(invites.fulfill).toHaveBeenCalledWith("fixture-replacement-token",{credentials:{api_key:"corrected-test-key"}});
+});
+
+test("Back and Continue re-verifies a saved provider instead of bypassing failure", async () => {
+ integrations.testConnection = mock(async () => ({ok:true, skipped:true, latency_ms:1}));
+ integrations.connectionModels = mock(async () => []);
+ await mount(); await choose(); await fillKey(); connect();
+ await screen.findByText(/No models are available/);
+ fireEvent.click(screen.getByRole("button",{name:"← Back"}));
+ fireEvent.click(screen.getByRole("button",{name:"Continue"}));
+ await screen.findByRole("heading",{name:"Connect your AI"});
+ await screen.findByText(/No models are available/);
+ expect(auth.completeOnboarding).not.toHaveBeenCalled();
+ expect(instances.create).not.toHaveBeenCalled();
+ expect(integrations.connectionModels).toHaveBeenCalledTimes(2);
+});
+
+test("reload checks existing credentials and lets the user repair them without duplicates", async () => {
+ configured=true;
+ integrations.testConnection=mock(async()=>({ok:false,error:"Expired key",latency_ms:1}));
+ await mount(); await choose();
+ await screen.findByText("Expired key");
+ expect(auth.completeOnboarding).not.toHaveBeenCalled();
+ await fillKey();
+ integrations.testConnection=mock(async()=>({ok:true,latency_ms:1}));
+ connect();
+ await screen.findByText("Conversation ready");
+ expect(integrations.connect).not.toHaveBeenCalled();
+ expect(invites.fulfill).toHaveBeenCalledTimes(1);
+});
+
+test("replacement failure keeps the saved connection available for another correction",async()=>{
+ integrations.testConnection=mock(async()=>({ok:false,error:"Invalid key",latency_ms:1}));
+ await mount();await choose();await fillKey();connect();await screen.findByText("Invalid key");
+ fireEvent.change(document.querySelector('input[type="password"]')!,{target:{value:"corrected"}});
+ invites.fulfill=mock(async()=>{throw new Error("Temporary update failure");});
+ connect();await screen.findByText("Temporary update failure");
+ expect(auth.completeOnboarding).not.toHaveBeenCalled();
+ invites.fulfill=mock(async()=>({status:"updated" as const,connection_id:9}));
+ integrations.testConnection=mock(async()=>({ok:true,latency_ms:1}));
+ connect();await screen.findByText("Conversation ready");
+ expect(integrations.connect).toHaveBeenCalledTimes(1);
+ expect(invites.fulfill).toHaveBeenCalledTimes(1);
+});
+
+
+test("switching from a failed provider uses the verified replacement for the starter", async () => {
+  configured = true;
+  let provider = "test";
+  const catalog = await integrations.runtimeCatalog("llm");
+  integrations.runtimeCatalog = mock(async () => [...catalog, { ...catalog[0]!, slug: "other-provider", name: "Other provider", provider_key: "other" }]);
+  integrations.runtimeConnections = mock(async () => [
+    { id: 9, role: "llm", provider_key: "test", app_slug: "test-provider" },
+    { id: 10, role: "llm", provider_key: "other", app_slug: "other-provider" },
+  ] as any);
+  integrations.newAgentProvider = mock(async () => ({ effective_provider: provider }) as any);
+  integrations.setNewAgentProvider = mock(async (next) => { provider = next; return { effective_provider: next } as any; });
+  integrations.testConnection = mock(async (id) => ({ ok: id === 10, latency_ms: 1, error: id === 9 ? "Expired key" : undefined }));
+  integrations.connect = mock(async () => ({ id: 10 }) as any);
+  await mount(); await choose();
+  await screen.findByText("Expired key");
+  await screen.findByRole("button", { name: "Connect and get started" });
+  fireEvent.change(screen.getByRole("combobox"), { target: { value: "other-provider" } });
+  await fillKey(); connect();
+  await screen.findByText("Conversation ready");
+  expect(integrations.setNewAgentProvider).toHaveBeenCalledWith("other", "p");
+  expect(integrations.connect).toHaveBeenCalledWith("other-provider", "Other provider", { api_key: "test-key" }, "api_key", "", undefined, "integration", false);
+  expect(invites.fulfill).not.toHaveBeenCalled();
+});
+
+test("managed AI without a user-owned connection can complete onboarding", async () => {
+  configured = true;
+  canManage = false;
+  integrations.runtimeConnections = mock(async () => []);
+  await mount(); await choose();
+  await screen.findByText("Conversation ready");
+  expect(integrations.testConnection).not.toHaveBeenCalled();
+  expect(integrations.connect).not.toHaveBeenCalled();
+});
+
+test("a lost create response reuses the saved row when the user retries", async () => {
+  integrations.connect = mock(async () => {
+    configured = true;
+    integrations.connections = mock(async () => [{ id: 9, app_slug: "test-provider", name: "Test provider", project_id: "" }] as any);
+    throw new Error("Connection interrupted");
+  });
+  await mount(); await choose(); await fillKey(); connect();
+  await screen.findByText("Connection interrupted");
+  connect();
+  await screen.findByText("Conversation ready");
+  expect(integrations.connect).toHaveBeenCalledTimes(1);
+  expect(invites.create).toHaveBeenCalledWith({ app_slug: "test-provider", connection_id: 9, ttl_seconds: 60 });
+});
+
+
+test("an expired OAuth provider can be replaced without writing its connection", async () => {
+  configured = true;
+  let provider = "oauth";
+  integrations.runtimeConnections = mock(async () => [
+    { id: 8, role: "llm", provider_key: "oauth", app_slug: "oauth-provider" },
+    { id: 9, role: "llm", provider_key: "test", app_slug: "test-provider" },
+  ] as any);
+  integrations.newAgentProvider = mock(async () => ({ effective_provider: provider }) as any);
+  integrations.setNewAgentProvider = mock(async (next) => { provider = next; return { effective_provider: next } as any; });
+  integrations.testConnection = mock(async (id) => ({ ok: id === 9, latency_ms: 1, error: id === 8 ? "OAuth session expired" : undefined }));
+  await mount(); await choose();
+  await screen.findByText("OAuth session expired");
+  await fillKey(); connect();
+  await screen.findByText("Conversation ready");
+  expect(integrations.connect).toHaveBeenCalledTimes(1);
+  expect(integrations.setNewAgentProvider).toHaveBeenCalledWith("test", "p");
+  expect(invites.fulfill).not.toHaveBeenCalled();
 });

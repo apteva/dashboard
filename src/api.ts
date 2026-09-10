@@ -447,6 +447,7 @@ export const auth = {
     name: string,
     options?: {
       kind?: "private" | "public_client";
+      access?: "read_only" | "read_write";
       project_id?: string;
       scopes?: unknown;
       allowed_origins?: string[];
@@ -454,7 +455,7 @@ export const auth = {
       expires_at?: string;
     },
   ) =>
-    request<{ id: number; key: string; prefix: string; kind: string }>(
+    request<{ id: number; key: string; prefix: string; kind: string; access: "read_only" | "read_write" }>(
       "POST",
       "/auth/keys",
       {
@@ -470,6 +471,7 @@ export const auth = {
         name: string;
         key_prefix: string;
         kind?: "private" | "public_client";
+        access?: "read_only" | "read_write";
         project_id?: string;
         scopes?: string;
         allowed_origins?: string;
@@ -697,6 +699,7 @@ export interface TemplateLogo {
   kind: "app" | "integration" | "channel";
   slug: string;
   icon_url?: string;
+  icon_style?: "image" | "monochrome";
   label: string;
   // "direct" — declared on the template itself.
   // "derived" — pulled from a required app's requires.integrations.
@@ -978,6 +981,7 @@ export interface Agent {
   name: string;
   directive: string;
   mode: RunMode;
+  proactivity?: number;
   config: string;
   port: number;
   pid: number;
@@ -1052,6 +1056,7 @@ export const instances = {
     projectId?: string,
     start?: boolean,
     opts?: {
+      proactivity?: number;
       idempotencyKey?: string;
       includeChannels?: boolean;
       unconscious?: boolean;
@@ -1071,6 +1076,7 @@ export const instances = {
       directive: directive || "",
       mode: mode || "autonomous",
       project_id: projectId || "",
+      ...(opts?.proactivity !== undefined ? { proactivity: opts.proactivity } : {}),
       ...(opts?.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
       // Server default is start=true; pass explicit false to create stopped.
       ...(start === false ? { start: false } : {}),
@@ -1138,6 +1144,7 @@ export const instances = {
     opts: {
       directive?: string;
       mode?: string;
+      proactivity?: number;
       providers?: Array<{ name: string; default: boolean }>;
       modelOverride?: string;
       realtimeEnabled?: boolean;
@@ -1148,6 +1155,7 @@ export const instances = {
     request<Agent & { behavior_sync?: BehaviorSync }>("PUT", `/agents/${id}/config`, {
       ...(opts.directive ? { directive: opts.directive } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
+      ...(opts.proactivity !== undefined ? { proactivity: opts.proactivity } : {}),
       ...(opts.providers ? { providers: opts.providers } : {}),
       ...(opts.modelOverride !== undefined
         ? { model_override: opts.modelOverride }
@@ -1873,6 +1881,12 @@ export const integrations = {
       `/connections/runtime${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
     ),
 
+  newAgentProvider: (projectId?: string) =>
+    request<NewAgentProviderSettings>("GET", `/settings/new-agent-provider${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`),
+
+  setNewAgentProvider: (provider: string, projectId?: string) =>
+    request<NewAgentProviderSettings>("PUT", `/settings/new-agent-provider${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`, { provider }),
+
   /** Pick which credential backs the runtime when several exist for one
    *  provider. Demotes the previous primary server-side. */
   setPrimary: (connectionId: number) =>
@@ -2322,6 +2336,7 @@ export interface Status {
   memories: number;
   paused: boolean;
   mode: RunMode;
+  proactivity?: number;
   behavior_sync?: BehaviorSync;
   pending_approval: PendingApproval | null;
   execution_control?: ExecutionControlStatus;
@@ -2652,6 +2667,7 @@ export const core = {
     request<{
       directive: string;
       mode: RunMode;
+      proactivity?: number;
       behavior_sync?: BehaviorSync;
       provider?: {
         name: string;
@@ -4073,3 +4089,10 @@ export const platform = {
   status: () => request<PlatformStatus>("GET", "/platform-status"),
   refresh: () => request<PlatformStatus>("POST", "/platform-status/refresh"),
 };
+
+export interface NewAgentProviderSettings {
+  provider: string;
+  effective_provider: string;
+  inherited_provider: string;
+  available_providers: string[];
+}
