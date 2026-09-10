@@ -364,6 +364,90 @@ body.apteva-shell-active #root {
   }
 }
 
+/* Shared range controls, including app panels hosted by the dashboard.
+ * Draw the track ourselves so native browser bevels and gray outlines never
+ * surround the accent. Controlled sliders can provide --range-fill (0–100%).
+ * A 24px input preserves a generous target around the slim 4px visible track.
+ */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 24px;
+  padding: 0;
+  margin-block: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border: 0;
+  border-radius: 9999px;
+  background: linear-gradient(to right, var(--accent) var(--range-fill, 0%), color-mix(in srgb, var(--accent) 18%, transparent) var(--range-fill, 0%));
+  box-shadow: none;
+}
+
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  border: 0;
+  border-radius: 9999px;
+  background: linear-gradient(to right, var(--accent) var(--range-fill, 0%), color-mix(in srgb, var(--accent) 18%, transparent) var(--range-fill, 0%));
+  box-shadow: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: none;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: none;
+}
+
+input[type="range"]:focus-visible {
+  outline: none;
+}
+
+input[type="range"]:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+input[type="range"]:focus-visible::-moz-range-thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+input[type="range"]:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+@media (forced-colors: active) {
+  input[type="range"] {
+    -webkit-appearance: auto;
+    appearance: auto;
+  }
+  input[type="range"]:focus-visible { outline: 2px solid Highlight; }
+}
+
 /* ─── System Map Motion ──────────────────────────────────────────
  * Telemetry-driven only: packets and glows appear when a recent event
  * updates an edge/node, without moving layout or refitting React Flow.

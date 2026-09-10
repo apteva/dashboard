@@ -3,7 +3,6 @@ import {
   integrations,
   invites,
   mcpServers,
-  type AppSummary,
   type AppDetail,
   type ConnectionInfo,
   type ConnectionTestResult,
@@ -33,6 +32,7 @@ function AppLogo({ src, className }: { src?: string | null; className?: string }
   );
 }
 import { Modal } from "../components/Modal";
+import { IntegrationLogo } from "../components/integrations/IntegrationLogo";
 import {
   ConnectionReauthDialog,
   isConnectionReauthable,
@@ -50,17 +50,7 @@ import {
   visibleCredentialFields,
 } from "../utils/integrationAuth";
 
-// Credential-group suite summary — from GET /integrations/groups.
-// The dashboard collapses each suite into a single catalog card.
-type SuiteSummary = {
-  id: string;
-  name: string;
-  logo?: string | null;
-  description?: string;
-  members: Array<{ slug: string; name: string; tool_count: number; logo?: string | null }>;
-  has_account_scope: boolean;
-  has_project_scope: boolean;
-};
+import { IntegrationCatalogModal, type IntegrationSuite } from "../components/integrations/IntegrationCatalogModal";
 
 type SourceTab = "local" | "usage";
 
@@ -129,14 +119,11 @@ export function Integrations() {
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
   const [detailsFor, setDetailsFor] = useState<ConnectionInfo | null>(null);
 
-  // Local catalog state
-  const [localSearch, setLocalSearch] = useState("");
-  const [localApps, setLocalApps] = useState<AppSummary[]>([]);
-  // Credential-group (suite) cards rendered above the flat catalog.
-  // One card per suite (OmniKit, SocialCast, ...). Clicking opens
-  // the SuiteConnect modal.
-  const [suites, setSuites] = useState<SuiteSummary[]>([]);
-  const [activeSuite, setActiveSuite] = useState<SuiteSummary | null>(null);
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const catalogRequest = useRef(0);
+  useEffect(() => () => { catalogRequest.current++; }, []);
+  const [connectionSearch, setConnectionSearch] = useState("");
+  const [activeSuite, setActiveSuite] = useState<IntegrationSuite | null>(null);
   const [selectedLocalApp, setSelectedLocalApp] = useState<AppDetail | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [connName, setConnName] = useState("");
@@ -182,23 +169,9 @@ export function Integrations() {
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [openMenuFor]);
 
-  const loadLocalApps = useCallback(() => {
-    // Ask the server to hide apps that are members of a credential
-    // group; the suite list below renders one card per group instead.
-    // Falls back silently on older servers that don't support group=1.
-    integrations.catalog(localSearch, { collapseGroups: true }).then(setLocalApps).catch(() => {});
-    // Suites come from a parallel endpoint so the cards can coexist
-    // with the flat catalog grid.
-    integrations.listGroups().then(setSuites).catch(() => setSuites([]));
-  }, [localSearch]);
-
   useEffect(() => {
     loadConnections();
   }, [loadConnections]);
-
-  useEffect(() => {
-    if (tab === "local") loadLocalApps();
-  }, [tab, loadLocalApps]);
 
   // --- Local app interactions ---
 
@@ -210,7 +183,10 @@ export function Integrations() {
   };
 
   const selectLocalApp = async (slug: string) => {
+    const request = ++catalogRequest.current;
     const app = await integrations.app(slug);
+    if (request !== catalogRequest.current) return;
+    setCatalogOpen(false);
     setDetailsFor(null);
     setSelectedLocalApp(app);
     setCredentials({});
@@ -656,52 +632,30 @@ export function Integrations() {
             setDetailsFor(c);
             setSelectedLocalApp(null);
           }}
-          className="min-w-0 flex flex-1 flex-wrap items-center gap-2 text-left sm:gap-3"
+          className="group min-w-0 flex flex-1 items-center gap-3 text-left"
           aria-label={`Open ${c.name} connection`}
         >
-          <span
-            className={`inline-block w-2.5 h-2.5 rounded-full ${
-              c.status === "active"
-                ? "bg-green"
-                : c.status === "pending"
-                  ? "bg-warn"
-                  : "bg-red"
-            }`}
-          />
-          <div className="min-w-0">
-            {c.is_group_child ? (
-              <span
-                className="text-text text-base font-bold"
-                title={c.external_project_id ? `Suite child — pinned to project ${c.external_project_id}` : undefined}
-              >
-                {c.app_name} {c.name}
+          <IntegrationLogo key={c.logo || c.app_slug} src={c.logo} name={c.app_name} />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-text text-base font-bold break-words"
+                title={c.is_group_child && c.external_project_id ? `Suite child — pinned to project ${c.external_project_id}` : undefined}>
+                {c.is_group_child ? `${c.app_name} ${c.name}` : c.name}
               </span>
-            ) : (
-              <>
-                <span className="text-text text-base font-bold">{c.name}</span>
-                {c.name.trim().toLowerCase() !== c.app_name.trim().toLowerCase() && (
-                  <span className="text-text-muted text-sm ml-2">· {c.app_name}</span>
-                )}
-              </>
+              <span className="text-xs px-1.5 py-0.5 rounded bg-bg-hover text-text-dim">{c.source || "local"}</span>
+              {isGlobal && <span className="text-xs px-1.5 py-0.5 rounded bg-accent/20 text-accent" title="Visible from every project">global</span>}
+            </div>
+            {!c.is_group_child && c.name.trim().toLowerCase() !== c.app_name.trim().toLowerCase() && (
+              <span className="block text-text-muted text-xs mt-1">{c.app_name}</span>
             )}
           </div>
-          <span className="text-xs px-1.5 py-0.5 rounded bg-bg-hover text-text-dim">
-            {c.source || "local"}
-          </span>
-          {isGlobal && (
-            <span
-              className="text-xs px-1.5 py-0.5 rounded bg-accent/20 text-accent"
-              title="Visible from every project"
-            >
-              global
-            </span>
-          )}
-          {c.status === "pending" && (
-            <span className="text-xs text-warn">pending…</span>
-          )}
-          <span className="ml-auto hidden text-xs text-text-dim transition-colors group-hover:text-text sm:inline">View →</span>
+          <span className="hidden text-xs text-text-dim transition-colors group-hover:text-text sm:inline">View →</span>
         </button>
-        <div className="flex shrink-0 items-center gap-3">
+        <div className="flex shrink-0 items-center gap-3 pl-13 sm:pl-0">
+          <span className={`inline-flex items-center gap-1.5 text-xs ${c.status === "active" ? "text-green" : c.status === "pending" ? "text-warn" : "text-red"}`}>
+            <span aria-hidden="true" className={`h-2 w-2 rounded-full ${c.status === "active" ? "bg-green" : c.status === "pending" ? "bg-warn" : "bg-red"}`} />
+            {c.status === "active" ? "Active" : c.status === "pending" ? "Pending" : c.status.charAt(0).toUpperCase() + c.status.slice(1)}
+          </span>
           {c.tool_count > 0 && (
             <span className="text-text-dim text-sm">{c.tool_count} tools</span>
           )}
@@ -796,15 +750,19 @@ export function Integrations() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b border-border px-4 py-3 sm:px-6 sm:py-4">
-        <h1 className="text-text text-lg font-bold">Integrations</h1>
-        <p className="text-text-muted text-sm mt-1">
-          Connect apps and services to your Apteva instances.
-        </p>
+      <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4 flex items-center justify-between gap-4">
+        <div>
+          <h1 className="text-text text-lg font-bold">Integrations</h1>
+          <p className="text-text-muted text-sm mt-1">Connect apps and services to your Apteva instances.</p>
+        </div>
+        <button type="button" onClick={() => { setTab("local"); setCatalogOpen(true); }}
+          className="shrink-0 inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-3 text-bg text-sm font-bold hover:bg-accent-hover transition-colors">
+          <span aria-hidden="true">+</span> Add integration
+        </button>
       </div>
 
       {/* Catalog and usage views. */}
-      <div className="border-b border-border flex max-w-full gap-0 overflow-x-auto px-4 sm:px-6">
+      <div className="shrink-0 border-b border-border flex max-w-full gap-0 overflow-x-auto overflow-y-hidden px-4 sm:px-6">
         <button
           onClick={() => setTab("local")}
           className={`shrink-0 whitespace-nowrap px-4 sm:px-5 py-3 text-sm transition-colors border-b-2 -mb-px ${
@@ -813,7 +771,7 @@ export function Integrations() {
               : "text-text-muted border-transparent hover:text-text"
           }`}
         >
-          Catalog
+          Connections
         </button>
         <button
           onClick={() => setTab("usage")}
@@ -837,12 +795,18 @@ export function Integrations() {
               same row component; only the heading differs. */}
           {tab === "local" && connections && connections.length > 0 && (
             <section>
-              <h2 className="text-text text-base font-bold mb-3">
-                Connected ({connections.length})
-              </h2>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                <h2 className="text-text text-base font-bold">Connected ({connections.length})</h2>
+                <input type="search" aria-label="Search connected integrations" placeholder="Search connections…"
+                  value={connectionSearch} onChange={(e) => setConnectionSearch(e.target.value)}
+                  className="w-full sm:w-80 bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent" />
+              </div>
               {(() => {
-                const globals = connections.filter((c) => !c.project_id);
-                const local = connections.filter((c) => c.project_id);
+                const query = connectionSearch.trim().toLowerCase();
+                const filtered = connections.filter((c) => `${c.name} ${c.app_name}`.toLowerCase().includes(query));
+                const globals = filtered.filter((c) => !c.project_id);
+                const local = filtered.filter((c) => c.project_id);
+                if (filtered.length === 0) return <p className="text-text-muted text-sm py-6">No connections match your search.</p>;
                 return (
                   <>
                     {local.length > 0 && (
@@ -873,114 +837,11 @@ export function Integrations() {
             </section>
           )}
 
-          {/* Tab content */}
-          {tab === "local" && (
-            <section>
-              <h2 className="text-text text-base font-bold mb-3">App Catalog</h2>
-              <input
-                value={localSearch}
-                onChange={(e) => setLocalSearch(e.target.value)}
-                className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-base text-text focus:outline-none focus:border-accent mb-4"
-                placeholder="Search apps..."
-              />
-              {(() => {
-                // Shared per-app card renderer — used from the merged
-                // sort below. Kept as a local closure so it captures
-                // `connections` + `selectLocalApp` without prop drilling.
-                const renderLocalAppCard = (app: AppSummary) => {
-                  const connectedCount = (connections || []).filter(
-                    (c) => c.app_slug === app.slug && c.source === "local",
-                  ).length;
-                  return (
-                    <button
-                      key={app.slug}
-                      onClick={() => selectLocalApp(app.slug)}
-                      className={`border rounded-lg p-4 text-left transition-colors ${
-                        connectedCount > 0
-                          ? "border-green bg-bg-card"
-                          : "border-border bg-bg-card hover:border-accent"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 mb-2">
-                        <AppLogo src={app.logo} className="w-6 h-6 rounded" />
-                        <div className="flex-1 min-w-0">
-                          <span className="text-text text-sm font-bold">{app.name}</span>
-                        </div>
-                        {connectedCount === 1 && <span className="text-green text-xs shrink-0">connected</span>}
-                        {connectedCount > 1 && (
-                          <span className="text-green text-xs shrink-0">{connectedCount} connections</span>
-                        )}
-                      </div>
-                      <p className="text-text-muted text-xs leading-relaxed line-clamp-2">{app.description}</p>
-                      <div className="flex items-center gap-2 mt-2">
-                        <span className="text-text-dim text-xs">{app.tool_count} tools</span>
-                      </div>
-                    </button>
-                  );
-                };
-                return (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {(() => {
-                  type SuiteItem = { kind: "suite"; sortName: string; suite: SuiteSummary };
-                  type AppItem = { kind: "app"; sortName: string; app: AppSummary };
-                  const items: Array<SuiteItem | AppItem> = [
-                    ...(suites || []).map<SuiteItem>((s) => ({
-                      kind: "suite",
-                      sortName: s.name.toLowerCase(),
-                      suite: s,
-                    })),
-                    ...(localApps || []).map<AppItem>((a) => ({
-                      kind: "app",
-                      sortName: a.name.toLowerCase(),
-                      app: a,
-                    })),
-                  ];
-                  items.sort((a, b) => a.sortName.localeCompare(b.sortName));
-                  return items.map((item) => {
-                    if (item.kind === "suite") {
-                      const suite = item.suite;
-                      const connectedCount = (connections || []).filter((c) =>
-                        suite.members.some((m) => m.slug === c.app_slug),
-                      ).length;
-                      return (
-                        <button
-                          key={`suite:${suite.id}`}
-                          onClick={() => setActiveSuite(suite)}
-                          className={`border rounded-lg p-4 text-left transition-colors ${
-                            connectedCount > 0
-                              ? "border-green bg-bg-card"
-                              : "border-border bg-bg-card hover:border-accent"
-                          }`}
-                        >
-                          <div className="flex items-center gap-3 mb-2">
-                            <AppLogo src={suite.logo} className="w-6 h-6 rounded" />
-                            <div className="flex-1 min-w-0">
-                              <span className="text-text text-sm font-bold">{suite.name}</span>
-                              <span className="text-text-muted text-xs ml-2">
-                                suite · {suite.members.length} services
-                              </span>
-                            </div>
-                            {connectedCount > 0 && (
-                              <span className="text-green text-xs shrink-0">{connectedCount} connected</span>
-                            )}
-                          </div>
-                          <p className="text-text-muted text-xs leading-relaxed line-clamp-2">{suite.description}</p>
-                        </button>
-                      );
-                    }
-                    // kind === "app" — fall through to the original
-                    // per-app card below.
-                    return renderLocalAppCard(item.app);
-                  });
-                })()}
-
-                  </div>
-                );
-              })()}
-              {localApps.length === 0 && suites.length === 0 && (
-                <p className="text-text-muted text-sm">No apps found.</p>
-              )}
-            </section>
+          {tab === "local" && connections.length === 0 && (
+            <div className="rounded-lg border border-dashed border-border p-8 sm:p-12 text-center">
+              <h2 className="text-text font-bold">No integrations connected yet</h2>
+              <p className="text-text-muted text-sm mt-2">Choose Add integration to find and connect an app or service.</p>
+            </div>
           )}
 
           {tab === "usage" && (
@@ -988,9 +849,12 @@ export function Integrations() {
           )}
         </div>
 
-        {/* Local app connect form (right panel) */}
+        {/* Connection setup follows catalog selection in its own dialog. */}
         {tab === "local" && selectedLocalApp && (
-          <div className="fixed inset-x-0 bottom-0 top-12 z-40 bg-bg border-t border-border overflow-y-auto p-4 shadow-xl md:static md:z-auto md:w-96 md:shrink-0 md:border-t-0 md:border-l md:p-6 md:shadow-none">
+          <Modal open ariaLabel={`Connect ${selectedLocalApp.name}`} onClose={() => {
+            setSelectedLocalApp(null); setDeviceAuth(null); setDeviceAuthStatus(null);
+          }}>
+          <div className="min-h-0 overflow-y-auto p-4 sm:p-6">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
                 <AppLogo src={selectedLocalApp.logo} className="w-8 h-8 rounded" />
@@ -1186,6 +1050,7 @@ export function Integrations() {
               </div>
             </div>
           </div>
+          </Modal>
         )}
 
         {/* Existing connection details (right panel). Provider-specific
@@ -1257,6 +1122,11 @@ export function Integrations() {
         Always project-scoped output (one child connection per service ×
         project cell). The master credential is invisible plumbing.
       */}
+      {catalogOpen && (
+        <IntegrationCatalogModal connections={connections} onClose={() => { catalogRequest.current++; setCatalogOpen(false); }}
+          onSelectApp={selectLocalApp} onSelectSuite={(suite) => { setCatalogOpen(false); setActiveSuite(suite); }} />
+      )}
+
       {activeSuite && (
         <SuiteConnect
           group={activeSuite}

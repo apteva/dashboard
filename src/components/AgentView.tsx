@@ -1,3 +1,7 @@
+import { AppIcon } from "@apteva/ui-kit";
+import { PickerOption } from "./PickerOption";
+import { ProactivityControl } from "./ProactivityControl";
+import { defaultProactivity } from "../agentBehavior";
 import { behaviorDescriptions, behaviorExplanation } from "../agentBehavior";
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import {
@@ -9,6 +13,7 @@ import {
   telemetry,
   type Agent,
   type AppRow,
+  type ConnectionInfo,
   type ExecutionControlStatus,
   type MCPServer,
   type MCPServerConfig,
@@ -79,9 +84,21 @@ function durationLabel(ms?: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }
 
+function runtimeToolCallID(ev: TelemetryEvent): string {
+  return compactText(ev.data?.id || ev.data?.call_id || ev.data?.tool_call_id);
+}
+
 function toolEventKey(ev: TelemetryEvent, name: string): string {
-  const id = compactText(ev.data?.id);
-  return `tool:${id || `${ev.thread_id || "main"}:${name}`}`;
+  const id = runtimeToolCallID(ev);
+  return `tool:${ev.thread_id || "main"}:${id || `${name}:${ev.id || ev.time}`}`;
+}
+
+// Keep the retained window chronological too: sorting only at render time
+// would still let late history evict newer activity at the size limit.
+function orderedRuntimeEvents(events: RuntimeEventItem[]): RuntimeEventItem[] {
+  return [...events].sort((a, b) =>
+    telemetryTimeMs(a.raw) - telemetryTimeMs(b.raw) || a.key.localeCompare(b.key),
+  ).slice(-MAX_RUNTIME_EVENTS);
 }
 
 function thoughtEventKey(ev: TelemetryEvent): string {
@@ -399,26 +416,40 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
   return null;
 }
 
-function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): RuntimeEventItem[] {
+export function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): RuntimeEventItem[] {
+  // History and live recovery can overlap. Once a call has finished, replayed
+  // starts/chunks must not create a second row or reopen its completed state.
+  if (["llm.start", "llm.thinking", "llm.chunk"].includes(ev.type) && hasCompletedRuntimeThought(prev, ev)) {
+    return prev;
+  }
   const item = normalizeRuntimeEvent(ev);
   if (!item) return prev;
   let idx = prev.findIndex((r) => r.key === item.key);
   if (idx < 0 && item.kind === "tool" && item.toolName) {
     idx = findRecentRuntimeTool(prev, item);
   }
-  if (idx < 0 && item.kind === "thought" && (ev.type === "llm.done" || ev.type === "llm.error")) {
+  if (idx < 0 && (ev.type === "llm.done" || ev.type === "llm.error")) {
     idx = findRecentRuntimeThought(prev, item);
   }
   if (idx >= 0) {
     const next = [...prev];
     const prevItem = next[idx];
+    if (item.kind === "tool" && prevItem.status !== "running" && item.status === "running") {
+      // Historical starts may add the reason/arguments, but cannot reopen a
+      // finished call, replace its result timestamp, or replay streamed args.
+      if (ev.type === "tool.call") {
+        next[idx] = { ...prevItem, toolArgs: item.toolArgs || prevItem.toolArgs,
+          label: item.label || prevItem.label };
+      }
+      return orderedRuntimeEvents(next);
+    }
     const args =
       ev.type === "llm.tool_chunk" && item.toolArgs
         ? `${prevItem.toolArgs || ""}${item.toolArgs}`
         : item.toolArgs || prevItem.toolArgs;
     let thoughtText: RuntimeThoughtText = {
       reasoning: prevItem.reasoningDetail || item.reasoningDetail,
-      response: prevItem.responseDetail || item.responseDetail,
+      response: ev.type === "llm.done" ? item.responseDetail || prevItem.responseDetail : prevItem.responseDetail || item.responseDetail,
     };
     if (ev.type === "llm.thinking" && item.reasoningDetail) {
       thoughtText = appendRuntimeThoughtText(
@@ -434,7 +465,7 @@ function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): Runtim
         item.responseDetail,
       );
     }
-    const detail = thoughtText.response || thoughtText.reasoning || item.detail || prevItem.detail;
+    const detail = ev.type === "llm.error" ? item.detail : thoughtText.response || thoughtText.reasoning || item.detail || prevItem.detail;
     next[idx] = {
       ...prevItem,
       ...item,
@@ -448,14 +479,33 @@ function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): Runtim
       toolArgs: args,
       toolResult: item.toolResult || prevItem.toolResult,
     };
-    return next;
+    return orderedRuntimeEvents(next);
   }
-  return [...prev, item].slice(-MAX_RUNTIME_EVENTS);
+  return orderedRuntimeEvents([...prev, item]);
 }
 
 function runtimeEventIteration(ev?: TelemetryEvent): string {
   const value = ev?.data?.iteration;
   return value == null ? "" : String(value);
+}
+
+function runtimeThoughtMergeWindow(ev: TelemetryEvent): number {
+  // Long provider calls still belong to their original start event.
+  const duration = Number(ev.data?.duration_ms) || 0;
+  return Math.max(RUNTIME_THOUGHT_MERGE_WINDOW_MS, duration + 5_000);
+}
+
+function hasCompletedRuntimeThought(prev: RuntimeEventItem[], ev: TelemetryEvent): boolean {
+  const iteration = runtimeEventIteration(ev);
+  const startedMs = telemetryTimeMs(ev);
+  if (!iteration || !startedMs) return false;
+  return prev.some((candidate) => {
+    if (candidate.raw.type !== "llm.done" && candidate.raw.type !== "llm.error") return false;
+    if (candidate.threadId !== (ev.thread_id || "main")) return false;
+    if (runtimeEventIteration(candidate.raw) !== iteration) return false;
+    const finishedMs = telemetryTimeMs(candidate.raw);
+    return finishedMs >= startedMs && finishedMs - startedMs <= runtimeThoughtMergeWindow(candidate.raw);
+  });
 }
 
 function findRecentRuntimeThought(prev: RuntimeEventItem[], item: RuntimeEventItem): number {
@@ -469,19 +519,31 @@ function findRecentRuntimeThought(prev: RuntimeEventItem[], item: RuntimeEventIt
     if (candidate.status !== "running") continue;
     if (runtimeEventIteration(candidate.raw) !== itemIteration) continue;
     const candidateMs = telemetryTimeMs(candidate.raw);
-    if (itemMs && candidateMs && Math.abs(itemMs - candidateMs) > RUNTIME_THOUGHT_MERGE_WINDOW_MS) continue;
+    if (itemMs && candidateMs && (candidateMs > itemMs || itemMs - candidateMs > runtimeThoughtMergeWindow(item.raw))) continue;
     return i;
   }
   return -1;
 }
 
 function findRecentRuntimeTool(prev: RuntimeEventItem[], item: RuntimeEventItem): number {
+  const itemID = runtimeToolCallID(item.raw);
+  const itemMs = telemetryTimeMs(item.raw);
   for (let i = prev.length - 1; i >= 0; i--) {
     const candidate = prev[i];
     if (candidate.kind !== "tool") continue;
     if (candidate.threadId !== item.threadId) continue;
     if (candidate.toolName !== item.toolName && candidate.detail !== item.toolName) continue;
-    if (candidate.status !== "running" && item.status === "running") continue;
+    const candidateID = runtimeToolCallID(candidate.raw);
+    // Explicit call identities must never be replaced by a same-name match.
+    if (itemID && candidateID && itemID !== candidateID) continue;
+    const candidateMs = telemetryTimeMs(candidate.raw);
+    if (!itemMs || !candidateMs || Math.abs(itemMs - candidateMs) > RUNTIME_THOUGHT_MERGE_WINDOW_MS) continue;
+    if (candidate.status !== "running") {
+      // A late start can enrich an existing result, not a later new call.
+      if (item.status !== "running" || itemMs > candidateMs) continue;
+    } else if (item.status !== "running" && candidateMs > itemMs) {
+      continue;
+    }
     return i;
   }
   return -1;
@@ -1160,7 +1222,7 @@ export function AgentView({
   );
 }
 
-function AgentRuntimePanel({
+export function AgentRuntimePanel({
   instance,
   threads,
   activeTools,
@@ -1326,15 +1388,16 @@ function AgentRuntimePanel({
     <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg">
       <Modal
         open={showCapabilitiesManage}
+        ariaLabel="Apps and MCP servers"
         onClose={() => setShowCapabilitiesManage(false)}
-        width="max-w-[920px]"
+        width="max-w-3xl"
       >
-        <div className="w-full max-h-[84vh] flex flex-col bg-bg-card">
-          <div className="shrink-0 px-4 py-3 border-b border-border flex items-start justify-between gap-4">
+        <div className="w-full max-h-[80vh] flex flex-col bg-bg-card">
+          <div className="shrink-0 p-5 border-b border-border flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-text text-sm font-bold">Manage Capabilities</h2>
+              <h2 className="text-text text-lg font-bold">Capabilities</h2>
               <p className="text-text-dim text-xs mt-1">
-                Choose which MCP capabilities this agent can use.
+                Choose apps, integrations, and MCP servers this agent can use.
               </p>
             </div>
             <button
@@ -1353,12 +1416,13 @@ function AgentRuntimePanel({
             inventory={mcpInventory}
             onAttachedChange={setMCPServers}
             onInventoryChange={setMCPInventory}
+            onDone={() => setShowCapabilitiesManage(false)}
           />
         </div>
       </Modal>
       <div className="shrink-0 border-b border-border/70 bg-bg-card/20">
         <div className="px-3 py-3 sm:px-4">
-          <div className="flex min-w-0 items-start justify-between gap-4">
+          <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <span className={`h-2 w-2 shrink-0 rounded-full ${instance.status === "running" ? "bg-green" : instance.status === "paused" ? "bg-yellow" : "bg-red"}`} />
@@ -1386,6 +1450,24 @@ function AgentRuntimePanel({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
+              <button type="button" onClick={() => setShowCapabilitiesManage(true)}
+                aria-label={`Capabilities: ${mcpServers.length} attached. Manage apps and MCP servers`}
+                title="Manage apps and MCP servers"
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-accent/50 px-2.5 text-xs text-text-muted hover:border-accent hover:bg-accent/5 transition-colors">
+                <span className="font-semibold">Capabilities</span>
+                <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-accent">{mcpServers.length}</span>
+                {mcpServers.length > 0 ? (
+                  <span className="hidden items-center gap-1.5 md:inline-flex">
+                    {mcpServers.slice(0, 2).map((capability) => (
+                      <span key={capability.name} className="max-w-24 truncate text-[11px]">{capabilityDisplayName(capability.name)}</span>
+                    ))}
+                    {mcpServers.length > 2 && <span className="text-[10px] text-text-dim">+{mcpServers.length - 2}</span>}
+                  </span>
+                ) : (
+                  <span className="hidden text-[11px] text-accent sm:inline">Add apps &amp; MCPs</span>
+                )}
+                <span aria-hidden="true" className="text-accent">›</span>
+              </button>
               {instance.status === "running" ? (
                 <button onClick={onStop} className="h-9 rounded-md border border-red/40 px-3 text-xs font-semibold text-red hover:bg-red/10">Stop</button>
               ) : (
@@ -1408,29 +1490,18 @@ function AgentRuntimePanel({
         {instance.status === "running" && (
           <LiveStatsBar instanceId={instance.id} subscribe={subscribe} sleep={liveStatus} />
         )}
-        <div className={`px-3 py-3 sm:px-4 ${instance.status === "running" ? "" : "border-t border-border/70"}`}>
-          <div className="mb-2 flex justify-end">
-            <ContributionManager
-              slot="dashboard.agent_detail"
-              projectId={instance.project_id || undefined}
-              agentId={instance.id}
-              label="Customize"
-            />
-          </div>
-          <div className="min-w-0">
-            <AppContributionArea
-              slot="dashboard.agent_detail"
-              projectId={instance.project_id || undefined}
-              agentId={instance.id}
-            />
-          </div>
-          <AppPanels
-            slot="instance.status"
-            instanceId={instance.id}
-            projectId={instance.project_id || undefined}
-            className="mt-2 space-y-1.5"
-          />
-        </div>
+        <AppContributionArea
+          slot="dashboard.agent_detail"
+          projectId={instance.project_id || undefined}
+          agentId={instance.id}
+          className="min-w-0 space-y-2 border-t border-border/70 px-3 py-3 sm:px-4"
+        />
+        <AppPanels
+          slot="instance.status"
+          instanceId={instance.id}
+          projectId={instance.project_id || undefined}
+          className="space-y-1.5 border-t border-border/70 px-3 py-3 sm:px-4"
+        />
         {executionControlsVisible && (
           <div className="border-t border-border/70 px-3 py-2 sm:px-4">
             <ExecutionControlStrip
@@ -1452,13 +1523,11 @@ function AgentRuntimePanel({
         activeTools={activeTools}
         thinking={thinking}
         selectedThreadId={selectedRuntimeThread}
-        capabilities={mcpServers}
         onThreadSelect={selectRuntimeThread}
         onThreadOpen={onThreadOpen}
-        onManageCapabilities={() => setShowCapabilitiesManage(true)}
       />
 
-      <div className="shrink-0 flex items-center gap-2 border-b border-border/70 px-3 py-2 sm:px-4">
+      <div className="shrink-0 flex flex-wrap items-center gap-2 border-b border-border/70 px-3 py-2 sm:px-4">
         <div className="flex min-w-0 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Agent workspace">
           {primaryViews.map((item) => (
             <button
@@ -1473,6 +1542,14 @@ function AgentRuntimePanel({
               {item.label}
             </button>
           ))}
+        </div>
+        <div className="ml-auto shrink-0">
+          <ContributionManager
+            slot="dashboard.agent_detail"
+            projectId={instance.project_id || undefined}
+            agentId={instance.id}
+            label="Customize widgets"
+          />
         </div>
         {view === "activity" && (
           <button type="button" onClick={() => onViewChange("stream")} className="ml-auto rounded bg-yellow/10 px-2 py-1 text-[10px] text-yellow">
@@ -1565,7 +1642,7 @@ function AgentRuntimeActionsMenu({
       {open && (
         <div role="menu" className="absolute right-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-lg border border-border bg-bg-card py-1 shadow-2xl shadow-black/60">
           <button type="button" role="menuitem" onClick={() => choose(onConfig)} className={itemClass}>Configuration</button>
-          <button type="button" role="menuitem" onClick={() => choose(onCapabilities)} className={itemClass}>Manage capabilities</button>
+          <button type="button" role="menuitem" onClick={() => choose(onCapabilities)} className={itemClass}>Add apps &amp; MCPs</button>
           {instance.status === "running" && (
             <button type="button" role="menuitem" onClick={() => choose(onPause)} className={itemClass}>Pause agent</button>
           )}
@@ -1596,19 +1673,15 @@ function RuntimeContextStrip({
   activeTools,
   thinking,
   selectedThreadId,
-  capabilities,
   onThreadSelect,
   onThreadOpen,
-  onManageCapabilities,
 }: {
   threads: Thread[];
   activeTools: Record<string, string>;
   thinking: Record<string, boolean>;
   selectedThreadId: string;
-  capabilities: MCPServerConfig[];
   onThreadSelect: (id: string) => void;
   onThreadOpen: (id: string) => void;
-  onManageCapabilities: () => void;
 }) {
   const mainThread: Thread = { id: "main", directive: "", tools: [], iteration: 0, rate: "", model: "", age: "" };
   const rows = threads.some((thread) => thread.id === "main") ? threads : [mainThread, ...threads];
@@ -1624,7 +1697,6 @@ function RuntimeContextStrip({
         : selected.sleep_state
           ? sleepLabel(selected, { compact: true })
           : selected.rate || "Waiting";
-  const shownCapabilities = capabilities.slice(0, 3);
 
   return (
     <div className="shrink-0 flex min-w-0 flex-wrap items-center gap-2 border-b border-border/70 bg-bg-card/30 px-3 py-2 sm:px-4">
@@ -1650,32 +1722,6 @@ function RuntimeContextStrip({
       <span className="max-w-52 truncate text-[11px] text-text-muted">{state}</span>
       <button type="button" onClick={() => onThreadOpen(selected.id)} className="rounded px-1.5 py-1 text-[10px] text-text-dim hover:bg-bg-hover hover:text-text">Details</button>
 
-      <button
-        type="button"
-        onClick={onManageCapabilities}
-        className="ml-auto flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-bg px-2 py-1.5 text-left hover:border-accent/50 hover:bg-bg-hover"
-        title="Select apps and MCP capabilities"
-      >
-        <span className="shrink-0 text-[9px] font-bold uppercase tracking-wide text-text-dim">Capabilities</span>
-        {shownCapabilities.length === 0 ? (
-          <span className="text-[11px] text-accent">Add</span>
-        ) : (
-          <>
-            <span className="hidden min-w-0 items-center gap-1 md:flex">
-              {shownCapabilities.map((capability) => (
-                <span key={capability.name} className="max-w-24 truncate rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">
-                  {capabilityDisplayName(capability.name)}
-                </span>
-              ))}
-            </span>
-            <span className="text-[11px] text-text-muted md:hidden">{capabilities.length} attached</span>
-            {capabilities.length > shownCapabilities.length && (
-              <span className="shrink-0 text-[10px] text-text-muted">+{capabilities.length - shownCapabilities.length}</span>
-            )}
-          </>
-        )}
-        <span className="shrink-0 text-text-dim" aria-hidden="true">›</span>
-      </button>
     </div>
   );
 }
@@ -1711,7 +1757,7 @@ function AgentCapabilitiesView({
           </button>
         ))}
         <button type="button" onClick={onManage} className="ml-auto rounded-md border border-accent/50 px-2.5 py-1.5 text-[11px] text-accent hover:bg-accent/10">
-          Manage
+          Add apps &amp; MCPs
         </button>
       </div>
 
@@ -1720,7 +1766,7 @@ function AgentCapabilitiesView({
           <div className="h-full overflow-y-auto p-4 sm:p-5">
             <div className="mb-4">
               <h2 className="text-sm font-semibold text-text">Attached capabilities</h2>
-              <p className="mt-1 text-xs text-text-muted">Apps and MCP servers available to this agent. Use Manage to attach or remove them.</p>
+              <p className="mt-1 text-xs text-text-muted">Apps and MCP servers available to this agent. Use Add apps & MCPs to attach or remove them.</p>
             </div>
             {attached.length === 0 ? (
               <button type="button" onClick={onManage} className="flex w-full items-center justify-between rounded-lg border border-dashed border-border px-4 py-5 text-left hover:border-accent/60 hover:bg-bg-card">
@@ -2049,7 +2095,7 @@ function truncateUI(value: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
-function CapabilitiesManager({
+export function CapabilitiesManager({
   instanceId,
   projectId,
   attached,
@@ -2057,6 +2103,7 @@ function CapabilitiesManager({
   inventory: inventoryProp,
   onAttachedChange,
   onInventoryChange,
+  onDone,
 }: {
   instanceId: number;
   projectId?: string;
@@ -2065,12 +2112,20 @@ function CapabilitiesManager({
   inventory: MCPServer[];
   onAttachedChange: (servers: MCPServerConfig[]) => void;
   onInventoryChange: (servers: MCPServer[]) => void;
+  onDone?: () => void;
 }) {
   const [loading, setLoading] = useState(true);
+  const [connections, setConnections] = useState<ConnectionInfo[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    integrations.connections(projectId).then((rows) => { if (!cancelled) setConnections(rows); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [projectId]);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [showAttachedOnly, setShowAttachedOnly] = useState(false);
+  const [category, setCategory] = useState<"attached" | "apps" | "integrations" | "custom">("attached");
+  const showAttachedOnly = category === "attached";
 
   const loadInventory = useCallback(() => {
     setLoading(true);
@@ -2153,10 +2208,6 @@ function CapabilitiesManager({
   const orphanAppRows = inventoryProp
     .filter((row) => row.source === "app" && !matchedAppInventoryIDs.has(row.id))
     .sort((a, b) => displayMCPName(a).localeCompare(displayMCPName(b)));
-  const appAttachedCount = appRows.filter((app) => {
-    const row = findAppInventoryRow(app, appInventoryByKey);
-    return capabilityIsAttached(attachedKeys, appCapabilityAliases(app, row));
-  }).length;
   const normalizedQuery = query.trim().toLowerCase();
   const matchesQuery = (...values: Array<string | undefined>) =>
     !normalizedQuery || values.some((value) => String(value || "").toLowerCase().includes(normalizedQuery));
@@ -2169,7 +2220,7 @@ function CapabilitiesManager({
     (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description),
   );
   const visibleIntegrationRows = integrationRows.filter((row) =>
-    (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description, mcpName(row)),
+    (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description, mcpName(row), connections.find((c) => c.id === row.connection_id)?.app_name, connections.find((c) => c.id === row.connection_id)?.name),
   );
   const visibleCustomRows = customRows.filter((row) =>
     (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description, mcpName(row)),
@@ -2177,7 +2228,7 @@ function CapabilitiesManager({
   const visibleCount = visibleAppRows.length + visibleOrphanAppRows.length + visibleIntegrationRows.length + visibleCustomRows.length;
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto">
+    <div className="flex flex-1 min-h-0 flex-col">
       <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-border bg-bg-card px-4 py-3">
         <div className="relative min-w-[14rem] flex-1">
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dim">
@@ -2187,34 +2238,38 @@ function CapabilitiesManager({
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search apps and MCP servers"
+            aria-label="Search capabilities"
+            placeholder="Search apps and MCP servers…"
             className="h-10 w-full rounded-lg border border-border bg-bg-input pl-9 pr-3 text-sm text-text placeholder:text-text-dim focus:border-accent focus:outline-none"
           />
         </div>
-        <div className="flex rounded-lg border border-border bg-bg p-0.5">
-          <button type="button" onClick={() => setShowAttachedOnly(false)} className={`rounded-md px-3 py-1.5 text-[11px] ${!showAttachedOnly ? "bg-bg-hover text-text" : "text-text-muted"}`}>All</button>
-          <button type="button" onClick={() => setShowAttachedOnly(true)} className={`rounded-md px-3 py-1.5 text-[11px] ${showAttachedOnly ? "bg-bg-hover text-text" : "text-text-muted"}`}>Attached {attached.length}</button>
+        <div className="flex w-full flex-wrap items-center gap-1" aria-label="Capability categories">
+          {([
+            ["attached", "Attached", attached.length],
+            ["apps", "Apps", appRows.length + orphanAppRows.length],
+            ["integrations", "Integrations", integrationRows.length],
+            ["custom", "MCP servers", customRows.length],
+          ] as const).map(([id, label, count]) => (
+            <button key={id} type="button" aria-pressed={category === id}
+              onClick={() => setCategory(id)}
+              className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${category === id ? "bg-accent/10 text-accent" : "text-text-muted hover:bg-bg-hover"}`}>
+              {label} <span className="ml-1 text-[10px] opacity-70">{count}</span>
+            </button>
+          ))}
         </div>
-        <span className="w-full text-[10px] text-text-dim sm:w-auto">Changes apply immediately</span>
       </div>
-      <div className="space-y-5 p-4">
-      {error && (
-        <div className="rounded border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">
-          {error}
+      <div className="min-h-0 flex-1 overflow-y-auto space-y-5 p-3" style={{ maxHeight: "min(55vh, 520px)" }}>
+      {error && <div role="alert" className="rounded-lg border border-red/40 bg-red/10 p-3 text-xs text-red">{error}</div>}
+      {!loading && (category === "attached" ? visibleCount === 0 : category === "apps" ? visibleAppRows.length + visibleOrphanAppRows.length === 0 : category === "integrations" ? visibleIntegrationRows.length === 0 : visibleCustomRows.length === 0) && (
+        <div className="px-4 py-10 text-center">
+          <p className="text-sm text-text-muted">{normalizedQuery ? "No capabilities match your search." : category === "attached" ? "No capabilities attached yet." : "Nothing available in this category yet."}</p>
+          {category === "attached" && !normalizedQuery && <button type="button" onClick={() => setCategory("apps")} className="mt-4 rounded-lg border border-border px-3 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent">+ Add apps</button>}
         </div>
       )}
-      {visibleCount === 0 && !loading && (
-        <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center text-sm text-text-muted">
-          No capabilities match this search.
-        </div>
-      )}
-      {(visibleAppRows.length > 0 || visibleOrphanAppRows.length > 0 || (!normalizedQuery && !showAttachedOnly)) && <CapabilitySection
-        title={`Apps — ${appAttachedCount}/${appRows.length} attached`}
-        hint="Installed apps exposing MCP tools"
+      {((category === "apps" || category === "attached") && (visibleAppRows.length > 0 || visibleOrphanAppRows.length > 0)) && <CapabilitySection
+        title="Apps"
+        hint="Tools and skills for your agent"
       >
-        {visibleAppRows.length === 0 && visibleOrphanAppRows.length === 0 && (
-          <EmptyCapabilityRow text="No running app MCP surfaces in this project." />
-        )}
         {visibleAppRows.map((app) => {
           const row = findAppInventoryRow(app, appInventoryByKey);
           const aliases = appCapabilityAliases(app, row);
@@ -2224,7 +2279,8 @@ function CapabilitiesManager({
             <CapabilityToggleRow
               key={`app:${app.install_id}`}
               title={app.display_name || app.name}
-              detail={app.description || `${app.surfaces?.mcp_tool_count || 0} MCP tools`}
+              detail={`${app.project_id ? "Project app" : "Global app"} · v${app.version} · ${app.description || "Tools for your agent"}`}
+              icon={<AppIcon src={app.icon} iconStyle={app.icon_style} name={app.display_name || app.name} size="md" className="text-accent" />}
               meta={`${app.surfaces?.mcp_tool_count || 0} tools`}
               enabled={enabled}
               disabled={!row}
@@ -2250,23 +2306,22 @@ function CapabilitiesManager({
         })}
       </CapabilitySection>}
 
-      {(visibleIntegrationRows.length > 0 || (!normalizedQuery && !showAttachedOnly)) && <CapabilitySection
-        title={`Integrations — ${integrationRows.filter((row) => mcpRowIsAttached(attachedKeys, row)).length}/${integrationRows.length} attached`}
-        hint="OAuth and integration-backed MCP servers"
+      {((category === "integrations" || category === "attached") && visibleIntegrationRows.length > 0) && <CapabilitySection
+        title="Integrations"
+        hint="Connected accounts your agent can use"
       >
-        {visibleIntegrationRows.length === 0 && (
-          <EmptyCapabilityRow text="No integration MCP servers available." />
-        )}
         {visibleIntegrationRows.map((row) => {
+          const connection = connections.find((c) => c.id === row.connection_id);
           const name = mcpName(row);
           const aliases = mcpCapabilityAliases(row);
           const enabled = capabilityIsAttached(attachedKeys, aliases);
           return (
             <CapabilityToggleRow
               key={`integration:${row.id}`}
-              title={displayMCPName(row)}
-              detail={row.name}
-              meta={`${row.tool_count || 0} tools · ${mcpName(row)} · ${scopeLabel(row)}`}
+              title={connection?.app_name || displayMCPName(row)}
+              detail={connection?.name || row.name}
+              icon={<AppIcon src={connection?.logo} name={connection?.app_name || displayMCPName(row)} size="md" framed={false} className="rounded-md bg-white text-gray-800" />}
+              meta={`${row.tool_count || 0} tools · ${scopeLabel(row)}`}
               enabled={enabled}
               disabled={!configFromInventory(row)}
               busy={busyKey === `mcp:${name}`}
@@ -2276,13 +2331,10 @@ function CapabilitiesManager({
         })}
       </CapabilitySection>}
 
-      {(visibleCustomRows.length > 0 || (!normalizedQuery && !showAttachedOnly)) && <CapabilitySection
-        title={`Custom MCP Servers — ${customRows.filter((row) => mcpRowIsAttached(attachedKeys, row)).length}/${customRows.length} attached`}
-        hint="Manually registered servers"
+      {((category === "custom" || category === "attached") && visibleCustomRows.length > 0) && <CapabilitySection
+        title="MCP servers"
+        hint="Custom tools and services"
       >
-        {visibleCustomRows.length === 0 && (
-          <EmptyCapabilityRow text="No custom MCP servers available." />
-        )}
         {visibleCustomRows.map((row) => {
           const name = mcpName(row);
           const aliases = mcpCapabilityAliases(row);
@@ -2306,6 +2358,10 @@ function CapabilitiesManager({
         <div className="text-center text-xs text-text-muted py-2">Loading capabilities…</div>
       )}
       </div>
+      <div className="shrink-0 flex items-center justify-between gap-3 border-t border-border px-5 py-3">
+        <span className="text-[11px] text-text-dim">{attached.length} attached · Changes apply immediately</span>
+        {onDone && <button type="button" onClick={onDone} className="rounded-lg border border-border px-4 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent">Done</button>}
+      </div>
     </div>
   );
 }
@@ -2325,106 +2381,32 @@ function CapabilitySection({
         <h3 className="text-[10px] uppercase tracking-wide text-text-muted font-bold shrink-0">{title}</h3>
         <span className="hidden sm:block text-[10px] text-text-dim truncate min-w-0">{hint}</span>
       </div>
-      <div className="overflow-hidden rounded border border-border bg-bg">
+      <div className="space-y-1">
         {children}
       </div>
     </section>
   );
 }
 
-function CapabilityToggleRow({
-  title,
-  detail,
-  meta,
-  enabled,
-  disabled,
-  busy,
-  onToggle,
-}: {
+function CapabilityToggleRow({ title, detail, meta, icon, enabled, disabled, busy, onToggle }: {
   title: string;
   detail: string;
   meta: string;
+  icon?: ReactNode;
   enabled: boolean;
   disabled?: boolean;
   busy?: boolean;
   onToggle: () => void;
 }) {
-  const canToggle = !disabled && !busy;
-  return (
-    <div
-      className={`group relative flex items-center gap-3 border-b border-border-subtle last:border-b-0 px-3.5 py-3 text-left select-none transition-colors ${
-        enabled
-          ? "bg-accent/10 hover:bg-accent/15"
-          : canToggle
-            ? "bg-bg hover:bg-bg-card cursor-pointer"
-            : "bg-bg opacity-50 cursor-not-allowed"
-      }`}
-      onClick={() => {
-        if (canToggle) onToggle();
-      }}
-      role="checkbox"
-      aria-checked={enabled}
-      tabIndex={canToggle ? 0 : -1}
-      onKeyDown={(e) => {
-        if (!canToggle) return;
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onToggle();
-        }
-      }}
-      title={enabled ? "Click to disable" : "Click to enable"}
-    >
-      <span
-        aria-hidden="true"
-        className={`absolute left-0 top-0 bottom-0 w-[2px] transition-colors ${
-          enabled ? "bg-accent" : "bg-transparent"
-        }`}
-      />
-      <span
-        aria-hidden="true"
-        className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
-          enabled
-            ? "bg-accent border-accent text-bg"
-            : "bg-bg border-border group-hover:border-text-dim"
-        }`}
-      >
-        {enabled && (
-          <svg
-            width="10"
-            height="10"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M3 8.5 L7 12 L13 5" />
-          </svg>
-        )}
-      </span>
-      <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${enabled ? "bg-green" : "bg-text-dim"}`} />
-      <div className="min-w-0 flex-1 pr-2">
-        <div className={`text-sm leading-tight truncate ${enabled ? "text-text font-medium" : "text-text"}`}>
-          {title}
-        </div>
-        <div className="mt-0.5 text-[11px] leading-snug text-text-muted truncate" title={detail}>
-          {detail}
-        </div>
-      </div>
-      <div
-        className={`mt-0.5 shrink-0 rounded px-2 py-1 text-[10px] leading-none whitespace-nowrap ${
-          enabled ? "bg-accent/15 text-accent" : "bg-bg-input text-text-muted"
-        }`}
-      >
-        {meta}
-      </div>
-    </div>
-  );
-}
-
-function EmptyCapabilityRow({ text }: { text: string }) {
-  return <div className="px-3 py-3 text-xs text-text-muted">{text}</div>;
+  return <PickerOption
+    name={title}
+    description={truncateUI(detail, 180)}
+    badge={busy ? "Updating…" : disabled ? "Unavailable" : meta}
+    icon={icon || <AppIcon name={title} size="md" className="text-accent" />}
+    selected={enabled}
+    disabled={disabled || busy}
+    onToggle={onToggle}
+  />;
 }
 
 function mcpName(row: MCPServer): string {
@@ -3238,6 +3220,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   const [modelSmall, setModelSmall] = useState("");
   const [directive, setDirective] = useState("");
   const [mode, setMode] = useState("");
+  const [proactivity, setProactivity] = useState(defaultProactivity);
   const [realtimeEnabled, setRealtimeEnabled] = useState(false);
   const [realtimeAvailable, setRealtimeAvailable] = useState(false);
   const [realtimeVoice, setRealtimeVoice] = useState("marin");
@@ -3250,6 +3233,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
     if (!open) return;
     setDirective(instance.directive || "");
     setMode(instance.mode || "autonomous");
+    setProactivity(instance.proactivity ?? defaultProactivity);
     setError("");
 
     setDefaultProvider("");
@@ -3257,6 +3241,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
     core.config(instance.id).then((config) => {
       setDirective(config.directive);
       setMode(config.mode);
+      setProactivity(config.proactivity ?? instance.proactivity ?? defaultProactivity);
       setDefaultProvider(resolveEffectiveAgentProvider(instance.config || "{}", config.providers));
       const realtimeProvider = (config.providers || []).find((provider) =>
         provider.name === "openai-realtime" || provider.name.includes("realtime"),
@@ -3352,6 +3337,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
       const result = await instances.updateConfig(instance.id, {
         directive: directive || undefined,
         mode: mode || undefined,
+        proactivity,
         providers: provs,
         realtimeEnabled,
         realtimeVoice,
@@ -3469,6 +3455,8 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         </div>
 
         <p className="text-xs text-text-muted">{behaviorDescriptions[mode as keyof typeof behaviorDescriptions]} {behaviorExplanation}</p>
+
+        <ProactivityControl value={proactivity} onChange={setProactivity} />
 
         {/* Realtime voice */}
         {shows("agent.realtimeVoice") && (
