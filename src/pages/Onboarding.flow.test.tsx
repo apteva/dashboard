@@ -30,6 +30,10 @@ async function choose(mode: "personal" | "business" = "personal") {
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 }
 async function fillKey() {
+  await waitFor(() => {
+    if (screen.queryByRole("button", { name: "Connect and get started" })) return;
+    fireEvent.click(screen.getByRole("button", { name: /Test provider.*Choose/ }));
+  });
   await screen.findByRole("button", { name: "Connect and get started" });
   fireEvent.change(document.querySelector('input[type="password"]')!, { target: { value: "test-key" } });
 }
@@ -112,9 +116,12 @@ test("requires live models when a provider has no health check", async () => {
 test("waits for workspace preparation and blocks double submission", async () => {
   let resolve!: () => void;
   auth.updatePreferences = mock(async () => { await new Promise<void>((done) => { resolve = done; }); return { language: "en", interface_level: "personal" as const, ui_layout: {}, ui_layout_revision: 0 }; });
+  auth.onboardingStatus = mock(async () => ({ project_id: "p", provider_configured: false, can_manage_provider: true, workspace_preparation: { status: "pending", message: "Downloading Conversations…" } }));
   await mount(); await choose();
-  expect((screen.getByRole("button", { name: /Preparing your workspace/ }) as HTMLButtonElement).disabled).toBe(true);
-  expect(auth.onboardingStatus).not.toHaveBeenCalled();
+  expect((await screen.findByRole("button", { name: /Downloading Conversations/ }) as HTMLButtonElement).disabled).toBe(true);
+  expect(auth.onboardingStatus).toHaveBeenCalled();
+  expect(instances.create).not.toHaveBeenCalled();
+  expect(screen.queryByRole("heading", { name: "Connect your AI" })).toBeNull();
   resolve();
   await screen.findByRole("heading", { name: "Connect your AI" });
   expect(auth.updatePreferences).toHaveBeenCalledTimes(1);
@@ -239,7 +246,8 @@ test("switching from a failed provider uses the verified replacement for the sta
   await mount(); await choose();
   await screen.findByText("Expired key");
   await screen.findByRole("button", { name: "Connect and get started" });
-  fireEvent.change(screen.getByRole("combobox"), { target: { value: "other-provider" } });
+  fireEvent.click(screen.getByRole("button", { name: "Change provider" }));
+  fireEvent.click(screen.getByRole("button", { name: /Other provider.*Choose/ }));
   await fillKey(); connect();
   await screen.findByText("Conversation ready");
   expect(integrations.setNewAgentProvider).toHaveBeenCalledWith("other", "p");
@@ -289,4 +297,31 @@ test("an expired OAuth provider can be replaced without writing its connection",
   expect(integrations.connect).toHaveBeenCalledTimes(1);
   expect(integrations.setNewAgentProvider).toHaveBeenCalledWith("test", "p");
   expect(invites.fulfill).not.toHaveBeenCalled();
+});
+
+
+test("provider choice is searchable and never defaults to OpenAI", async () => {
+  const [base] = await integrations.runtimeCatalog("llm");
+  integrations.runtimeCatalog = mock(async () => [
+    { ...base!, slug: "openai-api", name: "OpenAI", provider_key: "openai", description: "GPT models" },
+    { ...base!, slug: "anthropic", name: "Anthropic", provider_key: "anthropic", description: "Claude models" },
+    { ...base!, slug: "gemini", name: "Google Gemini", provider_key: "gemini", description: "Google AI" },
+  ]);
+  await mount(); await choose();
+  const search = await screen.findByRole("searchbox", { name: "Search providers" });
+  expect(screen.queryByRole("button", { name: "Connect and get started" })).toBeNull();
+  expect(screen.getAllByRole("button", { name: /Choose$/ })).toHaveLength(3);
+  fireEvent.change(search, { target: { value: "claude" } });
+  expect(screen.queryByRole("button", { name: /OpenAI.*Choose/ })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /Anthropic.*Choose/ }));
+  expect(screen.getByRole("heading", { name: "Anthropic" })).toBeTruthy();
+  const password = document.querySelector<HTMLInputElement>('input[type="password"]')!;
+  fireEvent.change(password, { target: { value: "anthropic-only-secret" } });
+  fireEvent.click(screen.getByRole("button", { name: "Change provider" }));
+  fireEvent.change(screen.getByRole("searchbox"), { target: { value: "nothing matches" } });
+  expect(screen.getByText("No providers match your search.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+  fireEvent.click(screen.getByRole("button", { name: /Google Gemini.*Choose/ }));
+  expect(document.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe("");
+  expect(integrations.connect).not.toHaveBeenCalled();
 });

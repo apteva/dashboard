@@ -5,6 +5,7 @@ import { auth, core, platformHelper, telemetry, mcpServers, integrations, subscr
 import { useNewAgentProviderDefault } from "../hooks/useNewAgentProviderDefault";
 import { Modal } from "../components/Modal";
 import { ProviderUsageDetails, ProviderUsageSummary } from "../components/ProviderUsage";
+import { ProviderPicker } from "../components/integrations/ProviderPicker";
 import { CredentialFields } from "../components/integrations/CredentialFields";
 import {
   ConnectionReauthDialog,
@@ -1504,11 +1505,6 @@ export function ProvidersTab() {
     }
   };
 
-  const filteredCatalog = catalog.filter((entry) =>
-    `${entry.name} ${entry.provider_key} ${entry.description}`
-      .toLowerCase()
-      .includes(providerSearch.trim().toLowerCase()),
-  );
   const effectiveConnections = primaryRuntimeConnections(connected);
   const providerName = (key: string) =>
     catalog.find((entry) => entry.provider_key === key)?.name || key;
@@ -1848,55 +1844,8 @@ export function ProvidersTab() {
             ×
           </button>
         </div>
-        <div className="px-5 pb-4">
-          <input
-            autoFocus
-            type="search"
-            aria-label="Search providers"
-            placeholder="Search providers…"
-            value={providerSearch}
-            onChange={(event) => setProviderSearch(event.target.value)}
-            className="w-full rounded-lg border border-border bg-transparent px-3 py-2.5 text-sm text-text focus:outline-none focus:border-accent"
-          />
-        </div>
-        <div className="overflow-y-auto px-5 pb-5 space-y-1">
-          {filteredCatalog.map((entry) => (
-            <button
-              type="button"
-              key={entry.slug}
-              onClick={() => openConnect(entry)}
-              className="flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-bg-hover transition-colors"
-            >
-              <AppIcon
-                src={entry.logo || undefined}
-                name={entry.name}
-                size="md"
-                framed={false}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-text">
-                  {entry.name}
-                </span>
-                <span className="block text-xs text-text-muted line-clamp-2 mt-1">
-                  {entry.description}
-                </span>
-              </span>
-              <span className="shrink-0 text-xs text-accent">
-                {connected.some(
-                  (connection) => connection.app_slug === entry.slug,
-                )
-                  ? "Add another"
-                  : "Connect"}
-              </span>
-            </button>
-          ))}
-          {filteredCatalog.length === 0 && (
-            <p className="py-8 text-center text-sm text-text-muted">
-              {catalog.length
-                ? "No providers match your search."
-                : "No providers available."}
-            </p>
-          )}
+        <div className="px-5 pb-5 min-h-0">
+          <ProviderPicker entries={catalog} query={providerSearch} onQueryChange={setProviderSearch} onSelect={openConnect} connectedSlugs={connected.map((connection) => connection.app_slug)} />
         </div>
       </Modal>
 

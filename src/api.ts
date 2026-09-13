@@ -293,6 +293,7 @@ export const auth = {
     provider_configured: boolean;
     can_manage_provider: boolean;
     starter_agent_id?: number;
+    workspace_preparation?: { status: string; message: string };
   }>("GET", "/auth/onboarding/status"),
   status: () =>
     request<{ reg_mode: string; needs_setup: boolean }>("GET", "/auth/status"),

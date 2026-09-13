@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { AppIcon } from "@apteva/ui-kit";
+import { ProviderPicker } from "../components/integrations/ProviderPicker";
 import { useNavigate } from "react-router-dom";
 import { auth, integrations, runtimeEntryAsAppDetail, type ConnectionInfo, type InterfaceLevel, type RuntimeCatalogEntry } from "../api";
 import { CredentialFields } from "../components/integrations/CredentialFields";
@@ -31,6 +33,8 @@ export function Onboarding() {
   const [error, setError] = useState("");
   const destination = useRef("/");
   const inFlight = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   useEffect(() => {
     if (user && user.onboarded && !busy) navigate(destination.current, { replace: true });
@@ -77,7 +81,18 @@ export function Onboarding() {
     setChoice(selected);
     void run(async () => {
       setProgress("Preparing your workspace…");
-      await setAudience(selected);
+      let preparing = selected !== "developer";
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const poll = async () => {
+        try {
+          const next = await auth.onboardingStatus();
+          if (preparing && mounted.current && next.workspace_preparation?.message) setProgress(next.workspace_preparation.message);
+        } catch { /* Saving the preference remains authoritative for errors. */ }
+        if (preparing && mounted.current) timer = setTimeout(poll, 750);
+      };
+      if (preparing) void poll();
+      try { await setAudience(selected); }
+      finally { preparing = false; if (timer) clearTimeout(timer); }
       const next = await auth.onboardingStatus();
       setStatus(next);
       if (next.provider_configured) {
@@ -113,7 +128,7 @@ export function Onboarding() {
       </> : <>
         <button disabled={busy} onClick={() => { setStep("usage"); setError(""); }} className="mb-5 text-sm text-text-muted disabled:opacity-40">← Back</button>
         <h1 className="text-3xl font-semibold text-text">Connect your AI</h1>
-        <p className="mt-3 text-sm leading-6 text-text-muted">Connect a model so your assistant can help in your first conversation.</p>
+        <p className="mt-3 text-sm leading-6 text-text-muted">Choose an AI provider for your assistant, then connect your account.</p>
         {status?.provider_configured ? <div className="mt-6">
           <p className="text-sm text-text-muted">Your AI connection is ready.</p>
           <button disabled={busy} onClick={() => void run(checkAndFinish)} className="mt-5 rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-40">{busy ? progress : "Open my conversation"}</button>
@@ -136,6 +151,8 @@ export function Onboarding() {
 function ProviderStep({ busy, projectId, retryConnection, onConnect }: { busy: boolean; projectId: string; retryConnection: Pick<ConnectionInfo, "id" | "app_slug"> | null; onConnect: (connect: () => Promise<void>) => void }) {
   const [entries, setEntries] = useState<RuntimeCatalogEntry[]>([]);
   const [selected, setSelected] = useState<RuntimeCatalogEntry | null>(null);
+  const [search, setSearch] = useState("");
+  const credentialForm = useRef<HTMLFormElement>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -149,9 +166,9 @@ function ProviderStep({ busy, projectId, retryConnection, onConnect }: { busy: b
     setLoadError("");
     integrations.runtimeCatalog("llm").then((all) => {
       if (!active) return;
-      const available = all.filter(isTypeableRuntimeEntry);
+      const available = all.filter(isTypeableRuntimeEntry).sort((a, b) => a.name.localeCompare(b.name));
       setEntries(available);
-      const initial = available.find((entry) => entry.slug === retryConnection?.app_slug) || available.find((entry) => entry.slug === "openai-api") || available[0] || null;
+      const initial = available.find((entry) => entry.slug === retryConnection?.app_slug) || null;
       // An expired OAuth connection may not be repairable in this key form.
       // Never apply another provider's credentials to that connection.
       if (savedConnection.current?.app_slug !== initial?.slug) savedConnection.current = null;
@@ -160,6 +177,17 @@ function ProviderStep({ busy, projectId, retryConnection, onConnect }: { busy: b
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [attempt, retryConnection?.id]);
+
+  useEffect(() => {
+    if (selected) credentialForm.current?.querySelector<HTMLInputElement>("input")?.focus();
+  }, [selected]);
+
+  const pickProvider = (entry: RuntimeCatalogEntry | null) => {
+    setSelected(entry);
+    setFields({});
+    savedConnection.current = null;
+    credentialsDirty.current = false;
+  };
 
   const connect = async () => {
     if (!selected) throw new Error("Choose a provider.");
@@ -198,14 +226,27 @@ function ProviderStep({ busy, projectId, retryConnection, onConnect }: { busy: b
   };
 
   if (loading) return <p role="status" className="mt-6 text-sm text-text-muted">Loading connection options…</p>;
-  if (loadError || !selected) return <div className="mt-6"><p role="alert" className="text-sm text-red">{loadError || "No connection options are available. Please contact your administrator."}</p><button disabled={busy} onClick={() => setAttempt(attempt + 1)} className="mt-3 text-sm text-accent">Try again</button></div>;
-  return <fieldset disabled={busy} className="mt-7 min-w-0 space-y-5">
-    <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
-      <h2 className="text-base font-semibold text-text">{selected.name}</h2>
-      <CredentialFields detail={runtimeEntryAsAppDetail(selected)} credentials={fields} setCredentials={(next) => { setFields(next); credentialsDirty.current = true; }} />
-      {entries.length > 1 && <details className="text-sm text-text-muted"><summary className="cursor-pointer">Use another provider</summary><label className="mt-3 block">Provider<select value={selected.slug} onChange={(event) => { setSelected(entries.find((entry) => entry.slug === event.target.value) || null); setFields({}); savedConnection.current = null; credentialsDirty.current = false; }} className="mt-2 block w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-text">{entries.map((entry) => <option key={entry.slug} value={entry.slug}>{entry.name}</option>)}</select></label></details>}
+  if (loadError || entries.length === 0) return <div className="mt-6"><p role="alert" className="text-sm text-red">{loadError || "No connection options are available. Please contact your administrator."}</p><button disabled={busy} onClick={() => setAttempt(attempt + 1)} className="mt-3 text-sm text-accent">Try again</button></div>;
+  if (!selected) return <section className="mt-7 rounded-xl border border-border bg-bg-card p-4 sm:p-5" aria-label="Choose a provider">
+    <div className="mb-4 flex items-center justify-between gap-3">
+      <h2 className="text-sm font-semibold text-text">Choose a provider</h2>
+      <span className="text-xs text-text-muted">{entries.length} available</span>
     </div>
-    <button onClick={() => onConnect(connect)} className="w-full rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-40">{busy ? "Connecting…" : "Connect and get started"}</button>
-    <p className="text-xs leading-5 text-text-muted">Your provider may charge for AI usage. You can manage this connection later in Settings.</p>
-  </fieldset>;
+    <ProviderPicker entries={entries} query={search} onQueryChange={setSearch} onSelect={pickProvider} disabled={busy} actionLabel="Choose" showDescriptions={false} />
+  </section>;
+
+  return <form ref={credentialForm} onSubmit={(event) => { event.preventDefault(); if (!busy) onConnect(connect); }} className="mt-7">
+    <fieldset disabled={busy} className="min-w-0 space-y-5">
+      <div className="rounded-xl border border-border bg-bg-card p-5 space-y-5">
+        <div className="flex items-center gap-3 border-b border-border pb-4">
+          <AppIcon src={selected.logo || undefined} name={selected.name} size="md" framed={false} className="rounded-lg bg-white text-black" />
+          <h2 className="min-w-0 flex-1 text-base font-semibold text-text">{selected.name}</h2>
+          <button type="button" onClick={() => pickProvider(null)} className="shrink-0 rounded-md px-2 py-1 text-sm text-text-muted hover:text-text hover:bg-bg-hover focus-visible:outline-accent">Change provider</button>
+        </div>
+        <CredentialFields detail={runtimeEntryAsAppDetail(selected)} credentials={fields} setCredentials={(next) => { setFields(next); credentialsDirty.current = true; }} />
+      </div>
+      <button type="submit" className="w-full rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-40">{busy ? "Connecting…" : "Connect and get started"}</button>
+      <p className="text-xs leading-5 text-text-muted">Your provider may charge for AI usage. You can manage this connection later in Settings.</p>
+    </fieldset>
+  </form>;
 }
