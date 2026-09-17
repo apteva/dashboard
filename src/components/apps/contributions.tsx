@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppIcon } from "@apteva/ui-kit";
 import { auth } from "../../api";
 import { useOptionalAuth } from "../../hooks/useAuth";
-import { useAppEvents } from "../../hooks/useAppEvents";
+import { usePanelEvents } from "../../hooks/usePanelEvents";
 import {
   ChatComponentMount,
   type InstalledAppRow,
@@ -431,13 +431,7 @@ export function ContributionMount({
   threadId?: string;
 }) {
   const { contribution } = instance;
-  const [eventRevision, setEventRevision] = useState(0);
-  useAppEvents(contribution.app.name, projectId, (event) => {
-    const topics = contribution.spec.refresh_topics || [];
-    if (topics.length === 0 || topics.includes(event.topic)) {
-      setEventRevision((value) => value + 1);
-    }
-  });
+  const events = usePanelEvents(contribution.app.name, projectId, contribution.app.install_id, contribution.spec.refresh_topics || []);
   const width = instance.size === "full" ? "xl:col-span-2" : "";
   return (
     <div
@@ -454,7 +448,7 @@ export function ContributionMount({
             agentId,
             instanceId: agentId,
             threadId,
-            eventRevision,
+            ...events,
             slot,
             widgetId: instance.id,
             widgetSize: instance.size,

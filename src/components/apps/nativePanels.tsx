@@ -25,11 +25,16 @@ export interface NativePanelProps {
   installId: number;
   projectId: string;
   instanceId?: number;
+  eventRevision?: number;
+  eventStreamManaged?: boolean;
+  appEvents?: import("../../hooks/useAppEvents").AppEventEnvelope[];
 }
 
 // Cache lazy components by URL so navigating away and back doesn't
 // re-import the panel module on every mount.
 const cache = new Map<string, LazyExoticComponent<ComponentType<NativePanelProps>>>();
+
+const wrappers = new Map<string, ComponentType<NativePanelProps>>();
 
 // resolvePanelComponent returns a Suspense-wrapped React component
 // for the given app's panel entry. Returns null if the entry is
@@ -73,6 +78,9 @@ export function resolvePanelComponent(
     });
     cache.set(url, cached);
   }
+  const wrapperKey = url + JSON.stringify(scope?.identity || null);
+  const existing = wrappers.get(wrapperKey);
+  if (existing) return existing;
   const Lazy = cached;
 
   // Wrap the lazy component in Suspense + a panel-scoped error
@@ -92,6 +100,7 @@ export function resolvePanelComponent(
     </PanelErrorBoundary>
   );
   Wrapped.displayName = `NativePanel(${appName})`;
+  wrappers.set(wrapperKey, Wrapped);
   return Wrapped;
 }
 

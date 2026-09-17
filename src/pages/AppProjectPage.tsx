@@ -15,6 +15,8 @@ import { usePageTitle } from "../hooks/usePageTitle";
 import { useAssistantPageDetails } from "../components/chat/pageContext";
 import { resolvePanelComponent } from "../components/apps/nativePanels";
 
+import { LiveAppPanel } from "../components/apps/LiveAppPanel";
+
 interface LoadedApp {
   app: AppRow;
   projectId: string;
@@ -144,7 +146,8 @@ export function AppProjectPage() {
   if (Native) {
     return (
       <div className="h-full">
-        <Native
+        <LiveAppPanel
+          component={Native}
           appName={app.name}
           installId={app.install_id}
           projectId={panelProjectId}
