@@ -31,7 +31,7 @@ function visibleDashboardComponents(preset: ProjectPreset): string[] {
   return components.filter((component) => !HIDDEN_DASHBOARD_COMPONENTS.has(component));
 }
 
-function presetCountSummary(preset: ProjectPreset) {
+export function presetCountSummary(preset: ProjectPreset) {
   const agents = preset.agents.length;
   const apps = new Set(preset.agents.flatMap((agent) => agent.apps || [])).size;
   const widgets = visibleDashboardComponents(preset).length;
@@ -240,7 +240,7 @@ export function ProjectPresetSetup({
   );
 }
 
-function PresetContentsSummary({ preset }: { preset: ProjectPreset }) {
+export function PresetContentsSummary({ preset }: { preset: ProjectPreset }) {
   const dashboardComponents = visibleDashboardComponents(preset);
   return (
     <section className="border border-accent/35 bg-accent/5 rounded-lg p-4" aria-label="What this template can do">
@@ -261,6 +261,7 @@ function PresetContentsSummary({ preset }: { preset: ProjectPreset }) {
         </ul>
       ) : <p className="mt-4 text-xs leading-relaxed text-text-muted">{preset.description}</p>}
 
+      {preset.interface_level && <p className="mt-3 text-xs text-text-muted">Recommended interface: {{ personal: "Focused", business: "Workspace", developer: "Advanced" }[preset.interface_level]}</p>}
       <details className="mt-4 border-t border-border pt-3">
         <summary className="cursor-pointer text-xs text-text-muted hover:text-text">Included setup · {presetCountSummary(preset)}</summary>
         <div className="space-y-3 mt-3">

@@ -293,6 +293,7 @@ export const auth = {
     provider_configured: boolean;
     can_manage_provider: boolean;
     starter_agent_id?: number;
+    workspace_preparation?: { status: string; message: string };
   }>("GET", "/auth/onboarding/status"),
   status: () =>
     request<{ reg_mode: string; needs_setup: boolean }>("GET", "/auth/status"),
@@ -427,8 +428,9 @@ export const auth = {
       { value },
     ),
 
-  completeOnboarding: () =>
-    request<{ status: string }>("POST", "/auth/onboarding/complete"),
+  prepareOnboarding: (mode: "ai") => request<{ status: string }>("POST", "/auth/onboarding/prepare", { mode }),
+  completeOnboarding: (interfaceLevel?: InterfaceLevel) =>
+    request<{ status: string }>("POST", "/auth/onboarding/complete", { interface_level: interfaceLevel }),
 
   // POST /auth/password — change the logged-in user's password. The
   // server revokes every OTHER active session for this user on
@@ -447,6 +449,7 @@ export const auth = {
     name: string,
     options?: {
       kind?: "private" | "public_client";
+      access?: "read_only" | "read_write";
       project_id?: string;
       scopes?: unknown;
       allowed_origins?: string[];
@@ -454,7 +457,7 @@ export const auth = {
       expires_at?: string;
     },
   ) =>
-    request<{ id: number; key: string; prefix: string; kind: string }>(
+    request<{ id: number; key: string; prefix: string; kind: string; access: "read_only" | "read_write" }>(
       "POST",
       "/auth/keys",
       {
@@ -470,6 +473,7 @@ export const auth = {
         name: string;
         key_prefix: string;
         kind?: "private" | "public_client";
+        access?: "read_only" | "read_write";
         project_id?: string;
         scopes?: string;
         allowed_origins?: string;
@@ -588,6 +592,7 @@ export interface ProjectPresetAgent {
 }
 
 export interface ProjectPreset {
+  interface_level?: InterfaceLevel;
   id: string;
   kind?: "project_setup";
   scope?: "personal" | "shared" | "project" | "system";
@@ -626,6 +631,7 @@ export interface ProjectPresetWidget {
 }
 
 export interface ProjectPresetPreview {
+  interface_level?: InterfaceLevel;
   preset: ProjectPreset;
   planner: "selected" | "meta" | "deterministic";
   confidence: number;
@@ -637,12 +643,17 @@ export interface ProjectPresetPreview {
   next_steps?: string[];
 }
 
+export type SetupAgentOverride = Pick<ProjectPresetAgentPreview, "key" | "name" | "directive" | "mode">;
+
 export interface ProjectPresetApplyInput {
+  interface_level?: InterfaceLevel;
+  agent_overrides?: SetupAgentOverride[];
   preset_id: string;
   description: string;
 }
 
 export interface ProjectSetupPresetDefinition {
+  interface_level?: InterfaceLevel;
   category: "personal" | "work" | "development" | "business";
   match?: string[];
   highlights?: string[];
@@ -697,6 +708,7 @@ export interface TemplateLogo {
   kind: "app" | "integration" | "channel";
   slug: string;
   icon_url?: string;
+  icon_style?: "image" | "monochrome";
   label: string;
   // "direct" — declared on the template itself.
   // "derived" — pulled from a required app's requires.integrations.
@@ -770,6 +782,20 @@ export const projects = {
   delete: (id: string) => request<any>("DELETE", `/projects/${id}`),
 };
 
+export interface WorkspaceSetupDraft {
+  interface_level?: InterfaceLevel;
+  category: "" | "personal" | "business" | "work" | "development";
+  preset_id: string;
+  description: string;
+  mode: "choice" | "browse" | "manual" | "ai" | "scratch";
+  agent_overrides?: SetupAgentOverride[];
+}
+
+export const workspaceSetup = {
+  get: (projectId: string) => request<WorkspaceSetupDraft>("GET", `/projects/${encodeURIComponent(projectId)}/setup/session`),
+  save: (projectId: string, draft: WorkspaceSetupDraft) => request<WorkspaceSetupDraft>("PUT", `/projects/${encodeURIComponent(projectId)}/setup/session`, draft),
+};
+
 export const projectPresets = {
   list: async (options?: { systemOnly?: boolean }) => {
     const path = options?.systemOnly ? "/templates?system_only=true" : "/templates";
@@ -788,6 +814,7 @@ export const projectPresets = {
         name: preset.name,
         description: preset.description,
         category: preset.definition.category,
+        interface_level: preset.definition.interface_level,
         highlights: preset.definition.highlights,
         agents: preset.definition.agents,
         dashboard: preset.definition.dashboard,
@@ -799,6 +826,7 @@ export const projectPresets = {
     projectId: string,
     input: {
       preset_id?: string;
+      interface_level?: InterfaceLevel;
       category?: string;
       description: string;
     },
@@ -978,6 +1006,7 @@ export interface Agent {
   name: string;
   directive: string;
   mode: RunMode;
+  proactivity?: number;
   config: string;
   port: number;
   pid: number;
@@ -1052,6 +1081,7 @@ export const instances = {
     projectId?: string,
     start?: boolean,
     opts?: {
+      proactivity?: number;
       idempotencyKey?: string;
       includeChannels?: boolean;
       unconscious?: boolean;
@@ -1071,6 +1101,7 @@ export const instances = {
       directive: directive || "",
       mode: mode || "autonomous",
       project_id: projectId || "",
+      ...(opts?.proactivity !== undefined ? { proactivity: opts.proactivity } : {}),
       ...(opts?.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
       // Server default is start=true; pass explicit false to create stopped.
       ...(start === false ? { start: false } : {}),
@@ -1138,6 +1169,7 @@ export const instances = {
     opts: {
       directive?: string;
       mode?: string;
+      proactivity?: number;
       providers?: Array<{ name: string; default: boolean }>;
       modelOverride?: string;
       realtimeEnabled?: boolean;
@@ -1148,6 +1180,7 @@ export const instances = {
     request<Agent & { behavior_sync?: BehaviorSync }>("PUT", `/agents/${id}/config`, {
       ...(opts.directive ? { directive: opts.directive } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
+      ...(opts.proactivity !== undefined ? { proactivity: opts.proactivity } : {}),
       ...(opts.providers ? { providers: opts.providers } : {}),
       ...(opts.modelOverride !== undefined
         ? { model_override: opts.modelOverride }
@@ -1873,6 +1906,12 @@ export const integrations = {
       `/connections/runtime${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
     ),
 
+  newAgentProvider: (projectId?: string) =>
+    request<NewAgentProviderSettings>("GET", `/settings/new-agent-provider${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`),
+
+  setNewAgentProvider: (provider: string, projectId?: string) =>
+    request<NewAgentProviderSettings>("PUT", `/settings/new-agent-provider${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`, { provider }),
+
   /** Pick which credential backs the runtime when several exist for one
    *  provider. Demotes the previous primary server-side. */
   setPrimary: (connectionId: number) =>
@@ -2322,6 +2361,7 @@ export interface Status {
   memories: number;
   paused: boolean;
   mode: RunMode;
+  proactivity?: number;
   behavior_sync?: BehaviorSync;
   pending_approval: PendingApproval | null;
   execution_control?: ExecutionControlStatus;
@@ -2652,6 +2692,7 @@ export const core = {
     request<{
       directive: string;
       mode: RunMode;
+      proactivity?: number;
       behavior_sync?: BehaviorSync;
       provider?: {
         name: string;
@@ -4073,3 +4114,10 @@ export const platform = {
   status: () => request<PlatformStatus>("GET", "/platform-status"),
   refresh: () => request<PlatformStatus>("POST", "/platform-status/refresh"),
 };
+
+export interface NewAgentProviderSettings {
+  provider: string;
+  effective_provider: string;
+  inherited_provider: string;
+  available_providers: string[];
+}

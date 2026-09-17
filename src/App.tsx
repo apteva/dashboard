@@ -24,6 +24,7 @@ const Connect = lazy(() => import("./pages/Connect").then((m) => ({ default: m.C
 const Onboarding = lazy(() => import("./pages/Onboarding").then((m) => ({ default: m.Onboarding })));
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
 const Personal = lazy(() => import("./pages/Personal").then((m) => ({ default: m.Personal })));
+const WorkspaceSetup = lazy(() => import("./pages/WorkspaceSetup").then((m) => ({ default: m.WorkspaceSetup })));
 const Build = lazy(() => import("./pages/Build").then((m) => ({ default: m.Build })));
 const Monitor = lazy(() => import("./pages/Monitor").then((m) => ({ default: m.Monitor })));
 const Agents = lazy(() => import("./pages/Agents").then((m) => ({ default: m.Agents })));
@@ -89,6 +90,8 @@ export default function App() {
               </ProtectedRoute>
             }
           />
+          <Route path="/setup" element={<Navigate to="/onboarding/setup" replace />} />
+          <Route path="/onboarding/setup" element={<ProtectedRoute><ProjectProvider><RealtimeVoiceProvider><WorkspaceSetup /></RealtimeVoiceProvider></ProjectProvider></ProtectedRoute>} />
           <Route
             element={
               <ProtectedRoute>

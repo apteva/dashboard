@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import { useAssistantPageDetails } from "../components/chat/pageContext";
 import { Link } from "react-router-dom";
 import { AppIcon as SharedAppIcon } from "@apteva/ui-kit";
 import {
@@ -183,6 +184,8 @@ export function Apps() {
   // entry vs. an installed app row). Only one is non-null at a time.
   const [detailEntry, setDetailEntry] = useState<MarketplaceEntry | null>(null);
   const [detailInstall, setDetailInstall] = useState<AppRow | null>(null);
+  const contextInstall = detailInstall && (!detailInstall.project_id || detailInstall.project_id === currentProject?.id) ? detailInstall : null;
+  useAssistantPageDetails(currentProject?.id || "", { app: contextInstall?.name || detailEntry?.name, installation_id: contextInstall?.install_id });
 
   const refreshInstalled = (showLoading = true) => {
     if (showLoading) setLoading(true);
@@ -1229,6 +1232,7 @@ function AppListRow({
   const [mountUrl, setMountUrl] = useState("http://127.0.0.1:8080");
   const [mountError, setMountError] = useState("");
   const [permissionPrompt, setPermissionPrompt] = useState<UpgradePermissionPrompt | null>(null);
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
 
   const remove = async () => {
     setBusy(true);
@@ -1322,7 +1326,7 @@ function AppListRow({
   return (
     <>
     <div
-      className="rounded-lg border border-border bg-bg-card px-3 py-3 flex items-center gap-3 hover:bg-bg-hover transition-colors cursor-pointer md:rounded-none md:border-0 md:bg-transparent md:px-4"
+      className="relative rounded-lg border border-border bg-bg-card px-3 py-3 flex items-center gap-3 hover:bg-bg-hover transition-colors cursor-pointer md:rounded-none md:border-0 md:bg-transparent md:px-4"
       onClick={onOpenDetails}
       role="button"
       tabIndex={0}
@@ -1374,7 +1378,7 @@ function AppListRow({
       </div>
 
       {/* Actions — anchored right, click doesn't propagate to row */}
-      <div className="hidden items-center gap-1 shrink-0 md:flex" onClick={(e) => e.stopPropagation()}>
+      <div className="hidden items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
         {showMount ? (
           <div className="bg-accent/10 border border-accent/40 rounded p-1.5 flex items-center gap-1.5">
             <input
@@ -1482,7 +1486,27 @@ function AppListRow({
           </>
         )}
       </div>
-      <span className="shrink-0 text-lg text-text-dim md:hidden">›</span>
+      <div className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          onClick={() => setActionMenuOpen((open) => !open)}
+          className="flex h-8 w-8 items-center justify-center rounded-md text-lg text-text-dim hover:bg-bg-hover hover:text-text"
+          aria-label={`Actions for ${app.display_name}`}
+          aria-expanded={actionMenuOpen}
+        >
+          ⋯
+        </button>
+        {actionMenuOpen && (
+          <div className="absolute right-0 top-9 z-20 min-w-36 rounded-md border border-border bg-bg-card p-1 shadow-xl">
+            {showOpen && (
+              <Link to={`/apps/${app.name}/page`} onClick={() => setActionMenuOpen(false)} className="block rounded px-3 py-2 text-xs text-text hover:bg-bg-hover">Open</Link>
+            )}
+            {updateAvailable && <button type="button" onClick={() => { setActionMenuOpen(false); void upgrade(); }} className="block w-full rounded px-3 py-2 text-left text-xs text-yellow hover:bg-bg-hover">Update</button>}
+            {app.status === "running" && app.source !== "builtin" && <button type="button" onClick={() => { setActionMenuOpen(false); void disable(); }} className="block w-full rounded px-3 py-2 text-left text-xs text-text-muted hover:bg-bg-hover">Disable</button>}
+            {app.source !== "builtin" && <button type="button" onClick={() => { setActionMenuOpen(false); if (confirm(`Uninstall ${app.display_name || app.name}?`)) void remove(); }} className="block w-full rounded px-3 py-2 text-left text-xs text-red hover:bg-bg-hover">Uninstall</button>}
+          </div>
+        )}
+      </div>
     </div>
     <UpgradePermissionModal
       appName={app.display_name}

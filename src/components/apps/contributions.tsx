@@ -414,6 +414,7 @@ export function AppContributionArea({
 }
 
 export function ContributionMount({
+  pageContext,
   instance,
   apps,
   slot,
@@ -421,6 +422,7 @@ export function ContributionMount({
   agentId,
   threadId,
 }: {
+  pageContext?: import("../chat/pageContext").AssistantPageContext;
   instance: ResolvedWidgetInstance;
   apps: InstalledAppRow[];
   slot: string;
@@ -457,6 +459,7 @@ export function ContributionMount({
             widgetId: instance.id,
             widgetSize: instance.size,
             widgetSettings: instance.settings || {},
+            pageContext,
           },
         }}
         apps={apps}

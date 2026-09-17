@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { auth, integrations, runtimeEntryAsAppDetail, type InterfaceLevel, type RuntimeCatalogEntry } from "../api";
+import { AppIcon } from "@apteva/ui-kit";
+import { OnboardingDeviceProvider } from "../components/integrations/OnboardingDeviceProvider";
+import { ProviderPicker } from "../components/integrations/ProviderPicker";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { auth, integrations, runtimeEntryAsAppDetail, type ConnectionInfo, type RuntimeCatalogEntry } from "../api";
 import { CredentialFields } from "../components/integrations/CredentialFields";
 import { defaultIntegrationAuthType } from "../utils/integrationAuth";
-import { prepareOnboardingConversation } from "../utils/onboarding";
+import { onboardingProviderConnection, verifyOnboardingConnection, verifyOnboardingProvider, replaceOnboardingCredentials } from "../utils/onboarding";
 import { useAuth } from "../hooks/useAuth";
-import { useAudience } from "../hooks/useAudience";
 import { usePageTitle } from "../hooks/usePageTitle";
 
-export const ONBOARDING_STEP_IDS = ["usage", "provider"] as const;
+export const ONBOARDING_STEP_IDS = ["provider", "setup"] as const;
 type SetupStatus = Awaited<ReturnType<typeof auth.onboardingStatus>>;
 
 export function isTypeableRuntimeEntry(entry: RuntimeCatalogEntry): boolean {
@@ -17,33 +19,24 @@ export function isTypeableRuntimeEntry(entry: RuntimeCatalogEntry): boolean {
   return type !== "oauth2" && type !== "oauth1" && type !== "oauth_device_code";
 }
 
+export function isOnboardingRuntimeEntry(entry: RuntimeCatalogEntry): boolean {
+  return isTypeableRuntimeEntry(entry) || defaultIntegrationAuthType(runtimeEntryAsAppDetail(entry)) === "oauth_device_code";
+}
+
 export function Onboarding() {
   usePageTitle("Welcome");
-  const { user, refresh } = useAuth();
-  const { setAudience } = useAudience();
+  const { user } = useAuth();
   const navigate = useNavigate();
-  const [step, setStep] = useState<"usage" | "provider">("usage");
-  const [choice, setChoice] = useState<InterfaceLevel | null>(null);
+  const [params] = useSearchParams();
+  const connectRequested = params.get("provider") === "1";
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState("");
+  const [retryConnection, setRetryConnection] = useState<Pick<ConnectionInfo, "id" | "app_slug"> | null>(null);
+  const [progress, setProgress] = useState("Checking AI access…");
   const [error, setError] = useState("");
-  const destination = useRef("/");
   const inFlight = useRef(false);
-
-  useEffect(() => {
-    if (user && user.onboarded && !busy) navigate(destination.current, { replace: true });
-  }, [user, busy, navigate]);
-
-  const finish = async (next: SetupStatus, selected: InterfaceLevel) => {
-    if (!user) throw new Error("Please sign in again.");
-    setProgress("Opening your conversation…");
-    destination.current = selected === "developer" ? "/agents/new" : await prepareOnboardingConversation(user.id, next.project_id, selected, next.starter_agent_id);
-    await auth.completeOnboarding();
-    await refresh();
-    window.dispatchEvent(new Event("apteva:agents-changed"));
-    navigate(destination.current, { replace: true });
-  };
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   const run = async (action: () => Promise<void>) => {
     if (inFlight.current) return;
@@ -51,75 +44,90 @@ export function Onboarding() {
     setBusy(true);
     setError("");
     try { await action(); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Could not finish setup. Please try again."); }
-    finally { inFlight.current = false; setBusy(false); }
+    catch (caught) { if (mounted.current) setError(caught instanceof Error ? caught.message : "Could not continue. Please try again."); }
+    finally { inFlight.current = false; if (mounted.current) setBusy(false); }
   };
 
-  const choose = (selected = choice) => {
-    if (!selected) return;
-    setChoice(selected);
-    void run(async () => {
-      setProgress("Preparing your workspace…");
-      await setAudience(selected);
-      const next = await auth.onboardingStatus();
-      setStatus(next);
-      if (next.provider_configured) await finish(next, selected);
-      else setStep("provider");
-    });
+  const finish = async (next: SetupStatus) => {
+    if (!mounted.current) return;
+    window.sessionStorage.setItem("apteva_project_id", next.project_id);
+    window.localStorage.setItem("apteva_project_id", next.project_id);
+    navigate("/onboarding/setup", { replace: true });
   };
+
+  const verifyExistingProvider = async (next: SetupStatus) => {
+    try {
+      const connection = await onboardingProviderConnection(next.project_id);
+      if (connection) {
+        setRetryConnection(connection);
+        await verifyOnboardingConnection(connection.id);
+      }
+      setRetryConnection(null);
+    } catch (error) {
+      setStatus({ ...next, provider_configured: false });
+      throw error;
+    }
+  };
+
+  const load = async () => {
+    setProgress("Checking AI access…");
+    const next = await auth.onboardingStatus();
+    if (!mounted.current) return;
+    setStatus(next);
+    if (next.provider_configured) {
+      await verifyExistingProvider(next);
+      await finish(next);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    if (user.onboarded && !connectRequested) { navigate("/", { replace: true }); return; }
+    void run(load);
+  }, [user && user.id, connectRequested]);
 
   const checkAndFinish = async () => {
     const next = await auth.onboardingStatus();
     setStatus(next);
     if (!next.provider_configured) throw new Error("AI access is not connected yet. Please connect a provider to continue.");
-    await finish(next, choice!);
+    await verifyExistingProvider(next);
+    await finish(next);
   };
 
   return <main className="min-h-screen bg-bg px-6 py-12 flex items-center justify-center">
     <div className="w-full max-w-xl">
       <p className="mb-3 text-xs font-medium uppercase tracking-wide text-text-muted">Welcome to Apteva</p>
-      {step === "usage" ? <>
-        <h1 className="text-3xl font-semibold text-text">How will you use Apteva?</h1>
-        <p className="mt-3 text-sm leading-6 text-text-muted">Choose a starting point. You can change this later.</p>
-        <div className="mt-8 grid gap-3 sm:grid-cols-2">
-          {(["personal", "business"] as const).map((value) => <button key={value} disabled={busy} aria-pressed={choice === value} onClick={() => setChoice(value)} className={`rounded-xl border p-5 text-left disabled:opacity-60 ${choice === value ? "border-accent bg-accent/5" : "border-border bg-bg-card hover:border-accent/50"}`}>
-            <span className="block text-base font-semibold text-text">{value === "personal" ? "For myself" : "For my business"}</span>
-            <span className="mt-2 block text-sm leading-6 text-text-muted">{value === "personal" ? "An assistant for everyday tasks and personal projects." : "An assistant to help with your business tasks."}</span>
-          </button>)}
-        </div>
-        <button disabled={!choice || busy} onClick={() => choose()} className="mt-6 w-full rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-40">{busy ? progress : "Continue"}</button>
-        <button disabled={busy} onClick={() => choose("developer")} className="mt-4 text-xs text-text-muted underline underline-offset-4 disabled:opacity-40">Developer setup</button>
-      </> : <>
-        <button disabled={busy} onClick={() => { setStep("usage"); setError(""); }} className="mb-5 text-sm text-text-muted disabled:opacity-40">← Back</button>
-        <h1 className="text-3xl font-semibold text-text">Connect your AI</h1>
-        <p className="mt-3 text-sm leading-6 text-text-muted">Connect a model so your assistant can help in your first conversation.</p>
-        {status?.provider_configured ? <div className="mt-6">
-          <p className="text-sm text-text-muted">Your AI connection is ready.</p>
-          <button disabled={busy} onClick={() => void run(checkAndFinish)} className="mt-5 rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-40">{busy ? progress : "Open my conversation"}</button>
-        </div> : status?.can_manage_provider ? <ProviderStep busy={busy} onConnect={(connect) => void run(async () => {
-          setProgress("Checking your connection…");
-          await connect();
-          await checkAndFinish();
-        })} /> : <div className="mt-6 rounded-xl border border-border bg-bg-card p-5">
-          <p className="text-sm leading-6 text-text-muted">Your workspace administrator needs to connect AI. Once they do, you can continue here without adding your own key.</p>
-          <button disabled={busy} onClick={() => void run(checkAndFinish)} className="mt-4 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:opacity-40">{busy ? progress : "Check again"}</button>
-        </div>}
-        {choice === "developer" && <button disabled={busy} onClick={() => void run(async () => finish(status!, "developer"))} className="mt-5 text-xs text-text-muted underline">Set up AI later</button>}
-      </>}
+      {connectRequested && <button disabled={busy} onClick={() => navigate("/onboarding/setup")} className="mb-5 text-sm text-text-muted">← Back</button>}
+      <h1 className="text-3xl font-semibold text-text">Connect your AI</h1>
+      <p className="mt-3 text-sm leading-6 text-text-muted">Connect a provider, then choose how to set up your workspace.</p>
+      {!status ? <div className="mt-6"><p className="text-sm text-text-muted">Checking AI access…</p>{error && <button disabled={busy} onClick={() => void run(load)} className="mt-4 text-sm text-accent">Retry</button>}</div> : status.provider_configured ? <div className="mt-6">
+        <p className="text-sm text-text-muted">Your AI connection is ready.</p>
+        <button disabled={busy} onClick={() => void run(checkAndFinish)} className="mt-5 rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-40">{busy ? progress : "Continue to setup"}</button>
+      </div> : status.can_manage_provider ? <ProviderStep key={retryConnection?.id || "new"} busy={busy} projectId={status.project_id} retryConnection={retryConnection} onConnect={(connect) => void run(async () => {
+        setProgress("Checking your connection…");
+        await connect();
+        await checkAndFinish();
+      })} /> : <div className="mt-6 rounded-xl border border-border bg-bg-card p-5">
+        <p className="text-sm leading-6 text-text-muted">Your workspace administrator needs to connect AI. Once they do, you can continue here without adding your own key.</p>
+        <button disabled={busy} onClick={() => void run(checkAndFinish)} className="mt-4 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:opacity-40">{busy ? progress : "Check again"}</button>
+      </div>}
       {error && <p role="alert" className="mt-5 text-sm text-red">{error}</p>}
       {busy && <p role="status" className="mt-4 text-sm text-text-muted">{progress}</p>}
     </div>
   </main>;
 }
 
-function ProviderStep({ busy, onConnect }: { busy: boolean; onConnect: (connect: () => Promise<void>) => void }) {
+function ProviderStep({ busy, projectId, retryConnection, onConnect }: { busy: boolean; projectId: string; retryConnection: Pick<ConnectionInfo, "id" | "app_slug"> | null; onConnect: (connect: () => Promise<void>) => void }) {
   const [entries, setEntries] = useState<RuntimeCatalogEntry[]>([]);
   const [selected, setSelected] = useState<RuntimeCatalogEntry | null>(null);
+  const [search, setSearch] = useState("");
+  const credentialForm = useRef<HTMLFormElement>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [attempt, setAttempt] = useState(0);
-  const savedConnection = useRef<number | null>(null);
+  const savedConnection = useRef<Pick<ConnectionInfo, "id" | "app_slug"> | null>(retryConnection);
+  const credentialsDirty = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -127,13 +135,27 @@ function ProviderStep({ busy, onConnect }: { busy: boolean; onConnect: (connect:
     setLoadError("");
     integrations.runtimeCatalog("llm").then((all) => {
       if (!active) return;
-      const available = all.filter(isTypeableRuntimeEntry);
+      const available = all.filter(isOnboardingRuntimeEntry).sort((a, b) => a.name.localeCompare(b.name));
       setEntries(available);
-      setSelected(available.find((entry) => entry.slug === "openai-api") || available[0] || null);
+      const initial = available.find((entry) => entry.slug === retryConnection?.app_slug) || null;
+      // Never apply another provider's credentials to a saved connection.
+      if (savedConnection.current?.app_slug !== initial?.slug) savedConnection.current = null;
+      setSelected(initial);
     }).catch(() => { if (active) setLoadError("Could not load connection options. Please try again."); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [attempt]);
+  }, [attempt, retryConnection?.id]);
+
+  useEffect(() => {
+    if (selected) credentialForm.current?.querySelector<HTMLInputElement>("input")?.focus();
+  }, [selected]);
+
+  const pickProvider = (entry: RuntimeCatalogEntry | null) => {
+    setSelected(entry);
+    setFields({});
+    savedConnection.current = null;
+    credentialsDirty.current = false;
+  };
 
   const connect = async () => {
     if (!selected) throw new Error("Choose a provider.");
@@ -145,26 +167,51 @@ function ProviderStep({ busy, onConnect }: { busy: boolean; onConnect: (connect:
     }
     if (!Object.keys(credentials).length) throw new Error("Enter your provider key.");
     if (!savedConnection.current) {
+      // Reuse an earlier saved attempt after Back, reload, provider switching,
+      // or a lost create response, without fetching its secret credentials.
+      const rows = await integrations.connections();
+      savedConnection.current = rows.find((row) => row.app_slug === selected.slug && row.name === selected.name && !row.project_id) || null;
+      if (savedConnection.current) credentialsDirty.current = true;
+    }
+    if (savedConnection.current) {
+      if (credentialsDirty.current) {
+        await replaceOnboardingCredentials(savedConnection.current, credentials);
+        credentialsDirty.current = false;
+      }
+    } else {
       const result = await integrations.connect(selected.slug, selected.name, credentials, defaultIntegrationAuthType(runtimeEntryAsAppDetail(selected)) || "api_key", "", undefined, "integration", false);
-      savedConnection.current = "connection" in result ? result.connection.id : result.id;
+      const id = "connection" in result ? result.connection.id : result.id;
+      savedConnection.current = { id, app_slug: selected.slug };
+      credentialsDirty.current = false;
     }
-    const test = await integrations.testConnection(savedConnection.current);
-    if (!test.ok) throw new Error(test.error || test.reason || "The connection did not work. Please check your key.");
-    if (test.skipped) {
-      const models = await integrations.connectionModels(savedConnection.current, true);
-      if (!models.length) throw new Error("No models are available through this connection. Please check your provider account.");
-    }
+    await verifyOnboardingProvider(savedConnection.current.id, selected.provider_key, projectId);
   };
 
   if (loading) return <p role="status" className="mt-6 text-sm text-text-muted">Loading connection options…</p>;
-  if (loadError || !selected) return <div className="mt-6"><p role="alert" className="text-sm text-red">{loadError || "No connection options are available. Please contact your administrator."}</p><button disabled={busy} onClick={() => setAttempt(attempt + 1)} className="mt-3 text-sm text-accent">Try again</button></div>;
-  return <fieldset disabled={busy} className="mt-7 min-w-0 space-y-5">
-    <div className="rounded-xl border border-border bg-bg-card p-5 space-y-4">
-      <h2 className="text-base font-semibold text-text">{selected.name}</h2>
-      <CredentialFields detail={runtimeEntryAsAppDetail(selected)} credentials={fields} setCredentials={(next) => { setFields(next); savedConnection.current = null; }} />
-      {entries.length > 1 && <details className="text-sm text-text-muted"><summary className="cursor-pointer">Use another provider</summary><label className="mt-3 block">Provider<select value={selected.slug} onChange={(event) => { setSelected(entries.find((entry) => entry.slug === event.target.value) || null); setFields({}); savedConnection.current = null; }} className="mt-2 block w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-text">{entries.map((entry) => <option key={entry.slug} value={entry.slug}>{entry.name}</option>)}</select></label></details>}
+  if (loadError || entries.length === 0) return <div className="mt-6"><p role="alert" className="text-sm text-red">{loadError || "No connection options are available. Please contact your administrator."}</p><button disabled={busy} onClick={() => setAttempt(attempt + 1)} className="mt-3 text-sm text-accent">Try again</button></div>;
+  if (!selected) return <section className="mt-7 rounded-xl border border-border bg-bg-card p-4 sm:p-5" aria-label="Choose a provider">
+    <div className="mb-4 flex items-center justify-between gap-3">
+      <h2 className="text-sm font-semibold text-text">Choose a provider</h2>
+      <span className="text-xs text-text-muted">{entries.length} available</span>
     </div>
-    <button onClick={() => onConnect(connect)} className="w-full rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-40">{busy ? "Connecting…" : "Connect and get started"}</button>
-    <p className="text-xs leading-5 text-text-muted">Your provider may charge for AI usage. You can manage this connection later in Settings.</p>
-  </fieldset>;
+    <ProviderPicker entries={entries} query={search} onQueryChange={setSearch} onSelect={pickProvider} disabled={busy} actionLabel="Choose" showDescriptions={false} />
+  </section>;
+
+  const deviceCode = defaultIntegrationAuthType(runtimeEntryAsAppDetail(selected)) === "oauth_device_code";
+  return <form ref={credentialForm} onSubmit={(event) => { event.preventDefault(); if (!busy && !deviceCode) onConnect(connect); }} className="mt-7">
+    <fieldset disabled={busy} className="min-w-0 space-y-5">
+      <div className="rounded-xl border border-border bg-bg-card p-5 space-y-5">
+        <div className="flex items-center gap-3 border-b border-border pb-4">
+          <AppIcon src={selected.logo || undefined} name={selected.name} size="md" framed={false} className="rounded-lg bg-white text-black" />
+          <h2 className="min-w-0 flex-1 text-base font-semibold text-text">{selected.name}</h2>
+          <button type="button" onClick={() => pickProvider(null)} className="shrink-0 rounded-md px-2 py-1 text-sm text-text-muted hover:text-text hover:bg-bg-hover focus-visible:outline-accent">Change provider</button>
+        </div>
+        {deviceCode ? <OnboardingDeviceProvider key={selected.slug} entry={selected} projectId={projectId} retryConnection={savedConnection.current} busy={busy} onConnect={onConnect} /> :
+          <CredentialFields detail={runtimeEntryAsAppDetail(selected)} credentials={fields} setCredentials={(next) => { setFields(next); credentialsDirty.current = true; }} />}
+
+      </div>
+      {!deviceCode && <button type="submit" className="w-full rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-40">{busy ? "Connecting…" : "Connect and get started"}</button>}
+      <p className="text-xs leading-5 text-text-muted">Your provider’s plan and usage limits apply. You can manage this connection later in Settings.</p>
+    </fieldset>
+  </form>;
 }

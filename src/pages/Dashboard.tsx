@@ -158,15 +158,13 @@ export function Dashboard() {
             >
               Add widget
             </button>
-            {(visibleWidgetComponents.length > 0 || editingLayout) && (
-              <button
-                type="button"
-                onClick={() => setEditingLayout((value) => !value)}
-                className={`rounded-md border px-3 py-2 text-xs font-semibold ${editingLayout ? "border-accent bg-accent/10 text-accent" : "border-border text-text-muted hover:border-accent hover:text-text"}`}
-              >
-                {editingLayout ? "Done" : "Edit layout"}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setEditingLayout((value) => !value)}
+              className={`rounded-md border px-3 py-2 text-xs font-semibold ${editingLayout ? "border-accent bg-accent/10 text-accent" : "border-border text-text-muted hover:border-accent hover:text-text"}`}
+            >
+              {editingLayout ? "Done" : "Edit layout"}
+            </button>
             <NewAgentButton />
           </div>
         </div>

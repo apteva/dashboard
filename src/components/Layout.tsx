@@ -18,6 +18,7 @@ import {
 import { NewAgentButton } from "./NewAgentButton";
 import { AgentMark } from "./AgentMark";
 import { RealtimeVoiceDock } from "../state/RealtimeVoiceContext";
+import { ChatAssistantDock } from "./chat/ChatAssistantDock";
 import {
   preferredSidebarAppNames,
   SidebarAppManager,
@@ -468,14 +469,23 @@ export function Layout() {
             const overflow = pinnedAppNav.length - visibleApps.length;
             return (
               <>
-                <div className="flex items-center">
+                <div className="group mt-5 mb-1 flex items-center pl-5 pr-3">
                   <button
                     type="button"
                     onClick={() => setSidebarAppsOpen(true)}
-                    className="min-w-0 flex-1 text-left"
-                    aria-label="Choose preferred apps"
+                    className="min-w-0 flex-1 text-left text-[10px] font-medium uppercase tracking-wider text-text-dim/70 hover:text-text"
+                    aria-label="Manage sidebar apps"
                   >
-                    <SidebarSectionHeader label={t("nav.appsSection")} />
+                    {t("nav.appsSection")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSidebarAppsOpen(true)}
+                    className="flex h-7 w-7 items-center justify-center rounded text-lg leading-none text-text-muted opacity-0 hover:bg-bg-hover hover:text-accent focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent group-hover:opacity-100"
+                    aria-label="Pin or unpin sidebar apps"
+                    title="Pin or unpin sidebar apps"
+                  >
+                    +
                   </button>
                 </div>
                 {visibleApps.map((item) => (
@@ -645,6 +655,7 @@ export function Layout() {
       </main>
 
       <RealtimeVoiceDock />
+      <ChatAssistantDock />
     </div>
   );
 }

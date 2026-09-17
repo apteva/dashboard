@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   isTypeableRuntimeEntry,
+  isOnboardingRuntimeEntry,
   ONBOARDING_STEP_IDS,
 } from "./Onboarding";
 import { runtimeEntryAsAppDetail, type RuntimeCatalogEntry } from "../api";
@@ -20,8 +21,8 @@ function entry(over: Partial<RuntimeCatalogEntry> = {}): RuntimeCatalogEntry {
 }
 
 describe("onboarding journey", () => {
-  test("asks for use case and AI access before opening a conversation", () => {
-    expect([...ONBOARDING_STEP_IDS]).toEqual(["usage", "provider"]);
+  test("connects AI before workspace configuration", () => {
+    expect([...ONBOARDING_STEP_IDS]).toEqual(["provider", "setup"]);
   });
 
   describe("runtime provider picker", () => {
@@ -30,15 +31,18 @@ describe("onboarding journey", () => {
       expect(isTypeableRuntimeEntry(entry({ auth_types: ["bearer"] }))).toBe(true);
     });
 
-    // A first-run screen shouldn't launch a popup and wait on a round
-    // trip; these stay reachable from Settings.
-    test("skips providers needing an interactive auth flow", () => {
+    test("interactive sign-in is separate from pasted credentials", () => {
       expect(
         isTypeableRuntimeEntry(
           entry({ slug: "openai-codex", auth_types: ["oauth_device_code"] }),
         ),
       ).toBe(false);
       expect(isTypeableRuntimeEntry(entry({ auth_types: ["oauth2"] }))).toBe(false);
+    });
+
+    test("offers device-code providers without requiring credential fields", () => {
+      expect(isOnboardingRuntimeEntry(entry({ slug: "openai-codex", auth_types: ["oauth_device_code"], credential_fields: [] }))).toBe(true);
+      expect(isOnboardingRuntimeEntry(entry())).toBe(true);
     });
 
     // Ollama declares no secret; without a field the form would render

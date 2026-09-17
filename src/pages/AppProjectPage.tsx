@@ -12,6 +12,7 @@ import { useParams, useSearchParams } from "react-router-dom";
 import { apps, type AppRow } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
+import { useAssistantPageDetails } from "../components/chat/pageContext";
 import { resolvePanelComponent } from "../components/apps/nativePanels";
 
 interface LoadedApp {
@@ -45,6 +46,8 @@ export function AppProjectPage() {
   const [loaded, setLoaded] = useState<LoadedApp | null>(null);
   const [error, setError] = useState("");
   const app = loaded?.app ?? null;
+  const contextApp = loaded && loadedAppMatchesRoute(loaded, currentProject?.id, name) ? app : null;
+  useAssistantPageDetails(currentProject?.id || "", { app: contextApp?.name, installation_id: contextApp?.install_id, panel: contextApp?.ui_panels?.find(panel => panel.slot === "project.page")?.label });
   usePageTitle(["App", app?.display_name || app?.name || name || "loading"]);
 
   useEffect(() => {
