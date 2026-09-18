@@ -15,6 +15,12 @@ type ApplyResult = Awaited<ReturnType<typeof projectPresets.apply>>;
 const categories = ["", "personal", "business", "work", "development"] as const;
 const inputClass = "w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-sm text-text focus:outline-none focus:border-accent";
 const secondaryClass = "rounded-lg border border-border px-4 py-2.5 text-sm text-text hover:bg-bg-hover disabled:opacity-50";
+export const workspaceSetupConversationSettings = {
+  display_mode: "single",
+  show_new_conversation: false,
+  show_page_context: false,
+  composer_layout: "compact",
+} as const;
 
 export function WorkspaceSetup() {
   usePageTitle("Welcome");
@@ -217,7 +223,8 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
       apps={surface.rows} projectId={projectId} agentId={surface.helper.id} slot="dashboard.build"
       pageContext={draft ? describeSetupPage(projectId, draft) : undefined}
       instance={{ id: `setup:${surface.helper.id}:${surface.conversationId}`, component: surface.contribution.key, contribution: surface.contribution, size: "full", settings: {
-        initial_conversation_id: surface.conversationId, display_mode: "single", show_new_conversation: false, composer_layout: "compact",
+        ...workspaceSetupConversationSettings,
+        initial_conversation_id: surface.conversationId,
         empty_message: "Welcome. Tell me what you’d like to accomplish, and I’ll help you choose a starting point.",
       } }}
     /></div>

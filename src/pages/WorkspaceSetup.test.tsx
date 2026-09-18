@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { apps, auth, projectPresets, workspaceSetup, platformHelper, instances, type WorkspaceSetupDraft } from "../api";
-import { SetupFlow } from "./WorkspaceSetup";
+import { SetupFlow, workspaceSetupConversationSettings } from "./WorkspaceSetup";
 
 const originalFetch = globalThis.fetch;
 const originalEventSource = globalThis.EventSource;
@@ -26,6 +26,13 @@ beforeEach(() => {
   instances.create = mock(async () => { throw new Error("Should not create a starter"); });
 });
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; globalThis.EventSource = originalEventSource; for (const { target, values } of originals) Object.assign(target, values); });
+
+test("the dedicated setup conversation hides page context presentation only", () => {
+  expect(workspaceSetupConversationSettings).toMatchObject({
+    display_mode: "single",
+    show_page_context: false,
+  });
+});
 
 test("starts in the audience category, searches across categories, and has no provisioning side effects", async () => {
   mount();
