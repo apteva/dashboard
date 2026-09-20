@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { apps, auth, projectPresets, workspaceSetup, platformHelper, instances, type WorkspaceSetupDraft } from "../api";
+import { apps, auth, integrations, projectPresets, skills, workspaceSetup, platformHelper, instances, type WorkspaceSetupDraft } from "../api";
 import { SetupFlow, workspaceSetupConversationSettings } from "./WorkspaceSetup";
 
 const originalFetch = globalThis.fetch;
 const originalEventSource = globalThis.EventSource;
-const originals = [apps, auth, projectPresets, workspaceSetup, platformHelper, instances].map((target) => ({ target, values: { ...target } }));
+const originals = [apps, auth, integrations, projectPresets, skills, workspaceSetup, platformHelper, instances].map((target) => ({ target, values: { ...target } }));
 const business = { id: "business-preset", category: "business" as const, name: "Lead generation", description: "Research and qualify prospects", agents: [{ key: "leads", name: "Lead assistant", directive: "Research leads for {{description}}", mode: "cautious" as const, apps: ["conversations", "crm"] }], dashboard: [] };
 const personal = { ...business, id: "personal-preset", category: "personal" as const, name: "Personal assistant" };
 let saved: WorkspaceSetupDraft;
@@ -19,6 +19,10 @@ beforeEach(() => {
   auth.onboardingStatus = mock(async () => ({ project_id: "p", provider_configured: true, can_manage_provider: true }));
   workspaceSetup.get = mock(async () => saved);
   workspaceSetup.save = mock(async (_, draft) => { saved = draft; return draft; });
+  workspaceSetup.proposal = mock(async () => ({ revision: 0, status: "empty" as const }));
+  workspaceSetup.confirm = mock(async () => ({ status: "confirmed", project_id: "p", agents: [], warnings: [] }));
+  integrations.connections = mock(async () => []);
+  skills.list = mock(async () => []);
   projectPresets.list = mock(async () => ({ schema_version: 2, presets: [business, personal] }));
   projectPresets.preview = mock(async () => ({ preset: business, planner: "selected" as const, confidence: 1, project: { name: "My workspace", description: "Research clinics", color: "" }, apps: [], agents: [{ ...business.agents[0]!, unconscious: false, app_install_ids: [], directive: "Research clinics" }], layout: [], warnings: [] }));
   projectPresets.apply = mock(async () => ({ status: "applied" as const, project_id: "p", preset_id: business.id, created_agents: [{ id: 11, name: "Lead assistant", status: "running" }], existing_agents: [], warnings: [] }));
@@ -192,37 +196,71 @@ function mockHelperConversation() {
   saved.mode = "ai";
   platformHelper.status = mock(async () => ({activated:true, state:"running" as const, provider_configured:true, conversations_installed:true}));
   platformHelper.get = mock(async () => ({id:99, name:"Apteva Helper",status:"running"}) as any);
-  apps.list = mock(async () => [{install_id:7,name:"conversations",project_id:"",status:"running",ui_components:[{name:"agent-conversations",entry:"/ui/Chat.mjs",slots:["dashboard.build"]}]}] as any);
+  apps.list = mock(async () => [{install_id:7,name:"conversations",display_name:"Conversations",description:"Agent conversations",icon:"/icons/conversations.svg",icon_style:"image",version:"1.0.0",project_id:"",status:"running",surfaces:{mcp_tool_count:2,mcp_tool_names:["conversation_list","conversation_send"],skill_count:1},ui_components:[{name:"agent-conversations",entry:"/ui/Chat.mjs",slots:["dashboard.build"]}]}] as any);
+  apps.marketplace = mock(async () => ({registry_url:"local",apps:[{name:"conversations",display_name:"Conversations",description:"Agent conversations",icon:"/icons/conversations.svg",icon_style:"image",version:"1.0.0",author:"Apteva",repo:"",manifest_url:"",tags:[],official:true,category:"communication",installed:true,builtin:true,surfaces:{mcp_tool_count:2,mcp_tool_names:["conversation_list","conversation_send"],skill_count:1}}]}) as any);
+  integrations.connections = mock(async () => [{id:4,app_slug:"fireworks",app_name:"Fireworks",name:"Fireworks",logo:"/icons/fireworks.svg",auth_type:"api_key",status:"active",source:"local",tool_count:3,created_at:"now"}] as any);
+  skills.list = mock(async () => [{id:5,slug:"using-conversations",name:"Using Conversations",description:"Use conversation tools well",body:"Always preserve the conversation context.",source:"app",project_id:"p",enabled:true,version:"1.0.0",created_at:"now",updated_at:"now",app_name:"conversations"}] as any);
+  let applied = false;
+  projectPresets.apply = mock(async () => {
+    applied = true;
+    return { status: "applied" as const, project_id: "p", preset_id: business.id, created_agents: [{ id: 11, name: "Lead assistant", status: "running" }], existing_agents: [], warnings: [] };
+  });
+  workspaceSetup.proposal = mock(async () => ({
+    revision: applied ? 2 : 1,
+    status: applied ? "ready" as const : "proposed" as const,
+    preview: {
+      preset: business,
+      planner: "selected" as const,
+      confidence: 1,
+      project: { name: "Lead research workspace", description: "Research clinics", color: "" },
+      apps: [{name:"conversations",installed:true,install_id:7,scope:"global" as const}],
+      agents: [{ ...business.agents[0]!, unconscious: false, app_install_ids: [], directive: "Research clinics" }],
+      layout: [],
+      warnings: applied ? [] : ["tasks is assigned by the preset but not installed for this project", "dashboard widget tasks:overview is unavailable until its app is installed"],
+    },
+    ...(applied ? { result: { agents: [{ id: 11, name: "Lead assistant", status: "running" }], warnings: [] } } : {}),
+  }));
   globalThis.fetch = mock(async (url) => String(url).includes("/ui/contributions")
     ? Response.json({contributions:[{app:"conversations",component:"agent-conversations",eligible:true}]})
     : Response.json({id:"setup-chat"})) as unknown as typeof fetch;
 }
 
-test("AI review reads Helper's saved recommendation and never completes before Finish", async () => {
+test("AI review reads the real staged workspace and never completes before activation", async () => {
   mockHelperConversation();
-  instances.list = mock(async () => [{id:11,name:"Planner",status:"running"}] as any);
+  instances.list = mock(async () => [{id:11,name:"Planner",status:"stopped",mode:"cautious",directive:"Research clinics",config:JSON.stringify({onboarding_staged:true})}] as any);
   const finish = mock(async (_destination: string, _level?: string) => {});
   mount(finish);
-  await screen.findByRole("button", {name:"Review setup"});
+  const reviewButton = await screen.findByRole("button", {name:"Review setup"}) as HTMLButtonElement;
+  await waitFor(() => expect(reviewButton.disabled).toBe(false));
   // Helper's apply updates the server draft while the conversation is open.
   saved = {...saved, preset_id:personal.id, interface_level:"personal"};
-  fireEvent.click(screen.getByRole("button", {name:"Review setup"}));
+  fireEvent.click(reviewButton);
   await screen.findByRole("heading", {name:"Review your workspace"});
-  expect(screen.getByText("Planner · running")).toBeTruthy();
+  expect(screen.getByText("Planner")).toBeTruthy();
+  expect(screen.queryByText(/not installed for this project/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", {name:"View Planner details"}));
+  expect(screen.getByRole("dialog", {name:"Planner"})).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", {name:"Close details"}));
+  fireEvent.click(screen.getByRole("button", {name:"View Conversations details"}));
+  expect(screen.getByRole("dialog", {name:"Conversations"})).toBeTruthy();
+  expect(screen.getByText("Agent conversations")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", {name:"Close details"}));
   expect((screen.getByRole("combobox", {name:"Your interface"}) as HTMLSelectElement).value).toBe("personal");
   expect(finish).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", {name:"Confirm and activate"}));
+  await screen.findByRole("button", {name:"Finish setup"});
+  expect(workspaceSetup.confirm).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole("button", {name:"Finish setup"}));
   await waitFor(() => expect(finish).toHaveBeenCalledWith("/", "personal"));
 });
 
-test("AI review can finish even when Helper created no agents", async () => {
+test("AI review waits until Helper has created a real agent", async () => {
   mockHelperConversation();
   instances.list = mock(async () => []);
   const finish = mock(async (_destination: string) => {});
   mount(finish);
-  fireEvent.click(await screen.findByRole("button", {name:"Review setup"}));
-  await screen.findByRole("heading", {name:"Review your workspace"});
+  const reviewButton = await screen.findByRole("button", {name:"Review setup"}) as HTMLButtonElement;
+  await waitFor(() => expect(reviewButton.disabled).toBe(true));
+  expect(screen.queryByRole("button", {name:"Confirm and activate"})).toBeNull();
   expect(finish).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", {name:"Finish setup"}));
-  await waitFor(() => expect(finish).toHaveBeenCalledWith("/", "business"));
 });

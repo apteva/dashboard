@@ -791,9 +791,24 @@ export interface WorkspaceSetupDraft {
   agent_overrides?: SetupAgentOverride[];
 }
 
+export interface WorkspaceSetupProposalResult {
+  agents: Array<{ id: number; name: string; status: string; existing?: boolean }>;
+  warnings?: string[];
+}
+
+export interface WorkspaceSetupProposal {
+  revision: number;
+  status: "empty" | "proposed" | "ready" | "needs_attention";
+  updated_at?: string;
+  preview?: ProjectPresetPreview;
+  result?: WorkspaceSetupProposalResult;
+}
+
 export const workspaceSetup = {
   get: (projectId: string) => request<WorkspaceSetupDraft>("GET", `/projects/${encodeURIComponent(projectId)}/setup/session`),
   save: (projectId: string, draft: WorkspaceSetupDraft) => request<WorkspaceSetupDraft>("PUT", `/projects/${encodeURIComponent(projectId)}/setup/session`, draft),
+  proposal: (projectId: string) => request<WorkspaceSetupProposal>("GET", `/projects/${encodeURIComponent(projectId)}/setup/proposal`),
+  confirm: (projectId: string) => request<{ status: string; project_id: string; agents: Agent[]; warnings?: string[] }>("POST", `/projects/${encodeURIComponent(projectId)}/setup/confirm`),
 };
 
 export const projectPresets = {
@@ -3100,8 +3115,11 @@ export const apps = {
 
   // --- v2 Apps system (sidecar-based, see github.com/apteva/app-sdk) ---
 
-  list: (projectId?: string) => {
-    const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  list: (projectId?: string, scope?: "global") => {
+    const params = new URLSearchParams();
+    if (projectId) params.set("project_id", projectId);
+    if (scope) params.set("scope", scope);
+    const q = params.toString() ? `?${params.toString()}` : "";
     return request<AppRow[]>("GET", `/apps${q}`).then((rows) =>
       rows.map((row) => ({
         ...row,
@@ -3433,6 +3451,7 @@ export interface AppUIComponent {
   description?: string;
   suggested?: boolean;
   visibility?: "attached" | "project";
+  dashboard_scopes?: Array<"project" | "global">;
   refresh_topics?: string[];
   default_width?: 1 | 2;
   supported_sizes?: Array<"half" | "full">;

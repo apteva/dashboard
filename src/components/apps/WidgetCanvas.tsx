@@ -20,6 +20,8 @@ export interface WidgetDefinition {
   defaultSettings?: Record<string, unknown>;
   settingsSchema?: Record<string, unknown>;
   suggested?: boolean;
+  /** Show this widget on a fresh layout before the user customizes it. */
+  defaultVisible?: boolean;
   kind?: "builtin" | "app";
   providerLabel?: string;
   render: (instance: WidgetInstance) => ReactNode;
@@ -27,6 +29,7 @@ export interface WidgetDefinition {
 
 export function WidgetCanvas({
   projectId,
+  layoutScope = "project",
   slot,
   definitions,
   editing,
@@ -36,6 +39,7 @@ export function WidgetCanvas({
   className = "grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2",
 }: {
   projectId?: string | null;
+  layoutScope?: "project" | "global";
   slot: string;
   definitions: WidgetDefinition[];
   editing: boolean;
@@ -44,7 +48,7 @@ export function WidgetCanvas({
   galleryRequest?: number;
   className?: string;
 }) {
-  const { project, updateSurface, saveState } = useProjectUILayout(projectId);
+  const { project, updateSurface, saveState } = useProjectUILayout(projectId, layoutScope);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [dragging, setDragging] = useState<string | null>(null);
   const [settingsID, setSettingsID] = useState<string | null>(null);
@@ -61,7 +65,14 @@ export function WidgetCanvas({
   const stored = explicit && Array.isArray(project.slots?.[slot])
     ? normalizeStoredWidgets(project.slots?.[slot] || [], definitions)
     : [];
-  const configured = stored;
+  const configured = explicit
+    ? stored
+    : definitions.filter((definition) => definition.defaultVisible).map((definition) => ({
+      id: `default:${definition.key}`,
+      component: definition.key,
+      size: definition.defaultSize,
+      settings: { ...(definition.defaultSettings || {}) },
+    }));
   const visible = configured.filter((instance) => byKey.has(instance.component));
   const visibleComponentsKey = visible.map((instance) => instance.component).join("\u0000");
 
@@ -71,7 +82,7 @@ export function WidgetCanvas({
   }, [editing, onEditingChange, onVisibleComponentsChange, visibleComponentsKey]);
 
   const persist = (next: WidgetInstance[]) => {
-    if (!projectId) return;
+    if (layoutScope === "project" && !projectId) return;
     void updateSurface(slot, next);
   };
   const add = (definition: WidgetDefinition) => {

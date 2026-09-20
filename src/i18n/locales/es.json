@@ -215,8 +215,8 @@
       "currently": "actualmente",
       "themeTerminal": "Terminal",
       "themeTerminalDescription": "Monoespaciado, esquinas marcadas y aspecto de taller. El valor por defecto.",
-      "themeClean": "Clean",
-      "themeCleanDescription": "Inter, esquinas redondeadas y sombras sutiles. Listo para presentaciones.",
+      "themeClean": "Profesional",
+      "themeCleanDescription": "Superficies neutras, jerarquía clara y elevación sutil para trabajar con concentración.",
       "modeAuto": "Auto",
       "modeDark": "Oscuro",
       "modeLight": "Claro"

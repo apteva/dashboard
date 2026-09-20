@@ -215,8 +215,8 @@
       "currently": "currently",
       "themeTerminal": "Terminal",
       "themeTerminalDescription": "Monospace, sharp corners, a workshop look. The default.",
-      "themeClean": "Clean",
-      "themeCleanDescription": "Inter, rounded corners, subtle shadows. Boardroom-ready.",
+      "themeClean": "Professional",
+      "themeCleanDescription": "Neutral surfaces, clear hierarchy, and restrained elevation for focused work.",
       "modeAuto": "Auto",
       "modeDark": "Dark",
       "modeLight": "Light"

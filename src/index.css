@@ -48,11 +48,11 @@
 }
 [data-theme="clean"] {
   --font-base: "Inter", "system-ui", -apple-system, sans-serif;
-  --radius-sm: 4px;
+  --radius-sm: 5px;
   --radius-md: 8px;
-  --radius-lg: 12px;
-  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.06);
-  --shadow-popover: 0 4px 6px rgb(0 0 0 / 0.05), 0 10px 20px rgb(0 0 0 / 0.10);
+  --radius-lg: 10px;
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.05), 0 3px 8px rgb(15 23 42 / 0.04);
+  --shadow-popover: 0 4px 8px rgb(15 23 42 / 0.08), 0 12px 28px rgb(15 23 42 / 0.12);
 }
 
 /* Always-mono token, for code / inline IDs / log lines. Never themed. */
@@ -135,49 +135,49 @@
 }
 
 [data-theme="clean"][data-mode="dark"] {
-  --bg: #0f1419;              /* slightly cooler than terminal-dark */
-  --bg-card: #1a2128;
-  --bg-subtle: #151b22;
-  --bg-hover: #232b34;
-  --bg-input: #131920;
+  --bg: #11161c;
+  --bg-card: #1a222b;
+  --bg-subtle: #151c24;
+  --bg-hover: #232d38;
+  --bg-input: #141c24;
   --bg-overlay: rgb(0 0 0 / 0.6);
-  --text: #e6e8eb;
-  --text-muted: #a3aab3;
-  --text-dim: #7d848e;
-  --border: #2a3340;
-  --border-subtle: #1f2630;
-  --border-strong: #3d4759;
-  --accent: #6e8aff;          /* cooler blue-violet */
-  --accent-hover: #8aa1ff;
-  --accent-muted: #4255a5;
+  --text: #e8edf2;
+  --text-muted: #a7b0ba;
+  --text-dim: #7c8793;
+  --border: #2b3642;
+  --border-subtle: #222c36;
+  --border-strong: #43505e;
+  --accent: #4f9cf7;
+  --accent-hover: #75b4ff;
+  --accent-muted: #28578d;
   --success: #4ade80;
   --warn: #fbbf24;
   --error: #f87171;
   --info: #60a5fa;
-  --recurring: #c084fc;
+  --recurring: #7c9ccf;
 }
 
 [data-theme="clean"][data-mode="light"] {
-  --bg: #ffffff;
-  --bg-card: #f7f8fa;
-  --bg-subtle: #fafbfc;
-  --bg-hover: #eef0f4;
+  --bg: #f7f9fb;
+  --bg-card: #ffffff;
+  --bg-subtle: #f1f4f7;
+  --bg-hover: #e9eef3;
   --bg-input: #ffffff;
   --bg-overlay: rgb(0 0 0 / 0.4);
-  --text: #15171a;
-  --text-muted: #4b5563;
-  --text-dim: #6b7280;
-  --border: #e5e7eb;
-  --border-subtle: #f1f3f5;
-  --border-strong: #cbd1d8;
-  --accent: #4f5fdb;          /* same family as clean-dark's accent, deeper */
-  --accent-hover: #4150c4;
-  --accent-muted: #c1c8f0;
+  --text: #17202a;
+  --text-muted: #526170;
+  --text-dim: #6f7d8c;
+  --border: #dbe2e9;
+  --border-subtle: #edf1f5;
+  --border-strong: #b7c2cd;
+  --accent: #1f67b1;
+  --accent-hover: #17548e;
+  --accent-muted: #b9d5ef;
   --success: #047857;
   --warn: #b45309;
   --error: #b91c1c;
   --info: #1d4ed8;
-  --recurring: #7c3aed;
+  --recurring: #4d77a8;
 }
 
 /* ─── Tailwind theme tokens ───────────────────────────────────────

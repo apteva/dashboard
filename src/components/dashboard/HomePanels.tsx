@@ -65,31 +65,80 @@ export function selectAgentOperations(
 export function HomeAgentOperations({
   agents,
   statuses,
+  compact = false,
+  showProjects = false,
+  projectNames,
 }: {
   agents: Agent[];
   statuses: CurrentStatusMessageRow[];
+  compact?: boolean;
+  showProjects?: boolean;
+  projectNames?: ReadonlyMap<string, string>;
 }) {
   const operations = useMemo(() => selectAgentOperations(agents, statuses), [agents, statuses]);
-  const visible = operations.slice(0, 5);
+  const visible = operations.slice(0, compact ? 4 : 6);
+  const active = operations.filter(({ agent, status }) =>
+    !status?.stale && (status?.state === "working" || (!status && agent.status === "running")),
+  ).length;
+  const attention = operations.filter(({ status }) =>
+    !status?.stale && (status?.state === "blocked" || status?.state === "waiting"),
+  ).length;
 
   return (
-    <section className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-bg-card xl:h-[460px]">
-      <PanelHeader
-        title="Agent operations"
-        subtitle="Latest and upcoming work"
-        count={operations.length}
-        to="/monitor"
-      />
+    <section className={`flex h-full flex-col overflow-hidden rounded-lg border border-border bg-bg-card ${compact ? "" : "xl:min-h-[360px]"}`}>
+      <AgentActivityHeader active={active} attention={attention} showProjects={showProjects} />
       {visible.length === 0 ? (
-        <EmptyState title="No agent operations right now" detail="Running agents and newly reported work will appear here." />
+        <EmptyState title="No agent activity right now" detail="Running agents and newly reported work will appear here." />
       ) : (
         <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
           {visible.map(({ agent, status }) => (
-            <AgentOperationRow key={agent.id} agent={agent} status={status} />
+            <AgentOperationRow
+              key={agent.id}
+              agent={agent}
+              status={status}
+              compact={compact}
+              projectName={showProjects ? projectNames?.get(status?.project_id || agent.project_id || "") : undefined}
+            />
           ))}
         </div>
       )}
     </section>
+  );
+}
+
+function AgentActivityHeader({
+  active,
+  attention,
+  showProjects,
+}: {
+  active: number;
+  attention: number;
+  showProjects: boolean;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-sm font-bold text-text">Agent activity</h2>
+          {active > 0 && (
+            <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[9px] font-bold text-accent">
+              {active} active
+            </span>
+          )}
+          {attention > 0 && (
+            <span className="rounded-full bg-red/10 px-2 py-0.5 text-[9px] font-bold text-red">
+              {attention} need{attention === 1 ? "s" : ""} attention
+            </span>
+          )}
+        </div>
+        <p className="mt-0.5 text-[11px] text-text-dim">
+          {showProjects ? "Current work across your projects" : "Current work and next steps"}
+        </p>
+      </div>
+      <Link to="/monitor" className="shrink-0 pt-0.5 text-[11px] text-text-muted hover:text-text">
+        View monitor →
+      </Link>
+    </div>
   );
 }
 
@@ -202,7 +251,15 @@ function PanelHeader({
   );
 }
 
-function AgentOperationRow({ agent, status }: AgentOperation) {
+function AgentOperationRow({
+  agent,
+  status,
+  compact,
+  projectName,
+}: AgentOperation & {
+  compact: boolean;
+  projectName?: string;
+}) {
   const state = status?.state || "running";
   const tone = stateTone(state, status?.stale);
   return (
@@ -210,23 +267,35 @@ function AgentOperationRow({ agent, status }: AgentOperation) {
       to={`/agents/${agent.id}`}
       className="group grid min-h-[82px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 transition-colors hover:bg-bg-hover"
     >
-      <span className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-[11px] font-bold ${tone.badge}`}>
-        {state === "blocked" ? "!" : state === "waiting" ? "◷" : state === "completed" ? "✓" : "›"}
+      <span className="relative inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-bg-subtle text-text-muted" aria-hidden="true">
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="5" y="7" width="14" height="11" rx="3" />
+          <path d="M12 4v3M8.5 12h.01M15.5 12h.01M9 15h6" />
+        </svg>
+        <span className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-bg-card ${tone.dot}`} />
       </span>
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-xs font-semibold text-text">{agent.name}</span>
+          {projectName && (
+            <span className="max-w-32 shrink truncate rounded border border-border bg-bg-subtle px-1.5 py-0.5 text-[8px] font-medium text-text-dim">
+              {projectName}
+            </span>
+          )}
           <span className={`shrink-0 text-[9px] font-bold uppercase tracking-wide ${tone.text}`}>{state}</span>
           {status?.progress != null && (
             <span className="ml-auto shrink-0 text-[10px] tabular-nums text-text-dim">{Math.round(status.progress)}%</span>
           )}
         </div>
         <div className="mt-1 flex min-w-0 items-center gap-2">
-          <p className="min-w-0 flex-1 truncate text-[11px] text-text-muted" title={status?.detail || undefined}>
+          <p className="min-w-0 flex-1 truncate text-[11px] text-text-muted" title={status?.detail || status?.title || undefined}>
             {status?.title || "Running without active work reported"}
           </p>
           {status && <StatusUpdatedAt status={status} className="shrink-0 text-[9px] tabular-nums text-text-dim" />}
         </div>
+        {!compact && status?.detail && status.detail !== status.title && (
+          <p className="mt-0.5 truncate text-[10px] text-text-dim" title={status.detail}>{status.detail}</p>
+        )}
         {status?.progress != null && (
           <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-bg-hover">
             <div className={`h-full ${tone.bar}`} style={{ width: `${Math.max(0, Math.min(100, status.progress))}%` }} />
@@ -286,11 +355,11 @@ function compareUpdatedAt(a?: CurrentStatusMessageRow, b?: CurrentStatusMessageR
 }
 
 function stateTone(state: string, stale = false) {
-  if (stale) return { badge: "bg-text-dim/15 text-text-dim", text: "text-text-dim", bar: "bg-text-dim" };
-  if (state === "blocked" || state === "error") return { badge: "bg-red/15 text-red", text: "text-red", bar: "bg-red" };
-  if (state === "waiting") return { badge: "bg-blue/15 text-blue", text: "text-blue", bar: "bg-blue" };
-  if (state === "completed") return { badge: "bg-green/15 text-green", text: "text-green", bar: "bg-green" };
-  return { badge: "bg-accent/15 text-accent", text: "text-accent", bar: "bg-accent" };
+  if (stale) return { badge: "bg-text-dim/15 text-text-dim", text: "text-text-dim", bar: "bg-text-dim", dot: "bg-text-dim" };
+  if (state === "blocked" || state === "error") return { badge: "bg-red/15 text-red", text: "text-red", bar: "bg-red", dot: "bg-red" };
+  if (state === "waiting") return { badge: "bg-blue/15 text-blue", text: "text-blue", bar: "bg-blue", dot: "bg-blue" };
+  if (state === "completed") return { badge: "bg-green/15 text-green", text: "text-green", bar: "bg-green", dot: "bg-green" };
+  return { badge: "bg-accent/15 text-accent", text: "text-accent", bar: "bg-accent", dot: "bg-accent" };
 }
 
 function formatNumber(value: number) {

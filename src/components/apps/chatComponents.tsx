@@ -46,6 +46,7 @@ export interface UIComponentSpec {
   description?: string;
   suggested?: boolean;
   visibility?: "attached" | "project";
+  dashboard_scopes?: Array<"project" | "global">;
   refresh_topics?: string[];
   default_width?: 1 | 2;
   supported_sizes?: Array<"half" | "full">;
@@ -91,6 +92,7 @@ interface NativeComponentProps {
   /** Injected by the host so the component can scope its fetches/events. */
   projectId?: string;
   installId?: number;
+  dashboardScope?: "project" | "global";
 }
 
 const moduleCache = new Map<string, LazyExoticComponent<ComponentType<NativeComponentProps>>>();
@@ -152,7 +154,7 @@ function loadComponent(
 interface ChatComponentMountProps {
   comp: ChatComponent;
   apps: InstalledAppRow[];
-  projectId: string;
+  projectId?: string;
   messageId?: number;
   onMessageUpdated?: (message: ChatMessageRow) => void;
   onActionComplete?: () => void;
@@ -160,6 +162,7 @@ interface ChatComponentMountProps {
    *  against the manifest's slots allowlist. Defaults to
    *  chat.message_attachment which is the only slot today. */
   slot?: string;
+  dashboardScope?: "project" | "global";
 }
 
 /**
@@ -176,6 +179,7 @@ export function ChatComponentMount({
   onMessageUpdated,
   onActionComplete,
   slot = "chat.message_attachment",
+  dashboardScope = "project",
 }: ChatComponentMountProps): ReactNode {
   if (comp.app === "channel-chat" && comp.name === "approval-card") {
     return (
@@ -224,6 +228,7 @@ export function ChatComponentMount({
             {...(comp.props ?? {})}
             projectId={projectId}
             installId={app.install_id}
+            dashboardScope={dashboardScope}
           />
         </AppIdentityProvider>
       </Suspense>
@@ -551,6 +556,7 @@ interface InstalledAppsCacheEntry {
 }
 
 const installedAppsCache = new Map<string, InstalledAppsCacheEntry>();
+const GLOBAL_APPS_KEY = "__global__";
 const EMPTY_INSTALLED_APPS: InstalledAppRow[] = [];
 let installedAppsChangeListenerReady = false;
 
@@ -589,10 +595,13 @@ function notifyInstalledApps(entry: InstalledAppsCacheEntry) {
   for (const listener of [...entry.listeners]) listener();
 }
 
-function loadInstalledApps(projectId: string, force = false): Promise<void> {
-  const entry = cacheEntry(projectId);
+function loadInstalledApps(scopeKey: string, force = false): Promise<void> {
+  const entry = cacheEntry(scopeKey);
   if (entry.promise && !force) return entry.promise;
-  const request = fetch(`/api/apps?project_id=${encodeURIComponent(projectId)}`, {
+  const query = scopeKey === GLOBAL_APPS_KEY
+    ? "scope=global"
+    : `project_id=${encodeURIComponent(scopeKey)}`;
+  const request = fetch(`/api/apps?${query}`, {
     credentials: "same-origin",
   })
     .then((response) => {
@@ -636,9 +645,9 @@ export function refreshInstalledApps(projectId?: string) {
  * Refetches only when the project changes — installed apps don't
  * churn at component render frequency.
  */
-export function useInstalledApps(projectId: string | null | undefined): InstalledAppRow[] {
+export function useInstalledApps(projectId: string | null | undefined, scope: "project" | "global" = "project"): InstalledAppRow[] {
   ensureInstalledAppsChangeListener();
-  const key = projectId || "";
+  const key = scope === "global" ? GLOBAL_APPS_KEY : projectId || "";
   const subscribe = useMemo(
     () => (listener: () => void) => {
       if (!key) return () => {};
@@ -655,7 +664,7 @@ export function useInstalledApps(projectId: string | null | undefined): Installe
   const apps = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   useEffect(() => {
     if (key) void loadInstalledApps(key);
-  }, [projectId]);
+  }, [key]);
   return apps;
 }
 

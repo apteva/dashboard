@@ -3,7 +3,7 @@ import { useAppEvents, type AppEventEnvelope } from "./useAppEvents";
 
 // Shared contract for app pages and contributions. Batch bursts without losing
 // entity IDs; eventRevision also supports older panels that only need invalidation.
-export function usePanelEvents(app: string, projectId: string, installId?: number, topics: string[] = []) {
+export function usePanelEvents(app: string, projectId: string | undefined, installId?: number, topics: string[] = [], dashboardScope: "project" | "global" = "project") {
   const [snapshot, setSnapshot] = useState<{eventRevision: number; appEvents: AppEventEnvelope[]}>({eventRevision: 0, appEvents: []});
   const pending = useRef<AppEventEnvelope[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -17,8 +17,10 @@ export function usePanelEvents(app: string, projectId: string, installId?: numbe
       setSnapshot(s => ({eventRevision: s.eventRevision + 1, appEvents: events}));
     }, 200);
   };
-  useAppEvents(app, projectId, event => {
-    if (event.project_id !== projectId || (installId && event.install_id !== installId)) return;
+  const eventScope = dashboardScope === "project" ? projectId : undefined;
+  useAppEvents(app, eventScope, event => {
+    if (dashboardScope !== "global" && event.project_id !== projectId) return;
+    if (installId && event.install_id !== installId) return;
     if (topics.length && !topics.some(t => t === event.topic || (t.endsWith(".*") && event.topic.startsWith(t.slice(0,-1))))) return;
     pending.current.push(event);
     // Bound memory during extreme bursts; a full refresh covers all entities.
@@ -27,7 +29,7 @@ export function usePanelEvents(app: string, projectId: string, installId?: numbe
   });
   useEffect(() => {
     const refresh = (event?: Event) => {
-      if (event?.type === "apteva:app-events-connected" && (event as CustomEvent).detail?.projectId !== projectId) return;
+      if (event?.type === "apteva:app-events-connected" && dashboardScope !== "global" && (event as CustomEvent).detail?.projectId !== projectId) return;
       if (document.visibilityState === "hidden") return;
       all.current = true; flush();
     };
@@ -41,6 +43,6 @@ export function usePanelEvents(app: string, projectId: string, installId?: numbe
       if (timer.current) clearTimeout(timer.current);
       timer.current = null; pending.current = []; all.current = false;
     };
-  }, [app, projectId, installId]);
-  return {...snapshot, eventStreamManaged: true as const};
+  }, [app, dashboardScope, projectId, installId]);
+  return {...snapshot, eventStreamManaged: dashboardScope === "project" && !!projectId};
 }
