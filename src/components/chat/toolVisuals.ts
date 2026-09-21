@@ -23,6 +23,7 @@ export interface ToolVisual {
   label: string;
   iconUrl?: string;
   iconStyle?: "image" | "monochrome";
+  brand?: boolean;
   glyph: ToolGlyph;
 }
 
@@ -118,7 +119,10 @@ function mcpSources(servers: MCPServer[]): ToolVisualSource[] {
 // explicit source identity so every apteva-server_* call shares one icon.
 const platformSource: ToolVisualSource = {
   key: "mcp:apteva-server",
-  label: "Apteva",
+  label: "Apteva Server",
+  iconUrl: "/apteva-mark-mask.png",
+  iconStyle: "monochrome",
+  brand: true,
   glyph: "tool",
   aliases: ["apteva_server"],
   exactTools: [],

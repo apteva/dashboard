@@ -60,6 +60,25 @@ describe("WidgetCanvas editing", () => {
     await waitFor(() => expect(onVisibleComponentsChange).toHaveBeenCalledWith([]));
   });
 
+  test("keeps a static grid placeholder while app widget definitions load", () => {
+    const onVisibleComponentsChange = mock(() => undefined);
+    const { container } = render(
+      <WidgetCanvas
+        projectId="default"
+        slot="dashboard.home"
+        definitions={definitions}
+        definitionsReady={false}
+        editing={false}
+        onEditingChange={() => undefined}
+        onVisibleComponentsChange={onVisibleComponentsChange}
+      />,
+    );
+
+    expect(screen.getByLabelText("Loading dashboard widgets")).toBeTruthy();
+    expect(container.querySelectorAll("[data-widget-canvas] > div")).toHaveLength(2);
+    expect(onVisibleComponentsChange).not.toHaveBeenCalled();
+  });
+
   test("keeps editor controls in normal document flow and limits dragging to the handle", async () => {
     const { container } = await renderConfigured();
 

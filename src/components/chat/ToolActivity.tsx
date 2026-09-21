@@ -283,9 +283,12 @@ function ToolSourceIcon({
   const stateClass = state === "running" || state === "preparing"
     ? "chat-tool-icon-running"
     : "";
+  const identityClass = visual.brand
+    ? "border border-border/70 bg-bg-input text-[var(--chat-tool-running)]"
+    : "bg-bg-hover text-text-muted";
   return (
     <span
-      className={`chat-tool-icon relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-bg-hover text-text-muted ${stateClass}`}
+      className={`chat-tool-icon relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${identityClass} ${stateClass}`}
       title={visual.label}
       aria-hidden="true"
     >
@@ -296,7 +299,7 @@ function ToolSourceIcon({
           name={visual.label}
           size="sm"
           framed={false}
-          className="text-accent"
+          className={visual.brand ? "text-[var(--chat-tool-running)]" : "text-accent"}
         />
       ) : (
         <ToolGlyphIcon glyph={visual.glyph} />

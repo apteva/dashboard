@@ -75,7 +75,7 @@ describe("Conversations-powered chat assistant", () => {
     render(<Dock />);
     fireEvent.click(screen.getByRole("button", { name: "Open chat assistant" }));
     expect(await screen.findByText("Conversations app: project-one/1")).toBeTruthy();
-    expect(mounts.mock.calls.at(-1)?.[0]).toMatchObject({ slot: "dashboard.build", agentId: 1, instance: { component: "conversations:agent-conversations", settings: { display_mode: "single", composer_layout: "compact", show_new_conversation: true } } });
+    expect(mounts.mock.calls.at(-1)?.[0]).toMatchObject({ slot: "dashboard.build", agentId: 1, instance: { component: "conversations:agent-conversations", settings: { display_mode: "single", composer_layout: "compact", show_new_conversation: true, show_page_context: false } } });
     fireEvent.click(screen.getByRole("button", { name: "Chat agent" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Research" }));
     expect(await screen.findByText("Conversations app: project-one/2")).toBeTruthy();

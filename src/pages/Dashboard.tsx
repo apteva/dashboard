@@ -15,7 +15,7 @@ import {
   supportedWidgetSizes,
 } from "../components/apps/contributions";
 import { WidgetCanvas, type WidgetDefinition } from "../components/apps/WidgetCanvas";
-import { useInstalledApps } from "../components/apps/chatComponents";
+import { useInstalledAppsState } from "../components/apps/chatComponents";
 
 const REFRESH_MS = 30_000;
 
@@ -23,7 +23,7 @@ export function Dashboard() {
   usePageTitle("Home");
 
   const [searchParams, setSearchParams] = useSearchParams();
-  const { projects, currentProject } = useProjects();
+  const { projects, currentProject, loaded: projectsLoaded } = useProjects();
   const allProjects = searchParams.get("scope") === "all";
   const requestedProject = projects.find((project) => project.id === searchParams.get("project"));
   const selectedProject = allProjects ? undefined : requestedProject || currentProject || undefined;
@@ -34,7 +34,11 @@ export function Dashboard() {
   const [editingLayout, setEditingLayout] = useState(false);
   const [galleryRequest, setGalleryRequest] = useState(0);
   const [visibleWidgetComponents, setVisibleWidgetComponents] = useState<string[]>([]);
-  const installedApps = useInstalledApps(projectId, allProjects ? "global" : "project");
+  const { apps: installedApps, ready: installedAppsReady } = useInstalledAppsState(
+    projectId,
+    allProjects ? "global" : "project",
+  );
+  const scopeReady = allProjects || (projectsLoaded && (!!projectId || projects.length === 0));
   const needsOverview = visibleWidgetComponents.some((component) =>
     component === "native:usage" || component === "native:activity" || component === "native:agent-activity",
   );
@@ -234,6 +238,7 @@ export function Dashboard() {
           onEditingChange={setEditingLayout}
           onVisibleComponentsChange={handleVisibleComponentsChange}
           galleryRequest={galleryRequest}
+          definitionsReady={scopeReady && installedAppsReady}
         />
       </main>
     </div>

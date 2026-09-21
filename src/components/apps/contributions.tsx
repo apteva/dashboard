@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppIcon } from "@apteva/ui-kit";
 import { auth } from "../../api";
 import { useOptionalAuth } from "../../hooks/useAuth";
@@ -54,19 +54,39 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
     user && typeof user === "object" ? normalizeLayout(user.uiLayout) : {};
   const [document, setDocument] = useState<UILayoutDocument>(initial);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const documentRef = useRef(document);
+  const revisionRef = useRef(user && typeof user === "object" ? user.uiLayoutRevision : 0);
+
+  const applyDocument = useCallback((next: UILayoutDocument, revision?: number) => {
+    if (revision != null && revision < revisionRef.current) return false;
+    if (revision != null) revisionRef.current = revision;
+    documentRef.current = next;
+    setDocument(next);
+    return true;
+  }, []);
 
   useEffect(() => {
-    if (user && typeof user === "object")
-      setDocument(normalizeLayout(user.uiLayout));
-  }, [user]);
+    if (user && typeof user === "object") {
+      applyDocument(normalizeLayout(user.uiLayout), user.uiLayoutRevision);
+    }
+  }, [applyDocument, user]);
   useEffect(() => {
     const onChanged = (event: Event) => {
-      const next = (event as CustomEvent<UILayoutDocument>).detail;
-      if (next) setDocument(next);
+      const detail = (event as CustomEvent<UILayoutDocument | { document: UILayoutDocument; revision?: number }>).detail;
+      if (!detail) return;
+      if ("document" in detail) applyDocument(detail.document, detail.revision);
+      else applyDocument(detail);
     };
     window.addEventListener(LAYOUT_EVENT, onChanged);
     return () => window.removeEventListener(LAYOUT_EVENT, onChanged);
-  }, []);
+  }, [applyDocument]);
+
+  const publishDocument = useCallback((next: UILayoutDocument, revision?: number) => {
+    if (!applyDocument(next, revision)) return;
+    window.dispatchEvent(new CustomEvent(LAYOUT_EVENT, {
+      detail: { document: next, revision },
+    }));
+  }, [applyDocument]);
 
   const project = layoutScope === "global"
     ? document.global || {}
@@ -74,37 +94,41 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
   const update = useCallback(
     async (nextProject: ProjectUILayout) => {
       if (layoutScope === "project" && !projectId) return;
+      const current = documentRef.current;
       const next: UILayoutDocument = layoutScope === "global"
-        ? { ...document, global: nextProject }
-        : { ...document, projects: { ...(document.projects || {}), [projectId!]: nextProject } };
-      setDocument(next);
-      window.dispatchEvent(new CustomEvent(LAYOUT_EVENT, { detail: next }));
+        ? { ...current, global: nextProject }
+        : { ...current, projects: { ...(current.projects || {}), [projectId!]: nextProject } };
+      publishDocument(next);
       try {
         setSaveState("saving");
-        await auth.updatePreferences({
+        const response = await auth.updatePreferences({
           ui_layout: next as Record<string, unknown>,
         });
+        publishDocument(normalizeLayout(response.ui_layout), response.ui_layout_revision);
         setSaveState("saved");
       } catch {
         setSaveState("error");
       }
     },
-    [document, layoutScope, projectId],
+    [layoutScope, projectId, publishDocument],
   );
 
   const updateSurface = useCallback(
     async (surface: string, widgets: WidgetInstance[]) => {
       if (layoutScope === "project" && !projectId) return;
       const stored = serializeWidgetInstances(widgets);
+      const current = documentRef.current;
+      const currentProject = layoutScope === "global"
+        ? current.global || {}
+        : current.projects?.[projectId!] || {};
       const nextProject: ProjectUILayout = {
-        ...project,
-        slots: { ...(project.slots || {}), [surface]: stored },
+        ...currentProject,
+        slots: { ...(currentProject.slots || {}), [surface]: stored },
       };
       const optimistic: UILayoutDocument = layoutScope === "global"
-        ? { ...document, global: nextProject }
-        : { ...document, projects: { ...(document.projects || {}), [projectId!]: nextProject } };
-      setDocument(optimistic);
-      window.dispatchEvent(new CustomEvent(LAYOUT_EVENT, { detail: optimistic }));
+        ? { ...current, global: nextProject }
+        : { ...current, projects: { ...(current.projects || {}), [projectId!]: nextProject } };
+      publishDocument(optimistic);
       setSaveState("saving");
       const queueKey = `${layoutScope}:${projectId || "global"}:${surface}`;
       const version = (surfaceSaveVersions.get(queueKey) || 0) + 1;
@@ -125,8 +149,7 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
         const response = await request;
         if (surfaceSaveVersions.get(queueKey) === version) {
           const confirmed = normalizeLayout(response.ui_layout);
-          setDocument(confirmed);
-          window.dispatchEvent(new CustomEvent(LAYOUT_EVENT, { detail: confirmed }));
+          publishDocument(confirmed, response.revision);
           setSaveState("saved");
         }
       } catch {
@@ -135,7 +158,7 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
         if (surfaceSaveQueues.get(queueKey) === request) surfaceSaveQueues.delete(queueKey);
       }
     },
-    [document, layoutScope, project, projectId],
+    [layoutScope, projectId, publishDocument],
   );
 
   return { document, project, update, updateSurface, saveState };
@@ -168,7 +191,9 @@ export function contributionsFor(
 ): Contribution[] {
   const out: Contribution[] = [];
   for (const app of apps) {
-    if (app.status && app.status !== "running") continue;
+    // An upgrade reports `pending` while the previous version keeps serving.
+    // Keep its widgets mounted so routine upgrades do not collapse the grid.
+    if (app.status && app.status !== "running" && !app.serving) continue;
     for (const spec of app.ui_components || []) {
       if (!spec.slots?.includes(slot)) continue;
       if (slot === "dashboard.home" && !supportsDashboardScope(spec, scope)) continue;

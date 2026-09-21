@@ -150,7 +150,9 @@ describe("ChatToolActivity", () => {
     const html = renderToStaticMarkup(
       <ChatToolActivity tools={platformTools} parallel registry={buildToolVisualRegistry([], [])} />,
     );
-    expect(html.match(/title="Apteva"/g)?.length).toBe(1);
+    expect(html.match(/title="Apteva Server"/g)?.length).toBe(1);
+    expect(html).toContain('src="/apteva-mark-mask.png"');
+    expect(html).toContain("text-[var(--chat-tool-running)]");
     expect(html).toContain("+2");
   });
 

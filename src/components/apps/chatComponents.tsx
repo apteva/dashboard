@@ -74,6 +74,8 @@ export interface InstalledAppRow {
   icon_style?: "image" | "monochrome";
   source?: string;
   status?: string;
+  /** True when the currently installed version is still serving UI/API traffic. */
+  serving?: boolean;
   surfaces?: {
     mcp_tool_names?: string[];
   };
@@ -553,6 +555,7 @@ interface InstalledAppsCacheEntry {
   apps: InstalledAppRow[];
   promise: Promise<void> | null;
   listeners: Set<() => void>;
+  loaded: boolean;
 }
 
 const installedAppsCache = new Map<string, InstalledAppsCacheEntry>();
@@ -571,6 +574,7 @@ function normalizeInstalledApps(rows: unknown): InstalledAppRow[] {
     icon_style: r.icon_style === "monochrome" ? "monochrome" : "image",
     source: typeof r.source === "string" ? r.source : undefined,
     status: typeof r.status === "string" ? r.status : undefined,
+    serving: Boolean(r.serving),
     surfaces: r.surfaces && typeof r.surfaces === "object"
       ? {
           mcp_tool_names: Array.isArray(r.surfaces.mcp_tool_names)
@@ -585,7 +589,7 @@ function normalizeInstalledApps(rows: unknown): InstalledAppRow[] {
 function cacheEntry(projectId: string): InstalledAppsCacheEntry {
   let entry = installedAppsCache.get(projectId);
   if (!entry) {
-    entry = { apps: [], promise: null, listeners: new Set() };
+    entry = { apps: [], promise: null, listeners: new Set(), loaded: false };
     installedAppsCache.set(projectId, entry);
   }
   return entry;
@@ -610,13 +614,14 @@ function loadInstalledApps(scopeKey: string, force = false): Promise<void> {
     })
     .then((rows) => {
       entry.apps = normalizeInstalledApps(rows);
-      notifyInstalledApps(entry);
     })
     .catch(() => {
       // Preserve the last known-good catalog during transient reconnects.
     })
     .finally(() => {
+      entry.loaded = true;
       if (entry.promise === request) entry.promise = null;
+      notifyInstalledApps(entry);
     });
   entry.promise = request;
   return request;
@@ -645,7 +650,10 @@ export function refreshInstalledApps(projectId?: string) {
  * Refetches only when the project changes — installed apps don't
  * churn at component render frequency.
  */
-export function useInstalledApps(projectId: string | null | undefined, scope: "project" | "global" = "project"): InstalledAppRow[] {
+export function useInstalledAppsState(
+  projectId: string | null | undefined,
+  scope: "project" | "global" = "project",
+): { apps: InstalledAppRow[]; ready: boolean } {
   ensureInstalledAppsChangeListener();
   const key = scope === "global" ? GLOBAL_APPS_KEY : projectId || "";
   const subscribe = useMemo(
@@ -661,11 +669,20 @@ export function useInstalledApps(projectId: string | null | undefined, scope: "p
     () => () => (key ? cacheEntry(key).apps : EMPTY_INSTALLED_APPS),
     [key],
   );
+  const getReadySnapshot = useMemo(
+    () => () => (key ? cacheEntry(key).loaded : true),
+    [key],
+  );
   const apps = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const ready = useSyncExternalStore(subscribe, getReadySnapshot, getReadySnapshot);
   useEffect(() => {
     if (key) void loadInstalledApps(key);
   }, [key]);
-  return apps;
+  return { apps, ready };
+}
+
+export function useInstalledApps(projectId: string | null | undefined, scope: "project" | "global" = "project"): InstalledAppRow[] {
+  return useInstalledAppsState(projectId, scope).apps;
 }
 
 export const __installedAppsTestHelpers = {

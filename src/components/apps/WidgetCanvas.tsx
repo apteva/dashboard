@@ -36,6 +36,7 @@ export function WidgetCanvas({
   onEditingChange,
   onVisibleComponentsChange,
   galleryRequest = 0,
+  definitionsReady = true,
   className = "grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2",
 }: {
   projectId?: string | null;
@@ -46,6 +47,8 @@ export function WidgetCanvas({
   onEditingChange: (editing: boolean) => void;
   onVisibleComponentsChange?: (components: string[]) => void;
   galleryRequest?: number;
+  /** False while app-owned definitions are still being discovered. */
+  definitionsReady?: boolean;
   className?: string;
 }) {
   const { project, updateSurface, saveState } = useProjectUILayout(projectId, layoutScope);
@@ -74,12 +77,16 @@ export function WidgetCanvas({
       settings: { ...(definition.defaultSettings || {}) },
     }));
   const visible = configured.filter((instance) => byKey.has(instance.component));
+  const loadingInstances = configured.filter((instance) =>
+    byKey.has(instance.component) || !instance.component.startsWith("native:"),
+  );
   const visibleComponentsKey = visible.map((instance) => instance.component).join("\u0000");
 
   useEffect(() => {
+    if (!definitionsReady) return;
     onVisibleComponentsChange?.(visible.map((instance) => instance.component));
     if (visible.length === 0 && editing) onEditingChange(false);
-  }, [editing, onEditingChange, onVisibleComponentsChange, visibleComponentsKey]);
+  }, [definitionsReady, editing, onEditingChange, onVisibleComponentsChange, visibleComponentsKey]);
 
   const persist = (next: WidgetInstance[]) => {
     if (layoutScope === "project" && !projectId) return;
@@ -140,7 +147,9 @@ export function WidgetCanvas({
         </div>
       )}
 
-      {visible.length > 0 ? (
+      {!definitionsReady ? (
+        <WidgetCanvasLoading instances={loadingInstances} className={className} slot={slot} />
+      ) : visible.length > 0 ? (
         <div className={className} data-widget-canvas={slot}>
           {visible.map((instance, index) => {
             const definition = byKey.get(instance.component)!;
@@ -257,6 +266,37 @@ export function WidgetCanvas({
   );
 }
 
+function WidgetCanvasLoading({
+  instances,
+  className,
+  slot,
+}: {
+  instances: WidgetInstance[];
+  className: string;
+  slot: string;
+}) {
+  const placeholders = instances.length > 0
+    ? instances
+    : [
+        { id: "loading:half", component: "", size: "half" as const },
+        { id: "loading:full", component: "", size: "full" as const },
+      ];
+  return (
+    <div className={className} data-widget-canvas={slot} aria-label="Loading dashboard widgets">
+      {placeholders.map((instance) => (
+        <div
+          key={instance.id}
+          className={`min-h-40 rounded-lg border border-border bg-bg-card p-4 ${instance.size === "full" ? "xl:col-span-2" : ""}`}
+        >
+          <div className="h-3 w-28 rounded bg-bg-hover" />
+          <div className="mt-4 h-2 w-full rounded bg-bg-subtle" />
+          <div className="mt-2 h-2 w-2/3 rounded bg-bg-subtle" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function normalizeStoredWidgets(values: unknown[], definitions: WidgetDefinition[]): WidgetInstance[] {
   const byKey = new Map(definitions.map((item) => [item.key, item]));
   return values.flatMap((value, index) => {
@@ -266,7 +306,7 @@ function normalizeStoredWidgets(values: unknown[], definitions: WidgetDefinition
     const component = legacy ? value : raw?.component;
     if (typeof component !== "string") return [];
     const definition = byKey.get(component);
-    const supported = definition?.supportedSizes || ["half"];
+    const supported = definition?.supportedSizes || ["half", "full"];
     const requested = raw?.size;
     const size = requested && supported.includes(requested)
       ? requested
