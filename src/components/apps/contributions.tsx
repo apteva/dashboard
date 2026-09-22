@@ -468,6 +468,7 @@ export function ContributionMount({
   dashboardScope = "project",
   agentId,
   threadId,
+  workspaceContext,
 }: {
   pageContext?: import("../chat/pageContext").AssistantPageContext;
   instance: ResolvedWidgetInstance;
@@ -477,6 +478,11 @@ export function ContributionMount({
   dashboardScope?: DashboardScope;
   agentId?: number;
   threadId?: string;
+  workspaceContext?: {
+    app: string;
+    kind: string;
+    id: string;
+  };
 }) {
   const { contribution } = instance;
   const events = usePanelEvents(contribution.app.name, projectId, contribution.app.install_id, contribution.spec.refresh_topics || [], dashboardScope);
@@ -502,6 +508,7 @@ export function ContributionMount({
             widgetSize: instance.size,
             widgetSettings: instance.settings || {},
             pageContext,
+            workspaceContext,
           },
         }}
         apps={apps}

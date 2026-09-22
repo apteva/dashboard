@@ -28,6 +28,20 @@ export interface NativePanelProps {
   eventRevision?: number;
   eventStreamManaged?: boolean;
   appEvents?: import("../../hooks/useAppEvents").AppEventEnvelope[];
+  /** Optional host-owned rail. Only native project pages can opt into it. */
+  workspaceRail?: ComponentType<NativePanelWorkspaceRailProps>;
+}
+
+export interface NativePanelWorkspaceRailProps {
+  projectId: string;
+  agentId?: number;
+  threadId?: string;
+  context?: {
+    app: string;
+    kind: string;
+    id: string;
+  };
+  children: ReactNode;
 }
 
 // Cache lazy components by URL so navigating away and back doesn't
