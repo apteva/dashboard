@@ -522,7 +522,7 @@ export function Apps() {
               // Installed apps are inventory, not pitch decks — render
               // as compact rows (status-led, actionable) rather than the
               // marketing cards we use on the Marketplace tab.
-              <div className="space-y-2 md:space-y-0 md:overflow-hidden md:rounded-lg md:border md:border-border md:divide-y md:divide-border">
+              <div className="space-y-2 md:space-y-0 md:overflow-visible md:rounded-lg md:border md:border-border md:divide-y md:divide-border">
                 {filteredInstalled.map((r) => (
                   <AppListRow
                     key={r.install_id}

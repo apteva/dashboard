@@ -163,6 +163,34 @@ describe("HomeAgentOperations", () => {
     expect(html).toMatch(/Updated (?:just now|\d+s ago)/);
     expect(html).toContain("Run the next hourly inbox check");
   });
+
+  test("summarizes live work and identifies projects in the global view", () => {
+    const working = reported(1, "working", 30_000);
+    working.project_id = "research";
+    const blocked = reported(2, "blocked", 60_000);
+    blocked.project_id = "support";
+
+    const html = renderToStaticMarkup(createElement(
+      MemoryRouter,
+      {},
+      createElement(HomeAgentOperations, {
+        agents: [
+          { ...agent(1, "Research Agent"), project_id: "research" },
+          { ...agent(2, "Support Agent"), project_id: "support" },
+        ],
+        statuses: [working, blocked],
+        showProjects: true,
+        projectNames: new Map([["research", "Market research"], ["support", "Customer support"]]),
+      }),
+    ));
+
+    expect(html).toContain("Agent activity");
+    expect(html).toContain("1 active");
+    expect(html).toContain("1 needs attention");
+    expect(html).toContain("Market research");
+    expect(html).toContain("Customer support");
+    expect(html).toContain("Current work across your projects");
+  });
 });
 
 describe("HomeAgentSchedule", () => {

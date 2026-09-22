@@ -78,7 +78,7 @@ function ProjectChatAssistant({ projectId }: { projectId: string }) {
           }} className="rounded border border-accent px-3 py-1.5 text-accent disabled:opacity-40">{starting ? "Starting…" : "Start agent"}</button>
           {startError && <span role="alert" className="w-full text-red">{startError}</span>}
         </div>}
-        {choice && directory?.contribution ? <div className="min-h-0 flex-1 overflow-hidden"><ContributionMount key={`${projectId}:${choice.agent.id}`} projectId={projectId} agentId={choice.agent.id} pageContext={preferences.sharePageContext ? pageContext : undefined} slot={ASSISTANT_CHAT_SLOT} apps={directory.rows} instance={{ id: `chat-assistant:${choice.agent.id}`, component: directory.contribution.key, contribution: directory.contribution, size: "full", settings: { experience: "personal", display_mode: "single", composer_layout: "compact", show_new_conversation: true } }} /></div>
+        {choice && directory?.contribution ? <div className="min-h-0 flex-1 overflow-hidden"><ContributionMount key={`${projectId}:${choice.agent.id}`} projectId={projectId} agentId={choice.agent.id} pageContext={preferences.sharePageContext ? pageContext : undefined} slot={ASSISTANT_CHAT_SLOT} apps={directory.rows} instance={{ id: `chat-assistant:${choice.agent.id}`, component: directory.contribution.key, contribution: directory.contribution, size: "full", settings: { experience: "personal", display_mode: "single", composer_layout: "compact", show_new_conversation: true, show_page_context: false } }} /></div>
           : <p className="p-5 text-sm text-text-muted">{loading ? "Checking agent availability…" : "This agent is unavailable. Choose another agent or update Chat assistant settings."}</p>}
       </div>}
     </dialog>

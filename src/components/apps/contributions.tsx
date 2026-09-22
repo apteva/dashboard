@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppIcon } from "@apteva/ui-kit";
 import { auth } from "../../api";
 import { useOptionalAuth } from "../../hooks/useAuth";
@@ -31,6 +31,8 @@ export interface ProjectUILayout {
 
 export interface UILayoutDocument {
   projects?: Record<string, ProjectUILayout>;
+  /** Widgets shown when Home is scoped to the whole workspace. */
+  global?: ProjectUILayout;
 }
 
 const LAYOUT_EVENT = "apteva:ui-layout-changed";
@@ -46,78 +48,108 @@ export function contributionKey(appName: string, componentName: string) {
   return `${appName}:${componentName}`;
 }
 
-export function useProjectUILayout(projectId?: string | null) {
+export function useProjectUILayout(projectId?: string | null, layoutScope: "project" | "global" = "project") {
   const user = useOptionalAuth()?.user;
   const initial =
     user && typeof user === "object" ? normalizeLayout(user.uiLayout) : {};
   const [document, setDocument] = useState<UILayoutDocument>(initial);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const documentRef = useRef(document);
+  const revisionRef = useRef(user && typeof user === "object" ? user.uiLayoutRevision : 0);
+
+  const applyDocument = useCallback((next: UILayoutDocument, revision?: number) => {
+    if (revision != null && revision < revisionRef.current) return false;
+    if (revision != null) revisionRef.current = revision;
+    documentRef.current = next;
+    setDocument(next);
+    return true;
+  }, []);
 
   useEffect(() => {
-    if (user && typeof user === "object")
-      setDocument(normalizeLayout(user.uiLayout));
-  }, [user]);
+    if (user && typeof user === "object") {
+      applyDocument(normalizeLayout(user.uiLayout), user.uiLayoutRevision);
+    }
+  }, [applyDocument, user]);
   useEffect(() => {
     const onChanged = (event: Event) => {
-      const next = (event as CustomEvent<UILayoutDocument>).detail;
-      if (next) setDocument(next);
+      const detail = (event as CustomEvent<UILayoutDocument | { document: UILayoutDocument; revision?: number }>).detail;
+      if (!detail) return;
+      if ("document" in detail) applyDocument(detail.document, detail.revision);
+      else applyDocument(detail);
     };
     window.addEventListener(LAYOUT_EVENT, onChanged);
     return () => window.removeEventListener(LAYOUT_EVENT, onChanged);
-  }, []);
+  }, [applyDocument]);
 
-  const project = projectId ? document.projects?.[projectId] || {} : {};
+  const publishDocument = useCallback((next: UILayoutDocument, revision?: number) => {
+    if (!applyDocument(next, revision)) return;
+    window.dispatchEvent(new CustomEvent(LAYOUT_EVENT, {
+      detail: { document: next, revision },
+    }));
+  }, [applyDocument]);
+
+  const project = layoutScope === "global"
+    ? document.global || {}
+    : projectId ? document.projects?.[projectId] || {} : {};
   const update = useCallback(
     async (nextProject: ProjectUILayout) => {
-      if (!projectId) return;
-      const next: UILayoutDocument = {
-        ...document,
-        projects: { ...(document.projects || {}), [projectId]: nextProject },
-      };
-      setDocument(next);
-      window.dispatchEvent(new CustomEvent(LAYOUT_EVENT, { detail: next }));
+      if (layoutScope === "project" && !projectId) return;
+      const current = documentRef.current;
+      const next: UILayoutDocument = layoutScope === "global"
+        ? { ...current, global: nextProject }
+        : { ...current, projects: { ...(current.projects || {}), [projectId!]: nextProject } };
+      publishDocument(next);
       try {
         setSaveState("saving");
-        await auth.updatePreferences({
+        const response = await auth.updatePreferences({
           ui_layout: next as Record<string, unknown>,
         });
+        publishDocument(normalizeLayout(response.ui_layout), response.ui_layout_revision);
         setSaveState("saved");
       } catch {
         setSaveState("error");
       }
     },
-    [document, projectId],
+    [layoutScope, projectId, publishDocument],
   );
 
   const updateSurface = useCallback(
     async (surface: string, widgets: WidgetInstance[]) => {
-      if (!projectId) return;
+      if (layoutScope === "project" && !projectId) return;
       const stored = serializeWidgetInstances(widgets);
+      const current = documentRef.current;
+      const currentProject = layoutScope === "global"
+        ? current.global || {}
+        : current.projects?.[projectId!] || {};
       const nextProject: ProjectUILayout = {
-        ...project,
-        slots: { ...(project.slots || {}), [surface]: stored },
+        ...currentProject,
+        slots: { ...(currentProject.slots || {}), [surface]: stored },
       };
-      const optimistic: UILayoutDocument = {
-        ...document,
-        projects: { ...(document.projects || {}), [projectId]: nextProject },
-      };
-      setDocument(optimistic);
-      window.dispatchEvent(new CustomEvent(LAYOUT_EVENT, { detail: optimistic }));
+      const optimistic: UILayoutDocument = layoutScope === "global"
+        ? { ...current, global: nextProject }
+        : { ...current, projects: { ...(current.projects || {}), [projectId!]: nextProject } };
+      publishDocument(optimistic);
       setSaveState("saving");
-      const queueKey = `${projectId}:${surface}`;
+      const queueKey = `${layoutScope}:${projectId || "global"}:${surface}`;
       const version = (surfaceSaveVersions.get(queueKey) || 0) + 1;
       surfaceSaveVersions.set(queueKey, version);
       const previous = surfaceSaveQueues.get(queueKey) || Promise.resolve();
-      const request = previous.catch(() => undefined).then(() =>
-        auth.patchUILayoutSurface(projectId, surface, stored),
-      );
+      const request = previous.catch(() => undefined).then(() => {
+        if (layoutScope === "global") {
+          return auth.updatePreferences({ ui_layout: optimistic as Record<string, unknown> }).then((response) => ({
+            value: stored,
+            ui_layout: response.ui_layout,
+            revision: response.ui_layout_revision || 0,
+          }));
+        }
+        return auth.patchUILayoutSurface(projectId!, surface, stored);
+      });
       surfaceSaveQueues.set(queueKey, request);
       try {
         const response = await request;
         if (surfaceSaveVersions.get(queueKey) === version) {
           const confirmed = normalizeLayout(response.ui_layout);
-          setDocument(confirmed);
-          window.dispatchEvent(new CustomEvent(LAYOUT_EVENT, { detail: confirmed }));
+          publishDocument(confirmed, response.revision);
           setSaveState("saved");
         }
       } catch {
@@ -126,7 +158,7 @@ export function useProjectUILayout(projectId?: string | null) {
         if (surfaceSaveQueues.get(queueKey) === request) surfaceSaveQueues.delete(queueKey);
       }
     },
-    [document, project, projectId],
+    [layoutScope, projectId, publishDocument],
   );
 
   return { document, project, update, updateSurface, saveState };
@@ -138,6 +170,16 @@ export interface Contribution {
   key: string;
 }
 
+export type DashboardScope = "project" | "global";
+
+export function supportsDashboardScope(spec: UIComponentSpec, scope: DashboardScope): boolean {
+  // Existing components remain project-only until they explicitly opt into
+  // the stronger global data/permission contract.
+  return scope === "project"
+    ? !spec.dashboard_scopes || spec.dashboard_scopes.includes("project")
+    : !!spec.dashboard_scopes?.includes("global");
+}
+
 export interface ResolvedWidgetInstance extends WidgetInstance {
   contribution: Contribution;
 }
@@ -145,12 +187,16 @@ export interface ResolvedWidgetInstance extends WidgetInstance {
 export function contributionsFor(
   apps: InstalledAppRow[],
   slot: string,
+  scope: DashboardScope = "project",
 ): Contribution[] {
   const out: Contribution[] = [];
   for (const app of apps) {
-    if (app.status && app.status !== "running") continue;
+    // An upgrade reports `pending` while the previous version keeps serving.
+    // Keep its widgets mounted so routine upgrades do not collapse the grid.
+    if (app.status && app.status !== "running" && !app.serving) continue;
     for (const spec of app.ui_components || []) {
       if (!spec.slots?.includes(slot)) continue;
+      if (slot === "dashboard.home" && !supportsDashboardScope(spec, scope)) continue;
       out.push({ app, spec, key: contributionKey(app.name, spec.name) });
     }
   }
@@ -419,6 +465,7 @@ export function ContributionMount({
   apps,
   slot,
   projectId,
+  dashboardScope = "project",
   agentId,
   threadId,
 }: {
@@ -426,16 +473,17 @@ export function ContributionMount({
   instance: ResolvedWidgetInstance;
   apps: InstalledAppRow[];
   slot: string;
-  projectId: string;
+  projectId?: string;
+  dashboardScope?: DashboardScope;
   agentId?: number;
   threadId?: string;
 }) {
   const { contribution } = instance;
-  const events = usePanelEvents(contribution.app.name, projectId, contribution.app.install_id, contribution.spec.refresh_topics || []);
+  const events = usePanelEvents(contribution.app.name, projectId, contribution.app.install_id, contribution.spec.refresh_topics || [], dashboardScope);
   const width = instance.size === "full" ? "xl:col-span-2" : "";
   return (
     <div
-      className={`h-full min-w-0 ${width}`}
+      className={`h-full min-w-0 w-full ${width}`}
       data-app-contribution={contribution.key}
       data-widget-id={instance.id}
       data-widget-size={instance.size}
@@ -458,6 +506,7 @@ export function ContributionMount({
         }}
         apps={apps}
         projectId={projectId}
+        dashboardScope={dashboardScope}
         slot={slot}
       />
     </div>
