@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { loadedAppMatchesRoute } from "./AppProjectPage";
 
 describe("loadedAppMatchesRoute", () => {
@@ -14,4 +15,9 @@ describe("loadedAppMatchesRoute", () => {
     expect(loadedAppMatchesRoute(loaded, undefined, "api")).toBe(false);
     expect(loadedAppMatchesRoute(loaded, "project-a", undefined)).toBe(false);
   });
+});
+
+test("native project pages receive the optional host workspace rail", () => {
+  const source = readFileSync(new URL("./AppProjectPage.tsx", import.meta.url), "utf8");
+  expect(source).toContain('workspaceRail={app.name === "conversations" ? ProjectAppWorkspaceRail : undefined}');
 });

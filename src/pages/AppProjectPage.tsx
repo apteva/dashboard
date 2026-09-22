@@ -16,6 +16,7 @@ import { useAssistantPageDetails } from "../components/chat/pageContext";
 import { resolvePanelComponent } from "../components/apps/nativePanels";
 
 import { LiveAppPanel } from "../components/apps/LiveAppPanel";
+import { ProjectAppWorkspaceRail } from "../components/apps/ProjectAppWorkspaceRail";
 
 interface LoadedApp {
   app: AppRow;
@@ -151,6 +152,7 @@ export function AppProjectPage() {
           appName={app.name}
           installId={app.install_id}
           projectId={panelProjectId}
+          workspaceRail={app.name === "conversations" ? ProjectAppWorkspaceRail : undefined}
         />
       </div>
     );
