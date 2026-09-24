@@ -1051,6 +1051,14 @@ export interface PlatformHelperCapabilities {
   reset_threads?: number;
 }
 
+export interface BuiltInIntegration {
+  id: string;
+  name: string;
+  description: string;
+  logo: string;
+  auto_attached: boolean;
+}
+
 export interface PlatformHelperStatus {
   activated: boolean;
   state: "inactive" | "stopped" | "running";
@@ -1058,6 +1066,7 @@ export interface PlatformHelperStatus {
   conversations_installed: boolean;
   conversations_install_id?: number;
   agent?: Agent;
+  built_in_integrations?: BuiltInIntegration[];
 }
 
 export const platformHelper = {

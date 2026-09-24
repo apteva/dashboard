@@ -316,7 +316,7 @@ async function pickCodex() {
   await mount(); fireEvent.click(await screen.findByRole("button", {name:"OpenAI Codex Choose"}));
   expect(document.querySelector('input[type="password"]')).toBeNull();
   fireEvent.click(screen.getByRole("button", {name:"Sign in with OpenAI Codex"}));
-  await screen.findByText("TEST-CODE");
+  await screen.findByDisplayValue("TEST-CODE");
 }
 
 test("Codex sign-in waits for authorization and verification before offering presets", async () => {
@@ -334,6 +334,39 @@ test("Codex sign-in waits for authorization and verification before offering pre
   expect(invites.fulfill).not.toHaveBeenCalled();
 });
 
+test("Codex copy uses a fallback and keeps sign-in open if copying is blocked", async () => {
+  mockCodex();
+  integrations.deviceAuthPoll = mock(async () => ({status:"pending"}));
+  const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+  const writeText = mock(async () => { throw new Error("Clipboard access denied"); });
+  const execCommand = mock(() => true);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+  try {
+    await pickCodex();
+    fireEvent.click(screen.getByRole("button", {name:"Copy code"}));
+    await screen.findByRole("button", {name:"Copied"});
+    expect(writeText).toHaveBeenCalledWith("TEST-CODE");
+    expect(execCommand).toHaveBeenCalledWith("copy");
+
+    execCommand.mockImplementation(() => false);
+    fireEvent.click(screen.getByRole("button", {name:"Copied"}));
+    await screen.findByRole("alert");
+    const code = screen.getByRole("textbox", {name:"Sign-in code"}) as HTMLInputElement;
+    expect(code.value).toBe("TEST-CODE");
+    expect(code.selectionStart).toBe(0);
+    expect(code.selectionEnd).toBe(code.value.length);
+    expect(screen.getByRole("link", {name:/Open sign-in page/})).toBeTruthy();
+    expect(integrations.reauth).not.toHaveBeenCalled();
+  } finally {
+    if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+    else Reflect.deleteProperty(navigator, "clipboard");
+    if (execCommandDescriptor) Object.defineProperty(document, "execCommand", execCommandDescriptor);
+    else Reflect.deleteProperty(document, "execCommand");
+  }
+});
+
 test("expired Codex authorization retries the same connection without advancing onboarding", async () => {
   mockCodex();
   integrations.deviceAuthPoll = mock(async () => ({status:"expired", error:"Sign-in code expired"}));
@@ -342,7 +375,7 @@ test("expired Codex authorization retries the same connection without advancing 
   expect(instances.create).not.toHaveBeenCalled();
   expect(auth.completeOnboarding).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", {name:"Sign in with OpenAI Codex"}));
-  await screen.findByText("TEST-CODE");
+  await screen.findByDisplayValue("TEST-CODE");
   expect(integrations.reauth).toHaveBeenCalledWith(12);
   expect(integrations.connect).toHaveBeenCalledTimes(1);
 });
@@ -354,7 +387,7 @@ test("a saved Codex connection is reauthenticated in place", async () => {
   integrations.deviceAuthPoll=mock(async()=>({status:"pending"}));
   await mount();await screen.findByText("Codex session expired");
   fireEvent.click(await screen.findByRole("button",{name:"Sign in with OpenAI Codex"}));
-  await screen.findByText("TEST-CODE");
+  await screen.findByDisplayValue("TEST-CODE");
   expect(integrations.reauth).toHaveBeenCalledWith(12);
   expect(integrations.connect).not.toHaveBeenCalled();
   expect(invites.fulfill).not.toHaveBeenCalled();
@@ -371,7 +404,7 @@ test("leaving Codex sign-in ignores a late session response", async () => {
   fireEvent.click(screen.getByRole("button",{name:"Change provider"}));
   resolve({connection:{id:12,app_slug:"openai-codex"},device_auth:deviceSession});
   await screen.findByRole("searchbox");
-  expect(screen.queryByText("TEST-CODE")).toBeNull();
+  expect(screen.queryByDisplayValue("TEST-CODE")).toBeNull();
   expect(integrations.deviceAuthPoll).not.toHaveBeenCalled();
   expect(auth.completeOnboarding).not.toHaveBeenCalled();
 });

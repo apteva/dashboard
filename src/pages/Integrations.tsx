@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   integrations,
+  platformHelper,
+  core,
   invites,
   mcpServers,
   type AppDetail,
   type ConnectionInfo,
+  type BuiltInIntegration,
   type ConnectionTestResult,
   type IntegrationUsageSummary,
   type ConnectCreateResponse,
@@ -117,6 +120,8 @@ export function Integrations() {
   const [pickerErr, setPickerErr] = useState("");
   const [pickerFilter, setPickerFilter] = useState("");
   const [connections, setConnections] = useState<ConnectionInfo[]>([]);
+  const [helperIntegration, setHelperIntegration] = useState<"loading" | "inactive" | "stopped" | "attached" | "unavailable">("loading");
+  const [builtInIntegration, setBuiltInIntegration] = useState<BuiltInIntegration | null>(null);
   const [detailsFor, setDetailsFor] = useState<ConnectionInfo | null>(null);
 
   const [catalogOpen, setCatalogOpen] = useState(false);
@@ -172,6 +177,31 @@ export function Integrations() {
   useEffect(() => {
     loadConnections();
   }, [loadConnections]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadHelperIntegration = async () => {
+      try {
+        const status = await platformHelper.status();
+        if (!cancelled) setBuiltInIntegration(status.built_in_integrations?.find((item) => item.id === "apteva-server") || null);
+        if (!status.activated) {
+          if (!cancelled) setHelperIntegration("inactive");
+          return;
+        }
+        if (status.state !== "running" || !status.agent) {
+          if (!cancelled) setHelperIntegration("stopped");
+          return;
+        }
+        const config = await core.config(status.agent.id);
+        const gateway = config.mcp_servers?.find((server) => server.name === "apteva-server");
+        if (!cancelled) setHelperIntegration(gateway && gateway.connected !== false ? "attached" : "unavailable");
+      } catch {
+        if (!cancelled) setHelperIntegration("unavailable");
+      }
+    };
+    void loadHelperIntegration();
+    return () => { cancelled = true; };
+  }, []);
 
   // --- Local app interactions ---
 
@@ -787,6 +817,27 @@ export function Integrations() {
 
       <div className="flex-1 flex min-h-0">
         <div className="page-safe-bottom flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+          {tab === "local" && builtInIntegration && (
+            <section>
+              <h2 className="mb-3 text-xs font-bold uppercase tracking-wide text-text-muted">Built-in integration</h2>
+              <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-bg-card p-3 sm:p-4">
+                <IntegrationLogo src={builtInIntegration.logo} name={builtInIntegration.name} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-base font-bold text-text">{builtInIntegration.name}</span>
+                    <span className="rounded bg-bg-hover px-1.5 py-0.5 text-[10px] font-semibold text-text-dim">built in</span>
+                  </div>
+                  <p className="mt-1 text-xs text-text-muted">{builtInIntegration.description} {builtInIntegration.auto_attached ? "Automatically attached to Apteva Helper." : ""}</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className={`text-xs font-semibold ${helperIntegration === "attached" ? "text-green" : helperIntegration === "unavailable" ? "text-red" : "text-text-muted"}`}>
+                    {helperIntegration === "attached" ? "Attached to Helper" : helperIntegration === "stopped" ? "Helper stopped" : helperIntegration === "inactive" ? "Helper inactive" : helperIntegration === "unavailable" ? "Unavailable" : "Checking…"}
+                  </span>
+                  <button type="button" onClick={() => navigate("/settings?tab=helper")} className="rounded-md border border-border px-3 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent">Helper settings</button>
+                </div>
+              </div>
+            </section>
+          )}
           {/* Active connections — shared across sources.
               v0.15.0 splits the list into "Project: <name>" and
               "Global" sections so the operator can tell at a glance

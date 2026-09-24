@@ -5,6 +5,7 @@ import { AppIcon } from "@apteva/ui-kit";
 import { auth, core, platformHelper, telemetry, mcpServers, integrations, subscriptions, channels, slack, email as emailAPI, projects as projectsAPI, instances as instancesAPI, serverSettings, users as usersAPI, apps as appsAPI, projectMembers, projectInvites, adminUsers, runtimeEntryAsAppDetail, type RuntimeCatalogEntry, type RuntimeConnection, type ConnectionInfo, type ConnectCreateResponse, type DeviceAuthStart, type ConnectionTestResult, type ProviderUsageSnapshot, type ModelInfo, type MCPServer, type MCPTool, type SubscriptionInfo, type Agent, type Project, type ChannelInfo, type SlackChannelInfo, type ServerSettings as ServerSettingsType, type AccessPolicy, type UserRow, type AppRow, type ProjectMember, type ProjectInvite, type ProjectRole, type AdminUser, type PlatformHelperStatus } from "../api";
 import { useNewAgentProviderDefault } from "../hooks/useNewAgentProviderDefault";
 import { Modal } from "../components/Modal";
+import { IntegrationLogo } from "../components/integrations/IntegrationLogo";
 import { ProviderUsageDetails, ProviderUsageSummary } from "../components/ProviderUsage";
 import { ProviderPicker } from "../components/integrations/ProviderPicker";
 import { CredentialFields } from "../components/integrations/CredentialFields";
@@ -1167,12 +1168,18 @@ function HelperTab() {
 
         <div className="p-4 sm:p-5">
           <div className="mb-4 grid gap-2 sm:grid-cols-3">
-            {["Apteva control", "Environments"].map((name) => (
-              <div key={name} className="flex items-center justify-between rounded-md border border-border-subtle bg-bg-hover px-3 py-2">
-                <span className="text-xs font-medium text-text">{name}</span>
-                <span className="text-[9px] font-bold uppercase tracking-wide text-text-dim">required</span>
-              </div>
-            ))}
+            <div className="flex items-center gap-3 rounded-md border border-border-subtle bg-bg-hover px-3 py-2">
+              <IntegrationLogo src={helperStatus?.built_in_integrations?.find((item) => item.id === "apteva-server")?.logo || "/favicon-orange.svg"} name="Apteva Server" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-xs font-semibold text-text">Apteva Server</span>
+                <span className="block text-[10px] text-text-dim">Built-in integration · auto-attached</span>
+              </span>
+              <span className="text-[9px] font-bold uppercase tracking-wide text-text-dim">required</span>
+            </div>
+            <div className="flex items-center justify-between rounded-md border border-border-subtle bg-bg-hover px-3 py-2">
+              <span className="text-xs font-medium text-text">Environments</span>
+              <span className="text-[9px] font-bold uppercase tracking-wide text-text-dim">required</span>
+            </div>
           </div>
 
           {capabilitiesLoading ? (
