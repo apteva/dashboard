@@ -80,7 +80,7 @@ for (const audience of ["personal", "business"] as const) test(`${audience} skip
 
 test("connects and verifies a provider with one action before offering presets", async () => {
   await mount(); await fillKey();
-  expect(screen.queryByText(/Skip for now|Activate Helper|Create setup|Choose a theme/)).toBeNull();
+  expect(screen.queryByText(/Activate Helper|Create setup|Choose a theme/)).toBeNull();
   connect();
   await screen.findByText("Setup options ready");
   expect(integrations.connect).toHaveBeenCalledTimes(1);

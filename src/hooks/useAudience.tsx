@@ -45,7 +45,6 @@ export const AUDIENCE_SECTIONS = {
   // operational links with its agent list. Routes stay registered, and the
   // platform gateway keeps advanced work reachable through Conversations.
   "nav.dashboard": "business",
-  "nav.build": "business",
   "nav.agents": "business",
   "nav.appPages": "business",
   "nav.monitor": "business",
@@ -70,7 +69,6 @@ export const AUDIENCE_SECTIONS = {
   "agent.provider": "business",
   "agent.realtimeVoice": "business",
   "agent.resetContext": "business",
-  "agent.technical": "developer",
   "agent.stepMode": "developer",
   "agent.stepControls": "developer",
   "agent.diagnostics": "developer",

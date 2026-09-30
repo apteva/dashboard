@@ -53,16 +53,16 @@ describe("legacy dashboard surfaces stay hidden", () => {
     const layout = source("./components/Layout.tsx");
 
     expect(app).toContain('<Route path="/apps/:name/page" element={<AppProjectPage />} />');
-    expect(dashboard).toContain('contributionsFor(installedApps, "dashboard.home"');
+    expect(dashboard).toContain('contributionsFor(installedApps, widgetSlot');
     expect(layout).toContain("useProjectUILayout");
   });
 
-  test("Build navigation follows explicit Helper activation", () => {
+  test("Helper activation refreshes when its status changes", () => {
     const layout = source("./components/Layout.tsx");
 
   expect(layout).toContain("platformHelper");
   expect(layout).toContain(".status()");
-    expect(layout).toContain("helperActivated ?");
+    expect(layout).toContain("setHelperActivated(status.activated)");
     expect(layout).toContain('window.addEventListener("apteva:helper-changed"');
   });
 });

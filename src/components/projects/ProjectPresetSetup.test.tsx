@@ -68,7 +68,7 @@ describe("ProjectPresetSetup", () => {
     expect(screen.getAllByText(/1 widget/).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Research and qualify prospects").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByText(/Included setup/));
-    expect(screen.getByText("Recent activity")).toBeTruthy();
+    expect(screen.getAllByText("Recent activity").length).toBeGreaterThan(0);
 
     fireEvent.click(personal);
     expect(screen.getByRole("button", { name: /Personal assistant/ })).toBeTruthy();

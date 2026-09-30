@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { chat, type Agent, type ChatRow } from "../../api";
 import { Modal } from "../Modal";
+import { AgentMark } from "../AgentMark";
 
 interface Props {
   open: boolean;
@@ -86,6 +87,7 @@ export function NewConversationModal({ open, projectId, agents, onClose, onCreat
               return (
                 <div key={agent.id} className="flex min-h-12 items-center gap-3 px-3 py-2 hover:bg-bg-hover">
                   <input type="checkbox" checked={checked} onChange={() => toggle(agent.id)} className="h-4 w-4 accent-[var(--color-accent)]" aria-label={agent.name} />
+                  <AgentMark icon={agent.icon} color={agent.icon_color} size="sm" />
                   <button type="button" onClick={() => toggle(agent.id)} className="min-w-0 flex-1 text-left">
                     <span className="block truncate text-sm text-text">{agent.name}</span>
                     <span className="block text-[10px] text-text-muted">#{agent.id} · {agent.status}</span>

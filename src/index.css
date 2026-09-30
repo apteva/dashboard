@@ -109,6 +109,7 @@
   --error: #ef4444;
   --info: #3b82f6;
   --recurring: #a78bfa;
+  --activity-thought: #a78bfa;
 }
 
 [data-theme="terminal"][data-mode="light"] {
@@ -132,6 +133,7 @@
   --error: #b91c1c;
   --info: #1d4ed8;
   --recurring: #6d28d9;
+  --activity-thought: #6d28d9;
 }
 
 [data-theme="clean"][data-mode="dark"] {
@@ -155,6 +157,7 @@
   --error: #f87171;
   --info: #60a5fa;
   --recurring: #7c9ccf;
+  --activity-thought: #b39ae8;
 }
 
 [data-theme="clean"][data-mode="light"] {
@@ -178,6 +181,7 @@
   --error: #b91c1c;
   --info: #1d4ed8;
   --recurring: #4d77a8;
+  --activity-thought: #7550ad;
 }
 
 /* ─── Tailwind theme tokens ───────────────────────────────────────
@@ -212,6 +216,7 @@
   --color-error: var(--error);
   --color-info: var(--info);
   --color-recurring: var(--recurring);
+  --color-activity-thought: var(--activity-thought);
 
   /* Back-compat aliases — the codebase has ~40 sites using the old
    * names (text-red, bg-green, text-yellow, text-blue). They map onto
@@ -290,8 +295,10 @@ body.apteva-shell-active #root {
   padding-bottom: var(--safe-area-bottom);
 }
 .app-topbar-safe {
-  min-height: calc(3rem + var(--safe-area-top));
+  min-height: calc(3.5rem + var(--safe-area-top));
   padding-top: var(--safe-area-top);
+  padding-left: calc(0.75rem + var(--safe-area-left));
+  padding-right: calc(0.75rem + var(--safe-area-right));
 }
 .modal-safe-frame {
   padding-top: max(0.75rem, var(--safe-area-top));
@@ -784,3 +791,19 @@ select {
   padding: 0.25rem 0.5rem;
 }
 .chat-md th { background: var(--bg-card); font-weight: 600; }
+
+/* Simple agent glyphs use the same surface and accent tokens as app icons. */
+.agent-mark {
+  color: var(--accent);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+}
+
+/* Focused pages size the existing widgets to their assigned pane. */
+.workspace-widget > section { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.workspace-widget > section > header { flex-shrink: 0; }
+.workspace-widget > section > div:last-child { min-height: 0; max-height: none; overflow: auto; }
+.workspace-widget > section > div:last-child:not(.workspace-chat) { flex: 1; }
+
+/* A focused workspace already provides the same assistant next to the system. */
+body:has([data-inline-workspace-helper="true"]) .floating-chat-launcher-safe { display: none; }

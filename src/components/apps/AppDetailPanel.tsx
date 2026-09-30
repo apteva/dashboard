@@ -17,6 +17,7 @@ import { useProjects } from "../../hooks/useProjects";
 import { AppSurfaceBadges } from "./AppSurfaceBadges";
 import { ChatComponentMount, type InstalledAppRow } from "./chatComponents";
 import { SettingsSection } from "./SettingsSection";
+import { AppStatusAction } from "./AppStatusAction";
 
 type Mode = "marketplace" | "installed";
 
@@ -32,6 +33,7 @@ interface Props {
    *  the app list (the row's project_id just changed). */
   onScopeChanged?: () => void;
   onAgentDefaultChanged?: (enabled: boolean) => void;
+  onStatusChanged?: (status: "running" | "disabled") => void;
 }
 
 interface View {
@@ -106,7 +108,13 @@ function viewFromProps(p: Props): View | null {
 }
 
 export function AppDetailPanel(props: Props) {
-  const view = viewFromProps(props);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [statusOverride, setStatusOverride] = useState<{ id: number; status: "running" | "disabled" } | null>(null);
+  useEffect(() => setStatusOverride(null), [props.install?.install_id, props.install?.status]);
+  const install = props.install && statusOverride?.id === props.install.install_id
+    ? { ...props.install, status: statusOverride.status }
+    : props.install;
+  const view = viewFromProps({ ...props, install });
   // ESC to close. Re-bind on each open so the listener doesn't leak.
   useEffect(() => {
     if (!props.open) return;
@@ -166,7 +174,7 @@ export function AppDetailPanel(props: Props) {
         <PanelBody view={view} props={props} />
 
         {/* Footer — primary actions. */}
-        <div className="border-t border-border px-6 py-4 flex-shrink-0 flex gap-2">
+        <div className="border-t border-border px-6 py-4 flex-shrink-0 flex flex-wrap gap-2">
           {props.mode === "marketplace" && !view.installed && (
             <button
               onClick={props.onInstall}
@@ -182,12 +190,17 @@ export function AppDetailPanel(props: Props) {
               Already installed
             </div>
           )}
-          {props.mode === "installed" && props.install && (
+          {props.mode === "installed" && install && (
             <>
-              <ScopeButton install={props.install} onChanged={props.onScopeChanged} />
+              <AppStatusAction key={install.install_id} app={install} onBusyChange={setStatusBusy} onChanged={(status) => {
+                setStatusOverride({ id: install.install_id, status });
+                props.onStatusChanged?.(status);
+              }} />
+              {!statusBusy && <ScopeButton install={install} onChanged={props.onScopeChanged} />}
               <button
                 onClick={props.onUninstall}
-                className="flex-1 px-3 py-2 border border-red text-red rounded font-bold text-sm hover:bg-red/10"
+                disabled={statusBusy}
+                className="flex-1 px-3 py-2 border border-red text-red rounded font-bold text-sm hover:bg-red/10 disabled:opacity-50"
               >
                 Uninstall
               </button>

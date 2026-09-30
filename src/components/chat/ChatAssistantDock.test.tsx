@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { defaultAssistantPreferences, type AssistantPreferences } from "./assistantModel";
 
@@ -9,6 +10,7 @@ let directory: any = null;
 let voiceSession: any = null;
 const save = mock(async (_value: AssistantPreferences) => {});
 const mounts = mock((_props: any) => {});
+const insertDraft = mock(async (_text: string, options: any) => ({ requestId: options.requestId, status: "applied" }));
 const originals = {
   projects: { ...await import("../../hooks/useProjects") },
   assistant: { ...await import("../../hooks/useChatAssistant") },
@@ -17,7 +19,7 @@ const originals = {
   show: HTMLDialogElement.prototype.show,
   close: HTMLDialogElement.prototype.close,
 };
-mock.module("../../hooks/useProjects", () => ({ useProjects: () => ({ currentProject: { id: projectId, name: "Test project" } }) }));
+mock.module("../../hooks/useProjects", () => ({ useProjects: () => ({ currentProject: { id: projectId, name: "Test project" }, projects: [{ id: projectId, name: "Test project" }] }) }));
 mock.module("../../hooks/useChatAssistant", () => ({
   ASSISTANT_CHAT_SLOT: "dashboard.build",
   useAssistantPreferences: () => ({ preferences, save, saveState: "idle" }),
@@ -26,6 +28,10 @@ mock.module("../../hooks/useChatAssistant", () => ({
 mock.module("../../state/RealtimeVoiceContext", () => ({ useRealtimeVoice: () => ({ session: voiceSession }) }));
 mock.module("../apps/contributions", () => ({ ContributionMount: (props: any) => {
   mounts(props);
+  useEffect(() => {
+    props.composerRef?.({ insertText: insertDraft });
+    return () => props.composerRef?.(null);
+  }, [props.composerRef]);
   return <div>Conversations app: {props.projectId}/{props.agentId}</div>;
 } }));
 const { ChatAssistantDock } = await import("./ChatAssistantDock");
@@ -41,7 +47,7 @@ beforeEach(() => {
     { target: { kind: "helper" }, agent: { id: 1, name: "Apteva Helper" } },
     { target: { kind: "agent", id: 2 }, agent: { id: 2, name: "Research" } },
   ] };
-  mounts.mockClear(); save.mockClear();
+  mounts.mockClear(); save.mockClear(); insertDraft.mockClear();
 });
 afterEach(cleanup);
 afterAll(() => {
@@ -54,6 +60,27 @@ afterAll(() => {
 });
 function Dock() { return <MemoryRouter><ChatAssistantDock /></MemoryRouter>; }
 describe("Conversations-powered chat assistant", () => {
+  test("Helper actions open the dock and insert once after lazy mount without replay on reopen", async () => {
+    render(<Dock />);
+    const detail = { prompt: "Explain this result", context: { projectId }, handled: false, inline: false };
+    act(() => window.dispatchEvent(new CustomEvent("apteva:helper-prompt", { detail })));
+    await waitFor(() => expect(insertDraft).toHaveBeenCalledTimes(1));
+    expect(detail.handled).toBe(true);
+    expect(insertDraft.mock.calls[0]?.[1]).toMatchObject({ projectId, agentId: 1 });
+    expect(await screen.findByText("Added to your draft. Review it before sending.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close chat assistant" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open chat assistant" }));
+    expect(insertDraft).toHaveBeenCalledTimes(1);
+  });
+  test("ignores inline Helper requests and requests from another project", () => {
+    render(<Dock />);
+    for (const detail of [{ context: { projectId: "other" }, inline: false, handled: false }, { context: { projectId }, inline: true, handled: false }]) {
+      act(() => window.dispatchEvent(new CustomEvent("apteva:helper-prompt", { detail })));
+      expect(detail.handled).toBe(false);
+    }
+    expect(insertDraft).not.toHaveBeenCalled();
+    expect(mounts).not.toHaveBeenCalled();
+  });
   test("page sharing is on by default, independent of chat target, and can be disabled", () => {
     const view = render(<Dock />);
     fireEvent.click(screen.getByRole("button", { name: "Open chat assistant" }));
@@ -75,7 +102,7 @@ describe("Conversations-powered chat assistant", () => {
     render(<Dock />);
     fireEvent.click(screen.getByRole("button", { name: "Open chat assistant" }));
     expect(await screen.findByText("Conversations app: project-one/1")).toBeTruthy();
-    expect(mounts.mock.calls.at(-1)?.[0]).toMatchObject({ slot: "dashboard.build", agentId: 1, instance: { component: "conversations:agent-conversations", settings: { display_mode: "single", composer_layout: "compact", show_new_conversation: true, show_page_context: false } } });
+    expect(mounts.mock.calls.at(-1)?.[0]).toMatchObject({ slot: "dashboard.build", agentId: 1, instance: { component: "conversations:agent-conversations", settings: { display_mode: "single", composer_layout: "compact", show_new_conversation: true, show_page_context: true } } });
     fireEvent.click(screen.getByRole("button", { name: "Chat agent" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Research" }));
     expect(await screen.findByText("Conversations app: project-one/2")).toBeTruthy();

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, type Dispatch, type SetStateAction } from "react";
 import { useAssistantPageDetails } from "../components/chat/pageContext";
 import { Link } from "react-router-dom";
 import { AppIcon as SharedAppIcon } from "@apteva/ui-kit";
@@ -22,6 +22,7 @@ import { usePageTitle } from "../hooks/usePageTitle";
 import { Modal } from "../components/Modal";
 import { AppSurfaceBadges } from "../components/apps/AppSurfaceBadges";
 import { AppDetailPanel } from "../components/apps/AppDetailPanel";
+import { AppStatusAction } from "../components/apps/AppStatusAction";
 import { AppDiscoverySelect } from "../components/apps/AppDiscoverySelect";
 import { CredentialValueInput } from "../components/integrations/CredentialFields";
 
@@ -630,6 +631,10 @@ export function Apps() {
           setDetailInstall(null);
           refreshInstalled();
         }}
+        onStatusChanged={(status) => {
+          setDetailInstall((current) => current ? { ...current, status } : current);
+          refreshInstalled(false);
+        }}
         onAgentDefaultChanged={(enabled) => {
           setDetailInstall((current) => current
             ? { ...current, default_for_new_agents: enabled }
@@ -641,31 +646,64 @@ export function Apps() {
   );
 }
 
+// Keep these search tiers aligned with marketplaceSearchScore in the server.
+// A substring still matches, but a name word outranks a tag or description.
+function appSearchMatchStrength(value: string | undefined, term: string): number {
+  if (!value) return 0;
+  const text = value.toLocaleLowerCase();
+  if (text === term) return 5;
+  if (text.startsWith(term)) return 4;
+  const words = text.split(/[^\p{L}\p{N}]+/u);
+  if (words.includes(term)) return 3;
+  if (words.some((word) => word.startsWith(term))) return 2;
+  return text.includes(term) ? 1 : 0;
+}
+
+function installedAppSearchScore(app: AppRow, query: string, terms: string[]): number {
+  const name = app.name.toLocaleLowerCase();
+  const displayName = (app.display_name || "").toLocaleLowerCase();
+  let score = name === query ? 1_000_000
+    : displayName === query ? 900_000
+    : name.startsWith(query) ? 10_000
+    : displayName.startsWith(query) ? 9_000
+    : 0;
+
+  const metadata = [
+    app.status,
+    app.status_message,
+    app.error_message,
+    app.source,
+    app.version,
+    app.available_version,
+    app.project_id ? "project" : "global",
+    ...(app.permissions || []),
+  ];
+  for (const term of terms) {
+    let best = Math.max(
+      120 * appSearchMatchStrength(app.name, term),
+      120 * appSearchMatchStrength(app.display_name, term),
+      20 * appSearchMatchStrength(app.description, term),
+    );
+    for (const value of metadata) {
+      best = Math.max(best, 10 * appSearchMatchStrength(value, term));
+    }
+    if (best === 0) return 0;
+    score += best;
+  }
+  return score;
+}
+
 export function filterInstalledApps(rows: AppRow[], query: string): AppRow[] {
   const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  return rows.filter((app) => {
-    if (!isManagedAppInstall(app)) return false;
-    if (terms.length === 0) return true;
-    const scope = app.project_id ? "project" : "global";
-    const searchable = [
-      app.display_name,
-      app.name,
-      app.description,
-      app.status,
-      app.status_message,
-      app.error_message,
-      app.source,
-      app.version,
-      app.available_version,
-      scope,
-      ...(app.permissions || []),
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLocaleLowerCase();
+  const installed = rows.filter(isManagedAppInstall);
+  if (terms.length === 0) return installed;
 
-    return terms.every((term) => searchable.includes(term));
-  });
+  const normalizedQuery = terms.join(" ");
+  return installed
+    .map((app, index) => ({ app, index, score: installedAppSearchScore(app, normalizedQuery, terms) }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map(({ app }) => app);
 }
 
 export function MarketplaceView({
@@ -1216,9 +1254,8 @@ function UpdateAllAppsModal({
 // while pending or errored), and surface every applicable action as
 // a button on the right.
 //
-// Shares uninstall + mount + disable + upgrade handlers with the
-// previous AppCard so behaviour is identical — only the layout
-// changes.
+// Lifecycle actions live in the menu; status changes use the same control
+// as app cards and the detail panel.
 function AppListRow({
   app, onChange, onOpenDetails,
 }: {
@@ -1227,10 +1264,6 @@ function AppListRow({
   onOpenDetails: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [confirmRemove, setConfirmRemove] = useState(false);
-  const [showMount, setShowMount] = useState(false);
-  const [mountUrl, setMountUrl] = useState("http://127.0.0.1:8080");
-  const [mountError, setMountError] = useState("");
   const [permissionPrompt, setPermissionPrompt] = useState<UpgradePermissionPrompt | null>(null);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
 
@@ -1238,28 +1271,6 @@ function AppListRow({
     setBusy(true);
     try {
       await apps.uninstall(app.install_id);
-      onChange();
-    } finally {
-      setBusy(false);
-    }
-  };
-  const mount = async () => {
-    setBusy(true);
-    setMountError("");
-    try {
-      await apps.setStatus(app.install_id, "running", { sidecarUrl: mountUrl });
-      setShowMount(false);
-      onChange();
-    } catch (e: any) {
-      setMountError(e.message || "mount failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-  const disable = async () => {
-    setBusy(true);
-    try {
-      await apps.setStatus(app.install_id, "disabled");
       onChange();
     } finally {
       setBusy(false);
@@ -1331,7 +1342,7 @@ function AppListRow({
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
+        if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
           e.preventDefault();
           onOpenDetails();
         }
@@ -1352,6 +1363,7 @@ function AppListRow({
           <span className="text-text text-sm font-medium truncate">
             {app.display_name}
           </span>
+          {app.status === "disabled" && <span className="shrink-0 text-[10px] text-text-dim">Disabled</span>}
           <span className="text-text-dim text-[11px] shrink-0">
             v{app.version}
             {updateAvailable && (
@@ -1377,115 +1389,6 @@ function AppListRow({
         {updateAvailable && <Pill className="bg-yellow/15 text-yellow">update</Pill>}
       </div>
 
-      {/* Actions — anchored right, click doesn't propagate to row */}
-      <div className="hidden items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-        {showMount ? (
-          <div className="bg-accent/10 border border-accent/40 rounded p-1.5 flex items-center gap-1.5">
-            <input
-              type="text"
-              value={mountUrl}
-              onChange={(e) => setMountUrl(e.target.value)}
-              placeholder="http://127.0.0.1:8080"
-              className="bg-bg-input border border-border rounded px-1.5 py-0.5 text-[11px] font-mono text-text w-48"
-            />
-            <button
-              onClick={mount}
-              disabled={busy}
-              className="text-[11px] text-accent font-medium hover:underline disabled:opacity-50"
-            >
-              {busy ? "…" : "mount"}
-            </button>
-            <button
-              onClick={() => setShowMount(false)}
-              disabled={busy}
-              className="text-[11px] text-text-muted hover:text-text"
-            >
-              cancel
-            </button>
-            {mountError && (
-              <span className="text-[10px] text-red ml-1">{mountError}</span>
-            )}
-          </div>
-        ) : confirmRemove ? (
-          <div className="bg-red/10 border border-red/40 rounded px-2 py-1 flex items-center gap-2">
-            <span className="text-[11px] text-red">Uninstall?</span>
-            <button
-              onClick={remove}
-              disabled={busy}
-              className="text-[11px] text-red font-medium hover:underline disabled:opacity-50"
-            >
-              {busy ? "…" : "confirm"}
-            </button>
-            <button
-              onClick={() => setConfirmRemove(false)}
-              disabled={busy}
-              className="text-[11px] text-text-muted hover:text-text"
-            >
-              cancel
-            </button>
-          </div>
-        ) : (
-          <>
-            {showOpen && (
-              staticAppMount ? (
-                <a
-                  href={staticAppMount.endsWith("/") ? staticAppMount : staticAppMount + "/"}
-                  target="_blank"
-                  rel="noopener"
-                  onClick={(e) => e.stopPropagation()}
-                  className="px-2.5 py-1 border border-accent rounded text-[11px] text-accent hover:bg-accent hover:text-bg transition-colors"
-                >
-                  Open ↗
-                </a>
-              ) : (
-                <Link
-                  to={`/apps/${app.name}/page`}
-                  onClick={(e) => e.stopPropagation()}
-                  className="px-2.5 py-1 border border-accent rounded text-[11px] text-accent hover:bg-accent hover:text-bg transition-colors"
-                >
-                  Open
-                </Link>
-              )
-            )}
-            {updateAvailable && (
-              <button
-                onClick={() => upgrade()}
-                disabled={busy}
-                className="px-2.5 py-1 border border-yellow rounded text-[11px] text-yellow hover:bg-yellow/10 transition-colors disabled:opacity-50"
-                title={`Upgrade to v${app.available_version}`}
-              >
-                {busy ? "…" : "Update"}
-              </button>
-            )}
-            {(app.status === "pending" || app.status === "disabled" || app.status === "error") && app.source !== "builtin" && (
-              <button
-                onClick={() => setShowMount(true)}
-                className="px-2.5 py-1 border border-border rounded text-[11px] text-text-muted hover:text-accent hover:border-accent transition-colors"
-                title="Mount a running sidecar by URL (local dev)"
-              >
-                Mount…
-              </button>
-            )}
-            {app.status === "running" && app.source !== "builtin" && (
-              <button
-                onClick={disable}
-                disabled={busy}
-                className="px-2.5 py-1 border border-border rounded text-[11px] text-text-muted hover:text-yellow hover:border-yellow transition-colors disabled:opacity-50"
-              >
-                Disable
-              </button>
-            )}
-            {app.source !== "builtin" && (
-              <button
-                onClick={() => setConfirmRemove(true)}
-                className="px-2.5 py-1 border border-border rounded text-[11px] text-text-muted hover:text-red hover:border-red transition-colors"
-              >
-                Uninstall
-              </button>
-            )}
-          </>
-        )}
-      </div>
       <div className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
         <button
           type="button"
@@ -1493,6 +1396,7 @@ function AppListRow({
           className="flex h-8 w-8 items-center justify-center rounded-md text-lg text-text-dim hover:bg-bg-hover hover:text-text"
           aria-label={`Actions for ${app.display_name}`}
           aria-expanded={actionMenuOpen}
+          disabled={busy}
         >
           ⋯
         </button>
@@ -1501,9 +1405,9 @@ function AppListRow({
             {showOpen && (
               <Link to={`/apps/${app.name}/page`} onClick={() => setActionMenuOpen(false)} className="block rounded px-3 py-2 text-xs text-text hover:bg-bg-hover">Open</Link>
             )}
-            {updateAvailable && <button type="button" onClick={() => { setActionMenuOpen(false); void upgrade(); }} className="block w-full rounded px-3 py-2 text-left text-xs text-yellow hover:bg-bg-hover">Update</button>}
-            {app.status === "running" && app.source !== "builtin" && <button type="button" onClick={() => { setActionMenuOpen(false); void disable(); }} className="block w-full rounded px-3 py-2 text-left text-xs text-text-muted hover:bg-bg-hover">Disable</button>}
-            {app.source !== "builtin" && <button type="button" onClick={() => { setActionMenuOpen(false); if (confirm(`Uninstall ${app.display_name || app.name}?`)) void remove(); }} className="block w-full rounded px-3 py-2 text-left text-xs text-red hover:bg-bg-hover">Uninstall</button>}
+            {updateAvailable && <button disabled={busy} type="button" onClick={() => { setActionMenuOpen(false); void upgrade(); }} className="block w-full rounded px-3 py-2 text-left text-xs text-yellow hover:bg-bg-hover">Update</button>}
+            <AppStatusAction app={app} disabled={busy} onBusyChange={setBusy} onChanged={() => { setActionMenuOpen(false); onChange(); }} className="block min-h-10 w-full rounded px-3 py-2 text-left text-xs text-text-muted hover:bg-bg-hover" />
+            {app.source !== "builtin" && <button disabled={busy} type="button" onClick={() => { setActionMenuOpen(false); if (confirm(`Uninstall ${app.display_name || app.name}?`)) void remove(); }} className="block w-full rounded px-3 py-2 text-left text-xs text-red hover:bg-bg-hover">Uninstall</button>}
           </div>
         )}
       </div>
@@ -1552,16 +1456,6 @@ function AppCard({
       onChange();
     } catch (e: any) {
       setMountError(e.message || "mount failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const disable = async () => {
-    setBusy(true);
-    try {
-      await apps.setStatus(app.install_id, "disabled");
-      onChange();
     } finally {
       setBusy(false);
     }
@@ -1737,15 +1631,7 @@ function AppCard({
                   Mount…
                 </button>
               )}
-              {app.status === "running" && app.source !== "builtin" && (
-                <button
-                  onClick={disable}
-                  disabled={busy}
-                  className="flex-1 px-2 py-1 border border-border rounded text-[11px] text-text-muted hover:text-yellow hover:border-yellow transition-colors"
-                >
-                  Disable
-                </button>
-              )}
+              <AppStatusAction app={app} disabled={busy} onBusyChange={setBusy} onChanged={() => onChange()} />
               {app.source !== "builtin" && (
                 <button
                   onClick={() => setConfirmRemove(true)}
@@ -1825,6 +1711,11 @@ function InstallModal({
       setManifestUrl(initialManifestUrl);
       setPreview(null);
       setPreflight(null);
+      setBindings({});
+      setIntents({});
+      setConfig({});
+      setError("");
+      setScope("project");
       // Trigger preview + preflight in parallel after URL state settles.
       setTimeout(() => {
         setPreviewing(true);
@@ -1850,6 +1741,7 @@ function InstallModal({
       setIntents({});
       setError("");
       setConfig({});
+      setScope("project");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialManifestUrl]);
@@ -1862,6 +1754,7 @@ function InstallModal({
     setIntents({});
     setError("");
     setConfig({});
+    setScope("project");
   };
 
   const doPreview = async () => {
@@ -1872,6 +1765,8 @@ function InstallModal({
         apps.preview(manifestUrl),
         apps.preflight(manifestUrl, undefined, projectId),
       ]);
+      setIntents({});
+      setConfig({});
       setPreview(p);
       setPreflight(pf);
       setBindings(seedBindings(pf));
@@ -1914,10 +1809,9 @@ function InstallModal({
   // which writes the binding directly.
   const requiredRolesUnbound = (preflight?.roles || []).filter((r) => {
     if (!r.required) return false;
-    const hasBinding = bindings[r.role] != null && bindings[r.role] !== 0;
-    if (hasBinding) return false;
+    if (hasBindingSelection(bindings[r.role])) return false;
     const intent = intents[r.role];
-    if (intent && intent.kind === "install_app") return false;
+    if (intent?.kind === "install_app" && intent.appName) return false;
     return true;
   });
   // Required config fields whose value is empty. A field is required
@@ -1931,10 +1825,22 @@ function InstallModal({
         (f) => !((config[f.name] ?? f.default ?? "") as string).trim(),
       )
     : [];
+  const optionalConnectionsUnfinished = (preflight?.roles || []).filter((r) =>
+    !r.required && intents[r.role]?.kind === "connect_integration" && !hasBindingSelection(bindings[r.role]),
+  );
+  const optionalAppsUnavailable = (preflight?.roles || []).filter((r) => {
+    const intent = intents[r.role];
+    return !r.required && intent?.kind === "install_app" && !intent.appName;
+  });
+  const installBlockers = [
+    ...requiredRolesUnbound.map((r) => `Connect or install ${r.label || r.role}`),
+    ...requiredFieldsUnfilled.map((f) => `Fill in ${f.label || f.name}`),
+    ...optionalConnectionsUnfinished.map((r) => `Finish connecting ${r.label || r.role}, or deselect it`),
+    ...optionalAppsUnavailable.map((r) => `No app is available for ${r.label || r.role}; deselect it`),
+  ];
   const canInstall =
     !!preview &&
-    requiredRolesUnbound.length === 0 &&
-    requiredFieldsUnfilled.length === 0;
+    installBlockers.length === 0;
 
   // Step text shown next to the spinner during the multi-step install.
   const [installStep, setInstallStep] = useState("");
@@ -1994,71 +1900,85 @@ function InstallModal({
   };
 
   return (
-    <Modal open={open} onClose={onClose} width="max-w-lg">
-      {/* flex-1 + overflow-y-auto keeps the body scrollable inside the
-          Modal's max-h-[90vh] container — the Preview-and-configure step
-          can grow tall once integration credential forms expand. */}
-      <div className="p-5 space-y-4 flex-1 overflow-y-auto min-h-0">
-        <h3 className="text-text text-base font-bold">Install an app</h3>
-
-        {!preview ? (
-          <>
-            <label className="block">
-              <span className="text-text-muted text-xs">Apteva manifest or Agent Plugin URL</span>
-              <input
-                type="text"
-                value={manifestUrl}
-                onChange={(e) => setManifestUrl(e.target.value)}
-                placeholder="https://example.com/my-app/plugin.json"
-                className="w-full mt-1 bg-bg-input border border-border rounded px-2 py-1.5 text-sm text-text font-mono focus:outline-none focus:border-accent"
-              />
-              <span className="mt-1 block text-[11px] text-text-dim">
-                Supports existing apteva.yaml manifests and Agent Plugins 1.0.0 plugin.json packages.
-              </span>
-            </label>
-            {error && <div className="text-red text-xs">{error}</div>}
-            <div className="flex justify-end gap-2">
-              <button onClick={onClose} className="px-3 py-1.5 text-sm text-text-muted hover:text-text">
-                Cancel
-              </button>
-              <button
-                onClick={doPreview}
-                disabled={!manifestUrl || previewing}
-                className="px-3 py-1.5 text-sm bg-accent text-bg rounded font-bold disabled:opacity-50"
-              >
-                {previewing ? "Loading…" : "Preview →"}
-              </button>
-            </div>
-          </>
-        ) : (
-          <PreviewAndConfigure
-            preview={preview}
-            preflight={preflight}
-            bindings={bindings}
-            setBindings={setBindings}
-            intents={intents}
-            setIntents={setIntents}
-            canInstall={canInstall}
-            scope={scope}
-            setScope={setScope}
-            config={config}
-            setConfig={setConfig}
-            error={error}
-            installing={installing}
-            installStep={installStep}
-            // Pass the scope-aware projectId so any integration
-            // connections minted inline during this install (via
-            // InlineConnectIntegration) land at the same scope as
-            // the app itself — a global app gets globally-scoped
-            // integrations, not project-scoped ones the operator
-            // can't reuse from other projects.
-            projectId={scope === "global" ? "" : projectId}
-            refetchPreflight={refetchPreflight}
-            onBack={() => { setPreview(null); setPreflight(null); setIntents({}); }}
-            onConfirm={doInstall}
-          />
-        )}
+    <Modal open={open} onClose={onClose} width="max-w-xl" ariaLabel="Install an app">
+      <div className="shrink-0 flex items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
+        <h3 className="min-w-0 text-text text-base font-bold">Install an app</h3>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close install dialog"
+          className="flex size-11 shrink-0 items-center justify-center rounded text-xl text-text-muted hover:bg-bg-muted hover:text-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          ×
+        </button>
       </div>
+
+      {!preview ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-4 sm:p-5">
+          <label className="block">
+            <span className="text-text-muted text-xs">Apteva manifest or Agent Plugin URL</span>
+            <input
+              type="text"
+              value={manifestUrl}
+              onChange={(e) => setManifestUrl(e.target.value)}
+              placeholder="https://example.com/my-app/plugin.json"
+              className="mt-1 min-h-11 w-full bg-bg-input border border-border rounded px-2 py-1.5 text-sm text-text font-mono focus:outline-none focus:border-accent"
+            />
+            <span className="mt-1 block text-[11px] text-text-dim">
+              Supports existing apteva.yaml manifests and Agent Plugins 1.0.0 plugin.json packages.
+            </span>
+          </label>
+          {error && <div className="text-red text-xs">{error}</div>}
+          <div className="flex justify-end gap-2">
+            <button onClick={onClose} className="min-h-11 px-3 py-1.5 text-sm text-text-muted hover:text-text">
+              Cancel
+            </button>
+            <button
+              onClick={doPreview}
+              disabled={!manifestUrl || previewing}
+              className="min-h-11 px-3 py-1.5 text-sm bg-accent text-bg rounded font-bold disabled:opacity-50"
+            >
+              {previewing ? "Loading…" : "Preview →"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <PreviewAndConfigure
+          preview={preview}
+          preflight={preflight}
+          bindings={bindings}
+          setBindings={setBindings}
+          intents={intents}
+          setIntents={setIntents}
+          canInstall={canInstall}
+          installBlockers={installBlockers}
+          scope={scope}
+          setScope={setScope}
+          config={config}
+          setConfig={setConfig}
+          error={error}
+          installing={installing}
+          installStep={installStep}
+          // Pass the scope-aware projectId so any integration
+          // connections minted inline during this install (via
+          // InlineConnectIntegration) land at the same scope as
+          // the app itself — a global app gets globally-scoped
+          // integrations, not project-scoped ones the operator
+          // can't reuse from other projects.
+          projectId={scope === "global" ? "" : projectId}
+          refetchPreflight={refetchPreflight}
+          onBack={() => {
+            setPreview(null);
+            setPreflight(null);
+            setBindings({});
+            setIntents({});
+            setConfig({});
+            setError("");
+            setScope("project");
+          }}
+          onConfirm={doInstall}
+        />
+      )}
     </Modal>
   );
 }
@@ -2135,6 +2055,9 @@ function RolePicker({
   setIntent,
   projectId,
   onConnected,
+  compact = false,
+  expanded = false,
+  onToggleExpanded,
 }: {
   role: PreflightRole;
   value: AppBindingValue;
@@ -2143,6 +2066,9 @@ function RolePicker({
   setIntent: (i: RoleIntent | null) => void;
   projectId?: string;
   onConnected: (connId: number) => void;
+  compact?: boolean;
+  expanded?: boolean;
+  onToggleExpanded?: () => void;
 }) {
   const cands =
     role.kind === "integration" ? role.integration_candidates || [] : role.app_candidates || [];
@@ -2157,151 +2083,179 @@ function RolePicker({
     role.kind === "app" && !hasCands && (role.required || optedIn);
 
   const label = role.label || role.role;
+  const showDetails = !compact || expanded;
+  const selectedCandidate = cands.find((c) =>
+    ("connection_id" in c ? c.connection_id : c.install_id) === bindingDefaultID(value),
+  );
+  const summary = optedIn
+    ? selectedCandidate
+      ? ("connection_id" in selectedCandidate ? selectedCandidate.name : selectedCandidate.display_name)
+      : hasBindingSelection(value)
+        ? "Connected"
+      : intent?.kind === "install_app"
+        ? `${intent.appName} will be installed`
+        : "Connection needed"
+    : role.hint || "Available if you want to connect it";
 
   return (
-    <div className="border border-border rounded p-3 space-y-2">
-      <div className="flex items-center gap-2 text-xs">
+    <div className={`border border-border rounded p-3 ${showDetails ? "space-y-2" : "space-y-1"}`}>
+      <div className="flex min-w-0 items-center gap-2 text-xs">
         {!role.required && (
-          <input
-            type="checkbox"
-            checked={optedIn}
-            onChange={(e) => {
-              if (e.target.checked) {
-                if (hasCands) {
-                  const c = cands[0] as PreflightConnectionCandidate | PreflightAppCandidate;
-                  const id = "connection_id" in c ? c.connection_id : c.install_id;
-                  onChange(multiple ? multiBinding([id], id) : id);
-                } else if (role.kind === "app") {
-                  // Set install_app intent; the parent's Install
-                  // handler runs the install before the parent.
-                  setIntent({
-                    kind: "install_app",
-                    manifestUrl: "",
-                    appName: (role.compatible || [])[0] || "",
-                  });
+          <label className="flex min-h-10 min-w-8 shrink-0 cursor-pointer items-center justify-center">
+            <input
+              type="checkbox"
+              aria-label={`Include ${label}`}
+              checked={optedIn}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  if (hasCands) {
+                    const c = cands[0] as PreflightConnectionCandidate | PreflightAppCandidate;
+                    const id = "connection_id" in c ? c.connection_id : c.install_id;
+                    onChange(multiple ? multiBinding([id], id) : id);
+                  } else if (role.kind === "app") {
+                    // App installs run just before the parent install.
+                    setIntent({
+                      kind: "install_app",
+                      manifestUrl: "",
+                      appName: (role.compatible || [])[0] || "",
+                    });
+                  } else {
+                    // Show the inline connection form before install.
+                    setIntent({ kind: "connect_integration" });
+                  }
                 } else {
-                  // kind=integration with no candidate: stash a
-                  // placeholder intent so optedIn flips true and the
-                  // <InlineConnectIntegration> form below renders.
-                  // onConnected (parent) replaces this intent with a
-                  // real connection_id when the form submits.
-                  setIntent({ kind: "connect_integration" });
+                  onChange(null);
+                  setIntent(null);
                 }
-              } else {
-                onChange(null);
-                setIntent(null);
-              }
-            }}
-          />
+              }}
+              className="size-5 accent-accent"
+            />
+          </label>
         )}
-        <span className="text-text font-medium">{label}</span>
-        {role.required ? (
-          <span className="text-text-dim text-[10px] uppercase tracking-wide">required</span>
-        ) : (
-          <span className="text-text-dim text-[10px] uppercase tracking-wide">optional</span>
-        )}
-        {role.capabilities && role.capabilities.length > 0 && (
+        <span className="min-w-0 flex-1 truncate text-text font-medium" title={label}>{label}</span>
+        <span className="shrink-0 text-text-dim text-[10px] uppercase tracking-wide">
+          {role.required ? "required" : optedIn ? "selected" : "optional"}
+        </span>
+        {!compact && role.capabilities && role.capabilities.length > 0 && (
           <span className="ml-auto text-text-dim text-[10px] truncate" title={role.capabilities.join(", ")}>
             {role.capabilities.join(", ")}
           </span>
         )}
+        {compact && (
+          <button
+            type="button"
+            onClick={onToggleExpanded}
+            aria-expanded={expanded}
+            aria-controls={`install-role-${role.role}`}
+            aria-label={`${expanded ? "Hide" : "Show"} ${label} details`}
+            className="min-h-10 shrink-0 rounded px-1.5 text-[11px] text-accent hover:bg-accent/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            {expanded ? "Less" : "Details"}
+          </button>
+        )}
       </div>
 
-      {role.hint && !showCredentialForm && !showAppOptInHint && (
-        <div className="text-text-muted text-[11px]">{role.hint}</div>
+      {compact && !expanded && (
+        <p className="truncate text-[11px] text-text-muted" title={summary}>{summary}</p>
       )}
 
-      {hasCands && (role.required || optedIn) && !multiple && (
-        <select
-          value={typeof value === "number" ? value : 0}
-          onChange={(e) => onChange(Number(e.target.value) || null)}
-          className="w-full bg-bg-input border border-border rounded px-2 py-1 text-xs text-text"
-        >
-          {role.kind === "integration"
-            ? (role.integration_candidates || []).map((c) => (
-                <option key={c.connection_id} value={c.connection_id}>
-                  {c.name} ({c.app_slug})
-                  {c.scope === "global" ? " · global" : ""}
-                </option>
-              ))
-            : (role.app_candidates || []).map((c) => (
-                <option key={c.install_id} value={c.install_id}>
-                  {c.display_name}
-                </option>
-              ))}
-        </select>
-      )}
+      <div id={`install-role-${role.role}`} hidden={!showDetails} className="space-y-2">
+        {role.hint && !showCredentialForm && !showAppOptInHint && (
+          <div className="break-words text-text-muted text-[11px]">{role.hint}</div>
+        )}
 
-      {hasCands && (role.required || optedIn) && multiple && (
-        <div className="space-y-2">
-          <div className="grid gap-1.5">
-            {cands.map((c) => {
-              const id = "connection_id" in c ? c.connection_id : c.install_id;
-              const selected = bindingIDs(value).includes(id);
-              return (
-                <label
-                  key={id}
-                  className="flex items-center gap-2 text-xs text-text border border-border rounded px-2 py-1.5 bg-bg-input"
+        {hasCands && (role.required || optedIn) && !multiple && (
+          <select
+            value={typeof value === "number" ? value : 0}
+            onChange={(e) => onChange(Number(e.target.value) || null)}
+            className="min-h-10 w-full bg-bg-input border border-border rounded px-2 py-1 text-xs text-text"
+          >
+            {role.kind === "integration"
+              ? (role.integration_candidates || []).map((c) => (
+                  <option key={c.connection_id} value={c.connection_id}>
+                    {c.name} ({c.app_slug})
+                    {c.scope === "global" ? " · global" : ""}
+                  </option>
+                ))
+              : (role.app_candidates || []).map((c) => (
+                  <option key={c.install_id} value={c.install_id}>
+                    {c.display_name}
+                  </option>
+                ))}
+          </select>
+        )}
+
+        {hasCands && (role.required || optedIn) && multiple && (
+          <div className="space-y-2">
+            <div className="grid gap-1.5">
+              {cands.map((c) => {
+                const id = "connection_id" in c ? c.connection_id : c.install_id;
+                const selected = bindingIDs(value).includes(id);
+                return (
+                  <label
+                    key={id}
+                    className="flex min-h-10 items-center gap-2 text-xs text-text border border-border rounded px-2 py-1.5 bg-bg-input"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={(e) => {
+                        const ids = bindingIDs(value);
+                        const next = e.target.checked ? [...ids, id] : ids.filter((x) => x !== id);
+                        onChange(multiBinding(next, bindingDefaultID(value)));
+                      }}
+                    />
+                    <span className="truncate">
+                      {"connection_id" in c
+                        ? `${c.name} (${c.app_slug}${c.scope === "global" ? " · global" : ""})`
+                        : c.display_name}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            {bindingIDs(value).length > 1 && (
+              <label className="grid gap-1 text-[11px] text-text-muted">
+                Default
+                <select
+                  value={bindingDefaultID(value) || bindingIDs(value)[0] || 0}
+                  onChange={(e) => onChange(multiBinding(bindingIDs(value), Number(e.target.value)))}
+                  className="min-h-10 w-full bg-bg-input border border-border rounded px-2 py-1 text-xs text-text"
                 >
-                  <input
-                    type="checkbox"
-                    checked={selected}
-                    onChange={(e) => {
-                      const ids = bindingIDs(value);
-                      const next = e.target.checked ? [...ids, id] : ids.filter((x) => x !== id);
-                      onChange(multiBinding(next, bindingDefaultID(value)));
-                    }}
-                  />
-                  <span className="truncate">
-                    {"connection_id" in c
-                      ? `${c.name} (${c.app_slug}${c.scope === "global" ? " · global" : ""})`
-                      : c.display_name}
-                  </span>
-                </label>
-              );
-            })}
+                  {cands
+                    .filter((c) => bindingIDs(value).includes("connection_id" in c ? c.connection_id : c.install_id))
+                    .map((c) => {
+                      const id = "connection_id" in c ? c.connection_id : c.install_id;
+                      return (
+                        <option key={id} value={id}>
+                          {"connection_id" in c ? `${c.name} (${c.app_slug})` : c.display_name}
+                        </option>
+                      );
+                    })}
+                </select>
+              </label>
+            )}
           </div>
-          {bindingIDs(value).length > 1 && (
-            <label className="grid gap-1 text-[11px] text-text-muted">
-              Default
-              <select
-                value={bindingDefaultID(value) || bindingIDs(value)[0] || 0}
-                onChange={(e) => onChange(multiBinding(bindingIDs(value), Number(e.target.value)))}
-                className="w-full bg-bg-input border border-border rounded px-2 py-1 text-xs text-text"
-              >
-                {cands
-                  .filter((c) => bindingIDs(value).includes("connection_id" in c ? c.connection_id : c.install_id))
-                  .map((c) => {
-                    const id = "connection_id" in c ? c.connection_id : c.install_id;
-                    return (
-                      <option key={id} value={id}>
-                        {"connection_id" in c ? `${c.name} (${c.app_slug})` : c.display_name}
-                      </option>
-                    );
-                  })}
-              </select>
-            </label>
-          )}
-        </div>
-      )}
+        )}
 
-      {/* No candidates, kind=integration → embedded form with a Connect
-          button that fires before the main install. */}
-      {showCredentialForm && (
-        <InlineConnectIntegration
-          slugs={role.compatible || []}
-          projectId={projectId}
-          onConnected={onConnected}
-        />
-      )}
+        {/* No candidates, kind=integration → embedded form with a Connect
+            button that fires before the main install. */}
+        {showCredentialForm && (
+          <InlineConnectIntegration
+            slugs={role.compatible || []}
+            projectId={projectId}
+            onConnected={onConnected}
+          />
+        )}
 
-      {/* No candidates, kind=app → opting in queues an install_app
-          intent; resolved when the user clicks the main Install. */}
-      {showAppOptInHint && (
-        <div className="text-text-muted text-[11px]">
-          {(role.compatible || [])[0]} will be installed when you click Install.
-        </div>
-      )}
+        {/* No candidates, kind=app → opting in queues an install_app
+            intent; resolved when the user clicks the main Install. */}
+        {showAppOptInHint && (
+          <div className="text-text-muted text-[11px]">
+            {(role.compatible || [])[0]} will be installed when you click Install.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2393,7 +2347,7 @@ function InlineConnectIntegration({
         <select
           value={chosenSlug}
           onChange={(e) => setChosenSlug(e.target.value)}
-          className="w-full bg-bg border border-border rounded px-2 py-1 text-[11px]"
+          className="min-h-10 w-full bg-bg border border-border rounded px-2 py-1 text-xs"
         >
           {slugs.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
@@ -2406,7 +2360,7 @@ function InlineConnectIntegration({
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="connection name"
-        className="w-full bg-bg border border-border rounded px-2 py-1 text-[11px]"
+        className="min-h-10 w-full bg-bg border border-border rounded px-2 py-1 text-xs"
       />
       {detail.auth.credential_fields.map((f) => (
         <div key={f.name}>
@@ -2415,7 +2369,7 @@ function InlineConnectIntegration({
             field={f}
             value={creds[f.name] || ""}
             onChange={(value) => setCreds({ ...creds, [f.name]: value })}
-            className="w-full bg-bg border border-border rounded px-2 py-1 text-[11px] font-mono"
+            className="min-h-10 w-full bg-bg border border-border rounded px-2 py-1 text-xs font-mono"
           />
           {f.description && <div className="text-text-dim text-[10px] mt-0.5">{f.description}</div>}
         </div>
@@ -2424,7 +2378,7 @@ function InlineConnectIntegration({
       <button
         onClick={submit}
         disabled={busy}
-        className="w-full px-2 py-1 text-[11px] bg-accent text-bg rounded font-bold disabled:opacity-50"
+        className="min-h-11 w-full px-2 py-1 text-xs bg-accent text-bg rounded font-bold disabled:opacity-50"
       >
         {busy ? "Connecting…" : `Connect ${detail.name}`}
       </button>
@@ -2476,6 +2430,7 @@ function PreviewAndConfigure({
   intents,
   setIntents,
   canInstall,
+  installBlockers,
   scope,
   setScope,
   config,
@@ -2491,10 +2446,11 @@ function PreviewAndConfigure({
   preview: AppPreview;
   preflight: AppPreflight | null;
   bindings: Record<string, AppBindingValue>;
-  setBindings: (b: Record<string, AppBindingValue>) => void;
+  setBindings: Dispatch<SetStateAction<Record<string, AppBindingValue>>>;
   intents: Record<string, RoleIntent | null>;
-  setIntents: (i: Record<string, RoleIntent | null>) => void;
+  setIntents: Dispatch<SetStateAction<Record<string, RoleIntent | null>>>;
   canInstall: boolean;
+  installBlockers: string[];
   scope: "project" | "global";
   setScope: (s: "project" | "global") => void;
   config: Record<string, string>;
@@ -2508,137 +2464,208 @@ function PreviewAndConfigure({
   refetchPreflight: () => Promise<void>;
 }) {
   const m = preview.manifest;
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+  const [optionalOpen, setOptionalOpen] = useState(false);
+  const [expandedOptionalRole, setExpandedOptionalRole] = useState<string | null>(null);
+  const requiredRoles = (preflight?.roles || []).filter((role) => role.required);
+  const optionalRoles = (preflight?.roles || []).filter((role) => !role.required);
+  const selectedOptionalRoles = optionalRoles.filter((role) =>
+    hasBindingSelection(bindings[role.role]) || intents[role.role] != null,
+  );
+  const hasRequiredSetup = requiredRoles.length > 0 || requiredConfigFields(m, bindings).length > 0;
+  const permissions = m.requires.permissions || [];
+  const optionalSummary = selectedOptionalRoles.length > 0
+    ? `Selected: ${selectedOptionalRoles.map((role) => role.label || role.role).join(", ")}`
+    : `Available: ${optionalRoles.map((role) => role.label || role.role).join(", ")}`;
+
+  const renderRole = (role: PreflightRole, compact: boolean) => (
+    <RolePicker
+      key={role.role}
+      role={role}
+      value={bindings[role.role] ?? null}
+      onChange={(value) => {
+        setBindings((current) => ({ ...current, [role.role]: value }));
+        if (compact && hasBindingSelection(value)) setExpandedOptionalRole(role.role);
+      }}
+      intent={intents[role.role] ?? null}
+      setIntent={(intent) => {
+        setIntents((current) => ({ ...current, [role.role]: intent }));
+        if (compact && intent) setExpandedOptionalRole(role.role);
+      }}
+      projectId={projectId}
+      onConnected={async (connId) => {
+        await refetchPreflight();
+        setBindings((current) => ({
+          ...current,
+          [role.role]: addBindingSelection(current[role.role], connId, role.mode === "multiple"),
+        }));
+      }}
+      compact={compact}
+      expanded={expandedOptionalRole === role.role}
+      onToggleExpanded={() => setExpandedOptionalRole(
+        expandedOptionalRole === role.role ? null : role.role,
+      )}
+    />
+  );
+
   return (
-    <div className="space-y-3">
-      <div className="border border-border rounded p-3">
-        <div className="flex items-center gap-2">
-          <span className="text-text font-bold">{m.display_name || m.name}</span>
-          <span className="text-text-dim text-xs">v{m.version}</span>
-        </div>
-        <p className="text-text-muted text-xs mt-1">{m.description}</p>
-      </div>
-
-      {m.requires.permissions?.length > 0 && (
-        <div>
-          <div className="text-text-muted text-xs mb-1">Permissions requested:</div>
-          <ul className="space-y-1">
-            {m.requires.permissions.map((p) => (
-              <li key={p} className="text-text text-xs flex items-center gap-1.5">
-                <span className="text-yellow">●</span>
-                <span className="font-mono">{p}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {m.scopes.length > 0 && (
-        <div>
-          <div className="text-text-muted text-xs mb-1">Install scope</div>
-          {m.scopes.length > 1 ? (
-            <div className="flex gap-2">
-              {(["project", "global"] as const).map((s) =>
-                m.scopes.includes(s) ? (
-                  <button
-                    key={s}
-                    onClick={() => setScope(s)}
-                    className={`px-3 py-1 text-xs rounded border ${
-                      scope === s
-                        ? "border-accent text-accent bg-accent/10"
-                        : "border-border text-text-muted"
-                    }`}
-                  >
-                    {s}
-                  </button>
-                ) : null,
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-5">
+        <section className="rounded-lg border border-border p-3 sm:p-4">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <h4 className="min-w-0 break-words text-sm font-bold text-text">{m.display_name || m.name}</h4>
+            <span className="shrink-0 text-xs text-text-dim">v{m.version}</span>
+          </div>
+          {m.description && (
+            <>
+              <p className={`mt-2 break-words text-xs leading-relaxed text-text-muted ${descriptionExpanded ? "whitespace-pre-wrap" : "line-clamp-2"}`}>
+                {m.description}
+              </p>
+              {m.description.length > 60 && (
+                <button
+                  type="button"
+                  onClick={() => setDescriptionExpanded(!descriptionExpanded)}
+                  aria-expanded={descriptionExpanded}
+                  className="mt-1 min-h-8 text-xs text-accent hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                >
+                  {descriptionExpanded ? "Show less" : "Read full description"}
+                </button>
               )}
-            </div>
-          ) : (
-            // Single-scope app: show as a non-interactive label so the
-            // operator knows what's about to happen instead of the
-            // picker silently disappearing.
-            <div className="text-text-muted text-xs">
-              <span className="px-2 py-0.5 rounded border border-border bg-bg-muted font-mono">
-                {m.scopes[0]}
-              </span>
-              <span className="ml-2 italic">
-                this app only supports {m.scopes[0]} scope
-              </span>
-            </div>
+            </>
           )}
-        </div>
-      )}
+        </section>
 
-      {/* Required-config fields. Optional fields land in the
-          post-install Settings panel — keeping the install modal
-          short. Field is "required" when:
-            - field.required is true, OR
-            - field.required_if_role_bound names a role that has a
-              non-null binding above.
-          Renderer also handles type=select_from_integration which
-          fetches options from the bound connection (e.g. R2's
-          list_buckets) so the bucket field becomes a dropdown of
-          real buckets the moment the operator binds backend. */}
-      <RequiredConfigFields
-        manifest={m}
-        bindings={bindings}
-        config={config}
-        setConfig={setConfig}
-      />
+        {(m.scopes.length > 0 || permissions.length > 0) && (
+          <div className="grid gap-4 sm:grid-cols-2">
+            {m.scopes.length > 0 && (
+              <section className="min-w-0">
+                <h4 className="mb-2 text-xs font-medium text-text-muted">Install scope</h4>
+                {m.scopes.length > 1 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {(["project", "global"] as const).map((choice) =>
+                      m.scopes.includes(choice) ? (
+                        <button
+                          key={choice}
+                          type="button"
+                          onClick={() => setScope(choice)}
+                          aria-pressed={scope === choice}
+                          className={`min-h-10 rounded border px-3 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
+                            scope === choice
+                              ? "border-accent bg-accent/10 text-accent"
+                              : "border-border text-text-muted hover:text-text"
+                          }`}
+                        >
+                          {choice}
+                        </button>
+                      ) : null,
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-text-muted">
+                    <span className="rounded border border-border bg-bg-muted px-2 py-1 font-mono">{m.scopes[0]}</span>
+                    <span className="ml-2">Only available scope</span>
+                  </p>
+                )}
+              </section>
+            )}
 
-      {/* Integration role pickers — one per requires.integrations entry.
-          Required roles must be bound; optional roles render a checkbox. */}
-      {preflight && preflight.roles.length > 0 && (
-        <div className="border border-border rounded p-3 space-y-3">
-          <div className="text-text-muted text-xs">Dependencies</div>
-          {preflight.roles.map((r) => (
-            <RolePicker
-              key={r.role}
-              role={r}
-              value={bindings[r.role] ?? null}
-              onChange={(v) => setBindings({ ...bindings, [r.role]: v })}
-              intent={intents[r.role] ?? null}
-              setIntent={(i) => setIntents({ ...intents, [r.role]: i })}
-              projectId={projectId}
-              onConnected={async (connId) => {
-                // Connection just landed in the DB. Refresh
-                // candidates so the role's select can pick it; then
-                // bind it explicitly so the operator sees the new
-                // option pre-selected.
-                await refetchPreflight();
-                setBindings({
-                  ...bindings,
-                  [r.role]: addBindingSelection(bindings[r.role], connId, r.mode === "multiple"),
-                });
-              }}
+            {permissions.length > 0 && (
+              <section className="min-w-0">
+                <h4 className="mb-2 text-xs font-medium text-text-muted">Permissions requested</h4>
+                <ul className="flex flex-wrap gap-1.5">
+                  {permissions.map((permission) => (
+                    <li key={permission} className="max-w-full break-all rounded border border-border bg-bg-muted px-2 py-1 font-mono text-[11px] text-text">
+                      {permission}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+          </div>
+        )}
+
+        {hasRequiredSetup && (
+          <section className="space-y-2">
+            <h4 className="text-xs font-semibold text-text">Required setup</h4>
+            {requiredRoles.map((role) => renderRole(role, false))}
+            <RequiredConfigFields
+              manifest={m}
+              bindings={bindings}
+              config={config}
+              setConfig={setConfig}
             />
-          ))}
-        </div>
-      )}
+          </section>
+        )}
 
-      {error && <div className="text-red text-xs">{error}</div>}
+        {optionalRoles.length > 0 && (
+          <section className="overflow-hidden rounded-lg border border-border">
+            <button
+              type="button"
+              onClick={() => setOptionalOpen(!optionalOpen)}
+              aria-expanded={optionalOpen}
+              aria-controls="install-optional-addons"
+              className="flex min-h-16 w-full items-center gap-3 p-3 text-left hover:bg-bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent sm:p-4"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-2 text-xs font-semibold text-text">
+                  Optional add-ons
+                  <span className="rounded bg-bg-muted px-1.5 py-0.5 text-[10px] font-normal text-text-muted">
+                    {selectedOptionalRoles.length} of {optionalRoles.length} selected
+                  </span>
+                </span>
+                <span className="mt-1 block truncate text-[11px] text-text-muted" title={optionalSummary}>{optionalSummary}</span>
+              </span>
+              <span aria-hidden="true" className="shrink-0 text-sm text-text-muted">{optionalOpen ? "▴" : "▾"}</span>
+            </button>
+            <div id="install-optional-addons" hidden={!optionalOpen} className="space-y-2 border-t border-border p-2 sm:p-3">
+              <p className="px-1 text-[11px] text-text-muted">Choose only the add-ons you want to use.</p>
+              {optionalRoles.map((role) => renderRole(role, true))}
+            </div>
+          </section>
+        )}
 
-      <div className="flex justify-between items-center pt-2">
-        <button onClick={onBack} className="text-text-muted text-xs hover:text-text">
-          ← back
-        </button>
-        <div className="flex gap-2">
-          <button
-            onClick={onConfirm}
-            disabled={installing || !canInstall}
-            title={canInstall ? "" : "Bind all required dependencies first"}
-            className="px-3 py-1.5 text-sm bg-accent text-bg rounded font-bold disabled:opacity-50"
-          >
-            {installing ? installStep || "Installing…" : "Install"}
-          </button>
-        </div>
+        <details className="text-[11px] text-text-dim">
+          <summary className="cursor-pointer py-1 hover:text-text-muted">What happens after install?</summary>
+          <p className="mt-1 leading-relaxed">
+            Apteva builds the app on this host. A first install can take 30–60 seconds while dependencies download.
+            Its status changes to running after the health check passes.
+          </p>
+        </details>
       </div>
-      <p className="text-text-dim text-[10px]">
-        Apteva clones the repo and runs <code>go build</code> on this host.
-        First install of a version takes ~30–60s while dependencies download;
-        subsequent installs are cached. Status will flip to{" "}
-        <code>running</code> once the sidecar passes its health check.
-      </p>
+
+      <footer className="shrink-0 border-t border-border bg-bg-card px-4 py-3 sm:px-5">
+        {error && <div role="alert" className="mb-2 max-h-20 overflow-y-auto break-words text-xs text-red">{error}</div>}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <p id="install-blockers" role="status" className={`min-w-0 flex-1 text-[11px] ${installBlockers.length ? "text-yellow" : "text-text-muted"}`}>
+            {installBlockers.length
+              ? `${installBlockers[0]}${installBlockers.length > 1 ? ` (+${installBlockers.length - 1} more)` : ""}`
+              : selectedOptionalRoles.length > 0
+                ? `Ready · ${selectedOptionalRoles.length} optional add-on${selectedOptionalRoles.length === 1 ? "" : "s"} selected`
+                : "Ready to install"}
+          </p>
+          <div className="flex w-full gap-2 sm:w-auto">
+            <button
+              type="button"
+              onClick={onBack}
+              disabled={installing}
+              className="min-h-11 rounded px-3 text-xs text-text-muted hover:text-text disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              ← Back
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={installing || !canInstall}
+              aria-describedby="install-blockers"
+              className="min-h-11 min-w-0 flex-1 rounded bg-accent px-4 text-sm font-bold text-bg disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent sm:max-w-60 sm:flex-none"
+            >
+              <span className="block truncate">
+                {installing ? installStep || "Installing…" : `Install ${m.display_name || m.name}`}
+              </span>
+            </button>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
@@ -2741,7 +2768,7 @@ function ConfigFieldInput({
           type="password"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
+          className="min-h-10 w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
         />
       );
     case "select":
@@ -2749,7 +2776,7 @@ function ConfigFieldInput({
         <select
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
+          className="min-h-10 w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
         >
           <option value="">(choose…)</option>
           {(field.options || []).map((o) => (
@@ -2793,7 +2820,7 @@ function ConfigFieldInput({
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
+          className="min-h-10 w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
         />
       );
   }

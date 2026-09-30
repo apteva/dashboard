@@ -35,6 +35,7 @@ import {
   parseApprovalReview,
 } from "../approvals/ApprovalReviewModal";
 import { Modal } from "../Modal";
+import type { WidgetActionBridge, WidgetContext } from "./widgetContext";
 
 // ─── manifest-side types ────────────────────────────────────────────
 
@@ -49,6 +50,8 @@ export interface UIComponentSpec {
   dashboard_scopes?: Array<"project" | "global">;
   refresh_topics?: string[];
   default_width?: 1 | 2;
+  /** Suggested agent-page presets; presentation only, never authorization. */
+  recommended_views?: Array<"personal" | "business" | "developer">;
   supported_sizes?: Array<"half" | "full">;
   default_size?: "half" | "full";
   props_schema?: Record<string, unknown>;
@@ -95,6 +98,10 @@ interface NativeComponentProps {
   projectId?: string;
   installId?: number;
   dashboardScope?: "project" | "global";
+  /** Optional host context. Legacy app widgets can ignore this prop. */
+  widgetContext?: WidgetContext;
+  /** Optional host actions. Legacy app widgets can ignore this prop. */
+  widgetActions?: WidgetActionBridge;
 }
 
 const moduleCache = new Map<string, LazyExoticComponent<ComponentType<NativeComponentProps>>>();
@@ -165,6 +172,8 @@ interface ChatComponentMountProps {
    *  chat.message_attachment which is the only slot today. */
   slot?: string;
   dashboardScope?: "project" | "global";
+  widgetContext?: WidgetContext;
+  widgetActions?: WidgetActionBridge;
 }
 
 /**
@@ -182,6 +191,8 @@ export function ChatComponentMount({
   onActionComplete,
   slot = "chat.message_attachment",
   dashboardScope = "project",
+  widgetContext,
+  widgetActions,
 }: ChatComponentMountProps): ReactNode {
   if (comp.app === "channel-chat" && comp.name === "approval-card") {
     return (
@@ -231,6 +242,8 @@ export function ChatComponentMount({
             projectId={projectId}
             installId={app.install_id}
             dashboardScope={dashboardScope}
+            widgetContext={widgetContext}
+            widgetActions={widgetActions}
           />
         </AppIdentityProvider>
       </Suspense>

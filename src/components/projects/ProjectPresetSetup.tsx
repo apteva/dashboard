@@ -5,6 +5,8 @@ import {
   type Project,
   type ProjectPreset,
 } from "../../api";
+import { PresetConnectionGuide } from "./PresetConnectionGuide";
+import { AgentMark } from "../AgentMark";
 import { useOptionalAuth } from "../../hooks/useAuth";
 
 const CATEGORIES = [
@@ -18,6 +20,14 @@ type PresetCategory = (typeof CATEGORIES)[number]["id"];
 const DEFAULT_CATEGORY: PresetCategory = CATEGORIES[0].id;
 
 const DASHBOARD_LABELS: Record<string, string> = {
+  "native:agents": "Agents",
+  "native:apps": "Apps",
+  "native:integrations": "Integrations",
+  "native:skills": "Skills",
+  "native:agent-activity": "Activity",
+  "native:agent-results": "Recent responses",
+  "conversations:agent-conversations": "Conversations",
+  "tasks:agent-tasks": "Agent tasks",
   "native:usage": "Usage summary",
   "conversations:inbox-overview": "Inbox",
   "native:activity": "Recent activity",
@@ -27,14 +37,14 @@ const DASHBOARD_LABELS: Record<string, string> = {
 const HIDDEN_DASHBOARD_COMPONENTS = new Set(["native:inbox"]);
 
 function visibleDashboardComponents(preset: ProjectPreset): string[] {
-  const components = preset.dashboard_layout?.map((widget) => widget.component) || preset.dashboard || [];
+  const components = preset.layouts?.home?.map((widget) => widget.component) || preset.dashboard_layout?.map((widget) => widget.component) || preset.dashboard || [];
   return components.filter((component) => !HIDDEN_DASHBOARD_COMPONENTS.has(component));
 }
 
 export function presetCountSummary(preset: ProjectPreset) {
   const agents = preset.agents.length;
   const apps = new Set(preset.agents.flatMap((agent) => agent.apps || [])).size;
-  const widgets = visibleDashboardComponents(preset).length;
+  const widgets = visibleDashboardComponents(preset).length + Object.values(preset.layouts?.agent_overview || {}).reduce((total, layout) => total + layout.length, 0);
   return `${agents} agent${agents === 1 ? "" : "s"} · ${apps} app${apps === 1 ? "" : "s"} · ${widgets} widget${widgets === 1 ? "" : "s"}`;
 }
 
@@ -224,6 +234,7 @@ export function ProjectPresetSetup({
       </div>
 
       {selectedPreset && <PresetContentsSummary preset={selectedPreset} />}
+      {!!selectedPreset?.connections?.length && <PresetConnectionGuide steps={selectedPreset.connections} projectId={project?.id} enabled={!!applied} />}
 
       <button
         type="button"
@@ -238,6 +249,31 @@ export function ProjectPresetSetup({
       {applied && <div className="border border-green/40 bg-green/5 text-green rounded-lg p-4 text-sm">{applied}</div>}
     </fieldset>
   );
+}
+
+export function PresetLayoutPreview({ preset, standalone = false }: { preset: ProjectPreset; standalone?: boolean }) {
+  const [surface, setSurface] = useState("home");
+  const home = preset.layouts?.home || preset.dashboard_layout || visibleDashboardComponents(preset).map((component) => ({ id: component, component, size: "half" as const }));
+  const agents = preset.agents.filter((agent) => preset.layouts?.agent_overview?.[agent.key]);
+  const widgets = surface === "home" ? home : preset.layouts?.agent_overview?.[surface] || [];
+  if (!home.length && !agents.length) return standalone ? <p className="text-sm leading-relaxed text-text-muted">This preset uses the default page layouts. You can add and arrange widgets after setup.</p> : null;
+  return <div className={standalone ? "" : "mt-4 border-t border-border pt-4"}>
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <h4 className="text-xs font-semibold">Page layout preview</h4>
+      <select aria-label="Preview page layout" value={surface} onChange={(event) => setSurface(event.target.value)} className="max-w-full rounded-md border border-border bg-bg-input px-2 py-2 text-xs text-text">
+        <option value="home">Home</option>
+        {agents.map((agent) => <option key={agent.key} value={agent.key}>{agent.name} · Overview</option>)}
+      </select>
+    </div>
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" aria-label="Planned widgets">
+      {widgets.map((widget) => <div key={widget.id} className={`min-w-0 rounded-lg border border-border p-3 ${widget.size === "full" ? "sm:col-span-2" : ""}`}>
+        <p className="text-xs font-medium">{dashboardLabel(widget.component)}</p>
+        <p className="mt-1 text-[10px] text-text-dim">{widget.size === "full" ? "Full width" : "Half width"}{surface !== "home" && widget.component === "native:agent-activity" ? " · Always shown" : ""}</p>
+        {"agent_key" in widget && widget.agent_key && <p className="mt-1 text-[10px] text-text-muted">{preset.agents.find((agent) => agent.key === widget.agent_key)?.name}</p>}
+      </div>)}
+    </div>
+    <p className="mt-2 text-[11px] leading-relaxed text-text-muted">Widgets stack on mobile. You can resize, move, and configure them after setup. Existing layouts are preserved.</p>
+  </div>;
 }
 
 export function PresetContentsSummary({ preset }: { preset: ProjectPreset }) {
@@ -262,13 +298,14 @@ export function PresetContentsSummary({ preset }: { preset: ProjectPreset }) {
       ) : <p className="mt-4 text-xs leading-relaxed text-text-muted">{preset.description}</p>}
 
       {preset.interface_level && <p className="mt-3 text-xs text-text-muted">Recommended interface: {{ personal: "Focused", business: "Workspace", developer: "Advanced" }[preset.interface_level]}</p>}
+      <PresetLayoutPreview key={preset.id} preset={preset} />
       <details className="mt-4 border-t border-border pt-3">
         <summary className="cursor-pointer text-xs text-text-muted hover:text-text">Included setup · {presetCountSummary(preset)}</summary>
         <div className="space-y-3 mt-3">
           {preset.agents.map((agent) => (
             <div key={agent.key} className="border border-border rounded-lg p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-text text-xs font-bold">{agent.name}</div>
+                <div className="flex items-center gap-2 text-text text-xs font-bold"><AgentMark icon={agent.icon} size="sm" />{agent.name}</div>
                 <div className="text-text-dim text-[10px] uppercase tracking-wide">{agent.mode}</div>
               </div>
               <div className="flex flex-wrap gap-1.5 mt-2">

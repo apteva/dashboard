@@ -12,6 +12,7 @@ interface Props {
    */
   width?: string;
   ariaLabel?: string;
+  fullScreen?: boolean;
 }
 
 const focusableSelector = [
@@ -28,7 +29,7 @@ function hasFinePointer() {
     && window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 }
 
-export function Modal({ open, onClose, children, width = "max-w-2xl", ariaLabel = "Dialog" }: Props) {
+export function Modal({ open, onClose, children, width = "max-w-2xl", ariaLabel = "Dialog", fullScreen = false }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -93,7 +94,7 @@ export function Modal({ open, onClose, children, width = "max-w-2xl", ariaLabel 
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center modal-safe-frame"
+      className={`fixed inset-0 z-50 flex items-end sm:items-center justify-center ${fullScreen ? "" : "modal-safe-frame"}`}
       onClick={onClose}
     >
       <div className="absolute inset-0 bg-bg/80 backdrop-blur-sm" />
@@ -103,7 +104,9 @@ export function Modal({ open, onClose, children, width = "max-w-2xl", ariaLabel 
         aria-modal="true"
         aria-label={ariaLabel}
         tabIndex={-1}
-        className={`modal-safe-panel relative bg-bg-card border border-border rounded-t-lg sm:rounded-lg shadow-lg ${width} w-full overflow-hidden flex flex-col`}
+        className={fullScreen
+          ? "relative h-dvh w-full overflow-hidden flex flex-col bg-bg pt-[env(safe-area-inset-top)]"
+          : `modal-safe-panel relative bg-bg-card border border-border rounded-t-lg sm:rounded-lg shadow-lg ${width} w-full overflow-hidden flex flex-col`}
         onClick={(e) => e.stopPropagation()}
       >
         {children}

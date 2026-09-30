@@ -1,4 +1,6 @@
+import { ServiceTierSelect, agentServiceTiers, serviceTierPatch } from "./ServiceTierSelect";
 import { AppIcon } from "@apteva/ui-kit";
+import { AgentIconPicker, AgentMark, suggestedAgentIcon } from "./AgentMark";
 import { PickerOption } from "./PickerOption";
 import { ProactivityControl } from "./ProactivityControl";
 import { defaultProactivity } from "../agentBehavior";
@@ -26,7 +28,6 @@ import {
 } from "../api";
 import { useTelemetryConnectionState, useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { sleepClassName, sleepLabel, sleepProgress, sleepTitle } from "../utils/sleepStatus";
-import { runtimeToolLabel } from "../utils/runtimeToolLabel";
 import { threadTokenUsage } from "../utils/threadTokenUsage";
 import { useAssistantPageDetails } from "./chat/pageContext";
 import { useProjects } from "../hooks/useProjects";
@@ -35,527 +36,28 @@ import { splitToolTelemetryPaintFrame } from "../utils/toolTelemetryPaint";
 
 export type EventListener = (event: TelemetryEvent) => void;
 export type SubscribeFn = (listener: EventListener) => () => void;
-import { ActivityPanel } from "./ActivityPanel";
 import { MemoryPanel } from "./MemoryPanel";
 import { UnconsciousPanel } from "./UnconsciousPanel";
 import { InjectPanel } from "./InjectPanel";
 import { ThreadDetailModal, formatContextResetResult } from "./ThreadDetailModal";
 import { AppPanels } from "./AppPanels";
 import { Modal } from "./Modal";
-import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
-import { useAudience } from "../hooks/useAudience";
-import { AppContributionArea, ContributionManager } from "./apps/contributions";
-import {
-  appendRuntimeThoughtText,
-  cleanReasoningDisplay,
-  type RuntimeThoughtText,
-} from "../utils/runtimeThought";
+import { useAudience, audienceShows, type AudienceSection } from "../hooks/useAudience";
+import { AgentOverview } from "./AgentOverview";
+import { AgentActivity } from "./AgentActivity";
+import { AgentDiagnostics } from "./AgentDiagnostics";
+import { AgentSummaryBar, useAgentUsage } from "./AgentSummaryBar";
+import { AgentCapabilityIcons } from "./AgentCapabilityIcons";
+import { buildToolVisualRegistry } from "./chat/toolVisuals";
+import type { Audience } from "../hooks/useAudience";
 
-type RuntimeView = "stream" | "activity" | "memory" | "skills" | "apps" | "capabilities";
+type RuntimeView = "overview" | "stream" | "activity" | "memory" | "skills" | "apps" | "capabilities";
 
-interface RuntimeEventItem {
-  key: string;
-  kind: "thought" | "tool" | "thread" | "channel" | "error" | "event";
-  label: string;
-  detail?: string;
-  reasoningDetail?: string;
-  responseDetail?: string;
-  toolName?: string;
-  toolArgs?: string;
-  toolResult?: string;
-  threadId?: string;
-  status?: "running" | "success" | "error" | "info";
-  durationMs?: number;
-  time: string;
-  raw: TelemetryEvent;
-}
-
-const MAX_RUNTIME_EVENTS = 250;
-const HISTORICAL_RUNTIME_EVENT_LIMIT = 300;
-const RUNTIME_THOUGHT_MERGE_WINDOW_MS = 5 * 60 * 1000;
-
-function compactText(value: unknown, fallback = ""): string {
-  if (value == null) return fallback;
-  const s = String(value).replace(/\s+/g, " ").trim();
-  return s || fallback;
-}
-
-function durationLabel(ms?: number): string {
-  if (ms == null || !Number.isFinite(ms)) return "";
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
-}
-
-function runtimeToolCallID(ev: TelemetryEvent): string {
-  return compactText(ev.data?.id || ev.data?.call_id || ev.data?.tool_call_id);
-}
-
-function toolEventKey(ev: TelemetryEvent, name: string): string {
-  const id = runtimeToolCallID(ev);
-  return `tool:${ev.thread_id || "main"}:${id || `${name}:${ev.id || ev.time}`}`;
-}
-
-// Keep the retained window chronological too: sorting only at render time
-// would still let late history evict newer activity at the size limit.
-function orderedRuntimeEvents(events: RuntimeEventItem[]): RuntimeEventItem[] {
-  return [...events].sort((a, b) =>
-    telemetryTimeMs(a.raw) - telemetryTimeMs(b.raw) || a.key.localeCompare(b.key),
-  ).slice(-MAX_RUNTIME_EVENTS);
-}
-
-function thoughtEventKey(ev: TelemetryEvent): string {
-  const data = ev.data || {};
-  const iteration = data.iteration != null ? String(data.iteration) : "";
-  if (ev.type === "llm.done" || ev.type === "llm.error") {
-    return `thought:${ev.thread_id || "main"}:${ev.id || ev.time || iteration}`;
-  }
-  return `thought:${ev.thread_id || "main"}:${iteration || ev.id || ev.time}`;
-}
-
-function toolArgsValue(data: Record<string, any>): unknown {
-  if ("args" in data) return data.args;
-  if ("arguments" in data) return data.arguments;
-  if ("input" in data) return data.input;
-  if ("params" in data) return data.params;
-  return undefined;
-}
-
-function toolResultValue(data: Record<string, any>): unknown {
-  if ("result" in data) return data.result;
-  if ("output" in data) return data.output;
-  if ("error" in data) return data.error;
-  if ("message" in data) return data.message;
-  return undefined;
-}
-
-function parseJSONIfPossible(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  const trimmed = value.trim();
-  if (!trimmed || !["{", "["].includes(trimmed[0])) return value;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return value;
-  }
-}
-
-function sanitizeToolPayload(value: unknown, depth = 0): unknown {
-  const parsed = parseJSONIfPossible(value);
-  if (parsed == null) return parsed;
-  if (typeof parsed === "string") {
-    if (parsed.length > 400) return `${parsed.slice(0, 400)}… (${parsed.length.toLocaleString()} chars)`;
-    return parsed;
-  }
-  if (typeof parsed !== "object") return parsed;
-  if (depth > 5) return "[nested object]";
-  if (Array.isArray(parsed)) {
-    const items = parsed.slice(0, 20).map((item) => sanitizeToolPayload(item, depth + 1));
-    return parsed.length > 20 ? [...items, `… ${parsed.length - 20} more items`] : items;
-  }
-
-  const obj = parsed as Record<string, unknown>;
-  if (obj._binary === true) return "[binary payload]";
-  const out: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(obj)) {
-    const lower = key.toLowerCase();
-    if (
-      lower.includes("base64") ||
-      lower.includes("screenshot") ||
-      lower.includes("image") ||
-      lower.includes("audio") ||
-      lower.includes("blob")
-    ) {
-      if (typeof val === "string") {
-        out[key] = `[${val.length.toLocaleString()} chars omitted]`;
-      } else if (val && typeof val === "object") {
-        out[key] = sanitizeToolPayload(val, depth + 1);
-      } else {
-        out[key] = val;
-      }
-      continue;
-    }
-    out[key] = sanitizeToolPayload(val, depth + 1);
-  }
-  return out;
-}
-
-function formatToolPayload(value: unknown, max = 5000): string {
-  if (value === undefined) return "";
-  let text: string;
-  const sanitized = sanitizeToolPayload(value);
-  if (typeof sanitized === "string") {
-    text = sanitized;
-  } else {
-    try {
-      text = JSON.stringify(sanitized, null, 2);
-    } catch {
-      text = String(sanitized);
-    }
-  }
-  if (text.length > max) return `${text.slice(0, max)}\n… (${text.length.toLocaleString()} chars total)`;
-  return text;
-}
-
-function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
-  const data = ev.data || {};
-  const threadId = ev.thread_id || "main";
-  const base = {
-    threadId,
-    time: ev.time,
-    raw: ev,
-  };
-
-  if (ev.type === "llm.tool_chunk") {
-    const name = compactText(data.tool || data.name);
-    if (!name) return null;
-    if (["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"].includes(name)) return null;
-    return {
-      ...base,
-      key: toolEventKey(ev, name),
-      kind: "tool",
-      label: `Preparing ${name}`,
-      detail: name,
-      toolName: name,
-      toolArgs: String(data.chunk || ""),
-      status: "running",
-    };
-  }
-
-  if (ev.type === "tool.call") {
-    const name = compactText(data.name);
-    if (!name) return null;
-    if (["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"].includes(name)) return null;
-    const reason = compactText(data.reason);
-    const args = formatToolPayload(toolArgsValue(data));
-    return {
-      ...base,
-      key: toolEventKey(ev, name),
-      kind: "tool",
-      label: runtimeToolLabel(name, reason, `Running ${name}`),
-      detail: name,
-      toolName: name,
-      toolArgs: args,
-      status: "running",
-    };
-  }
-
-  if (ev.type === "tool.result") {
-    const name = compactText(data.name || data.tool);
-    if (!name) return null;
-    if (["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"].includes(name)) return null;
-    const failed = !!data.is_error;
-    return {
-      ...base,
-      key: toolEventKey(ev, name),
-      kind: "tool",
-      label: compactText(data.reason, name),
-      detail: failed ? compactText(data.error || data.message, "Tool failed") : name,
-      toolName: name,
-      toolResult: formatToolPayload(toolResultValue(data)),
-      status: failed ? "error" : "success",
-      durationMs: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
-    };
-  }
-
-  if (ev.type === "llm.start") {
-    return {
-      ...base,
-      key: thoughtEventKey(ev),
-      kind: "thought",
-      label: "Thinking",
-      detail: compactText(data.model),
-      status: "running",
-    };
-  }
-
-  if (ev.type === "llm.thinking") {
-    const text = String(data.text || data.chunk || "");
-    if (!text.trim()) return null;
-    return {
-      ...base,
-      key: thoughtEventKey(ev),
-      kind: "thought",
-      label: "Reasoning",
-      detail: text,
-      reasoningDetail: text,
-      status: "running",
-    };
-  }
-
-  if (ev.type === "llm.chunk") {
-    const text = String(data.text || data.chunk || "");
-    if (!text.trim()) return null;
-    return {
-      ...base,
-      key: thoughtEventKey(ev),
-      kind: "thought",
-      label: "Response",
-      detail: text,
-      responseDetail: text,
-      status: "running",
-    };
-  }
-
-  if (ev.type === "llm.done") {
-    const message = compactText(data.message || data.model);
-    return {
-      ...base,
-      key: thoughtEventKey(ev),
-      kind: "thought",
-      label: "Completed reasoning step",
-      detail: message,
-      responseDetail: message,
-      status: "success",
-      durationMs: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
-    };
-  }
-
-  if (ev.type === "llm.error") {
-    return {
-      ...base,
-      key: thoughtEventKey(ev),
-      kind: "error",
-      label: "LLM error",
-      detail: compactText(data.error || data.message),
-      status: "error",
-    };
-  }
-
-  if (ev.type.startsWith("execution.")) {
-    return null;
-  }
-
-  if (ev.type === "realtime.session_started") {
-    return {
-      ...base,
-      key: ev.id || `realtime-start:${threadId}:${ev.time}`,
-      kind: "thread",
-      label: "Live voice connected",
-      detail: [data.voice, data.model].filter(Boolean).join(" · "),
-      status: "running",
-    };
-  }
-
-  if (ev.type === "realtime.user" || ev.type === "realtime.assistant") {
-    return {
-      ...base,
-      key: ev.id || `${ev.type}:${threadId}:${ev.time}`,
-      kind: ev.type === "realtime.user" ? "channel" : "thought",
-      label: ev.type === "realtime.user" ? "Operator said" : "Agent said",
-      detail: compactText(data.text),
-      responseDetail: ev.type === "realtime.assistant" ? compactText(data.text) : undefined,
-      status: "info",
-    };
-  }
-
-  if (ev.type === "realtime.bridge_connected" || ev.type === "realtime.bridge_disconnected") {
-    return {
-      ...base,
-      key: ev.id || `${ev.type}:${threadId}:${ev.time}`,
-      kind: "thread",
-      label: ev.type === "realtime.bridge_connected" ? "Voice audio connected" : "Voice audio disconnected",
-      status: ev.type === "realtime.bridge_connected" ? "success" : "info",
-    };
-  }
-
-  if (ev.type === "thread.spawn") {
-    return {
-      ...base,
-      key: ev.id || `thread-spawn:${threadId}:${ev.time}`,
-      kind: "thread",
-      label: `Spawned ${compactText(data.name || threadId, threadId)}`,
-      detail: compactText(data.directive),
-      status: "info",
-    };
-  }
-
-  if (ev.type === "thread.done") {
-    return {
-      ...base,
-      key: ev.id || `thread-done:${threadId}:${ev.time}`,
-      kind: "thread",
-      label: `Finished ${threadId}`,
-      status: "success",
-    };
-  }
-
-  if (ev.type === "event.received") {
-    const msg = compactText(data.message);
-    if (!msg) return null;
-    const internal = ["admin", "system", "inject"].some((c) => msg.startsWith(`[${c}]`));
-    if (internal) return null;
-    return {
-      ...base,
-      key: ev.id || `event:${threadId}:${ev.time}:${msg.slice(0, 24)}`,
-      kind: "channel",
-      label: msg,
-      detail: compactText(data.source),
-      status: "info",
-    };
-  }
-
-  if (ev.type === "thread.message") {
-    return {
-      ...base,
-      key: ev.id || `thread-message:${threadId}:${ev.time}`,
-      kind: "thread",
-      label: compactText(data.message, "Thread message"),
-      detail: compactText(data.from && data.to ? `${data.from} -> ${data.to}` : ""),
-      status: "info",
-    };
-  }
-
-  if (ev.type.includes("error")) {
-    return {
-      ...base,
-      key: ev.id || `error:${threadId}:${ev.time}`,
-      kind: "error",
-      label: compactText(data.error || data.message || ev.type, ev.type),
-      status: "error",
-    };
-  }
-
-  return null;
-}
-
-export function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): RuntimeEventItem[] {
-  // History and live recovery can overlap. Once a call has finished, replayed
-  // starts/chunks must not create a second row or reopen its completed state.
-  if (["llm.start", "llm.thinking", "llm.chunk"].includes(ev.type) && hasCompletedRuntimeThought(prev, ev)) {
-    return prev;
-  }
-  const item = normalizeRuntimeEvent(ev);
-  if (!item) return prev;
-  let idx = prev.findIndex((r) => r.key === item.key);
-  if (idx < 0 && item.kind === "tool" && item.toolName) {
-    idx = findRecentRuntimeTool(prev, item);
-  }
-  if (idx < 0 && (ev.type === "llm.done" || ev.type === "llm.error")) {
-    idx = findRecentRuntimeThought(prev, item);
-  }
-  if (idx >= 0) {
-    const next = [...prev];
-    const prevItem = next[idx];
-    if (item.kind === "tool" && prevItem.status !== "running" && item.status === "running") {
-      // Historical starts may add the reason/arguments, but cannot reopen a
-      // finished call, replace its result timestamp, or replay streamed args.
-      if (ev.type === "tool.call") {
-        next[idx] = { ...prevItem, toolArgs: item.toolArgs || prevItem.toolArgs,
-          label: item.label || prevItem.label };
-      }
-      return orderedRuntimeEvents(next);
-    }
-    const args =
-      ev.type === "llm.tool_chunk" && item.toolArgs
-        ? `${prevItem.toolArgs || ""}${item.toolArgs}`
-        : item.toolArgs || prevItem.toolArgs;
-    let thoughtText: RuntimeThoughtText = {
-      reasoning: prevItem.reasoningDetail || item.reasoningDetail,
-      response: ev.type === "llm.done" ? item.responseDetail || prevItem.responseDetail : prevItem.responseDetail || item.responseDetail,
-    };
-    if (ev.type === "llm.thinking" && item.reasoningDetail) {
-      thoughtText = appendRuntimeThoughtText(
-        { reasoning: prevItem.reasoningDetail, response: prevItem.responseDetail },
-        "reasoning",
-        item.reasoningDetail,
-      );
-    }
-    if (ev.type === "llm.chunk" && item.responseDetail) {
-      thoughtText = appendRuntimeThoughtText(
-        { reasoning: prevItem.reasoningDetail, response: prevItem.responseDetail },
-        "response",
-        item.responseDetail,
-      );
-    }
-    const detail = ev.type === "llm.error" ? item.detail : thoughtText.response || thoughtText.reasoning || item.detail || prevItem.detail;
-    next[idx] = {
-      ...prevItem,
-      ...item,
-      label:
-        item.kind === "tool" && item.status !== "running" && item.label === item.detail
-          ? prevItem.label
-          : item.label || prevItem.label,
-      detail,
-      reasoningDetail: thoughtText.reasoning,
-      responseDetail: thoughtText.response,
-      toolArgs: args,
-      toolResult: item.toolResult || prevItem.toolResult,
-    };
-    return orderedRuntimeEvents(next);
-  }
-  return orderedRuntimeEvents([...prev, item]);
-}
-
-function runtimeEventIteration(ev?: TelemetryEvent): string {
-  const value = ev?.data?.iteration;
-  return value == null ? "" : String(value);
-}
-
-function runtimeThoughtMergeWindow(ev: TelemetryEvent): number {
-  // Long provider calls still belong to their original start event.
-  const duration = Number(ev.data?.duration_ms) || 0;
-  return Math.max(RUNTIME_THOUGHT_MERGE_WINDOW_MS, duration + 5_000);
-}
-
-function hasCompletedRuntimeThought(prev: RuntimeEventItem[], ev: TelemetryEvent): boolean {
-  const iteration = runtimeEventIteration(ev);
-  const startedMs = telemetryTimeMs(ev);
-  if (!iteration || !startedMs) return false;
-  return prev.some((candidate) => {
-    if (candidate.raw.type !== "llm.done" && candidate.raw.type !== "llm.error") return false;
-    if (candidate.threadId !== (ev.thread_id || "main")) return false;
-    if (runtimeEventIteration(candidate.raw) !== iteration) return false;
-    const finishedMs = telemetryTimeMs(candidate.raw);
-    return finishedMs >= startedMs && finishedMs - startedMs <= runtimeThoughtMergeWindow(candidate.raw);
-  });
-}
-
-function findRecentRuntimeThought(prev: RuntimeEventItem[], item: RuntimeEventItem): number {
-  const itemIteration = runtimeEventIteration(item.raw);
-  if (!itemIteration) return -1;
-  const itemMs = telemetryTimeMs(item.raw);
-  for (let i = prev.length - 1; i >= 0; i--) {
-    const candidate = prev[i];
-    if (candidate.kind !== "thought") continue;
-    if (candidate.threadId !== item.threadId) continue;
-    if (candidate.status !== "running") continue;
-    if (runtimeEventIteration(candidate.raw) !== itemIteration) continue;
-    const candidateMs = telemetryTimeMs(candidate.raw);
-    if (itemMs && candidateMs && (candidateMs > itemMs || itemMs - candidateMs > runtimeThoughtMergeWindow(item.raw))) continue;
-    return i;
-  }
-  return -1;
-}
-
-function findRecentRuntimeTool(prev: RuntimeEventItem[], item: RuntimeEventItem): number {
-  const itemID = runtimeToolCallID(item.raw);
-  const itemMs = telemetryTimeMs(item.raw);
-  for (let i = prev.length - 1; i >= 0; i--) {
-    const candidate = prev[i];
-    if (candidate.kind !== "tool") continue;
-    if (candidate.threadId !== item.threadId) continue;
-    if (candidate.toolName !== item.toolName && candidate.detail !== item.toolName) continue;
-    const candidateID = runtimeToolCallID(candidate.raw);
-    // Explicit call identities must never be replaced by a same-name match.
-    if (itemID && candidateID && itemID !== candidateID) continue;
-    const candidateMs = telemetryTimeMs(candidate.raw);
-    if (!itemMs || !candidateMs || Math.abs(itemMs - candidateMs) > RUNTIME_THOUGHT_MERGE_WINDOW_MS) continue;
-    if (candidate.status !== "running") {
-      // A late start can enrich an existing result, not a later new call.
-      if (item.status !== "running" || itemMs > candidateMs) continue;
-    } else if (item.status !== "running" && candidateMs > itemMs) {
-      continue;
-    }
-    return i;
-  }
-  return -1;
-}
-
-function telemetryTimeMs(ev: TelemetryEvent): number {
-  const ms = Date.parse(ev.time || "");
-  return Number.isFinite(ms) ? ms : 0;
-}
+export { mergeRuntimeEvent } from "../utils/runtimeActivity";
+export type { RuntimeEventItem } from "../utils/runtimeActivity";
+import { mergeRuntimeEvent, telemetryTimeMs, HISTORICAL_RUNTIME_EVENT_LIMIT, type RuntimeEventItem } from "../utils/runtimeActivity";
 
 function restoreCheckpointMs(ev: TelemetryEvent): number {
   if (ev.type !== "execution.restored") return 0;
@@ -609,6 +111,7 @@ export function AgentView({
   const pendingRuntimeEventsRef = useRef<TelemetryEvent[]>([]);
   const runtimeFrameRef = useRef<number | null>(null);
   const lastStoredTelemetryMsRef = useRef(0);
+  const liveActivitySinceRef = useRef(Date.now());
   const handleEventRef = useRef<(event: TelemetryEvent) => void>(() => {});
   const subscribe: SubscribeFn = useCallback((cb) => {
     listenersRef.current.add(cb);
@@ -631,7 +134,7 @@ export function AgentView({
   const [resetBusy, setResetBusy] = useState(false);
   const [resetFeedback, setResetFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [showConfig, setShowConfig] = useState(false);
-  const [view, setView] = useState<RuntimeView>("stream");
+  const [view, setView] = useState<RuntimeView>("overview");
 
   // Track threads, tools, and active LLM calls for the runtime summary.
   const [graphThreads, setGraphThreads] = useState<Thread[]>(initialThreads);
@@ -653,6 +156,7 @@ export function AgentView({
   // /instances/:id → /instances/:other, and stale threads from the previous
   // instance would otherwise leak into the runtime summary.
   useEffect(() => {
+    setView("overview");
     setGraphThreads(initialThreads);
     setGraphActiveTools({});
     setGraphThinking({});
@@ -667,6 +171,7 @@ export function AgentView({
     seenLiveOrderRef.current = [];
     pendingRuntimeEventsRef.current = [];
     lastStoredTelemetryMsRef.current = 0;
+    liveActivitySinceRef.current = Date.now();
     if (runtimeFrameRef.current !== null) {
       window.cancelAnimationFrame(runtimeFrameRef.current);
       runtimeFrameRef.current = null;
@@ -793,6 +298,14 @@ export function AgentView({
         if (old) seenLiveRef.current.delete(old);
       }
     }
+    // Initial catch-up and SSE reconnects can replay old work. Keep it in
+    // the activity feed without treating it as the agent's current state.
+    const eventMs = telemetryTimeMs(event);
+    if (eventMs > 0 && eventMs < liveActivitySinceRef.current) {
+      queueRuntimeEvent(event);
+      lastStoredTelemetryMsRef.current = Math.max(lastStoredTelemetryMsRef.current, eventMs);
+      return;
+    }
     const restoreMs = restoreCheckpointMs(event);
     if (restoreMs > 0) {
       flushRuntimeEvents();
@@ -889,7 +402,8 @@ export function AgentView({
       });
     }
 
-    // Track active tools — keep visible for 3s after completion
+    // Track only unfinished tools. Completed work remains in the activity
+    // feed, but must not keep the agent header in the Working state.
     // Skip noisy inline tools (send, pace, done, evolve, remember) and channels from display
     const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"]);
     const toolName = String(data.name || "");
@@ -901,16 +415,12 @@ export function AgentView({
     if (event.type === "tool.result" && showTool) {
       const threadId = event.thread_id;
       const toolName = data.name;
-      setTimeout(() => {
-        setGraphActiveTools((prev) => {
-          if (prev[threadId] === toolName) {
-            const n = { ...prev };
-            delete n[threadId];
-            return n;
-          }
-          return prev;
-        });
-      }, 3000);
+      setGraphActiveTools((prev) => {
+        if (prev[threadId] !== toolName) return prev;
+        const next = { ...prev };
+        delete next[threadId];
+        return next;
+      });
     }
 
     if (event.type === "llm.done" && data.message) {
@@ -1009,9 +519,7 @@ export function AgentView({
   }, [instance.id, instance.status]);
 
   const advancedContent =
-    view === "activity" ? (
-      <ActivityPanel instance={instance} subscribe={subscribe} onReload={onReload} onThreadOpen={setSelectedThreadId} />
-    ) : view === "memory" ? (
+    view === "memory" ? (
       <div className="h-full min-h-0 flex flex-col">
           <UnconsciousPanel instanceId={instance.id} compact onAgentReload={onReload} />
           {instance.status === "running" ? (
@@ -1187,6 +695,7 @@ export function AgentView({
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
           <AgentRuntimePanel
+            key={instance.id}
             instance={instance}
             threads={graphThreads}
             activeTools={graphActiveTools}
@@ -1201,6 +710,7 @@ export function AgentView({
             onStop={async () => { await instances.stop(instance.id); onReload(); }}
             onStart={async () => { await instances.start(instance.id); onReload(); }}
             onConfig={() => setShowConfig(true)}
+            onAppearanceSaved={onReload}
             onReset={() => setShowResetConfirm(true)}
             onDelete={() => setShowDeleteConfirm(true)}
             advancedContent={advancedContent}
@@ -1240,6 +750,7 @@ export function AgentRuntimePanel({
   onStop,
   onStart,
   onConfig,
+  onAppearanceSaved,
   onReset,
   onDelete,
   advancedContent,
@@ -1258,16 +769,44 @@ export function AgentRuntimePanel({
   onStop: () => void | Promise<void>;
   onStart: () => void | Promise<void>;
   onConfig: () => void;
+  onAppearanceSaved: () => void;
   onReset: () => void;
   onDelete: () => void;
   advancedContent: ReactNode;
 }) {
+  // The Settings interface preference is the only audience selector.
+  const { audience: selectedAudience } = useAudience();
+  const { currentProject: contextProject } = useProjects();
+  const [connections, setConnections] = useState<ConnectionInfo[]>([]);
   const [mcpServers, setMCPServers] = useState<MCPServerConfig[]>([]);
   const [installedApps, setInstalledApps] = useState<AppRow[]>([]);
   const [mcpInventory, setMCPInventory] = useState<MCPServer[]>([]);
+  const toolRegistry = useMemo(() => buildToolVisualRegistry(installedApps, connections, mcpInventory), [installedApps, connections, mcpInventory]);
   const [showCapabilitiesManage, setShowCapabilitiesManage] = useState(false);
+  const [showAppearance, setShowAppearance] = useState(false);
+  const [appearanceIcon, setAppearanceIcon] = useState(instance.icon || "robot");
+  const [appearanceSaving, setAppearanceSaving] = useState(false);
+  const [appearanceError, setAppearanceError] = useState("");
+  const openAppearance = () => {
+    setAppearanceIcon(suggestedAgentIcon(instance.icon));
+    setAppearanceError("");
+    setShowAppearance(true);
+  };
+  const saveAppearance = async () => {
+    setAppearanceSaving(true);
+    setAppearanceError("");
+    try {
+      await instances.updateIdentity(instance.id, { icon: appearanceIcon, icon_color: "accent" });
+      onAppearanceSaved();
+      window.dispatchEvent(new Event("apteva:agents-changed"));
+      setShowAppearance(false);
+    } catch (err) {
+      setAppearanceError(err instanceof Error ? err.message : "Could not save agent icon");
+    } finally {
+      setAppearanceSaving(false);
+    }
+  };
   const [selectedRuntimeThread, setSelectedRuntimeThread] = useState("main");
-  const { currentProject: contextProject } = useProjects();
   useAssistantPageDetails(instance.project_id || contextProject?.id || "", { viewed_agent_id: instance.id, viewed_agent_name: instance.name, thread_id: selectedRuntimeThread, tab: view });
   const [executionControl, setExecutionControl] = useState<ExecutionControlStatus>({
     mode: "auto",
@@ -1278,6 +817,19 @@ export function AgentRuntimePanel({
   const [liveStatus, setLiveStatus] = useState<Status | null>(null);
   const [executionBusy, setExecutionBusy] = useState<"run" | "pause" | "step" | "back" | null>(null);
   const [showDeveloperControls, setShowDeveloperControls] = useState(false);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [lifecycleError, setLifecycleError] = useState("");
+  const performLifecycleAction = async (action: () => void | Promise<void>) => {
+    setLifecycleBusy(true);
+    setLifecycleError("");
+    try {
+      await action();
+      const next = await core.status(instance.id).catch(() => null);
+      if (next) { setLiveStatus(next); if (next.execution_control) setExecutionControl(next.execution_control); }
+    } catch (error) {
+      setLifecycleError(error instanceof Error ? error.message : "Could not update this agent.");
+    } finally { setLifecycleBusy(false); }
+  };
   const telemetryConnection = useTelemetryConnectionState();
 
   useEffect(() => {
@@ -1308,12 +860,14 @@ export function AgentRuntimePanel({
           }
         })
         .catch(() => {});
+      integrations.connections(instance.project_id, { includeAppOwned: true })
+        .then((rows) => { if (!cancelled) setConnections(rows); }).catch(() => {});
       appsAPI.list(instance.project_id)
         .then((rows) => {
           if (!cancelled) setInstalledApps(rows || []);
         })
         .catch(() => {});
-      mcpServersAPI.list(instance.project_id)
+      mcpServersAPI.list(instance.project_id, { includeAppOwned: true })
         .then((rows) => {
           if (!cancelled) setMCPInventory(rows || []);
         })
@@ -1380,17 +934,42 @@ export function AgentRuntimePanel({
   };
 
   const primaryViews: Array<{ id: RuntimeView; label: string }> = [
-    { id: "stream", label: "Live" },
-    { id: "memory", label: "Memory" },
-    { id: "capabilities", label: `Capabilities${mcpServers.length > 0 ? ` ${mcpServers.length}` : ""}` },
+    { id: "overview", label: "Overview" },
+    { id: "stream", label: "Activity" },
+    { id: "memory", label: "Knowledge" },
+    { id: "capabilities", label: "Capabilities" },
+    ...(installedApps.some((app) => app.status === "running" && app.ui_panels?.some((panel) => panel.slot === "instance.tab")) ? [{ id: "apps" as const, label: "App panels" }] : []),
+    ...(selectedAudience === "developer" || view === "activity" ? [{ id: "activity" as const, label: "Diagnostics" }] : []),
   ];
-  const executionControlsVisible =
-    showDeveloperControls || (
-      instance.status === "running" && (executionControl.mode !== "auto" || !!executionControl.waiting)
-    );
+  const diagnostics = view === "activity";
+  const usage = useAgentUsage(instance.id, subscribe);
+  const working = instance.status === "running" && (Object.values(activeTools).some(Boolean) || Object.values(thinking).some(Boolean));
+  const isPaused = instance.status === "paused" || !!liveStatus?.paused || executionControl.mode === "paused";
+  const statusLabel = instance.status === "stopped" ? "Stopped" : isPaused ? "Paused"
+    : instance.status !== "running" ? instance.status
+    : executionControl.waiting ? "Needs attention"
+    : telemetryConnection !== "open" ? "Reconnecting" : working ? "Working" : "Ready";
+  const togglePause = async () => {
+    if (!isPaused || liveStatus?.paused) await onPause();
+    if (isPaused && executionControl.mode === "paused") await sendExecutionControl("run");
+  };
+  const executionControlsVisible = diagnostics && (showDeveloperControls || executionControl.mode !== "auto" || !!executionControl.waiting);
+  const openDiagnostics = () => onViewChange("activity");
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg">
+      <Modal open={showAppearance} ariaLabel="Change agent icon" onClose={() => { if (!appearanceSaving) setShowAppearance(false); }} width="max-w-xl">
+        <div className="page-safe-bottom max-h-[90dvh] overflow-y-auto p-4 sm:p-6">
+          <h2 className="text-base font-bold text-text">Agent icon</h2>
+          <p className="mt-1 text-xs text-text-muted">Choose a visual for {instance.name}. This does not change how the agent works.</p>
+          <div className="mt-5"><AgentIconPicker icon={appearanceIcon} onIconChange={setAppearanceIcon} /></div>
+          {appearanceError && <p role="alert" className="mt-4 text-xs text-red">{appearanceError}</p>}
+          <div className="mt-5 flex justify-end gap-2">
+            <button type="button" disabled={appearanceSaving} onClick={() => setShowAppearance(false)} className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted">Cancel</button>
+            <button type="button" disabled={appearanceSaving} onClick={() => void saveAppearance()} className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:opacity-50">{appearanceSaving ? "Saving…" : "Save icon"}</button>
+          </div>
+        </div>
+      </Modal>
       <Modal
         open={showCapabilitiesManage}
         ariaLabel="Apps and MCP servers"
@@ -1425,169 +1004,69 @@ export function AgentRuntimePanel({
           />
         </div>
       </Modal>
-      <div className="shrink-0 border-b border-border/70 bg-bg-card/20">
-        <div className="px-3 py-3 sm:px-4">
-          <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <span className={`h-2 w-2 shrink-0 rounded-full ${instance.status === "running" ? "bg-green" : instance.status === "paused" ? "bg-yellow" : "bg-red"}`} />
-                <h1 className="truncate text-sm font-bold text-text">{instance.name}</h1>
-                <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
-                  instance.status === "running"
-                    ? "bg-green/10 text-green"
-                    : instance.status === "paused"
-                      ? "bg-yellow/10 text-yellow"
-                      : "bg-red/10 text-red"
-                }`}>{instance.status}</span>
-                {instance.status !== "stopped" && (
-                  <SleepPill sleep={liveStatus || statusFallbackForInstance(instance.status)} />
-                )}
-              </div>
-              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-text-muted">
-                <span>{instance.mode}</span>
-                <span aria-hidden="true">·</span>
-                <span>#{instance.id}</span>
-                {instance.status === "running" && telemetryConnection !== "open" && (
-                  <span className="text-yellow" aria-live="polite">
-                    live {telemetryConnection === "connecting" ? "connecting" : "reconnecting"}
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <button type="button" onClick={() => setShowCapabilitiesManage(true)}
-                aria-label={`Capabilities: ${mcpServers.length} attached. Manage apps and MCP servers`}
-                title="Manage apps and MCP servers"
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-accent/50 px-2.5 text-xs text-text-muted hover:border-accent hover:bg-accent/5 transition-colors">
-                <span className="font-semibold">Capabilities</span>
-                <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-accent">{mcpServers.length}</span>
-                {mcpServers.length > 0 ? (
-                  <span className="hidden items-center gap-1.5 md:inline-flex">
-                    {mcpServers.slice(0, 2).map((capability) => (
-                      <span key={capability.name} className="max-w-24 truncate text-[11px]">{capabilityDisplayName(capability.name)}</span>
-                    ))}
-                    {mcpServers.length > 2 && <span className="text-[10px] text-text-dim">+{mcpServers.length - 2}</span>}
-                  </span>
-                ) : (
-                  <span className="hidden text-[11px] text-accent sm:inline">Add apps &amp; MCPs</span>
-                )}
-                <span aria-hidden="true" className="text-accent">›</span>
-              </button>
-              {instance.status === "running" ? (
-                <button onClick={onStop} className="h-9 rounded-md border border-red/40 px-3 text-xs font-semibold text-red hover:bg-red/10">Stop</button>
-              ) : (
-                <button onClick={onStart} className="h-9 rounded-md border border-accent bg-accent/10 px-3 text-xs font-semibold text-accent hover:bg-accent hover:text-bg">Start</button>
-              )}
-              <AgentRuntimeActionsMenu
-                instance={instance}
-                developerControlsVisible={executionControlsVisible}
-                onPause={onPause}
-                onConfig={onConfig}
-                onCapabilities={() => setShowCapabilitiesManage(true)}
-                onDiagnostics={() => onViewChange("activity")}
-                onToggleDeveloperControls={() => setShowDeveloperControls((visible) => !visible)}
-                onReset={onReset}
-                onDelete={onDelete}
-              />
-            </div>
-          </div>
-        </div>
-        {instance.status === "running" && (
-          <LiveStatsBar instanceId={instance.id} subscribe={subscribe} sleep={liveStatus} />
+      <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2 sm:gap-3 sm:px-4">
+        <button type="button" onClick={openAppearance} className="shrink-0 rounded-lg focus-visible:outline-2 focus-visible:outline-accent" aria-label={`Change icon for ${instance.name}`}>
+          <AgentMark icon={instance.icon} color={instance.icon_color} size="sm" />
+        </button>
+        <h1 title={instance.name} className="min-w-0 flex-1 truncate text-sm font-bold text-text">{instance.name}</h1>
+        <span className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted" role="status" title={statusLabel}>
+          <span className={`h-2 w-2 rounded-full ${statusLabel === "Working" ? "bg-accent motion-safe:animate-pulse" : statusLabel === "Ready" ? "bg-green" : statusLabel === "Needs attention" ? "bg-yellow" : "bg-text-dim"}`} />
+          <span className="sr-only md:not-sr-only">{statusLabel}</span>
+        </span>
+        <button type="button" onClick={() => setShowCapabilitiesManage(true)} className="flex min-h-9 shrink-0 items-center rounded-md border border-border px-2 text-left hover:border-accent/50 focus-visible:outline-2 focus-visible:outline-accent" aria-label="Manage capabilities">
+          <AgentCapabilityIcons attached={mcpServers} skills={[]} catalog={{ apps: installedApps, connections, inventory: mcpInventory }} compact />
+        </button>
+        {instance.status === "running" ? (
+          <button type="button" disabled={lifecycleBusy} onClick={() => void performLifecycleAction(togglePause)} className="hidden h-9 shrink-0 rounded-md border border-border px-3 text-xs text-text-muted hover:text-text disabled:opacity-50 sm:inline-flex sm:items-center">{lifecycleBusy ? "Updating…" : isPaused ? "Resume" : "Pause"}</button>
+        ) : (
+          <button type="button" disabled={lifecycleBusy} onClick={() => void performLifecycleAction(onStart)} className="h-9 shrink-0 rounded-md border border-border px-2 text-xs text-accent hover:border-accent disabled:opacity-50 sm:px-3">{lifecycleBusy ? "Starting…" : instance.status === "paused" ? "Resume" : "Start"}</button>
         )}
-        <AppContributionArea
-          slot="dashboard.agent_detail"
-          projectId={instance.project_id || undefined}
-          agentId={instance.id}
-          className="min-w-0 space-y-2 border-t border-border/70 px-3 py-3 sm:px-4"
-        />
-        <AppPanels
-          slot="instance.status"
-          instanceId={instance.id}
-          projectId={instance.project_id || undefined}
-          className="space-y-1.5 border-t border-border/70 px-3 py-3 sm:px-4"
-        />
-        {executionControlsVisible && (
-          <div className="border-t border-border/70 px-3 py-2 sm:px-4">
-            <ExecutionControlStrip
-              status={executionControl}
-              disabled={instance.status !== "running" || executionBusy !== null}
-              busy={executionBusy}
-              onRun={() => sendExecutionControl("run")}
-              onPause={() => sendExecutionControl("pause")}
-              onStep={() => sendExecutionControl("step")}
-              onBack={restorePreviousStep}
-              onThreadOpen={onThreadOpen}
+        <AgentRuntimeActionsMenu paused={isPaused} presentationAudience={selectedAudience} instance={instance} developerControlsVisible={executionControlsVisible}
+          onPause={() => performLifecycleAction(togglePause)} onStop={() => performLifecycleAction(onStop)} onConfig={onConfig} onAppearance={openAppearance}
+          onCapabilities={() => setShowCapabilitiesManage(true)} onDiagnostics={openDiagnostics}
+          onToggleDeveloperControls={() => { openDiagnostics(); setShowDeveloperControls((visible) => !visible); }}
+          onReset={onReset} onDelete={onDelete} />
+      </header>
+      <AgentSummaryBar instance={instance} usage={usage} />
+      {lifecycleError && <div role="alert" className="shrink-0 border-b border-red/30 px-4 py-3 text-xs text-red">{lifecycleError}</div>}
+      {executionControl.waiting && !isPaused && !diagnostics && <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-yellow/30 bg-yellow/5 px-4 py-3 text-xs text-text">
+        <span className="flex-1">This agent is waiting for an execution decision.</span><button type="button" onClick={openDiagnostics} className="min-h-9 rounded-lg border border-yellow/40 px-3 text-yellow">Review</button>
+      </div>}
+      <nav className="flex shrink-0 gap-1 overflow-x-auto border-b border-border px-3 py-2 sm:px-5" aria-label="Agent workspace">
+        {primaryViews.map((item) => <button type="button" key={item.id} onClick={() => onViewChange(item.id)} aria-current={view === item.id ? "page" : undefined}
+          className={`min-h-10 shrink-0 rounded-lg px-3 text-xs font-medium ${view === item.id ? "bg-accent/10 text-accent" : "text-text-muted hover:bg-bg-hover hover:text-text"}`}>{item.label}</button>)}
+      </nav>
+      {diagnostics && <>
+        <RuntimeContextStrip instanceId={instance.id} threads={threads} activeTools={activeTools} thinking={thinking} selectedThreadId={selectedRuntimeThread} onThreadSelect={selectRuntimeThread} onThreadOpen={onThreadOpen} />
+        {executionControlsVisible && <div className="shrink-0 border-b border-border px-4 py-2"><ExecutionControlStrip status={executionControl} disabled={instance.status !== "running" || executionBusy !== null} busy={executionBusy} onRun={() => sendExecutionControl("run")} onPause={() => sendExecutionControl("pause")} onStep={() => sendExecutionControl("step")} onBack={restorePreviousStep} onThreadOpen={onThreadOpen} /></div>}
+      </>}
+
+      <div className="min-h-0 flex-1">
+        {view === "overview" ? <div className="h-full overflow-y-auto">
+          <AgentOverview key={`${instance.id}:${selectedAudience}`} instance={instance} projectId={instance.project_id || contextProject?.id}
+            audience={selectedAudience} toolRegistry={toolRegistry} events={events} loading={runtimeLoading}
+            attachmentKey={mcpServers.map((server) => `${server.name}:${server.url}`).join("|")}
+            onDetails={onThreadOpen} onActivity={() => onViewChange("stream")} onCapabilities={() => setShowCapabilitiesManage(true)}
             />
-          </div>
-        )}
+        </div> : view === "stream" ? <div className="h-full overflow-y-auto p-3 sm:p-4"><div className="w-full"><AgentActivity toolRegistry={toolRegistry} events={events} threads={threads} loading={runtimeLoading} onDetails={onThreadOpen} /></div></div>
+        : view === "activity" ? <AgentDiagnostics instance={instance} status={liveStatus} execution={executionControl} connection={telemetryConnection} usage={usage} onActivity={() => onViewChange("stream")} onConfig={onConfig} /> : view === "capabilities" ? <AgentCapabilitiesView instance={instance} attached={mcpServers} inventory={mcpInventory} onManage={() => setShowCapabilitiesManage(true)} />
+        : advancedContent}
       </div>
+      {diagnostics && instance.status === "running" && <InjectPanel instanceId={instance.id} threads={threads} />}
 
-      <RuntimeContextStrip
-        instanceId={instance.id}
-        threads={threads}
-        activeTools={activeTools}
-        thinking={thinking}
-        selectedThreadId={selectedRuntimeThread}
-        onThreadSelect={selectRuntimeThread}
-        onThreadOpen={onThreadOpen}
-      />
-
-      <div className="shrink-0 flex flex-wrap items-center gap-2 border-b border-border/70 px-3 py-2 sm:px-4">
-        <div className="flex min-w-0 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Agent workspace">
-          {primaryViews.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => onViewChange(item.id)}
-              role="tab"
-              aria-selected={view === item.id}
-              className={`rounded-md px-3 py-1.5 text-xs whitespace-nowrap transition-colors ${
-                view === item.id ? "bg-accent/15 text-accent" : "text-text-muted hover:bg-bg-hover hover:text-text"
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-        <div className="ml-auto shrink-0">
-          <ContributionManager
-            slot="dashboard.agent_detail"
-            projectId={instance.project_id || undefined}
-            agentId={instance.id}
-            label="Customize widgets"
-          />
-        </div>
-        {view === "activity" && (
-          <button type="button" onClick={() => onViewChange("stream")} className="ml-auto rounded bg-yellow/10 px-2 py-1 text-[10px] text-yellow">
-            Diagnostics ×
-          </button>
-        )}
-      </div>
-
-      <div className="flex-1 min-h-0">
-        {view === "stream" ? (
-          <RuntimeStream events={events} selectedThreadId={selectedRuntimeThread} loading={runtimeLoading} />
-        ) : view === "capabilities" ? (
-          <AgentCapabilitiesView
-            instance={instance}
-            attached={mcpServers}
-            inventory={mcpInventory}
-            onManage={() => setShowCapabilitiesManage(true)}
-          />
-        ) : advancedContent}
-      </div>
-      {instance.status === "running" && (
-        <InjectPanel instanceId={instance.id} threads={threads} />
-      )}
     </section>
   );
 }
 
 function AgentRuntimeActionsMenu({
   instance,
+  presentationAudience,
+  paused,
   developerControlsVisible,
   onPause,
+  onStop,
   onConfig,
+  onAppearance,
   onCapabilities,
   onDiagnostics,
   onToggleDeveloperControls,
@@ -1595,16 +1074,20 @@ function AgentRuntimeActionsMenu({
   onDelete,
 }: {
   instance: Agent;
+  presentationAudience: Audience;
+  paused: boolean;
   developerControlsVisible: boolean;
   onPause: () => void | Promise<void>;
+  onStop: () => void | Promise<void>;
   onConfig: () => void;
+  onAppearance: () => void;
   onCapabilities: () => void;
   onDiagnostics: () => void;
   onToggleDeveloperControls: () => void;
   onReset: () => void;
   onDelete: () => void;
 }) {
-  const { shows } = useAudience();
+  const shows = (section: AudienceSection) => audienceShows(presentationAudience, section);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -1647,10 +1130,11 @@ function AgentRuntimeActionsMenu({
       </button>
       {open && (
         <div role="menu" className="absolute right-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-lg border border-border bg-bg-card py-1 shadow-2xl shadow-black/60">
-          <button type="button" role="menuitem" onClick={() => choose(onConfig)} className={itemClass}>Configuration</button>
+          <button type="button" role="menuitem" onClick={() => choose(onConfig)} className={itemClass}>Settings</button>
+          <button type="button" role="menuitem" onClick={() => choose(onAppearance)} className={itemClass}>Change icon</button>
           <button type="button" role="menuitem" onClick={() => choose(onCapabilities)} className={itemClass}>Add apps &amp; MCPs</button>
           {instance.status === "running" && (
-            <button type="button" role="menuitem" onClick={() => choose(onPause)} className={itemClass}>Pause agent</button>
+            <button type="button" role="menuitem" onClick={() => choose(onPause)} className={itemClass}>{paused ? "Resume agent" : "Pause agent"}</button>
           )}
           {(shows("agent.diagnostics") || shows("agent.stepControls")) && (
             <div className="my-1 border-t border-border" />
@@ -1664,6 +1148,7 @@ function AgentRuntimeActionsMenu({
             </button>
           )}
           <div className="my-1 border-t border-border" />
+          {instance.status !== "stopped" && <button type="button" role="menuitem" onClick={() => choose(onStop)} className={`${itemClass} text-red`}>Stop agent</button>}
           {shows("agent.resetContext") && (
             <button type="button" role="menuitem" onClick={() => choose(onReset)} className={`${itemClass} text-yellow`}>Reset context</button>
           )}
@@ -3008,245 +2493,6 @@ function CapabilityRow({
   );
 }
 
-function RuntimeStream({
-  events,
-  selectedThreadId,
-  loading,
-}: {
-  events: RuntimeEventItem[];
-  selectedThreadId: string;
-  loading: boolean;
-}) {
-  type RuntimeFilter = "work" | "all" | RuntimeEventItem["kind"];
-  const [filter, setFilter] = useState<RuntimeFilter>("all");
-  const { shows } = useAudience();
-  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
-  const [query, setQuery] = useState("");
-  const visible = events
-    .filter((e) => (e.threadId || "main") === selectedThreadId)
-    .filter((e) => {
-      if (filter === "all") return true;
-      if (filter === "work") {
-        return e.kind === "tool" || e.kind === "error" || e.kind === "thread" || (e.kind === "thought" && e.status === "running");
-      }
-      return e.kind === filter;
-    })
-    .filter((e) => {
-      const q = query.trim().toLowerCase();
-      if (!q) return true;
-      return `${e.kind} ${e.label} ${e.detail || ""} ${e.threadId || ""}`.toLowerCase().includes(q);
-    })
-    .slice()
-    .reverse();
-
-  const primaryFilters: Array<{ id: RuntimeFilter; label: string }> = [
-    { id: "all", label: "All" },
-    { id: "work", label: "Work" },
-    { id: "tool", label: "Tools" },
-    { id: "error", label: "Errors" },
-  ];
-  const advancedFilters: Array<{ id: RuntimeFilter; label: string }> = [
-    { id: "thought", label: "Thoughts" },
-    { id: "thread", label: "Threads" },
-  ];
-
-  return (
-    <div className="h-full min-h-0 flex flex-col">
-      <div className="shrink-0 flex flex-wrap items-center gap-2 border-b border-border/70 px-3 py-2">
-        <div className="flex items-center gap-1 overflow-x-auto">
-          {primaryFilters.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setFilter(item.id)}
-              className={`px-2 py-1 rounded text-[11px] capitalize whitespace-nowrap ${
-                filter === item.id ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-          {/* "More" reveals the Technical filter row — raw event kinds
-              that only mean something if you know the runtime. */}
-          {shows("agent.technical") && (
-            <button
-              type="button"
-              onClick={() => setShowAdvancedFilters((visible) => !visible)}
-              className={`rounded px-2 py-1 text-[11px] whitespace-nowrap ${showAdvancedFilters ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
-            >
-              More {showAdvancedFilters ? "−" : "+"}
-            </button>
-          )}
-        </div>
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search stream"
-          className="ml-auto w-32 sm:w-44 bg-bg-input border border-border rounded px-2 py-1 text-[11px] text-text focus:outline-none focus:border-accent"
-        />
-        {showAdvancedFilters && (
-          <div className="flex w-full items-center gap-1 border-t border-border-subtle pt-2">
-            <span className="mr-1 text-[9px] font-bold uppercase tracking-wide text-text-dim">Technical</span>
-            {advancedFilters.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setFilter(item.id)}
-                className={`rounded px-2 py-1 text-[10px] ${filter === item.id ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
-        {visible.length === 0 ? (
-          <div className="h-full flex items-center justify-center text-text-dim text-sm">
-            {loading ? "Loading runtime events..." : filter === "work" ? "No recent operational activity." : `No matching runtime events for ${selectedThreadId}.`}
-          </div>
-        ) : (
-          <div className="space-y-1.5">
-            {visible.map((e) => (
-              <RuntimeRow key={e.key} event={e} />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function runtimeVisual(event: RuntimeEventItem): {
-  icon: string;
-  iconClass: string;
-  labelClass: string;
-  hoverBorder: string;
-} {
-  if (event.status === "error") {
-    return {
-      icon: "!",
-      iconClass: "text-red bg-red/10",
-      labelClass: "text-red",
-      hoverBorder: "hover:border-red/40",
-    };
-  }
-
-  if (event.kind === "tool") {
-    if (event.status === "running") {
-      return {
-        icon: "⟳",
-        iconClass: "text-yellow bg-yellow/10 animate-spin",
-        labelClass: "text-yellow",
-        hoverBorder: "hover:border-yellow/40",
-      };
-    }
-    return {
-      icon: event.status === "success" ? "✓" : "◇",
-      iconClass: event.status === "success" ? "text-green bg-green/10" : "text-yellow bg-yellow/10",
-      labelClass: "text-yellow",
-      hoverBorder: "hover:border-yellow/40",
-    };
-  }
-
-  if (event.kind === "thought") {
-    return {
-      icon: event.status === "running" ? "◐" : "◆",
-      iconClass: event.status === "running" ? "text-accent bg-accent/10 animate-pulse" : "text-accent bg-accent/10",
-      labelClass: "text-accent",
-      hoverBorder: "hover:border-accent/40",
-    };
-  }
-
-  if (event.kind === "thread") {
-    return {
-      icon: event.status === "success" ? "✓" : "↳",
-      iconClass: "text-blue bg-blue/10",
-      labelClass: "text-blue",
-      hoverBorder: "hover:border-blue/40",
-    };
-  }
-
-  if (event.kind === "channel") {
-    return {
-      icon: "→",
-      iconClass: "text-green bg-green/10",
-      labelClass: "text-green",
-      hoverBorder: "hover:border-green/40",
-    };
-  }
-
-  return {
-    icon: "•",
-    iconClass: "text-text-muted bg-bg-hover",
-    labelClass: "text-text-muted",
-    hoverBorder: "hover:border-border",
-  };
-}
-
-function RuntimeRow({ event }: { event: RuntimeEventItem }) {
-  const visual = runtimeVisual(event);
-  const reasoning = cleanReasoningDisplay(event.reasoningDetail || "");
-  const response = event.responseDetail || "";
-  const summaryDetail = response || reasoning || (
-    event.kind === "tool" && event.detail === event.toolName ? "" : event.detail || ""
-  );
-
-  return (
-    <details className={`group rounded border border-transparent hover:bg-bg-card/40 ${visual.hoverBorder}`}>
-      <summary className="list-none cursor-pointer px-2 py-2 flex items-start gap-2 min-w-0">
-        <span className={`mt-0.5 w-5 h-5 rounded flex items-center justify-center text-[11px] shrink-0 ${visual.iconClass}`}>
-          {visual.icon}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className={`text-[10px] uppercase tracking-wide shrink-0 ${visual.labelClass}`}>
-              {event.kind === "channel" ? "event" : event.kind}
-            </span>
-            <span className="text-xs text-text truncate">{event.label}</span>
-          </div>
-          {summaryDetail && (
-            <div className="text-[11px] text-text-dim truncate mt-0.5">{summaryDetail}</div>
-          )}
-        </div>
-        {event.durationMs != null && (
-          <span className="text-[10px] text-text-dim tabular-nums shrink-0">{durationLabel(event.durationMs)}</span>
-        )}
-        <span className="text-[10px] text-text-dim tabular-nums shrink-0">
-          {new Date(event.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-        </span>
-      </summary>
-      <div className="px-8 pb-2">
-        <div className="space-y-2">
-          {event.kind === "tool" && event.toolArgs && (
-            <RuntimePayloadBlock title="Arguments" text={event.toolArgs} />
-          )}
-          {event.kind === "tool" && event.toolResult && (
-            <RuntimePayloadBlock title="Result" text={event.toolResult} />
-          )}
-          {event.kind === "thought" && reasoning && (
-            <RuntimePayloadBlock title="Reasoning" text={reasoning} dim />
-          )}
-          {event.kind === "thought" && response && (
-            <RuntimePayloadBlock title="Response" text={response} />
-          )}
-          <RuntimePayloadBlock title="Raw event" text={formatToolPayload(event.raw)} dim />
-        </div>
-      </div>
-    </details>
-  );
-}
-
-function RuntimePayloadBlock({ title, text, dim }: { title: string; text: string; dim?: boolean }) {
-  return (
-    <div>
-      <div className="mb-1 text-[9px] uppercase tracking-wide text-text-dim">{title}</div>
-      <pre className={`text-[10px] ${dim ? "text-text-muted" : "text-text"} bg-bg-input border border-border rounded p-2 overflow-auto max-h-56`}>
-        {text}
-      </pre>
-    </div>
-  );
-}
-
 // --- Config Modal ---
 
 function ConfigModal({ open, onClose, instance, onSaved }: {
@@ -3257,6 +2503,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
 }) {
   const { shows } = useAudience();
   const [providerList, setProviderList] = useState<RuntimeConnection[]>([]);
+  const [serviceTierOverrides, setServiceTierOverrides] = useState<Record<string, string | null>>({});
   const [availableModels, setAvailableModels] = useState<Record<number, ModelInfo[]>>({});
   const [loadingModels, setLoadingModels] = useState<number | null>(null);
   const [defaultProvider, setDefaultProvider] = useState("");
@@ -3269,6 +2516,14 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   const [realtimeEnabled, setRealtimeEnabled] = useState(false);
   const [realtimeAvailable, setRealtimeAvailable] = useState(false);
   const [realtimeVoice, setRealtimeVoice] = useState("marin");
+  const [realtimeProvider, setRealtimeProvider] = useState("");
+  const [realtimeModel, setRealtimeModel] = useState("");
+  const [realtimeProviders, setRealtimeProviders] = useState<Array<{
+    name: string;
+    default?: boolean;
+    models?: Partial<Record<"large" | "medium" | "small", string>>;
+    realtime_voice?: string;
+  }>>([]);
   const [realtimeVoiceMCP, setRealtimeVoiceMCP] = useState<string[]>([]);
   const [realtimeCapabilityOptions, setRealtimeCapabilityOptions] = useState<MCPServerConfig[]>([]);
   const [saving, setSaving] = useState(false);
@@ -3276,43 +2531,53 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
 
   useEffect(() => {
     if (!open) return;
+    // Model catalogs can change while the dashboard stays open (for example
+    // when a provider exposes a newly released model). Do not retain the
+    // previous modal session's list when reopening the editor.
+    setAvailableModels({});
     setDirective(instance.directive || "");
     setMode(instance.mode || "autonomous");
     setProactivity(instance.proactivity ?? defaultProactivity);
     setError("");
 
     setDefaultProvider("");
+    setServiceTierOverrides(agentServiceTiers(instance.config));
 
     core.config(instance.id).then((config) => {
       setDirective(config.directive);
       setMode(config.mode);
       setProactivity(config.proactivity ?? instance.proactivity ?? defaultProactivity);
       setDefaultProvider(resolveEffectiveAgentProvider(instance.config || "{}", config.providers));
-      const realtimeProvider = (config.providers || []).find((provider) =>
-        provider.name === "openai-realtime" || provider.name.includes("realtime"),
-      );
+      const voiceProviders = (config.providers || []).filter((provider) => provider.name.endsWith("-realtime"));
+      const selectedVoiceProvider = voiceProviders.find((provider) => provider.default) || voiceProviders[0];
       const capabilityOptions = (config.mcp_servers || []).filter((server) =>
         server.name !== "channels" &&
         server.name !== "apteva-channels" &&
         server.name !== "apteva-server",
       );
       const availableNames = new Set(capabilityOptions.map((server) => server.name));
-      setRealtimeAvailable(!!realtimeProvider);
-      setRealtimeEnabled(config.realtime_enabled ?? !!realtimeProvider);
-      setRealtimeVoice(config.realtime_voice || realtimeProvider?.realtime_voice || "marin");
+      setRealtimeProviders(voiceProviders);
+      setRealtimeProvider(selectedVoiceProvider?.name || "");
+      setRealtimeModel(selectedVoiceProvider?.models?.large || "");
+      setRealtimeAvailable(!!selectedVoiceProvider);
+      setRealtimeEnabled(config.realtime_enabled ?? !!selectedVoiceProvider);
+      setRealtimeVoice(config.realtime_voice || selectedVoiceProvider?.realtime_voice || "marin");
       setRealtimeCapabilityOptions(capabilityOptions);
       setRealtimeVoiceMCP((config.realtime_voice_mcp || []).filter((name) => availableNames.has(name)));
     }).catch(() => {
       setDefaultProvider(resolveEffectiveAgentProvider(instance.config || "{}"));
       setRealtimeAvailable(false);
       setRealtimeEnabled(false);
+      setRealtimeProviders([]);
+      setRealtimeProvider("");
+      setRealtimeModel("");
       setRealtimeCapabilityOptions([]);
       setRealtimeVoiceMCP([]);
     });
 
     integrations
       .runtimeConnections(instance.project_id)
-      .then((list) => setProviderList((list || []).filter((c) => c.role === "llm")))
+      .then((list) => setProviderList((list || []).filter((c, index, rows) => c.role === "llm" && rows.findIndex((row) => row.provider_key === c.provider_key) === index)))
       .catch(() => {});
   }, [open, instance.id]);
 
@@ -3354,6 +2619,17 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   };
 
   const models = selectedDetail ? availableModels[selectedDetail.id] : undefined;
+  const selectedRealtimeConfig = realtimeProviders.find((provider) => provider.name === realtimeProvider);
+  const realtimeCatalog = providerList.find((connection) => connection.realtime?.provider_key === realtimeProvider)?.realtime;
+  const realtimeModelOptions = realtimeCatalog?.models || Array.from(new Set([
+    selectedRealtimeConfig?.models?.large,
+    selectedRealtimeConfig?.models?.medium,
+    selectedRealtimeConfig?.models?.small,
+  ].filter((model): model is string => !!model))).map((model) => ({ id: model, name: model, available: true }));
+  const realtimeVoices = realtimeCatalog?.voices || (realtimeProvider === "openai-realtime"
+    ? ["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"]
+    : [selectedRealtimeConfig?.realtime_voice || realtimeVoice]);
+  const selectedRealtimeVoice = realtimeVoices.includes(realtimeVoice) ? realtimeVoice : realtimeVoices[0];
 
   const handleSave = async () => {
     setSaving(true); setError("");
@@ -3384,8 +2660,11 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         mode: mode || undefined,
         proactivity,
         providers: provs,
+        serviceTierOverrides: serviceTierPatch(instance.config, serviceTierOverrides),
         realtimeEnabled,
-        realtimeVoice,
+        realtimeProvider: realtimeAvailable ? realtimeProvider : undefined,
+        realtimeModel: realtimeAvailable ? realtimeModel : undefined,
+        realtimeVoice: selectedRealtimeVoice,
         realtimeVoiceMCP,
       });
       onSaved();
@@ -3460,6 +2739,8 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
           </div>
         )}
 
+        {shows("agent.provider") && <ServiceTierSelect connection={selectedDetail} inherit value={serviceTierOverrides[defaultProvider]} disabled={saving} onChange={(value) => setServiceTierOverrides((current) => ({ ...current, [defaultProvider]: value }))} />}
+
         {/* Models */}
         {shows("agent.provider") && selectedDetail && (
           <div className="border border-border rounded-lg p-3 space-y-2">
@@ -3531,17 +2812,56 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
             </button>
           </div>
           {!realtimeAvailable ? (
-            <p className="mt-3 text-[11px] text-text-muted">Connect an OpenAI provider with realtime support to enable voice.</p>
+            <p className="mt-3 text-[11px] text-text-muted">Connect a provider with realtime voice support to enable voice.</p>
           ) : realtimeEnabled ? (
             <div className="mt-4 space-y-4 border-t border-border/70 pt-4">
+              {realtimeProviders.length > 1 && (
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-text-dim">Voice provider</label>
+                  <select
+                    value={realtimeProvider}
+                    onChange={(event) => {
+                      const name = event.target.value;
+                      const provider = realtimeProviders.find((candidate) => candidate.name === name);
+                      setRealtimeProvider(name);
+                      setRealtimeModel(provider?.models?.large || "");
+                      setRealtimeVoice(provider?.realtime_voice || "");
+                    }}
+                    className="w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-xs text-text focus:border-accent focus:outline-none"
+                  >
+                    {realtimeProviders.map((provider) => (
+                      <option key={provider.name} value={provider.name}>{provider.name.replace("-realtime", "").replace(/^./, (letter) => letter.toUpperCase())}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {realtimeModelOptions.length > 0 && (
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-text-dim">Live model</label>
+                  <select
+                    value={realtimeModel}
+                    onChange={(event) => setRealtimeModel(event.target.value)}
+                    className="w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-xs text-text focus:border-accent focus:outline-none"
+                  >
+                    {realtimeModelOptions.map((model) => (
+                      <option key={model.id} value={model.id} disabled={!model.available}>
+                        {model.name}{model.available ? "" : " · requires Core update"}
+                      </option>
+                    ))}
+                  </select>
+                  {realtimeCatalog?.models.some((model) => !model.available) && (
+                    <p className="mt-1 text-[11px] text-text-muted">Gemini 3.8 Live will be selectable after the agent Core protocol update.</p>
+                  )}
+                </div>
+              )}
               <div>
                 <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-text-dim">Voice</label>
                 <select
-                  value={realtimeVoice}
+                  value={selectedRealtimeVoice}
                   onChange={(event) => setRealtimeVoice(event.target.value)}
                   className="w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-xs text-text focus:border-accent focus:outline-none"
                 >
-                  {["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"].map((voice) => (
+                  {realtimeVoices.map((voice) => (
                     <option key={voice} value={voice}>{voice[0].toUpperCase() + voice.slice(1)}</option>
                   ))}
                 </select>

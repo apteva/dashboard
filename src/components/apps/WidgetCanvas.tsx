@@ -1,4 +1,6 @@
+import { PresetConnectionGuide } from "../projects/PresetConnectionGuide";
 import { AppIcon } from "@apteva/ui-kit";
+import { Modal } from "../Modal";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -8,6 +10,12 @@ import {
   type WidgetInstance,
   type WidgetSize,
 } from "./contributions";
+import {
+  createWidgetActionBridge,
+  type WidgetAction,
+  type WidgetContext,
+  type WidgetRenderContext,
+} from "./widgetContext";
 
 export interface WidgetDefinition {
   key: string;
@@ -22,9 +30,11 @@ export interface WidgetDefinition {
   suggested?: boolean;
   /** Show this widget on a fresh layout before the user customizes it. */
   defaultVisible?: boolean;
+  /** Keep exactly one instance on this surface; it can still move and resize. */
+  required?: boolean;
   kind?: "builtin" | "app";
   providerLabel?: string;
-  render: (instance: WidgetInstance) => ReactNode;
+  render: (instance: WidgetInstance, renderContext?: WidgetRenderContext) => ReactNode;
 }
 
 export function WidgetCanvas({
@@ -37,6 +47,10 @@ export function WidgetCanvas({
   onVisibleComponentsChange,
   galleryRequest = 0,
   definitionsReady = true,
+  defaultLayout,
+  context,
+  workspaceLayout = false,
+  onWidgetAction,
   className = "grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2",
 }: {
   projectId?: string | null;
@@ -49,12 +63,24 @@ export function WidgetCanvas({
   galleryRequest?: number;
   /** False while app-owned definitions are still being discovered. */
   definitionsReady?: boolean;
+  /** Contextual preset used until this surface has its own saved layout. */
+  defaultLayout?: WidgetInstance[];
+  /** Shared selection context passed to native and app-provided widgets. */
+  context?: WidgetContext;
+  workspaceLayout?: boolean;
+  /** Optional host action handler. Actions are also published on the window bridge. */
+  onWidgetAction?: (action: WidgetAction) => void;
   className?: string;
 }) {
   const { project, updateSurface, saveState } = useProjectUILayout(projectId, layoutScope);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [dragging, setDragging] = useState<string | null>(null);
   const [settingsID, setSettingsID] = useState<string | null>(null);
+  const widgetActions = useMemo(() => createWidgetActionBridge(onWidgetAction), [onWidgetAction]);
+  const renderContext = useMemo<WidgetRenderContext>(() => ({
+    context: context || { scope: layoutScope },
+    actions: widgetActions,
+  }), [context, layoutScope, widgetActions]);
   useEffect(() => {
     if (galleryRequest > 0) setGalleryOpen(true);
   }, [galleryRequest]);
@@ -68,15 +94,16 @@ export function WidgetCanvas({
   const stored = explicit && Array.isArray(project.slots?.[slot])
     ? normalizeStoredWidgets(project.slots?.[slot] || [], definitions)
     : [];
-  const configured = explicit
+  const initialLayout = explicit
     ? stored
-    : definitions.filter((definition) => definition.defaultVisible).map((definition) => ({
+    : defaultLayout ?? definitions.filter((definition) => definition.defaultVisible).map((definition) => ({
       id: `default:${definition.key}`,
       component: definition.key,
       size: definition.defaultSize,
       settings: { ...(definition.defaultSettings || {}) },
     }));
-  const visible = configured.filter((instance) => byKey.has(instance.component));
+  const configured = ensureRequiredWidgets(initialLayout, definitions);
+  const visible = configured.filter((instance) => instance.component !== "native:inbox");
   const loadingInstances = configured.filter((instance) =>
     byKey.has(instance.component) || !instance.component.startsWith("native:"),
   );
@@ -90,9 +117,10 @@ export function WidgetCanvas({
 
   const persist = (next: WidgetInstance[]) => {
     if (layoutScope === "project" && !projectId) return;
-    void updateSurface(slot, next);
+    void updateSurface(slot, ensureRequiredWidgets(next, definitions));
   };
   const add = (definition: WidgetDefinition) => {
+    if (definition.required && configured.some((item) => item.component === definition.key)) return;
     persist([
       ...configured,
       {
@@ -106,7 +134,11 @@ export function WidgetCanvas({
   };
   const patchWidget = (id: string, patch: Partial<WidgetInstance>) =>
     persist(configured.map((item) => item.id === id ? { ...item, ...patch } : item));
-  const remove = (id: string) => persist(configured.filter((item) => item.id !== id));
+  const remove = (id: string) => {
+    const instance = configured.find((item) => item.id === id);
+    if (instance && byKey.get(instance.component)?.required) return;
+    persist(configured.filter((item) => item.id !== id));
+  };
   const move = (id: string, target: string) =>
     persist(reorderWidgetInstances(configured, id, target));
   const activeSettings = settingsID
@@ -132,6 +164,14 @@ export function WidgetCanvas({
           </span>
           <button
             type="button"
+            hidden={!defaultLayout}
+            onClick={() => defaultLayout && persist(defaultLayout)}
+            className="min-h-8 rounded-md border border-border px-3 py-1.5 text-[11px] text-text-muted hover:text-text"
+          >
+            Reset view
+          </button>
+          <button
+            type="button"
             onClick={() => setGalleryOpen(true)}
             className="ml-auto min-h-8 rounded-md border border-border px-3 py-1.5 text-[11px] font-semibold text-text hover:border-accent hover:text-accent"
           >
@@ -152,7 +192,11 @@ export function WidgetCanvas({
       ) : visible.length > 0 ? (
         <div className={className} data-widget-canvas={slot}>
           {visible.map((instance, index) => {
-            const definition = byKey.get(instance.component)!;
+            const definition: WidgetDefinition = byKey.get(instance.component) || {
+              key: instance.component, label: instance.component.split(":").pop()?.replaceAll("-", " ") || "Widget",
+              supportedSizes: ["half", "full"], defaultSize: instance.size,
+              render: () => <section className="h-full rounded-lg border border-dashed border-border p-4"><h3 className="text-sm font-semibold">Widget unavailable</h3><p className="mt-2 text-xs leading-relaxed text-text-muted">{instance.component} is saved here. Install or update its app and check its access to this page or agent.</p><a href="/apps" className="mt-3 inline-block text-xs text-accent">Manage apps</a></section>,
+            };
             const sizes = definition.supportedSizes;
             return (
               <div
@@ -169,7 +213,7 @@ export function WidgetCanvas({
               >
                 {editing && (
                   <div
-                    className="mb-1.5 flex min-h-9 items-center gap-1.5 rounded-lg border border-border bg-bg-card px-2 py-1 shadow-sm"
+                    className="mb-1.5 flex min-h-9 flex-wrap items-center gap-1.5 rounded-lg border border-border bg-bg-card px-2 py-1 shadow-sm"
                     data-widget-editor-controls
                   >
                     <button
@@ -207,7 +251,7 @@ export function WidgetCanvas({
                       <button
                         type="button"
                         onClick={() => setSettingsID(instance.id)}
-                        className="flex h-7 w-7 items-center justify-center rounded text-[11px] text-text-muted hover:bg-bg-hover hover:text-text"
+                        className="flex h-10 w-10 sm:h-7 sm:w-7 items-center justify-center rounded text-[11px] text-text-muted hover:bg-bg-hover hover:text-text"
                         aria-label={`Configure ${definition.label}`}
                       >
                         ⚙
@@ -217,28 +261,32 @@ export function WidgetCanvas({
                       type="button"
                       disabled={index === 0}
                       onClick={() => move(instance.id, visible[index - 1]?.id || instance.id)}
-                      className="flex h-7 w-7 items-center justify-center rounded text-[11px] text-text-dim hover:bg-bg-hover disabled:opacity-25 sm:hidden"
+                      className="flex h-10 w-10 sm:h-7 sm:w-7 items-center justify-center rounded text-[11px] text-text-dim hover:bg-bg-hover disabled:opacity-25 sm:hidden"
                       aria-label={`Move ${definition.label} earlier`}
                     >↑</button>
                     <button
                       type="button"
                       disabled={index === visible.length - 1}
                       onClick={() => move(instance.id, visible[index + 1]?.id || instance.id)}
-                      className="flex h-7 w-7 items-center justify-center rounded text-[11px] text-text-dim hover:bg-bg-hover disabled:opacity-25 sm:hidden"
+                      className="flex h-10 w-10 sm:h-7 sm:w-7 items-center justify-center rounded text-[11px] text-text-dim hover:bg-bg-hover disabled:opacity-25 sm:hidden"
                       aria-label={`Move ${definition.label} later`}
                     >↓</button>
-                    <button
+                    {workspaceLayout && <select aria-label={`Area for ${definition.label}`} className="min-h-9 rounded border border-border bg-bg-input px-2 text-xs" value={instance.placement || "main"} onChange={event => patchWidget(instance.id, { placement: event.target.value as WidgetInstance["placement"] })}>
+                      <option value="assistant">Side panel</option><option value="main">Main view</option><option value="activity">Activity panel</option><option value="details">Details panel</option>
+                    </select>}
+                    {definition.required ? <span className="px-1 text-[10px] text-text-dim" title="Always shown on this page. You can resize or move it.">Always shown</span> : <button
                       type="button"
                       onClick={() => remove(instance.id)}
-                      className="flex h-7 w-7 items-center justify-center rounded text-sm text-text-dim hover:bg-red/10 hover:text-red"
+                      className="flex h-10 w-10 sm:h-7 sm:w-7 items-center justify-center rounded text-sm text-text-dim hover:bg-red/10 hover:text-red"
                       aria-label={`Remove ${definition.label}`}
                     >
                       ×
-                    </button>
+                    </button>}
                   </div>
                 )}
                 <div className={`min-w-0 ${editing ? "min-h-0 flex-1" : "h-full"}`}>
-                  {definition.render(instance)}
+                  {instance.agent_id === -1 ? <p className="rounded-lg border border-border p-4 text-sm text-text-muted">This widget is waiting for its preset agent. Retry workspace setup to finish creating it.</p> : definition.render(instance, renderContext)}
+                  {!!instance.setup?.length && <PresetConnectionGuide steps={instance.setup} projectId={projectId || undefined} compact /> }
                 </div>
               </div>
             );
@@ -297,7 +345,31 @@ function WidgetCanvasLoading({
   );
 }
 
-function normalizeStoredWidgets(values: unknown[], definitions: WidgetDefinition[]): WidgetInstance[] {
+function ensureRequiredWidgets(instances: WidgetInstance[], definitions: WidgetDefinition[]): WidgetInstance[] {
+  const required = definitions.filter((definition) => definition.required);
+  if (required.length === 0) return instances;
+  const requiredKeys = new Set(required.map((definition) => definition.key));
+  const seen = new Set<string>();
+  // Preserve saved size/order and unavailable app entries. Restore a mandatory
+  // widget even when an older saved layout removed it, without rewriting it.
+  const existing = instances.filter((instance) => {
+    if (!requiredKeys.has(instance.component)) return true;
+    if (seen.has(instance.component)) return false;
+    seen.add(instance.component);
+    return true;
+  });
+  return [
+    ...required.filter((definition) => !seen.has(definition.key)).map((definition) => ({
+      id: `required:${definition.key}`,
+      component: definition.key,
+      size: definition.defaultSize,
+      settings: { ...(definition.defaultSettings || {}) },
+    })),
+    ...existing,
+  ];
+}
+
+export function normalizeStoredWidgets(values: unknown[], definitions: WidgetDefinition[]): WidgetInstance[] {
   const byKey = new Map(definitions.map((item) => [item.key, item]));
   return values.flatMap((value, index) => {
     const legacy = typeof value === "string";
@@ -313,6 +385,9 @@ function normalizeStoredWidgets(values: unknown[], definitions: WidgetDefinition
       : definition?.defaultSize || "half";
     return [{
       id: raw?.id || `legacy:${index}:${component}`,
+      placement: raw?.placement,
+      agent_id: raw?.agent_id,
+      setup: raw?.setup,
       component,
       size,
       settings: {
@@ -344,9 +419,8 @@ function WidgetGallery({
   const builtins = definitions.filter((definition) => definition.kind === "builtin" || definition.key.startsWith("native:"));
   const appWidgets = definitions.filter((definition) => !builtins.includes(definition));
   return (
-    <div className="fixed inset-0 z-[110] grid place-items-center p-4" role="dialog" aria-modal="true" aria-label="Widget gallery">
-      <button className="absolute inset-0 bg-black/65" onClick={onClose} aria-label="Close widget gallery" />
-      <div className="relative flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-bg-card shadow-2xl">
+    <div className="relative z-[110]"><Modal open onClose={onClose} ariaLabel="Widget gallery" width="max-w-2xl">
+      <div className="flex max-h-[82dvh] w-full flex-col overflow-hidden">
         <header className="flex items-center border-b border-border px-5 py-4">
           <div>
             <h2 className="text-sm font-bold text-text">Add a widget</h2>
@@ -361,7 +435,7 @@ function WidgetGallery({
           )}
         </div>
       </div>
-    </div>
+    </Modal></div>
   );
 }
 
@@ -403,10 +477,11 @@ function WidgetGalleryGroup({
                 </div>
                 <button
                   type="button"
+                  disabled={definition.required && count > 0}
                   onClick={() => onAdd(definition)}
-                  className="mt-auto self-end rounded-md border border-accent px-3 py-1.5 text-[9px] font-bold text-accent hover:bg-accent/10"
+                  className="mt-auto self-end rounded-md border border-accent px-3 py-1.5 text-[9px] font-bold text-accent hover:bg-accent/10 disabled:cursor-default disabled:opacity-50"
                 >
-                  {count ? "Add another" : "Add"}
+                  {definition.required && count ? "Always shown" : count ? "Add another" : "Add"}
                 </button>
             </article>
           );
@@ -428,9 +503,8 @@ function WidgetSettingsDialog({
   onClose: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-[115] grid place-items-center p-4" role="dialog" aria-modal="true" aria-label={`Configure ${definition.label}`}>
-      <button className="absolute inset-0 bg-black/65" onClick={onClose} aria-label="Close settings" />
-      <div className="relative w-full max-w-lg rounded-xl border border-border bg-bg-card p-5 shadow-2xl">
+    <div className="relative z-[115]"><Modal open onClose={onClose} ariaLabel={`Configure ${definition.label}`} width="max-w-lg">
+      <div className="max-h-[82dvh] w-full overflow-y-auto p-5">
         <div className="flex items-center">
           <h2 className="text-sm font-bold text-text">{definition.label}</h2>
           <button type="button" onClick={onClose} className="ml-auto text-lg text-text-dim hover:text-text">×</button>
@@ -440,6 +514,6 @@ function WidgetSettingsDialog({
           <button type="button" onClick={onClose} className="rounded-md border border-accent bg-accent px-4 py-2 text-xs font-bold text-bg">Done</button>
         </div>
       </div>
-    </div>
+    </Modal></div>
   );
 }

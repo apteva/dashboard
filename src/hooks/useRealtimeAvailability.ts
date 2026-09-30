@@ -20,9 +20,8 @@ export function useRealtimeAvailability(agentId?: number, running = false): Real
     const refresh = () => {
       core.config(agentId).then((config) => {
         if (cancelled) return;
-        const provider = (config.providers || []).find((candidate) =>
-          candidate.name === "openai-realtime" || candidate.name.includes("realtime"),
-        );
+        const providers = (config.providers || []).filter((candidate) => candidate.name.endsWith("-realtime"));
+        const provider = providers.find((candidate) => candidate.default) || providers[0];
         const attached = new Set((config.mcp_servers || []).map((server) => server.name));
         setValue({
           enabled: !!config.realtime_enabled,

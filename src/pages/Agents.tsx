@@ -1,16 +1,20 @@
 import { behaviorDescriptions, behaviorExplanation } from "../agentBehavior";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { instances, core, instanceSkills, agentCoreRollouts, type Agent, type AgentCoreRollout, type InstanceSkill, type MCPServerConfig, type RunMode } from "../api";
+import { instances, core, instanceSkills, agentCoreRollouts, apps as appsAPI, integrations, mcpServers as mcpServersAPI, telemetry, type Agent, type AgentCoreRollout, type InstanceSkill, type MCPServerConfig, type RunMode } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { Modal } from "../components/Modal";
 import { sleepClassName, sleepLabel, sleepTitle, type SleepLike } from "../utils/sleepStatus";
 import { structureDirectiveDraft } from "../utils/directiveMarkdown";
 import { AppContributionArea, ContributionManager } from "../components/apps/contributions";
+import { AgentIconPicker, AgentMark, suggestedAgentIcon } from "../components/AgentMark";
+import { AgentCapabilityIcons, type AgentCapabilityCatalog } from "../components/AgentCapabilityIcons";
 
 type AgentLiveStatus = { threads: number; iter: number; rate: string } & SleepLike;
 type AgentsViewMode = "cards" | "list";
+const EMPTY_SKILLS: InstanceSkill[] = [];
+const EMPTY_MCP_CONFIGS: MCPServerConfig[] = [];
 
 function mcpNamesFromConfig(servers?: MCPServerConfig[]) {
   const names: string[] = [];
@@ -24,11 +28,11 @@ function mcpNamesFromConfig(servers?: MCPServerConfig[]) {
   return names;
 }
 
-function mcpNamesFromAgentConfig(raw?: string): string[] {
+function mcpConfigsFromAgentConfig(raw?: string): MCPServerConfig[] {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as { mcp_servers?: MCPServerConfig[] };
-    return mcpNamesFromConfig(parsed.mcp_servers);
+    return parsed.mcp_servers || [];
   } catch {
     return [];
   }
@@ -50,12 +54,13 @@ export function Agents() {
   const [showCreate, setShowCreate] = useState(false);
   const [showMobileActions, setShowMobileActions] = useState(false);
   const [name, setName] = useState("");
+  const [createIcon, setCreateIcon] = useState("robot");
   const [directive, setDirective] = useState("");
   // Default new instances to "learn" — safest default for a fresh agent:
   // it asks before every new kind of action and remembers answers, so
   // users building their first agent can watch it ask rather than act.
   // Can be changed to cautious/autonomous before create, or later in
-  // AgentView / the ActivityPanel header toggle.
+  // AgentView configuration controls.
   const [createMode, setCreateMode] = useState<RunMode>("learn");
   const [createUnconscious, setCreateUnconscious] = useState(true);
   const [error, setError] = useState("");
@@ -70,7 +75,9 @@ export function Agents() {
   // Per-instance saved MCP attachments. Sourced from /config so the
   // fleet row renders the same list while the agent is running or
   // stopped.
-  const [mainMCPs, setMainMCPs] = useState<Record<number, string[]>>({});
+  const [mainMCPs, setMainMCPs] = useState<Record<number, MCPServerConfig[]>>({});
+  const [capabilityCatalog, setCapabilityCatalog] = useState<AgentCapabilityCatalog>({ apps: [], connections: [], inventory: [] });
+  const [lastActive, setLastActive] = useState<Record<number, string>>({});
   const [viewMode, setViewMode] = useState<AgentsViewMode>(() => {
     try {
       return localStorage.getItem("apteva.agents.view") === "list" ? "list" : "cards";
@@ -111,6 +118,7 @@ export function Agents() {
   // = modal closed.
   const [editTarget, setEditTarget] = useState<Agent | null>(null);
   const [editName, setEditName] = useState("");
+  const [editIcon, setEditIcon] = useState("robot");
   const [editDirective, setEditDirective] = useState("");
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState("");
@@ -121,6 +129,7 @@ export function Agents() {
   const openEditModal = (inst: Agent) => {
     setEditTarget(inst);
     setEditName(inst.name);
+    setEditIcon(suggestedAgentIcon(inst.icon));
     setEditDirective(inst.directive || "");
     setEditError("");
   };
@@ -144,11 +153,13 @@ export function Agents() {
       // changed to avoid spurious history rows on the directive
       // audit trail.
       const nameChanged = trimmedName !== editTarget.name;
+      const appearanceChanged = editIcon !== (editTarget.icon || "robot") || editTarget.icon_color !== "accent";
       const directiveChanged = trimmedDirective !== (editTarget.directive || "").trim();
-      if (nameChanged) await instances.rename(editTarget.id, trimmedName);
+      if (nameChanged || appearanceChanged) await instances.updateIdentity(editTarget.id, { ...(nameChanged ? { name: trimmedName } : {}), icon: editIcon, icon_color: "accent" });
       if (directiveChanged) await instances.updateConfig(editTarget.id, { directive: trimmedDirective });
       closeEditModal();
       load();
+      window.dispatchEvent(new Event("apteva:agents-changed"));
     } catch (err: any) {
       setEditError(err?.message || "Save failed");
       setEditSaving(false);
@@ -214,6 +225,8 @@ export function Agents() {
     setLoaded(false);
     setLiveStatus({});
     setMainMCPs({});
+    setCapabilityCatalog({ apps: [], connections: [], inventory: [] });
+    setLastActive({});
     load();
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
@@ -245,10 +258,50 @@ export function Agents() {
   const runtimeAgentsKey = list.map((inst) => `${inst.id}:${inst.status}`).join("|");
   const mcpConfigKey = list.map((inst) => `${inst.id}:${inst.config}`).join("|");
 
+  // Project capability metadata is loaded once for all cards, then refreshed
+  // periodically so attachment icons update after app or connection changes.
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    const refresh = async () => {
+      const [apps, connections, inventory] = await Promise.allSettled([
+        appsAPI.list(projectId),
+        integrations.connections(projectId),
+        mcpServersAPI.list(projectId, { includeAppOwned: true }),
+      ]);
+      if (!cancelled) setCapabilityCatalog((previous) => ({
+        apps: apps.status === "fulfilled" ? apps.value : previous.apps,
+        connections: connections.status === "fulfilled" ? connections.value : previous.connections,
+        inventory: inventory.status === "fulfilled" ? inventory.value : previous.inventory,
+      }));
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 30_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [projectId]);
+
+  // Fetch one activity timestamp per agent in a single project query.
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    const refresh = async () => {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const rows = await telemetry.agentsLastActive(projectId);
+        if (!cancelled) setLastActive(Object.fromEntries(rows.map((row) => [row.agent_id, row.last_active_at])));
+      } catch {
+        // Retain the last known activity when a refresh is temporarily unavailable.
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 30_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [projectId]);
+
   // The fleet payload's config blob is only a fast fallback: for some older
   // agents it does not contain the full persisted/live mcp_servers list.
   // Resolve /config once when fleet membership or stored config changes, not
-  // on the five-second list poll, so MCP chips stay correct without restoring
+  // on the five-second list poll, so capability icons stay correct without restoring
   // the old per-agent request storm.
   useEffect(() => {
     if (list.length === 0) return;
@@ -256,15 +309,15 @@ export function Agents() {
     const gen = loadGen.current;
     const agents = list;
     const fallback = Object.fromEntries(
-      agents.map((inst) => [inst.id, mcpNamesFromAgentConfig(inst.config)]),
+      agents.map((inst) => [inst.id, mcpConfigsFromAgentConfig(inst.config)]),
     );
     setMainMCPs(fallback);
     void mapWithConcurrency(agents, 6, async (inst) => {
-      const names = await core
+      const configs = await core
         .config(inst.id)
-        .then((config) => mcpNamesFromConfig(config.mcp_servers))
+        .then((config) => config.mcp_servers || [])
         .catch(() => fallback[inst.id] || []);
-      return [inst.id, names] as const;
+      return [inst.id, configs] as const;
     }).then((pairs) => {
       if (cancelled || gen !== loadGen.current) return;
       setMainMCPs(Object.fromEntries(pairs));
@@ -336,16 +389,19 @@ export function Agents() {
       // a fresh instance consume tokens before the user has had a chance
       // to configure directive / MCPs / channels.
       await instances.create(name.trim(), directive.trim(), createMode, projectId, false, {
+        icon: createIcon,
         // includeChannels deliberately omitted: the server default is
         // now false — the conversations app owns the chat surface.
         unconscious: createUnconscious,
       });
       setName("");
+      setCreateIcon("robot");
       setDirective("");
       setCreateMode("learn");
       setCreateUnconscious(true);
       setShowCreate(false);
       load();
+      window.dispatchEvent(new Event("apteva:agents-changed"));
     } catch (err: any) {
       setError(err?.message || "Failed to create agent");
     } finally {
@@ -486,39 +542,37 @@ export function Agents() {
             {list.map((inst) => {
               const live = liveStatus[inst.id];
               const isRunning = inst.status === "running";
-              const assignedSkills = agentSkills[inst.id] || [];
-              const mcpNames = mainMCPs[inst.id] || [];
+              const assignedSkills = agentSkills[inst.id] || EMPTY_SKILLS;
+              const attachedMCPs = mainMCPs[inst.id] || EMPTY_MCP_CONFIGS;
               return (
                 <article
                   key={inst.id}
-                  className="relative min-h-[220px] rounded-lg border border-border bg-bg-card transition-colors hover:border-accent sm:h-[220px]"
+                  className="relative rounded-lg border border-border bg-bg-card transition-colors hover:border-accent"
                 >
-                  <Link to={`/agents/${inst.id}`} className="block h-full min-w-0 p-4">
-                    <div className="min-w-0 pr-28">
-                      <div className="truncate text-sm font-bold text-text">{inst.name}</div>
-                      <div className="mt-1 flex items-center gap-2 text-[10px] text-text-dim">
-                        <span>#{inst.id}</span>
-                        <ModeBadge mode={inst.mode} />
-                        {inst.core_update_available && (
-                          <span
-                            className="rounded bg-yellow/10 px-1.5 py-0.5 text-yellow"
-                            title={`Running ${inst.core_version || "unknown"}; target ${inst.target_core_version || "current"}`}
-                          >
-                            core update
-                          </span>
-                        )}
+                  <Link to={`/agents/${inst.id}`} className="block min-w-0 p-4">
+                    <div className="flex min-w-0 items-start gap-3 pr-10">
+                      <AgentMark icon={inst.icon} color={inst.icon_color} name={inst.name} />
+                      <div className="min-w-0 flex-1">
+                        <div className="line-clamp-2 text-sm font-bold leading-5 text-text" title={inst.name}>{inst.name}</div>
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-text-dim">
+                          <LifecycleBadge running={isRunning} compact />
+                          <ModeBadge mode={inst.mode} />
+                          {inst.core_update_available && (
+                            <span
+                              className="rounded bg-yellow/10 px-1.5 py-0.5 text-yellow"
+                              title={`Running ${inst.core_version || "unknown"}; target ${inst.target_core_version || "current"}`}
+                            >
+                              core update
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
-
-                    <div className="mt-4 min-h-[66px]">
-                      <AppContributionArea slot="dashboard.agent_card" projectId={projectId} agentId={inst.id} />
-                    </div>
-
-                    <RuntimeSummary live={live} running={isRunning} now={now} />
-                    <AgentCapabilityChips skills={assignedSkills} mcpNames={mcpNames} />
+                    <AgentActivityLine live={live} running={isRunning} lastActiveAt={lastActive[inst.id]} now={now} />
+                    <AgentCapabilityIcons attached={attachedMCPs} skills={assignedSkills} catalog={capabilityCatalog} />
+                    <AppContributionArea slot="dashboard.agent_card" projectId={projectId} agentId={inst.id} className="mt-3" />
                   </Link>
-                  <div className="absolute right-3 top-3 z-20 flex items-center gap-2">
-                    <LifecycleBadge running={isRunning} />
+                  <div className="absolute right-2 top-2 z-20">
                     <AgentActionsMenu
                       agent={inst}
                       rolloutRunning={rollout?.state === "running"}
@@ -548,7 +602,7 @@ export function Agents() {
                 const live = liveStatus[inst.id];
                 const isRunning = inst.status === "running";
                 const assignedSkills = agentSkills[inst.id] || [];
-                const mcpNames = mainMCPs[inst.id] || [];
+                const mcpNames = mcpNamesFromConfig(mainMCPs[inst.id]);
                 return (
                   <article
                     key={inst.id}
@@ -556,6 +610,7 @@ export function Agents() {
                   >
                     <Link to={`/agents/${inst.id}`} className="min-w-0">
                       <div className="flex min-w-0 items-center gap-2">
+                        <AgentMark icon={inst.icon} color={inst.icon_color} size="sm" name={inst.name} />
                         <span className="truncate text-sm font-bold text-text">{inst.name}</span>
                         <LifecycleBadge running={isRunning} compact />
                       </div>
@@ -632,12 +687,12 @@ export function Agents() {
         {editTarget && (
           <form
             onSubmit={(e) => { e.preventDefault(); void saveEdit(); }}
-            className="p-4 sm:p-6 w-full max-w-[560px] space-y-4"
+            className="page-safe-bottom max-h-[90dvh] w-full max-w-[620px] space-y-4 overflow-y-auto p-4 sm:p-6"
           >
             <div>
               <h2 className="text-text text-base font-bold">Edit agent</h2>
               <p className="text-text-muted text-xs mt-1">
-                Quick edits — name + directive. For mode, providers,
+                Quick edits — name, icon, and directive. For mode, providers,
                 MCPs, open the agent's detail page.
               </p>
             </div>
@@ -651,6 +706,7 @@ export function Agents() {
                 autoFocus
               />
             </div>
+            <AgentIconPicker icon={editIcon} onIconChange={setEditIcon} compact />
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="block text-text-muted text-sm">
@@ -763,6 +819,7 @@ export function Agents() {
               autoFocus
             />
           </div>
+          <AgentIconPicker icon={createIcon} onIconChange={setCreateIcon} />
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="block text-text-muted text-sm">Directive (optional)</label>
@@ -879,6 +936,30 @@ function LifecycleBadge({ running, compact = false }: { running: boolean; compac
       {running ? "running" : "stopped"}
     </span>
   );
+}
+
+function AgentActivityLine({ live, running, lastActiveAt, now }: {
+  live?: AgentLiveStatus | null;
+  running: boolean;
+  lastActiveAt?: string;
+  now: number;
+}) {
+  const working = running && live?.sleep_state === "active";
+  const paused = running && live?.sleep_state === "paused";
+  const timestamp = Date.parse(lastActiveAt || live?.sleep_started_at || "");
+  const age = Number.isFinite(timestamp) ? Math.max(0, now - timestamp) : null;
+  const relative = age === null ? ""
+    : age < 60_000 ? "just now"
+      : age < 3_600_000 ? `${Math.floor(age / 60_000)}m ago`
+        : age < 86_400_000 ? `${Math.floor(age / 3_600_000)}h ago`
+          : `${Math.floor(age / 86_400_000)}d ago`;
+  const label = working ? "Working now" : paused ? "Paused"
+    : relative ? `Last active ${relative}` : "No recent activity";
+  return <div className="mt-3 flex min-w-0 items-center gap-2 text-xs text-text-muted"
+    title={age === null ? undefined : new Date(timestamp).toLocaleString()}>
+    <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${working ? "bg-green" : "bg-text-dim"}`} aria-hidden="true" />
+    <span className="truncate">{label}</span>
+  </div>;
 }
 
 function RuntimeSummary({

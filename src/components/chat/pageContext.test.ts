@@ -16,3 +16,6 @@ test("settings allowlists section names and unsupported routes share nothing", (
   expect(describeAssistantPage("/settings", "?tab=secret", "p")?.tab).toBeUndefined();
   expect(describeAssistantPage("/login", "?token=secret", "p")).toBeUndefined();
 });
+test("custom pages use dashboard context without exposing their query", () => {
+  expect(describeAssistantPage("/pages/build-123", "?project=p&token=secret", "p")).toEqual({ version: 1, page: "dashboard", project_id: "p", project_name: undefined });
+});

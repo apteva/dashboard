@@ -13,6 +13,14 @@ let saved: WorkspaceSetupDraft;
 function mount(onFinish = mock(async (_destination: string) => {})) {
   return render(<MemoryRouter><Routes><Route path="/" element={<SetupFlow userId={1} projectId="p" onFinish={onFinish} />} /><Route path="/agents/new" element={<p>Manual agent wizard</p>} /></Routes></MemoryRouter>);
 }
+async function chooseBusinessPreset() {
+  fireEvent.click(await screen.findByRole("button", { name: /Lead generation/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "Use this preset" }));
+  await screen.findByRole("textbox", { name: /What would you like help/ });
+}
+function openAgentCustomization() {
+  fireEvent.click(screen.getByText(/Customize agents/));
+}
 beforeEach(() => {
   auth.prepareOnboarding = mock(async () => { throw new Error("Must not prepare while browsing"); });
   saved = { category: "business", preset_id: "", description: "", mode: "browse" };
@@ -55,26 +63,26 @@ test("starts in the audience category, searches across categories, and has no pr
 test("manual preset setup previews first and applies edited agent configuration", async () => {
   const finish = mock(async (_destination: string) => {});
   mount(finish);
-  fireEvent.click(await screen.findByRole("button", { name: /Lead generation/ }));
+  await chooseBusinessPreset();
   fireEvent.change(screen.getByRole("textbox", { name: /What would you like help/ }), { target: { value: "Research clinics" } });
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  openAgentCustomization();
   const name = await screen.findByRole("textbox", { name: "Agent name" });
   expect(auth.prepareOnboarding).not.toHaveBeenCalled();
   expect(projectPresets.apply).not.toHaveBeenCalled();
   fireEvent.change(name, { target: { value: "Clinic assistant" } });
-  fireEvent.click(screen.getByRole("button", { name: "Create setup" }));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm and create workspace" }));
   await screen.findByText("Your setup is ready");
-  expect(projectPresets.apply).toHaveBeenCalledWith("p", { preset_id: business.id, description: "Research clinics", agent_overrides: [{ key: "leads", name: "Clinic assistant", directive: "Research clinics", mode: "cautious" }], interface_level: undefined });
+  expect(projectPresets.apply).toHaveBeenCalledWith("p", { preset_id: business.id, description: "Research clinics", agent_overrides: [{ key: "leads", name: "Clinic assistant", directive: "Research leads for Research clinics", mode: "cautious" }], interface_level: undefined });
   expect(finish).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Finish setup" }));
-  await waitFor(() => expect(finish).toHaveBeenCalledWith("/conversations?agent=11", "business"));
+  await waitFor(() => expect(finish).toHaveBeenCalledWith("/", "business"));
 });
 
 test("partial failures remain visible and retries reuse the same preset", async () => {
   saved = { category: "business", preset_id: business.id, description: "Research clinics", mode: "manual" };
   projectPresets.apply = mock(async () => ({ status: "applied" as const, project_id: "p", preset_id: business.id, created_agents: [], existing_agents: [{ id: 11, name: "Lead assistant", status: "stopped" }], warnings: ["CRM installation failed"] }));
   mount();
-  fireEvent.click(await screen.findByRole("button", { name: "Create setup" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm and create workspace" }));
   await screen.findByText("Your setup needs attention");
   expect(screen.getByText("CRM installation failed")).toBeTruthy();
   expect(screen.queryByText("Your setup is ready")).toBeNull();
@@ -85,6 +93,8 @@ test("partial failures remain visible and retries reuse the same preset", async 
 test("reload restores manual edits without applying them", async () => {
   saved = { category: "business", preset_id: business.id, description: "Research clinics", mode: "manual", agent_overrides: [{ key: "leads", name: "Saved name", directive: "Saved instructions", mode: "learn" }] };
   mount();
+  await screen.findByText(/Customize agents/);
+  openAgentCustomization();
   expect((await screen.findByRole("textbox", { name: "Agent name" }) as HTMLInputElement).value).toBe("Saved name");
   expect((screen.getByRole("textbox", { name: "Instructions" }) as HTMLTextAreaElement).value).toBe("Saved instructions");
   expect(auth.prepareOnboarding).not.toHaveBeenCalled();
@@ -95,12 +105,12 @@ test("saving failure blocks creation and allows retry", async () => {
   saved = { category: "business", preset_id: business.id, description: "Research clinics", mode: "manual" };
   workspaceSetup.save = mock(async () => { throw new Error("Save interrupted"); });
   mount();
-  fireEvent.click(await screen.findByRole("button", { name: "Create setup" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm and create workspace" }));
   await screen.findByText("Save interrupted");
   expect(auth.prepareOnboarding).not.toHaveBeenCalled();
   expect(projectPresets.apply).not.toHaveBeenCalled();
   workspaceSetup.save = mock(async (_, draft) => draft);
-  fireEvent.click(screen.getByRole("button", { name: "Create setup" }));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm and create workspace" }));
   await screen.findByText("Your setup is ready");
 });
 
@@ -124,7 +134,7 @@ test("AI is offered only when connected", async () => {
   auth.onboardingStatus = mock(async () => ({ project_id: "p", provider_configured: false, can_manage_provider: true }));
   mount();
   await screen.findByRole("button", { name: /Explore presets/ });
-  expect(screen.queryByRole("button", { name: /Configure with AI/ })).toBeNull();
+  expect((screen.getByRole("button", { name: /Configure with AI/ }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByRole("link", { name: "Connect AI" }).getAttribute("href")).toBe("/onboarding?provider=1");
 });
 
@@ -144,7 +154,7 @@ test("completion failure keeps the created setup available to retry", async () =
   saved = { category: "business", preset_id: business.id, description: "Research clinics", mode: "manual" };
   const finish = mock(async (_destination: string) => { throw new Error("Completion interrupted"); });
   mount(finish);
-  fireEvent.click(await screen.findByRole("button", { name: "Create setup" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm and create workspace" }));
   fireEvent.click(await screen.findByRole("button", { name: "Finish setup" }));
   await screen.findByText("Completion interrupted");
   expect(screen.getByText("Your setup is ready")).toBeTruthy();
@@ -168,19 +178,17 @@ test("preset recommendation is editable, persists, and only applies when finishi
   projectPresets.list = mock(async () => ({ schema_version: 2, presets: [{...business, interface_level:"personal" as const}] }));
   const finish = mock(async (_destination: string, _level?: string) => {});
   mount(finish);
-  fireEvent.click(await screen.findByRole("button", {name:/Lead generation/}));
+  await chooseBusinessPreset();
   fireEvent.change(screen.getByRole("textbox", {name:/What would you like help/}), {target:{value:"Research clinics"}});
-  fireEvent.click(screen.getByRole("button", {name:"Continue"}));
   const picker = await screen.findByRole("combobox", {name:"Your interface"});
   expect((picker as HTMLSelectElement).value).toBe("personal");
   fireEvent.change(picker, {target:{value:"developer"}});
-  fireEvent.click(screen.getByRole("button", {name:"Create setup"}));
+  fireEvent.click(screen.getByRole("button", {name:"Confirm and create workspace"}));
   await screen.findByRole("button", {name:"Finish setup"});
   expect(saved.interface_level).toBe("developer");
   expect(finish).not.toHaveBeenCalled();
-  fireEvent.change(screen.getByRole("combobox", {name:"Your interface"}), {target:{value:"business"}});
   fireEvent.click(screen.getByRole("button", {name:"Finish setup"}));
-  await waitFor(() => expect(finish).toHaveBeenCalledWith("/conversations?agent=11", "business"));
+  await waitFor(() => expect(finish).toHaveBeenCalledWith("/", "developer"));
   expect(projectPresets.apply).toHaveBeenCalledTimes(1);
 });
 

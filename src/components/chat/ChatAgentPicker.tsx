@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { targetKey, type AssistantChoice } from "./assistantModel";
+import { AgentMark } from "../AgentMark";
 
 export function ChatAgentPicker({ choices, activeKey, onSelect }: {
   choices: AssistantChoice[];
@@ -38,6 +39,7 @@ export function ChatAgentPicker({ choices, activeKey, onSelect }: {
         }
       }}
       className="flex min-h-10 max-w-full items-center gap-2 rounded-md px-2 text-left text-sm font-semibold hover:bg-bg-hover focus-visible:outline-accent">
+      {choice?.agent && <AgentMark icon={choice.agent.icon} color={choice.agent.icon_color} size="sm" />}
       <span className="truncate">{choice?.agent.name || "Selected agent unavailable"}</span>
       <svg className={`shrink-0 text-text-muted transition-transform ${open ? "rotate-180" : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
     </button>
@@ -63,6 +65,7 @@ export function ChatAgentPicker({ choices, activeKey, onSelect }: {
         return <button key={key} type="button" role="menuitemradio" aria-checked={selected} tabIndex={-1}
           onClick={() => { onSelect(item); close(); }}
           className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-text hover:bg-bg-hover focus:bg-bg-hover focus:outline-none">
+          <AgentMark icon={item.agent.icon} color={item.agent.icon_color} size="sm" />
           <span className="min-w-0 flex-1 break-words">{item.agent.name}</span>
           {selected && <svg className="shrink-0 text-accent" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}
         </button>;

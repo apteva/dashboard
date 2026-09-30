@@ -67,15 +67,14 @@ describe("Personal Conversations workspace", () => {
     expect(source).not.toContain("chat.createConversation");
   });
 
-  test("uses one theme-aware Apteva mark instead of social-style avatars", () => {
+  test("uses the shared theme-aware agent icon collection", () => {
     const personal = readFileSync(new URL("./Personal.tsx", import.meta.url), "utf8");
     const mark = readFileSync(new URL("../components/AgentMark.tsx", import.meta.url), "utf8");
-    expect(personal).toContain('import { AgentMark } from "../components/AgentMark"');
+    expect(personal).toContain('import { AgentMark, suggestedAgentIcon } from "../components/AgentMark"');
     expect(mark).toContain("function AgentMark");
     expect(mark).toContain('stroke="currentColor"');
-    expect(mark).toContain("border-accent/25 bg-accent/10 text-accent");
-    expect(mark).not.toContain("agentColor");
-    expect(mark).not.toContain("backgroundColor");
+    expect(mark).toContain('id: "robot"');
+    expect(mark).toContain("AGENT_ICON_COLORS");
   });
 
   test("keeps navigation out of the Personal page", () => {

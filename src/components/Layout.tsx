@@ -1,5 +1,8 @@
+import { ProductTour } from "./tour/ProductTour";
+import { PRODUCT_TOUR, requestProductTour } from "./tour/config";
+import { useProductTourCompleted } from "./tour/useProductTourCompleted";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { AppIcon } from "@apteva/ui-kit";
 import { useProjects } from "../hooks/useProjects";
@@ -23,6 +26,7 @@ import {
   preferredSidebarAppNames,
   SidebarAppManager,
   useProjectUILayout,
+  workspacePages,
 } from "./apps/contributions";
 
 // Sidebar APPS section visible-cap. Above this, the overflow row
@@ -30,6 +34,19 @@ import {
 // "shows above the fold on a 720-tall screen plus the MANAGE
 // section underneath" threshold — picked empirically.
 const SIDEBAR_APPS_VISIBLE = 5;
+
+type PlatformNavIcon = "dashboard" | "pages" | "agents" | "monitor" | "integrations" | "apps" | "skills" | "usage" | "settings";
+
+const platformNavIcons: Record<string, PlatformNavIcon> = {
+  "/": "dashboard",
+  "/agents": "agents",
+  "/monitor": "monitor",
+  "/integrations": "integrations",
+  "/apps": "apps",
+  "/skills": "skills",
+  "/analytics": "usage",
+  "/settings": "settings",
+};
 
 export function Layout() {
   const { t } = useTranslation();
@@ -52,6 +69,22 @@ export function Layout() {
       return false;
     }
   });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("sidebar:collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed((collapsed) => {
+      const next = !collapsed;
+      try {
+        localStorage.setItem("sidebar:collapsed", next ? "1" : "0");
+      } catch {}
+      return next;
+    });
+  }, []);
   const toggleShowAllApps = useCallback(() => {
     setShowAllApps((v) => {
       const next = !v;
@@ -63,11 +96,25 @@ export function Layout() {
   }, []);
   const [refreshing, setRefreshing] = useState(false);
   const { projects, currentProject, setCurrentProject } = useProjects();
-  const { project: projectUILayout } = useProjectUILayout(currentProject?.id);
+  const { project: projectUILayout, document: pageLayout } = useProjectUILayout(currentProject?.id);
+  const pageNav = workspacePages(pageLayout, currentProject?.id)
+    .filter((page) => page.pinned !== false)
+    .map((page) => ({ to: `/pages/${encodeURIComponent(page.id)}?${page.scope === "global" ? "scope=global" : `project=${encodeURIComponent(currentProject!.id)}`}`, label: page.title }));
   const [sidebarAppsOpen, setSidebarAppsOpen] = useState(false);
   const location = useLocation();
   const { user, logout } = useAuth();
+  const tourCompleted = useProductTourCompleted();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const tourSidebar = useRef({ collapsed: false });
+  const beginTour = useCallback(() => { tourSidebar.current = { collapsed: sidebarCollapsed }; }, [sidebarCollapsed]);
+  const prepareTour = useCallback((navigation: boolean) => {
+    setMobileNavOpen(navigation && window.innerWidth < 768);
+    if (navigation) setSidebarCollapsed(false);
+  }, []);
+  const endTour = useCallback(() => {
+    setSidebarCollapsed(tourSidebar.current.collapsed);
+    setMobileNavOpen(false);
+  }, []);
   const [sidebarAgents, setSidebarAgents] = useState<Agent[]>([]);
 
   const sidebarScope = useRef(currentProject?.id);
@@ -135,8 +182,14 @@ export function Layout() {
   useEffect(() => {
     if (!user) return;
     if (typeof window === "undefined") return;
-    window.__aptevaTelemetryBus?.setProjectId(currentProject?.id ?? null);
-  }, [user, currentProject?.id]);
+    if (location.pathname === "/monitor") return; // Monitor owns its fleet scope.
+    const params = new URLSearchParams(location.search);
+    const workspace = location.pathname === "/" || location.pathname.startsWith("/pages/") || (location.pathname === "/settings" && params.get("tab") === "pages");
+    const requested = params.get("project");
+    const selected = workspace && projects.some(project => project.id === requested) ? requested : currentProject?.id;
+    const global = workspace && ["global", "all"].includes(params.get("scope") || "");
+    window.__aptevaTelemetryBus?.setProjectId(global ? "*" : selected ?? null);
+  }, [user, currentProject?.id, projects, location.pathname, location.search]);
 
   // Pull the platform-update status so the sidebar version footer can
   // show "update available" inline with the current version. The
@@ -226,7 +279,6 @@ export function Layout() {
   // working at every audience.
   const primaryNav = [
     { to: "/", label: t("nav.dashboard"), section: "nav.dashboard" },
-    ...(helperActivated ? [{ to: "/build", label: t("nav.build"), section: "nav.build" }] : []),
     { to: "/agents", label: t("nav.agents"), section: "nav.agents" },
     { to: "/monitor", label: t("nav.monitor"), section: "nav.monitor" },
   ].filter((item) => !item.section || shows(item.section as AudienceSection));
@@ -294,7 +346,7 @@ export function Layout() {
         }[] = [];
         const seen = new Set<string>();
         for (const r of rows) {
-          if (r.status !== "running") continue;
+          if (r.status !== "running" && !r.serving) continue;
           for (const p of r.ui_panels || []) {
             if (p.slot !== "project.page") continue;
             const to = `/apps/${r.name}/page`;
@@ -342,24 +394,26 @@ export function Layout() {
 
   // Flat list — only used for "is this entry's path a prefix of
   // another's" active-link disambiguation. Doesn't change rendering.
-  const navItems = [...primaryNav, ...pinnedAppNav, ...manageNav];
+  const navItems = [...primaryNav, ...pageNav, ...pinnedAppNav, ...manageNav];
 
   useEffect(() => {
     setMobileNavOpen(false);
   }, [location.pathname, location.search]);
 
-  const renderSidebar = (mobile = false) => (
+  const renderSidebar = (mobile = false, compact = !mobile && sidebarCollapsed) => (
     <>
-      <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-        <Link
-          to="/"
-          onClick={() => {
-            if (mobile) setMobileNavOpen(false);
-          }}
-          className="text-accent font-bold text-lg"
-        >
-          Apteva
-        </Link>
+      <div className={`h-[61px] border-b border-border flex items-center ${compact ? "justify-center px-2" : "justify-between px-5"}`}>
+        {!compact && (
+          <Link
+            to="/"
+            onClick={() => {
+              if (mobile) setMobileNavOpen(false);
+            }}
+            className="text-accent font-bold text-lg"
+          >
+            Apteva
+          </Link>
+        )}
         {mobile && (
           <button
             type="button"
@@ -370,6 +424,21 @@ export function Layout() {
             x
           </button>
         )}
+        {!mobile && (
+          <button
+            type="button"
+            onClick={toggleSidebarCollapsed}
+            className="h-9 w-9 inline-flex shrink-0 items-center justify-center rounded text-text-muted hover:text-text hover:bg-bg-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            aria-label={compact ? "Expand sidebar" : "Collapse sidebar"}
+            title={compact ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M9 4v16" />
+              <path d={compact ? "m14 9 3 3-3 3" : "m17 9-3 3 3 3"} />
+            </svg>
+          </button>
+        )}
       </div>
 
       {/* Project selector. Projects the current user didn't create
@@ -378,25 +447,39 @@ export function Layout() {
           "(shared)" tag so the picker UI signals "you're peeking
           into someone else's workspace." */}
       {projects.length > 0 && (
-        <div className="px-3 py-3 border-b border-border">
-          <select
-            value={currentProject?.id || ""}
-            onChange={(e) => {
-              const p = projects.find((p) => p.id === e.target.value);
-              setCurrentProject(p || null);
-            }}
-            className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
-          >
-            {projects.map((p) => {
-              const mine = !!user && p.user_id === user.id;
-              return (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                  {mine ? "" : " (shared)"}
-                </option>
-              );
-            })}
-          </select>
+        <div data-tour="workspace" className="px-3 py-3 border-b border-border">
+          {compact ? (
+            <button
+              type="button"
+              onClick={toggleSidebarCollapsed}
+              className="h-10 w-10 inline-flex items-center justify-center rounded-lg bg-bg-input text-text-muted hover:text-text"
+              aria-label={`Select project: ${currentProject?.name || "none"}`}
+              title={currentProject?.name || "Select project"}
+            >
+              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 6h6l2 2h10v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              </svg>
+            </button>
+          ) : (
+            <select
+              value={currentProject?.id || ""}
+              onChange={(e) => {
+                const p = projects.find((p) => p.id === e.target.value);
+                setCurrentProject(p || null);
+              }}
+              className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+            >
+              {projects.map((p) => {
+                const mine = !!user && p.user_id === user.id;
+                return (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {mine ? "" : " (shared)"}
+                  </option>
+                );
+              })}
+            </select>
+          )}
         </div>
       )}
 
@@ -414,7 +497,8 @@ export function Layout() {
           onClick={() => {
             if (mobile) setMobileNavOpen(false);
           }}
-          className="w-full"
+          className={compact ? "" : "w-full"}
+          iconOnly={compact}
           title={t("nav.newAgentTitle")}
         />
       </div>
@@ -427,17 +511,24 @@ export function Layout() {
             key={item.to}
             item={item}
             navItems={navItems}
+            compact={compact}
             onNavigate={mobile ? () => setMobileNavOpen(false) : undefined}
           />
         ))}
 
+        {pageNav.length > 0 && <>
+          <SidebarSectionHeader label={t("nav.pages")} compact={compact} />
+          {pageNav.map((item) => <SidebarLink key={item.to} item={item} navItems={navItems} compact={compact} onNavigate={mobile ? () => setMobileNavOpen(false) : undefined} />)}
+        </>}
+
         {audience === "personal" && (
-          <>
-            <SidebarSectionHeader label={t("nav.agents")} />
+          <div data-tour="personal-agents">
+            <SidebarSectionHeader label={t("nav.agents")} compact={compact} />
             {sidebarAgents.map((agent) => (
               <SidebarAgentLink
                 key={agent.id}
                 agent={agent}
+                compact={compact}
                 active={
                   location.pathname === "/" &&
                   selectedSidebarAgentID === String(agent.id) &&
@@ -446,10 +537,10 @@ export function Layout() {
                 onNavigate={mobile ? () => setMobileNavOpen(false) : undefined}
               />
             ))}
-            {sidebarAgents.length === 0 && (
+            {sidebarAgents.length === 0 && !compact && (
               <div className="px-5 py-2 text-xs text-text-dim">No agents yet</div>
             )}
-          </>
+          </div>
         )}
 
         {/* Apps group — only rendered when >=1 installed app has a
@@ -463,12 +554,15 @@ export function Layout() {
             current project's generic UI layout. */}
         {shows("nav.appPages") && appNav.length > 0 &&
           (() => {
-            const visibleApps = showAllApps
+            const visibleApps = compact || showAllApps
               ? pinnedAppNav
               : pinnedAppNav.slice(0, SIDEBAR_APPS_VISIBLE);
             const overflow = pinnedAppNav.length - visibleApps.length;
             return (
               <>
+                {compact ? (
+                  <SidebarSectionHeader label={t("nav.appsSection")} compact />
+                ) : (
                 <div className="group mt-5 mb-1 flex items-center pl-5 pr-3">
                   <button
                     type="button"
@@ -488,13 +582,15 @@ export function Layout() {
                     +
                   </button>
                 </div>
+                )}
                 {visibleApps.map((item) => (
                   <SidebarLink
                     key={item.to}
                     item={item}
                     navItems={navItems}
-                    iconUrl={item.icon}
+                    iconUrl={item.icon ?? ""}
                     iconStyle={item.iconStyle}
+                    compact={compact}
                     onNavigate={
                       mobile ? () => setMobileNavOpen(false) : undefined
                     }
@@ -504,12 +600,14 @@ export function Layout() {
                   <button
                     type="button"
                     onClick={() => setSidebarAppsOpen(true)}
-                    className="w-full px-5 py-2 text-left text-xs text-text-dim hover:text-text"
+                    className={compact ? "mx-2 flex h-10 w-12 items-center justify-center rounded-lg text-lg text-text-muted hover:bg-bg-hover hover:text-text" : "w-full px-5 py-2 text-left text-xs text-text-dim hover:text-text"}
+                    aria-label={compact ? "Choose preferred apps" : undefined}
+                    title={compact ? "Choose preferred apps" : undefined}
                   >
-                    Choose preferred apps…
+                    {compact ? "+" : "Choose preferred apps…"}
                   </button>
                 )}
-                {(overflow > 0 || showAllApps) && (
+                {!compact && (overflow > 0 || showAllApps) && (
                   <button
                     onClick={toggleShowAllApps}
                     className="w-full px-5 py-2 text-xs text-text-muted hover:text-text text-left transition-colors"
@@ -525,12 +623,13 @@ export function Layout() {
 
         {/* Manage group — platform-administration verbs. Things you
             do TO the platform, not WITH the platform's daily surfaces. */}
-        <SidebarSectionHeader label={t("nav.manageSection")} />
+        <SidebarSectionHeader label={t("nav.manageSection")} compact={compact} />
         {manageNav.map((item) => (
           <SidebarLink
             key={item.to}
             item={item}
             navItems={navItems}
+            compact={compact}
             onNavigate={mobile ? () => setMobileNavOpen(false) : undefined}
           />
         ))}
@@ -538,9 +637,22 @@ export function Layout() {
 
       {/* Logged-in user + account menu (change password, logout). Rendered
           above the version line so it sits in the same footer area. */}
-      {user && <AccountMenu user={user} onLogout={logout} />}
+      {user && (compact ? (
+        <button
+          type="button"
+          onClick={toggleSidebarCollapsed}
+          className="h-14 border-t border-border flex items-center justify-center text-text-muted hover:text-text hover:bg-bg-hover"
+          aria-label={`Open account menu for ${user.email}`}
+          title={user.email}
+        >
+          <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="8" r="3" />
+            <path d="M5 21v-2a7 7 0 0 1 14 0v2" />
+          </svg>
+        </button>
+      ) : <AccountMenu user={user} onLogout={logout} />)}
 
-      {version && (
+      {version && !compact && (
         <div className="px-5 py-3 border-t border-border flex items-center gap-2">
           <span className="text-text-muted text-xs" title={versionTip}>
             v{version}
@@ -563,7 +675,7 @@ export function Layout() {
   return (
     <div className="app-shell flex h-dvh min-h-dvh bg-bg overflow-hidden">
       {/* Sidebar */}
-      <nav className="hidden md:flex w-56 shrink-0 border-r border-border flex-col">
+      <nav className={`hidden md:flex shrink-0 border-r border-border flex-col transition-[width] duration-200 ${sidebarCollapsed ? "w-16" : "w-56"}`} aria-label="Main navigation">
         {renderSidebar(false)}
       </nav>
 
@@ -615,12 +727,12 @@ export function Layout() {
             notifications tray; placeholder for future search,
             user-shortcut, or quick-create surfaces. */}
         <div
-          className="app-topbar-safe flex border-b border-border items-center justify-between md:justify-end gap-3 px-3 flex-shrink-0 safe-area-x"
+          className="app-topbar-safe flex border-b border-border items-center justify-between md:justify-end gap-3 flex-shrink-0"
         >
           <button
             type="button"
             onClick={() => setMobileNavOpen(true)}
-            className="md:hidden touch-target h-9 w-9 inline-flex items-center justify-center rounded border border-border text-text-muted hover:text-text hover:bg-bg-hover"
+            className="md:hidden h-11 w-11 shrink-0 inline-flex items-center justify-center rounded-lg border border-border text-text-muted hover:text-text hover:bg-bg-hover focus-visible:outline-2 focus-visible:outline-accent"
             aria-label="Open navigation"
           >
             <span className="sr-only">Open navigation</span>
@@ -639,23 +751,29 @@ export function Layout() {
               <path d="M4 17h16" />
             </svg>
           </button>
-          <div className="md:hidden min-w-0 flex-1">
-            <div className="text-sm font-bold text-accent truncate">Apteva</div>
+          <div className="md:hidden min-w-0 flex-1 leading-tight">
+            <div className="text-base font-bold text-accent truncate">Apteva</div>
             {currentProject && (
-              <div className="text-[11px] text-text-dim truncate">
+              <div className="text-xs text-text-dim truncate" title={currentProject.name}>
                 {currentProject.name}
               </div>
             )}
           </div>
+          <div className="ml-auto flex items-center gap-2">
+          {PRODUCT_TOUR.enabled && !tourCompleted && <button type="button" data-tour="replay" onClick={requestProductTour} title="Explore Apteva" aria-label="Explore Apteva" className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-border px-3 text-xs font-semibold text-text-muted hover:border-accent hover:text-text">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m16 8-2 6-6 2 2-6z" /></svg><span className="hidden sm:inline">Explore Apteva</span>
+          </button>}
           <NotificationsTray />
+          </div>
         </div>
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <Outlet />
+        <div data-tour="page" className="flex-1 min-h-0 overflow-hidden">
+          <Suspense fallback={<p className="p-4 text-sm text-text-muted">Loading…</p>}><Outlet /></Suspense>
         </div>
       </main>
 
       <RealtimeVoiceDock />
       <ChatAssistantDock />
+      <ProductTour key={user ? user.id : "guest"} navPaths={navItems.map((item) => item.to)} onStart={beginTour} onPrepare={prepareTour} onEnd={endTour} />
     </div>
   );
 }
@@ -770,7 +888,10 @@ function PlatformUpdateModal(props: {
 // nav groups (APPS / MANAGE). Same typographic treatment Linear, VS
 // Code, and Slack use for sidebar groupings: tiny, low-contrast,
 // generous top margin so the group reads as a separate band.
-function SidebarSectionHeader({ label }: { label: string }) {
+function SidebarSectionHeader({ label, compact = false }: { label: string; compact?: boolean }) {
+  if (compact) {
+    return <div role="separator" aria-label={label} className="mx-4 my-3 border-t border-border" />;
+  }
   return (
     <div className="px-5 mt-5 mb-1 text-[10px] font-medium tracking-wider text-text-dim/70 uppercase">
       {label}
@@ -786,12 +907,14 @@ function SidebarLink({
   navItems,
   iconUrl,
   iconStyle,
+  compact = false,
   onNavigate,
 }: {
   item: { to: string; label: string };
   navItems: { to: string; label: string }[];
   iconUrl?: string;
   iconStyle?: "image" | "monochrome";
+  compact?: boolean;
   onNavigate?: () => void;
 }) {
   const isPrefixOfAnother = navItems.some(
@@ -799,55 +922,93 @@ function SidebarLink({
       other !== item &&
       other.to.startsWith(item.to + (item.to === "/" ? "" : "/")),
   );
+  const platformIcon = item.to.startsWith("/pages/") ? "pages" : platformNavIcons[item.to];
   return (
     <NavLink
       to={item.to}
+      data-tour={`nav-${item.to}`}
       end={item.to === "/" || isPrefixOfAnother}
       onClick={onNavigate}
+      title={compact ? item.label : undefined}
+      aria-label={compact ? item.label : undefined}
       className={({ isActive }) =>
-        `flex items-center gap-2 px-5 py-2 text-sm transition-colors ${
+        `flex items-center gap-2 text-sm transition-colors ${compact ? "mx-2 h-10 justify-center rounded-lg px-0" : "px-5 py-2"} ${
           isActive
-            ? "text-accent bg-bg-hover border-r-2 border-accent"
+            ? compact ? "text-accent bg-bg-hover ring-1 ring-accent/30" : "text-accent bg-bg-hover border-r-2 border-accent"
             : "text-text-muted hover:text-text hover:bg-bg-hover"
         }`
       }
     >
-      {iconUrl !== undefined && (
+      {iconUrl !== undefined ? (
         <AppIcon
           src={iconUrl}
           iconStyle={iconStyle}
           name={item.label}
-          size="xs"
+          size={compact ? "sm" : "xs"}
           framed={false}
           className="text-accent"
         />
-      )}
-      <span className="truncate">{item.label}</span>
+      ) : platformIcon ? (
+        <SidebarPlatformIcon name={platformIcon} compact={compact} />
+      ) : null}
+      <span className={compact ? "sr-only" : "truncate"}>{item.label}</span>
     </NavLink>
+  );
+}
+
+function SidebarPlatformIcon({ name, compact = false }: { name: PlatformNavIcon; compact?: boolean }) {
+  const paths: Record<PlatformNavIcon, ReactNode> = {
+    dashboard: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
+    pages: <><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" /></>,
+    agents: <><circle cx="9" cy="8" r="3" /><path d="M3 20v-2a6 6 0 0 1 12 0v2" /><path d="M17 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 5v1" /></>,
+    monitor: <><path d="M3 12h4l3-7 4 14 3-7h4" /></>,
+    integrations: <><path d="M8 3v5m8-5v5M6 8h12v4a6 6 0 0 1-12 0zM12 18v3" /></>,
+    apps: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M17.5 14v7m-3.5-3.5h7" /></>,
+    skills: <><path d="M12 3 4 7v5c0 5 3.5 8 8 9 4.5-1 8-4 8-9V7z" /><path d="m9 12 2 2 4-4" /></>,
+    usage: <><path d="M4 20V12m5 8V8m5 12V4m5 16v-6M2 20h20" /></>,
+    settings: <><circle cx="12" cy="12" r="3" /><path d="M10 3h4l.7 2.1 1.7.7 2-.9 2.8 2.8-.9 2 .7 1.7L23 12l-2.1.7-.7 1.7.9 2-2.8 2.8-2-.9-1.7.7L14 21h-4l-.7-2.1-1.7-.7-2 .9-2.8-2.8.9-2-.7-1.7L1 12l2.1-.7.7-1.7-.9-2 2.8-2.8 2 .9 1.7-.7z" /></>,
+  };
+  return (
+    <svg
+      className={`${compact ? "h-5 w-5" : "h-4 w-4"} shrink-0`}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {paths[name]}
+    </svg>
   );
 }
 
 function SidebarAgentLink({
   agent,
   active,
+  compact = false,
   onNavigate,
 }: {
   agent: Agent;
   active: boolean;
+  compact?: boolean;
   onNavigate?: () => void;
 }) {
   return (
     <Link
       to={`/?agent=${agent.id}`}
       onClick={onNavigate}
-      className={`mx-2 mb-1 flex items-center gap-2.5 rounded-lg px-3 py-2 transition-colors ${
+      title={compact ? agent.name : undefined}
+      aria-label={compact ? agent.name : undefined}
+      className={`mx-2 mb-1 flex items-center gap-2.5 rounded-lg transition-colors ${compact ? "h-10 justify-center px-0" : "px-3 py-2"} ${
         active
           ? "bg-bg-hover text-text"
           : "text-text-muted hover:bg-bg-hover hover:text-text"
       }`}
     >
-      <AgentMark size="sm" />
-      <span className="min-w-0 flex-1">
+      <AgentMark icon={agent.icon} color={agent.icon_color} size="sm" />
+      <span className={compact ? "sr-only" : "min-w-0 flex-1"}>
         <span className="block truncate text-xs font-medium">{agent.name}</span>
         <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-text-dim">
           <span

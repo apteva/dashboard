@@ -1,7 +1,7 @@
 {
   "nav": {
     "dashboard": "Dashboard",
-    "build": "Build",
+    "pages": "Pages",
     "agents": "Agents",
     "tasks": "Tasks",
     "activity": "Activity",
@@ -223,11 +223,11 @@
     },
     "interface": {
       "title": "Interface",
-    "description": "Choose your workspace experience and how much technical detail the dashboard shows.",
+      "description": "Choose your workspace experience and how much technical detail the dashboard shows.",
       "level": "Interface level",
       "hint": "Saved to your account and shared across devices. Hidden sections remain reachable by direct link; this setting does not change permissions.",
       "personal": "Personal",
-    "personalDescription": "A focused agent and Conversations workspace with advanced controls out of the way.",
+      "personalDescription": "A focused agent and Conversations workspace with advanced controls out of the way.",
       "business": "Business",
       "businessDescription": "Adds integrations, apps, activity, costs and team settings.",
       "developer": "Developer",

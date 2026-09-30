@@ -1,7 +1,7 @@
 {
   "nav": {
     "dashboard": "Tableau de bord",
-    "build": "Créer",
+    "pages": "Pages",
     "agents": "Agents",
     "tasks": "Tâches",
     "activity": "Activité",
@@ -223,11 +223,11 @@
     },
     "interface": {
       "title": "Interface",
-    "description": "Choisissez votre espace de travail et le niveau de détail technique affiché par le tableau de bord.",
+      "description": "Choisissez votre espace de travail et le niveau de détail technique affiché par le tableau de bord.",
       "level": "Niveau d'interface",
       "hint": "Enregistré dans votre compte et partagé entre vos appareils. Les sections masquées restent accessibles par lien direct ; ce réglage ne modifie pas les autorisations.",
       "personal": "Personnel",
-    "personalDescription": "Un espace ciblé pour les agents et Conversations, avec les contrôles avancés mis de côté.",
+      "personalDescription": "Un espace ciblé pour les agents et Conversations, avec les contrôles avancés mis de côté.",
       "business": "Entreprise",
       "businessDescription": "Ajoute les intégrations, les apps, l'activité, les coûts et les réglages d'équipe.",
       "developer": "Développeur",

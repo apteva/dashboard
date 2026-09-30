@@ -27,6 +27,7 @@ import { chatPreviewText } from "../../utils/chatPreview";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useRealtimeAvailability } from "../../hooks/useRealtimeAvailability";
 import { openAgentConversation } from "../../utils/agentConversations";
+import { AgentMark } from "../AgentMark";
 
 const FOCUSED_KEY = "apteva.dashboard.projectChat.focused";
 const REFRESH_MS = 8000;
@@ -194,6 +195,7 @@ export function ProjectChat() {
           const row = summaryByAgent.get(agent.id);
           return (
             <button key={agent.id} type="button" onClick={() => void openChat(agent)} className="flex min-h-[72px] w-full items-center gap-3 px-4 py-3 text-left hover:bg-bg-hover">
+              <AgentMark icon={agent.icon} color={agent.icon_color} size="sm" />
               <span className={`h-2 w-2 shrink-0 rounded-full ${agent.status === "running" ? "bg-green" : "bg-text-dim"}`} />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-2">
@@ -244,6 +246,7 @@ export function ProjectChat() {
                         running ? "bg-green" : "bg-text-dim"
                       }`}
                     />
+                    <AgentMark icon={inst.icon} color={inst.icon_color} size="sm" />
                     <span
                       className={`flex-1 truncate text-sm ${
                         active ? "text-text" : "text-text-muted"

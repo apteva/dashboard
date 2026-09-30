@@ -4,6 +4,7 @@ import { defaultProactivity, proactivityLabel } from "../agentBehavior";
 import { behaviorDescriptions, behaviorExplanation } from "../agentBehavior";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AppIcon } from "@apteva/ui-kit";
+import { AgentIconPicker, AgentMark, AGENT_ICONS, suggestedAgentIcon } from "../components/AgentMark";
 import { useNavigate } from "react-router-dom";
 import {
   agentTemplates,
@@ -84,6 +85,7 @@ interface AppAccessDraft {
 export interface WizardState {
   templateID: string | null;
   name: string;
+  icon: string;
   directive: string;
   mode: Mode;
   proactivity: number;
@@ -101,6 +103,7 @@ export interface WizardState {
 export const INITIAL: WizardState = {
   templateID: null,
   name: "",
+  icon: "robot",
   directive: "",
   mode: "learn",
   proactivity: defaultProactivity,
@@ -419,6 +422,7 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
       templateID: t.id,
       // Suggest the template's name but let the user override.
       name: s.name || (t.id === "empty" ? "" : t.name),
+      icon: suggestedAgentIcon(t.icon),
       directive: structureDirectiveDraft(t.directive, s.name || (t.id === "empty" ? "" : t.name)),
       mode: t.mode as Mode,
       unconscious: t.unconscious,
@@ -460,6 +464,7 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
         currentProject?.id,
         startNow,
         {
+          icon: state.icon,
           proactivity: state.proactivity,
           includeChannels: state.includeChannels,
           unconscious: state.unconscious,
@@ -807,6 +812,9 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
           autoComplete="off"
         />
       </div>
+
+      <AgentIconPicker icon={state.icon}
+        onIconChange={(icon) => setState((current) => ({ ...current, icon }))} />
 
       <div>
         <div className="flex items-center justify-between mb-1.5">
@@ -1918,6 +1926,7 @@ function ReviewStep({ state, hasProvider, onEdit, installProgress, installedApps
 
       <dl className="border border-border rounded-lg divide-y divide-border">
         <Row label="Name"        value={state.name}                       onEdit={() => onEdit(1)} />
+        <div className="flex items-center gap-3 px-4 py-3 text-sm"><dt className="w-28 shrink-0 text-text-muted">Icon</dt><dd className="flex flex-1 items-center gap-2 text-text"><AgentMark icon={state.icon} size="sm" />{AGENT_ICONS.find((item) => item.id === state.icon)?.label || "Generic"}</dd><button type="button" onClick={() => onEdit(1)} className="text-xs text-accent">Edit</button></div>
         {state.highlights.length > 0 && (
           <Row label="What it can do" value={`• ${state.highlights.join("\n• ")}`} multiline onEdit={() => onEdit(0)} />
         )}

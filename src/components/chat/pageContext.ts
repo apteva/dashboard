@@ -34,7 +34,7 @@ const safe = (value?: string) => value && value.length <= 200 && !/[\u0000-\u001
 export function describeAssistantPage(pathname: string, search: string, projectId: string, projectName?: string, details: Details = {}): AssistantPageContext | undefined {
   if (!projectId) return;
   const base = { version: 1 as const, project_id: projectId, project_name: safe(projectName) };
-  if (pathname === "/") return { ...base, page: "dashboard" };
+  if (pathname === "/" || /^\/pages\/[a-zA-Z0-9_-]+\/?$/.test(pathname)) return { ...base, page: "dashboard" };
   const app = pathname.match(/^\/apps\/([a-z0-9-]+)\/page\/?$/);
   if (app) return { ...base, page: "app", app: app[1], ...(details.app === app[1] ? { installation_id: details.installation_id, panel: safe(details.panel) } : {}) };
   const agent = pathname.match(/^\/(?:agents|instances)\/(\d+)\/?$/);

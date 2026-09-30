@@ -4,11 +4,12 @@ import { Link, useNavigate } from "react-router-dom";
 import { apps, auth, instances, integrations, projectPresets, skills as skillsAPI, workspaceSetup, type Agent, type AppRow, type ConnectionInfo, type InterfaceLevel, type MarketplaceEntry, type ProjectPreset, type ProjectPresetPreview, type Skill, type WorkspaceSetupDraft, type WorkspaceSetupProposal } from "../api";
 import { ContributionMount } from "../components/apps/contributions";
 import { describeSetupPage } from "../components/chat/pageContext";
-import { PresetContentsSummary, presetCountSummary } from "../components/projects/ProjectPresetSetup";
+import { PresetConnectionGuide } from "../components/projects/PresetConnectionGuide";
+import { PresetChooser } from "../components/projects/PresetChooser";
+import { PresetContentsSummary } from "../components/projects/ProjectPresetSetup";
 import { useAuth } from "../hooks/useAuth";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
-import { AgentNew } from "./AgentNew";
 import { openWorkspaceHelper } from "../utils/workspaceSetup";
 import { useTheme, type ThemeMode, type ThemeName } from "../hooks/useTheme";
 
@@ -16,7 +17,6 @@ type HelperSurface = Awaited<ReturnType<typeof openWorkspaceHelper>>;
 type ApplyResult = Awaited<ReturnType<typeof projectPresets.apply>>;
 type WorkspaceResources = { apps: AppRow[]; connections: ConnectionInfo[]; skills: Skill[]; marketplace?: MarketplaceEntry[] };
 type ReviewSnapshot = { agents: Agent[]; apps: string[]; resources: WorkspaceResources };
-const categories = ["", "personal", "business", "work", "development"] as const;
 const inputClass = "w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-sm text-text focus:outline-none focus:border-accent";
 const secondaryClass = "rounded-lg border border-border px-4 py-2.5 text-sm text-text hover:bg-bg-hover disabled:opacity-50";
 export const workspaceSetupConversationSettings = {
@@ -34,10 +34,10 @@ export function WorkspaceSetup() {
   const finish = async (destination: string, interfaceLevel?: InterfaceLevel) => {
     await auth.completeOnboarding(interfaceLevel);
     await refresh();
-    navigate(destination, { replace: true });
+    navigate(destination, { replace: true, state: { offerProductTour: !!user && !user.onboarded } });
   };
   return <main className="h-dvh overflow-y-auto bg-bg text-text">
-    <div className="mx-auto flex h-full min-h-0 w-full max-w-[1500px] flex-col px-4 py-5 sm:px-6 sm:py-8 xl:px-8">
+    <div className="mx-auto flex h-full min-h-0 w-full max-w-[1680px] flex-col px-4 py-5 sm:px-6 sm:py-8 xl:px-8">
       <div className="mb-4 flex shrink-0 items-center justify-between"><span className="text-lg font-semibold text-accent">Apteva</span><div className="flex items-center gap-3"><span className="hidden text-xs text-text-muted sm:inline">Welcome · Set up your workspace</span><OnboardingAppearanceControl /></div></div>
       {!currentProject || !user ? <p className="p-6 text-sm text-text-muted">Loading your workspace…</p> :
         <SetupFlow key={`${user.id}:${currentProject.id}`} projectId={currentProject.id} userId={user.id} initialInterfaceLevel={user.interfaceLevel || "business"} onboarding={!user.onboarded} onFinish={finish} />}
@@ -88,11 +88,10 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
   const navigate = useNavigate();
   const [review, setReview] = useState<ReviewSnapshot | null>(null);
   const [aiAvailable, setAIAvailable] = useState(false);
-  const scratchKey = `apteva:setup-agent:${userId}:${projectId}`;
-  const [scratchAgent, setScratchAgent] = useState<{ id: number; name: string; status: string; warning?: string } | null>(null);
   const [draft, setDraft] = useState<WorkspaceSetupDraft | null>(null);
   const [catalog, setCatalog] = useState<ProjectPreset[]>([]);
   const [query, setQuery] = useState("");
+  const presetScroll = useRef(0);
   const [preview, setPreview] = useState<ProjectPresetPreview | null>(null);
   const [helperProgress, setHelperProgress] = useState("Opening your conversation with Apteva Helper…");
   const [surface, setSurface] = useState<HelperSurface | null>(null);
@@ -127,21 +126,12 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
       if (cancelled) return;
       setAIAvailable(status.provider_configured);
       setCatalog(presets.presets);
-      setDraft(saved);
-      if (saved.mode === "scratch") {
-        const createdID = Number(sessionStorage.getItem(scratchKey));
-        if (createdID) {
-          try {
-            const agent = await instances.get(createdID);
-            if (!cancelled) setScratchAgent(agent);
-          } catch { sessionStorage.removeItem(scratchKey); }
-        }
-      }
+      // A resumed AI draft must remain navigable when its provider is unavailable.
+      setDraft(saved.mode === "ai" && !status.provider_configured ? { ...saved, mode: "choice" } : saved);
       if (saved.mode === "manual" && saved.preset_id) {
         const next = await projectPresets.preview(projectId, saved);
         if (!cancelled) setPreview(next);
-      } else if (saved.mode === "ai") {
-        if (!status.provider_configured) throw new Error("Connect AI before continuing with Helper.");
+      } else if (saved.mode === "ai" && status.provider_configured) {
         const next = await openWorkspaceHelper(userId, projectId, saved, (message) => { if (!cancelled) setHelperProgress(message); });
         if (!cancelled) setSurface(next);
       }
@@ -200,18 +190,23 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
 
   const chooseMode = (mode: "manual" | "ai") => void run(async () => {
     if (!draft) return;
+    if (mode === "ai" && !aiAvailable) throw new Error("Connect a provider to configure your workspace with AI.");
     if (mode === "manual" && !draft.preset_id) {
-      const next = { ...draft, mode: "scratch" as const };
+      const next = { ...draft, mode: "scratch" as const, agent_overrides: [] };
       await save(next);
       setDraft(next);
       return;
     }
-    if (mode === "manual" && !draft.description.trim()) throw new Error("Describe what you want this setup to help with.");
-    const next = { ...draft, mode, interface_level: draft.interface_level || (mode === "manual" ? catalog.find((p) => p.id === draft.preset_id)?.interface_level : undefined) };
+    if (mode === "manual" && !catalog.some((preset) => preset.id === draft.preset_id)) throw new Error("Choose a preset to continue.");
+    const next = { ...draft, mode, description: draft.description.trim() || (mode === "manual" ? catalog.find((p) => p.id === draft.preset_id)?.description || "" : ""), interface_level: draft.interface_level || (mode === "manual" ? catalog.find((p) => p.id === draft.preset_id)?.interface_level : undefined) };
     await save(next);
-    setDraft(next);
-    if (mode === "ai") setSurface(await openWorkspaceHelper(userId, projectId, next, (message) => { if (mounted.current) setHelperProgress(message); }));
-    else setPreview(await projectPresets.preview(projectId, next));
+    if (mode === "ai") {
+      setDraft(next);
+      setSurface(await openWorkspaceHelper(userId, projectId, next, (message) => { if (mounted.current) setHelperProgress(message); }));
+    } else {
+      setPreview(await projectPresets.preview(projectId, next));
+      setDraft(next);
+    }
   });
 
   const back = () => void run(async () => {
@@ -270,6 +265,7 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
 
   const apply = () => void run(async () => {
     if (!draft || !preview) return;
+    if (!draft.description.trim()) throw new Error("Describe what you would like this workspace to help with.");
     await save(draft);
     const applied = await projectPresets.apply(projectId, { preset_id: draft.preset_id, description: draft.description, agent_overrides: draft.agent_overrides, interface_level: draft.interface_level });
     setResult(applied);
@@ -279,12 +275,26 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
 
   if (!draft) return <div className="p-6 text-sm text-text-muted">{error ? <><p role="alert">{error}</p><button className={secondaryClass} onClick={() => setAttempt((n) => n + 1)}>Retry</button></> : "Loading setup options…"}</div>;
   const selected = catalog.find((preset) => preset.id === draft.preset_id);
-  const search = query.trim().toLowerCase();
-  const visible = catalog.filter((preset) => search
-    ? `${preset.name} ${preset.description} ${(preset.highlights || []).join(" ")} ${preset.agents.flatMap((agent) => agent.apps || []).join(" ")}`.toLowerCase().includes(search)
-    : !draft.category || preset.category === draft.category);
+
 
   const interfacePicker = onboarding ? <InterfacePicker value={draft.interface_level || initialInterfaceLevel} onChange={(interface_level) => update({ ...draft, interface_level }, false)} /> : null;
+
+  if (draft.mode === "scratch") return <section className="m-auto w-full max-w-xl py-8">
+    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">Summary</p>
+    <h1 className="mt-2 text-2xl font-semibold">Start from scratch</h1>
+    <p className="mt-3 text-sm leading-6 text-text-muted">Your workspace is ready to make your own. Add agents, apps, and integrations whenever you need them.</p>
+    <div className="mt-6 space-y-4 rounded-xl border border-border p-5">
+      <div><p className="text-sm font-medium">Workspace setup</p><p className="mt-1 text-sm text-text-muted">No preset agents or apps will be added.</p></div>
+      {draft.description.trim() && <div><p className="text-sm font-medium">Your goals</p><p className="mt-1 whitespace-pre-wrap break-words text-sm text-text-muted">{draft.description}</p></div>}
+      {!aiAvailable && <p className="text-sm text-text-muted">Connect a provider in Settings when you’re ready to use AI.</p>}
+    </div>
+    <fieldset disabled={busy} className="mt-6">{interfacePicker}</fieldset>
+    <div className="mt-6 flex flex-wrap gap-3 border-t border-border pt-5">
+      <button disabled={busy} onClick={back} className={secondaryClass}>← Presets</button>
+      <button disabled={busy} onClick={() => finish("/")} className="rounded-lg bg-accent px-5 py-2.5 text-sm font-semibold text-bg disabled:opacity-50">{busy ? "Finishing setup…" : "Finish setup"}</button>
+    </div>
+    {error && <p role="alert" className="mt-4 text-sm text-red">{error}</p>}
+  </section>;
 
   if (review) return <section className="mx-auto flex min-h-0 w-full max-w-[1500px] flex-1 flex-col py-5 sm:py-8">
     <header className="mb-5">
@@ -306,19 +316,14 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
     <h1 className="text-3xl font-semibold">How would you like to configure your workspace?</h1>
     <p className="mt-3 text-sm text-text-muted">Choose how to get started. You can change your choice as you go.</p>
     <div className="mt-7 grid gap-3">
-      {aiAvailable && <button disabled={busy} onClick={() => chooseMode("ai")} className="rounded-xl border border-accent bg-accent/5 p-5 text-left disabled:opacity-50"><span className="block font-semibold text-accent">Configure with AI</span><span className="mt-2 block text-sm text-text-muted">Talk with Apteva Helper. It will configure real staged agents and resources as you go, then let you activate them.</span></button>}
+      <button disabled={busy || !aiAvailable} aria-describedby={!aiAvailable ? "setup-ai-unavailable" : undefined} onClick={() => chooseMode("ai")} className={`rounded-xl border p-5 text-left disabled:opacity-50 ${aiAvailable ? "border-accent bg-accent/5" : "border-border"}`}><span className={`block font-semibold ${aiAvailable ? "text-accent" : "text-text-muted"}`}>Configure with AI</span><span className="mt-2 block text-sm text-text-muted">{aiAvailable ? "Talk with Apteva Helper. It will configure real staged agents and resources as you go, then let you activate them." : "Connect a provider to set up your workspace with Apteva Helper."}</span></button>
       <button disabled={busy} onClick={browse} className="rounded-xl border border-border bg-bg-card p-5 text-left disabled:opacity-50"><span className="block font-semibold">Explore presets</span><span className="mt-2 block text-sm text-text-muted">Explore presets and choose the agents and capabilities to start with.</span></button>
     </div>
-    {!aiAvailable && <p className="mt-4 text-sm text-text-muted"><Link className="text-accent" to="/onboarding?provider=1">Connect AI</Link> to configure your workspace with Helper.</p>}
+    {!aiAvailable && <p id="setup-ai-unavailable" className="mt-4 text-sm text-text-muted"><Link className="text-accent" to="/onboarding?provider=1">Connect AI</Link> to configure your workspace with Helper. Agents will need a provider before they can run.</p>}
+    {onboarding && <div className="mt-6 border-t border-border pt-5"><button disabled={busy} onClick={() => finish("/")} className={secondaryClass}>Set up later · Explore workspace</button></div>}
     {busy && <p role="status" className="mt-4 text-sm text-text-muted">Preparing setup…</p>}
     {error && <p role="alert" className="mt-4 text-sm text-red">{error}</p>}
   </section>;
-
-  if (draft.mode === "scratch") return <div className="min-h-0 flex-1 overflow-y-auto">
-    <button disabled={busy} onClick={back} className={secondaryClass}>← Presets</button>
-    {scratchAgent ? <section className="space-y-4 p-6"><h1 className="text-xl font-semibold">{scratchAgent.name} created</h1><p>{scratchAgent.warning || `Status: ${scratchAgent.status}`}</p>{interfacePicker}<button disabled={busy} onClick={() => finish(`/agents/${scratchAgent.id}`)} className={secondaryClass}>Finish setup</button></section> : <AgentNew reviewContent={interfacePicker} onCreated={(agent) => { sessionStorage.setItem(scratchKey, String(agent.id)); setScratchAgent(agent); }} onBack={back} />}
-    {error && <p role="alert" className="mt-4 text-sm text-red">{error}</p>}
-  </div>;
 
   if (draft.mode === "ai" && surface) return <>
     <header className="flex min-h-12 shrink-0 flex-wrap items-center justify-end gap-2 px-1 py-2">
@@ -352,18 +357,36 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
     <button disabled={busy} onClick={back} className={secondaryClass}>← Setup options</button>
   </section>;
 
-  return <div className="mx-auto w-full max-w-4xl p-5 sm:p-8">
-    <header className="mb-6"><h1 className="text-2xl font-semibold text-text">{draft.mode === "manual" ? "Configure your setup" : "What would you like to start with?"}</h1><p className="mt-2 text-sm text-text-muted">Choose a preset, review its agents and apps, then create your setup.</p></header>
-    <button disabled={busy} onClick={back} className="mb-4 text-sm text-text-muted">{draft.mode === "manual" ? "← Presets" : "← Setup options"}</button>
-    <fieldset disabled={busy} className="min-w-0 space-y-5 disabled:opacity-70">
-      {draft.mode === "manual" && preview ? <>
-        <h2 className="text-lg font-semibold text-text">{preview.preset.name}</h2>
-        <p className="text-sm text-text-muted">{draft.description}</p>
-        <p className="text-sm text-text-muted">Review the agents and adjust their names, instructions, or behavior before creating this setup.</p>
+  if (draft.mode !== "manual") return <PresetChooser
+    catalog={catalog} selectedId={draft.preset_id} category={draft.category} query={query} projectId={projectId}
+    busy={busy} error={error} scrollPosition={presetScroll.current} onScrollPosition={(value) => { presetScroll.current = value; }}
+    onQuery={setQuery} onCategory={(category) => update({ ...draft, category }, false)}
+    onSelect={(preset) => {
+      if ((preset?.id || "") === draft.preset_id) return;
+      update({ ...draft, preset_id: preset?.id || "", interface_level: preset?.interface_level,
+        description: draft.description === selected?.description ? "" : draft.description, agent_overrides: [], mode: "browse" });
+    }}
+    onUse={() => chooseMode("manual")} onBack={back}
+  />;
+
+  return <div className="mx-auto w-full max-w-5xl shrink-0 pb-8 pt-3 sm:pt-5">
+    <button disabled={busy} onClick={back} className="mb-4 min-h-9 text-sm text-text-muted hover:text-text">← Choose another preset</button>
+    <header className="mb-6"><h1 className="text-2xl font-semibold text-text">{result ? "Your workspace" : "Personalize and confirm"}</h1><p className="mt-2 text-sm text-text-muted">{result ? "Finish connecting your apps now, or return to them later." : "Your preset is ready. Adjust your goals, review what will be created, then confirm."}</p></header>
+    {!preview ? <div className="space-y-3 rounded-xl border border-border p-5"><p className="text-sm text-text-muted">{busy ? "Preparing your summary…" : "Could not load your preset summary."}</p>{error && <p role="alert" className="text-sm text-red">{error}</p>}<button disabled={busy} className={secondaryClass} onClick={() => setAttempt((n) => n + 1)}>Retry</button></div> : <fieldset disabled={busy} className="min-w-0 space-y-5 disabled:opacity-70">
+      <h2 className="text-lg font-semibold text-text">{preview.preset.name}</h2>
+      {!result && <>
+        <label className="block text-sm font-medium text-text">What would you like help with?<textarea className={`${inputClass} mt-2 font-normal`} rows={3} maxLength={4000} value={draft.description} onChange={(event) => update({ ...draft, description: event.target.value })} placeholder="Describe your goals, your work, or what you would like to automate." /><span className="mt-1 block text-xs font-normal text-text-muted">These goals give your agents context. You can refine them later.</span></label>
         {interfacePicker}
-        <PresetContentsSummary preset={preview.preset} />
+      </>}
+      <PresetContentsSummary preset={preview.preset} />
+      {!result && <details className="rounded-xl border border-border p-4"><summary className="cursor-pointer text-sm font-medium">Customize agents <span className="font-normal text-text-dim">· Optional</span></summary><p className="mt-3 text-xs text-text-muted">The preset provides names, instructions, and behavior. Open these settings only if you want to change them.</p><div className="mt-4 space-y-3">
         {preview.agents.map((agent) => {
-          const current = draft.agent_overrides?.find((item) => item.key === agent.key) || agent;
+          const spec = preview.preset.agents.find((item) => item.key === agent.key);
+          const current = draft.agent_overrides?.find((item) => item.key === agent.key) || {
+            ...agent,
+            name: spec?.name.replaceAll("{{description}}", draft.description.trim()) || agent.name,
+            directive: spec?.directive.replaceAll("{{description}}", draft.description.trim()) || agent.directive,
+          };
           const change = (patch: Partial<typeof current>) => update({ ...draft, agent_overrides: [
             ...(draft.agent_overrides || []).filter((item) => item.key !== agent.key),
             { key: current.key, name: current.name, directive: current.directive, mode: current.mode, ...patch },
@@ -375,26 +398,14 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
             <p className="text-xs text-text-muted">Apps: {preview.preset.agents.find((item) => item.key === agent.key)?.apps?.join(", ") || "None"}</p>
           </section>;
         })}
-        {!!preview.warnings?.length && !result && <div className="rounded-lg border border-border p-4 text-sm text-text-muted"><p className="mb-2 font-medium text-text">Setup requirements</p>{preview.warnings.map((warning, i) => <p key={i}>{warning}</p>)}<p className="mt-2">Available apps are attached during setup. Missing apps may require installation by your administrator.</p></div>}
-        {!result && <button onClick={apply} className="rounded-lg bg-accent px-5 py-2.5 text-sm font-semibold text-bg">Create setup</button>}
-        {result && <SetupResult result={result} retry={apply} finish={finish} />}
-      </> : <>
-        <label className="block text-sm text-text">What would you like help with?<textarea className={`${inputClass} mt-2`} rows={3} maxLength={4000} value={draft.description} onChange={(e) => update({ ...draft, description: e.target.value })} placeholder="Describe your goals, your work, or what you would like to automate." /></label>
-        <input type="search" aria-label="Search presets" placeholder="Search presets…" className={inputClass} value={query} onChange={(e) => setQuery(e.target.value)} />
-        <div className="flex flex-wrap gap-2">{categories.map((category) => <button key={category} aria-pressed={draft.category === category && !search} onClick={() => { setQuery(""); update({ ...draft, category }); }} className={`rounded-full border px-3 py-1.5 text-sm capitalize ${draft.category === category && !search ? "border-accent text-accent" : "border-border text-text-muted"}`}>{category || "All"}</button>)}</div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <button aria-pressed={!draft.preset_id} onClick={() => update({ ...draft, preset_id: "", interface_level: undefined, agent_overrides: [], mode: "browse" })} className={`rounded-xl border p-4 text-left ${!draft.preset_id ? "border-accent bg-accent/5" : "border-border bg-bg-card"}`}><span className="font-semibold text-text">Start from scratch</span><p className="mt-2 text-sm text-text-muted">Create and configure your own agent.</p></button>
-          {visible.map((preset) => <button key={preset.id} aria-pressed={draft.preset_id === preset.id} onClick={() => update({ ...draft, preset_id: preset.id, interface_level: preset.interface_level, agent_overrides: [], mode: "browse" })} className={`rounded-xl border p-4 text-left ${draft.preset_id === preset.id ? "border-accent bg-accent/5" : "border-border bg-bg-card hover:border-text-dim"}`}><span className="font-semibold text-text">{preset.name}</span><p className="mt-2 text-sm text-text-muted">{preset.description}</p><p className="mt-3 text-xs text-text-dim">{presetCountSummary(preset)}</p></button>)}
-        </div>
-        {visible.length === 0 && <p className="text-sm text-text-muted">No presets match. Try another search or start from scratch.</p>}
-        {selected && <PresetContentsSummary preset={selected} />}
-        <div className="flex flex-wrap gap-3 border-t border-border pt-5">
-          <button onClick={() => chooseMode("manual")} className={secondaryClass}>Continue</button>
-        </div>
-      </>}
-    </fieldset>
+      </div></details>}
+      {!!preview.preset.connections?.length && <PresetConnectionGuide steps={preview.preset.connections} projectId={projectId} enabled={!!result} />}
+      {!!preview.warnings?.length && !result && <details className="rounded-lg border border-border p-4 text-sm text-text-muted"><summary className="cursor-pointer font-medium text-text">App and widget availability</summary><p className="mt-2">Setup will install the available apps. Apps or widgets that still need attention will be listed afterward.</p><div className="mt-3 space-y-2">{preview.warnings.map((warning, i) => <p key={i}>{warning}</p>)}</div></details>}
+      {!result && <div className="sticky bottom-0 border-t border-border bg-bg py-4 pb-[max(1rem,env(safe-area-inset-bottom))]"><p className="mb-3 text-xs leading-relaxed text-text-muted">This will create {preview.agents.length} agent{preview.agents.length === 1 ? "" : "s"}, install missing apps, and add the planned widgets. Existing workspace content is preserved.</p>{error && <p role="alert" className="mb-3 text-sm text-red">{error}</p>}<button onClick={apply} className="min-h-11 w-full rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-50 sm:w-auto">{busy ? "Creating your workspace…" : "Confirm and create workspace"}</button></div>}
+      {result && <SetupResult result={result} retry={apply} finish={finish} />}
+    </fieldset>}
     {busy && <p role="status" className="mt-4 text-sm text-text-muted">Preparing your setup…</p>}
-    {error && <div className="mt-4"><p role="alert" className="text-sm text-red">{error}</p>{draft.mode !== "browse" && !preview && <button disabled={busy} onClick={() => setAttempt((n) => n + 1)} className={`${secondaryClass} mt-2`}>Retry</button>}</div>}
+    {result && error && <p role="alert" className="mt-4 text-sm text-red">{error}</p>}
   </div>;
 }
 
@@ -638,7 +649,7 @@ function isPlannedSetupNotice(warning: string) {
 function SetupResult({ result, retry, finish }: { result: ApplyResult; retry: () => void; finish: (destination: string) => void }) {
   const agents = [...result.created_agents, ...result.existing_agents];
   const ready = agents.length > 0 && agents.every((agent) => agent.status === "running") && !result.warnings?.length;
-  const destination = agents.length === 1 ? `/conversations?agent=${agents[0]!.id}` : "/agents";
+  const destination = "/";
   return <section className="space-y-3 rounded-xl border border-border p-4" aria-label="Setup result">
     <h2 className="font-semibold text-text">{ready ? "Your setup is ready" : "Your setup needs attention"}</h2>
     <p className="text-sm text-text-muted">{result.created_agents.length} agents created · {result.existing_agents.length} existing agents reused</p>

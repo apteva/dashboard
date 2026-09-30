@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Ref } from "react";
+import type { ConversationComposerHandle } from "../chat/conversationComposer";
 import { AppIcon } from "@apteva/ui-kit";
 import { auth } from "../../api";
 import { useOptionalAuth } from "../../hooks/useAuth";
@@ -9,10 +11,18 @@ import {
   type UIComponentSpec,
   useInstalledApps,
 } from "./chatComponents";
+import {
+  createWidgetActionBridge,
+  type WidgetActionBridge,
+  type WidgetContext,
+} from "./widgetContext";
 
 export type WidgetSize = "half" | "full";
 
 export interface WidgetInstance {
+  placement?: "assistant" | "main" | "activity" | "details";
+  agent_id?: number;
+  setup?: import("../../api").PresetConnectionSetup[];
   /** Stable identity so one component may be added more than once. */
   id: string;
   /** app:component manifest identity. */
@@ -27,6 +37,20 @@ export interface ProjectUILayout {
   /** String entries are the legacy enabled-component format. */
   slots?: Record<string, StoredWidget[]>;
   sidebar?: string[];
+  /** User-created pages belonging to this project. */
+  pages?: WorkspacePage[];
+}
+
+export interface WorkspacePage {
+  id: string;
+  title: string;
+  icon?: string;
+  kind: "system" | "template" | "custom";
+  layout?: "grid" | "workspace";
+  scope: "project" | "global";
+  created_at?: string;
+  description?: string;
+  pinned?: boolean;
 }
 
 export interface UILayoutDocument {
@@ -35,13 +59,37 @@ export interface UILayoutDocument {
   global?: ProjectUILayout;
 }
 
+export function workspacePages(document: UILayoutDocument, projectId?: string | null): WorkspacePage[] {
+  const projectPages = projectId ? document.projects?.[projectId]?.pages || [] : [];
+  const globalPages = document.global?.pages || [];
+  return [...(Array.isArray(globalPages) ? globalPages : []), ...(Array.isArray(projectPages) ? projectPages : [])].filter((page) => page && typeof page.id === "string" && typeof page.title === "string");
+}
+
 const LAYOUT_EVENT = "apteva:ui-layout-changed";
 const surfaceSaveQueues = new Map<string, Promise<unknown>>();
 const surfaceSaveVersions = new Map<string, number>();
+const sidebarSaveQueues = new Map<string, Promise<unknown>>();
+const sidebarSaveVersions = new Map<string, number>();
+const pendingSidebars = new Map<string, { projectId: string; names: string[] }>();
+const latestLayouts = new Map<number, { document: UILayoutDocument; confirmed: UILayoutDocument; revision: number }>();
 
 function normalizeLayout(value: unknown): UILayoutDocument {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as UILayoutDocument;
+}
+
+function withPendingSidebars(document: UILayoutDocument, userId?: number): UILayoutDocument {
+  if (!userId) return document;
+  let next = document;
+  for (const [key, pending] of pendingSidebars) {
+    if (!key.startsWith(`${userId}:`)) continue;
+    const projects = next.projects || {};
+    next = { ...next, projects: {
+      ...projects,
+      [pending.projectId]: { ...(projects[pending.projectId] || {}), sidebar: pending.names },
+    } };
+  }
+  return next;
 }
 
 export function contributionKey(appName: string, componentName: string) {
@@ -50,20 +98,32 @@ export function contributionKey(appName: string, componentName: string) {
 
 export function useProjectUILayout(projectId?: string | null, layoutScope: "project" | "global" = "project") {
   const user = useOptionalAuth()?.user;
-  const initial =
-    user && typeof user === "object" ? normalizeLayout(user.uiLayout) : {};
+  const userId = user && typeof user === "object" ? user.id : undefined;
+  const profileDocument = user && typeof user === "object" ? normalizeLayout(user.uiLayout) : {};
+  const profileRevision = user && typeof user === "object" ? user.uiLayoutRevision : 0;
+  const cached = userId ? latestLayouts.get(userId) : undefined;
+  const useCached = !!cached && cached.revision >= profileRevision;
+  const initial = withPendingSidebars(useCached ? cached.document : profileDocument, userId);
+  const initialConfirmed = useCached ? cached.confirmed : profileDocument;
+  const initialRevision = useCached ? cached.revision : profileRevision;
   const [document, setDocument] = useState<UILayoutDocument>(initial);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const documentRef = useRef(document);
-  const revisionRef = useRef(user && typeof user === "object" ? user.uiLayoutRevision : 0);
+  const confirmedDocumentRef = useRef(initialConfirmed);
+  const revisionRef = useRef(initialRevision);
 
   const applyDocument = useCallback((next: UILayoutDocument, revision?: number) => {
-    if (revision != null && revision < revisionRef.current) return false;
-    if (revision != null) revisionRef.current = revision;
-    documentRef.current = next;
-    setDocument(next);
+    if (revision != null && revision <= revisionRef.current) return false;
+    if (revision != null) {
+      revisionRef.current = revision;
+      confirmedDocumentRef.current = next;
+    }
+    const visible = withPendingSidebars(next, userId);
+    documentRef.current = visible;
+    setDocument(visible);
+    if (userId) latestLayouts.set(userId, { document: visible, confirmed: confirmedDocumentRef.current, revision: revisionRef.current });
     return true;
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     if (user && typeof user === "object") {
@@ -91,27 +151,50 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
   const project = layoutScope === "global"
     ? document.global || {}
     : projectId ? document.projects?.[projectId] || {} : {};
-  const update = useCallback(
-    async (nextProject: ProjectUILayout) => {
-      if (layoutScope === "project" && !projectId) return;
-      const current = documentRef.current;
-      const next: UILayoutDocument = layoutScope === "global"
-        ? { ...current, global: nextProject }
-        : { ...current, projects: { ...(current.projects || {}), [projectId!]: nextProject } };
-      publishDocument(next);
-      try {
-        setSaveState("saving");
-        const response = await auth.updatePreferences({
-          ui_layout: next as Record<string, unknown>,
-        });
-        publishDocument(normalizeLayout(response.ui_layout), response.ui_layout_revision);
+  const toggleSidebarApp = useCallback(async (appName: string, defaults: string[]) => {
+    if (!projectId || layoutScope !== "project") return;
+    const key = `${user && typeof user === "object" ? user.id : 0}:${projectId}`;
+    const current = documentRef.current;
+    const currentProject = current.projects?.[projectId] || {};
+    const base = Object.prototype.hasOwnProperty.call(currentProject, "sidebar")
+      ? currentProject.sidebar || [] : defaults;
+    const names = [...new Set(base)];
+    const pinned = !names.includes(appName);
+    const nextNames = pinned ? [...names, appName] : names.filter((name) => name !== appName);
+    pendingSidebars.set(key, { projectId, names: nextNames });
+    const next: UILayoutDocument = { ...current, projects: {
+      ...(current.projects || {}),
+      [projectId]: { ...currentProject, sidebar: nextNames },
+    } };
+    publishDocument(next);
+    setSaveState("saving");
+
+    const version = (sidebarSaveVersions.get(key) || 0) + 1;
+    sidebarSaveVersions.set(key, version);
+    const previous = sidebarSaveQueues.get(key) || Promise.resolve();
+    const request = previous.catch(() => undefined).then(() => auth.patchSidebarApp(projectId, appName, pinned, defaults));
+    sidebarSaveQueues.set(key, request);
+    try {
+      const response = await request;
+      if (sidebarSaveVersions.get(key) === version) {
+        pendingSidebars.delete(key);
+        publishDocument(normalizeLayout(response.ui_layout), response.revision);
         setSaveState("saved");
-      } catch {
+      }
+    } catch {
+      if (sidebarSaveVersions.get(key) === version) {
+        pendingSidebars.delete(key);
+        publishDocument(confirmedDocumentRef.current);
+        try {
+          const latest = await auth.me();
+          publishDocument(normalizeLayout(latest.ui_layout), latest.ui_layout_revision);
+        } catch { /* Keep the last visible layout until another refresh. */ }
         setSaveState("error");
       }
-    },
-    [layoutScope, projectId, publishDocument],
-  );
+    } finally {
+      if (sidebarSaveQueues.get(key) === request) sidebarSaveQueues.delete(key);
+    }
+  }, [layoutScope, projectId, publishDocument, user]);
 
   const updateSurface = useCallback(
     async (surface: string, widgets: WidgetInstance[]) => {
@@ -135,14 +218,9 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
       surfaceSaveVersions.set(queueKey, version);
       const previous = surfaceSaveQueues.get(queueKey) || Promise.resolve();
       const request = previous.catch(() => undefined).then(() => {
-        if (layoutScope === "global") {
-          return auth.updatePreferences({ ui_layout: optimistic as Record<string, unknown> }).then((response) => ({
-            value: stored,
-            ui_layout: response.ui_layout,
-            revision: response.ui_layout_revision || 0,
-          }));
-        }
-        return auth.patchUILayoutSurface(projectId!, surface, stored);
+        return layoutScope === "global"
+          ? auth.patchGlobalUILayoutSurface(surface, stored)
+          : auth.patchUILayoutSurface(projectId!, surface, stored);
       });
       surfaceSaveQueues.set(queueKey, request);
       try {
@@ -161,7 +239,7 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
     [layoutScope, projectId, publishDocument],
   );
 
-  return { document, project, update, updateSurface, saveState };
+  return { document, project, toggleSidebarApp, updateSurface, saveState };
 }
 
 export interface Contribution {
@@ -195,8 +273,9 @@ export function contributionsFor(
     // Keep its widgets mounted so routine upgrades do not collapse the grid.
     if (app.status && app.status !== "running" && !app.serving) continue;
     for (const spec of app.ui_components || []) {
-      if (!spec.slots?.includes(slot)) continue;
-      if (slot === "dashboard.home" && !supportsDashboardScope(spec, scope)) continue;
+      const pageSlot = slot.startsWith("page.");
+      if (!spec.slots?.includes(slot) && !(pageSlot && (spec.slots?.includes("dashboard.home") || spec.slots?.includes("project.page")))) continue;
+      if ((slot === "dashboard.home" || pageSlot) && !supportsDashboardScope(spec, scope)) continue;
       out.push({ app, spec, key: contributionKey(app.name, spec.name) });
     }
   }
@@ -216,6 +295,7 @@ export async function fetchEligibleContributionKeys(
   slot: string,
   agentId: number,
   threadId?: string,
+  signal?: AbortSignal,
 ): Promise<Set<string>> {
   const params = new URLSearchParams({
     project_id: projectId,
@@ -225,6 +305,7 @@ export async function fetchEligibleContributionKeys(
   if (threadId) params.set("thread_id", threadId);
   const response = await fetch(`/api/ui/contributions?${params.toString()}`, {
     credentials: "same-origin",
+    signal,
   });
   if (!response.ok) throw new Error("unable to resolve contributions");
   const payload = await response.json() as ContributionEligibilityResponse;
@@ -355,6 +436,8 @@ export function storedWidgetInstancesFor(
         ? `legacy:${slot}:${index}:${component}`
         : entry.id || `widget:${slot}:${index}:${component}`,
       component,
+      agent_id: legacy ? undefined : entry.agent_id,
+      setup: legacy ? undefined : entry.setup,
       size: contribution
         ? normalizedWidgetSize(contribution.spec, legacy ? undefined : entry.size)
         : fallbackSize,
@@ -382,6 +465,9 @@ export function serializeWidgetInstances(
     id: item.id,
     component: item.component,
     size: item.size,
+    ...(item.placement ? { placement: item.placement } : {}),
+    ...(item.agent_id !== undefined ? { agent_id: item.agent_id } : {}),
+    ...(item.setup?.length ? { setup: item.setup } : {}),
     ...(item.settings && Object.keys(item.settings).length
       ? { settings: item.settings }
       : {}),
@@ -460,6 +546,7 @@ export function AppContributionArea({
 }
 
 export function ContributionMount({
+  composerRef,
   pageContext,
   instance,
   apps,
@@ -469,7 +556,11 @@ export function ContributionMount({
   agentId,
   threadId,
   workspaceContext,
+  widgetContext,
+  widgetActions,
 }: {
+  /** Optional Conversations contract; omitted for all other widgets. */
+  composerRef?: Ref<ConversationComposerHandle>;
   pageContext?: import("../chat/pageContext").AssistantPageContext;
   instance: ResolvedWidgetInstance;
   apps: InstalledAppRow[];
@@ -478,15 +569,23 @@ export function ContributionMount({
   dashboardScope?: DashboardScope;
   agentId?: number;
   threadId?: string;
-  workspaceContext?: {
-    app: string;
-    kind: string;
-    id: string;
-  };
+  workspaceContext?: { app: string; kind: string; id: string };
+  /** Optional shared host context. Existing app widgets do not need it. */
+  widgetContext?: WidgetContext;
+  /** Optional shared host action bridge. Existing app widgets do not need it. */
+  widgetActions?: WidgetActionBridge;
 }) {
   const { contribution } = instance;
   const events = usePanelEvents(contribution.app.name, projectId, contribution.app.install_id, contribution.spec.refresh_topics || [], dashboardScope);
   const width = instance.size === "full" ? "xl:col-span-2" : "";
+  const effectiveContext: WidgetContext = {
+    projectId,
+    scope: dashboardScope,
+    ...widgetContext,
+    agentId: agentId ?? instance.agent_id ?? widgetContext?.agentId,
+    threadId: threadId ?? widgetContext?.threadId,
+  };
+  const effectiveActions = widgetActions || createWidgetActionBridge();
   return (
     <div
       className={`h-full min-w-0 w-full ${width}`}
@@ -499,18 +598,23 @@ export function ContributionMount({
           app: contribution.app.name,
           name: contribution.spec.name,
           props: {
-            agentId,
-            instanceId: agentId,
+            agentId: agentId ?? instance.agent_id,
+            instanceId: agentId ?? instance.agent_id,
             threadId,
+            ...(workspaceContext ? { workspaceContext } : {}),
             ...events,
             slot,
             widgetId: instance.id,
             widgetSize: instance.size,
             widgetSettings: instance.settings || {},
             pageContext,
-            workspaceContext,
+            ...(composerRef ? { composerRef } : {}),
+                      widgetContext: effectiveContext,
+            widgetActions: effectiveActions,
           },
         }}
+        widgetContext={effectiveContext}
+        widgetActions={effectiveActions}
         apps={apps}
         projectId={projectId}
         dashboardScope={dashboardScope}
@@ -907,16 +1011,10 @@ export function SidebarAppManager({
   }>;
   onClose: () => void;
 }) {
-  const { project, update } = useProjectUILayout(projectId);
+  const { project, toggleSidebarApp, saveState } = useProjectUILayout(projectId);
   const selected = new Set(preferredSidebarAppNames(apps, project));
   const toggle = (name: string) => {
-    const next = new Set(selected);
-    if (next.has(name)) next.delete(name);
-    else next.add(name);
-    void update({
-      ...project,
-      sidebar: apps.filter((app) => next.has(app.name)).map((app) => app.name),
-    });
+    void toggleSidebarApp(name, apps.filter((app) => app.suggested).map((app) => app.name));
   };
   return (
     <div
@@ -970,6 +1068,8 @@ export function SidebarAppManager({
           ))}
         </div>
         <footer className="flex justify-end border-t border-border p-4">
+          {saveState === "saving" && <span className="mr-auto self-center text-xs text-text-muted">Saving…</span>}
+          {saveState === "error" && <span role="alert" className="mr-auto self-center text-xs text-red">Could not save. Try again.</span>}
           <button
             onClick={onClose}
             className="rounded border border-accent bg-accent/10 px-4 py-2 text-xs font-bold text-accent hover:bg-accent/20"

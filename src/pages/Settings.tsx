@@ -1,3 +1,6 @@
+import { PagesSettings } from "../components/pages/PagesSettings";
+import { PRODUCT_TOUR, requestProductTour } from "../components/tour/config";
+import { ServiceTierSelect, agentServiceTiers, serviceTierPatch } from "../components/ServiceTierSelect";
 import { useState, useEffect, useCallback } from "react";
 import { useAssistantPageDetails } from "../components/chat/pageContext";
 import { Link, useSearchParams } from "react-router-dom";
@@ -63,7 +66,7 @@ export function visibleUserManagedKeys(keys: Key[], now = Date.now()): Key[] {
 }
 
 
-type Tab = "projects" | "presets" | "chat-assistant" | "helper" | "interface" | "appearance" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
+type Tab = "pages" | "projects" | "presets" | "chat-assistant" | "helper" | "interface" | "appearance" | "providers" | "mcp" | "subscriptions" | "api-keys" | "data" | "account" | "server" | "users";
 
 // GlobeIcon — Lucide-style outline glyph used for "global" provider
 // scope. Inherits color via currentColor; sized to sit inline next to
@@ -93,7 +96,7 @@ export function Settings() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab") as Tab | null;
   const [tab, setTab] = useState<Tab>(
-    requestedTab && ["projects", "presets", "chat-assistant", "helper", "interface", "appearance", "providers", "mcp", "subscriptions", "api-keys", "data", "account", "server", "users"].includes(requestedTab)
+    requestedTab && ["pages", "projects", "presets", "chat-assistant", "helper", "interface", "appearance", "providers", "mcp", "subscriptions", "api-keys", "data", "account", "server", "users"].includes(requestedTab)
       ? requestedTab
       : "projects",
   );
@@ -111,6 +114,7 @@ export function Settings() {
   const allTabs: { id: Tab; label: string; section?: AudienceSection }[] = [
     { id: "projects", label: t("settings.tabs.projects"), section: "settings.projects" },
     { id: "presets", label: t("settings.tabs.presets") },
+    { id: "pages", label: t("nav.pages") },
     { id: "chat-assistant", label: "Chat assistant" },
     { id: "helper", label: t("settings.tabs.helper"), section: "settings.helper" },
     { id: "interface", label: t("settings.tabs.interface") },
@@ -191,6 +195,7 @@ export function Settings() {
       <div className="page-safe-bottom flex-1 overflow-y-auto p-4 sm:p-6">
         {tab === "projects" && <ProjectsTab />}
         {tab === "presets" && <PresetSettings />}
+        {tab === "pages" && <PagesSettings />}
         {tab === "helper" && <HelperTab />}
         {tab === "chat-assistant" && <ChatAssistantSettings />}
         {tab === "interface" && <InterfaceTab />}
@@ -351,6 +356,11 @@ function InterfaceTab() {
         <h2 className="text-text font-medium mb-1">{t("settings.interface.title")}</h2>
         <p className="text-text-muted text-sm">{t("settings.interface.description")}</p>
       </div>
+      {PRODUCT_TOUR.enabled && <section className="rounded-lg border border-border p-4">
+        <h3 className="text-sm font-semibold text-text">Explore Apteva</h3>
+        <p className="mt-1 text-sm text-text-muted">A quick, interactive guide to agents, apps, connected accounts, and your workspace. Skip at any time.</p>
+        <button type="button" onClick={requestProductTour} className="mt-3 min-h-10 rounded-lg border border-accent px-4 text-sm font-semibold text-accent hover:bg-accent/10">Show me around</button>
+      </section>}
       <section>
         <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">
           {t("settings.interface.level")}
@@ -816,6 +826,7 @@ export function availableRuntimeEntries(
 
 function HelperTab() {
   const [runtimeConns, setRuntimeConns] = useState<RuntimeConnection[]>([]);
+  const [serviceTierOverrides, setServiceTierOverrides] = useState<Record<string, string | null>>({});
   // The server returns these in pool order (project scope, then primary,
   // then id), so first-wins dedup here produces exactly the provider the
   // agent will boot with. This used to be reimplemented client-side by
@@ -895,6 +906,7 @@ function HelperTab() {
   }, []);
 
   const applyRuntimeConfig = useCallback((agent: Agent, config: Awaited<ReturnType<typeof core.config>>) => {
+    setServiceTierOverrides(agentServiceTiers(agent.config));
     const effectiveProvider = resolveEffectiveAgentProvider(agent.config || "{}", config.providers);
     const effectiveModels = config.provider?.models || {};
     setRuntimeProvider(config.provider?.name || effectiveProvider);
@@ -1008,6 +1020,7 @@ function HelperTab() {
           default: connection.provider_key === selectedProvider,
         })),
         modelOverride: selectedModel,
+        serviceTierOverrides: serviceTierPatch(helper.config, serviceTierOverrides),
       });
       const refreshedHelper = await platformHelper.get();
       const config = await core.config(refreshedHelper.id);
@@ -1083,7 +1096,7 @@ function HelperTab() {
     <div className="mx-auto max-w-4xl space-y-5">
       <div>
         <h2 className="text-base font-bold text-text">Helper</h2>
-        <p className="mt-1 text-sm text-text-muted">Configure the Apteva Helper used for Build conversations and dashboard assistance.</p>
+        <p className="mt-1 text-sm text-text-muted">Configure the Apteva Helper used for dashboard assistance.</p>
       </div>
 
       <section className="rounded-lg border border-border bg-bg-card">
@@ -1122,6 +1135,8 @@ function HelperTab() {
                   {textProviders.map((connection) => <option key={connection.id} value={connection.provider_key}>{connection.app_name}{connection.scope === "project" ? " · project" : " · global"}</option>)}
                 </select>
               </label>
+
+              <ServiceTierSelect connection={selectedProviderRow} inherit value={serviceTierOverrides[selectedProvider]} disabled={saving} onChange={(value) => setServiceTierOverrides((current) => ({ ...current, [selectedProvider]: value }))} />
 
               <label className="grid gap-1.5">
                 <span className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-text-dim">Main model {loadingModels && <span className="font-normal normal-case">Loading…</span>}</span>
@@ -1501,6 +1516,15 @@ export function ProvidersTab() {
     }
   };
 
+  const handleServiceTier = async (connection: RuntimeConnection, value: string | null) => {
+    setBusyID(connection.id); setError("");
+    try {
+      await integrations.updateRuntimeConfig(connection.id, { service_tier: value || null });
+      load();
+    } catch (err: any) { setError(err?.message || "Could not save service tier"); }
+    finally { setBusyID(null); }
+  };
+
   const handlePinModel = async (
     connection: RuntimeConnection,
     tier: string,
@@ -1708,6 +1732,7 @@ export function ProvidersTab() {
                           ))}
                         </div>
                       )}
+                      <ServiceTierSelect connection={connection} value={connection.runtime_config?.service_tier || ""} disabled={busy} onChange={(value) => void handleServiceTier(connection, value)} />
                       <div className="space-y-1.5">
                         {(["large", "medium", "small"] as const).map((tier) => (
                           <label

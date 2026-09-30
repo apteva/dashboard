@@ -382,6 +382,7 @@ export const auth = {
       created_at: string;
       onboarded: boolean;
       onboarded_at?: string;
+      product_tours?: Record<string, string>;
       language?: string;
       interface_level?: InterfaceLevel | null;
       ui_layout?: Record<string, unknown>;
@@ -428,7 +429,30 @@ export const auth = {
       { value },
     ),
 
+  mutateUIPage: (method: "POST" | "PATCH" | "DELETE", page: {
+    id?: string; scope: "project" | "global"; project_id?: string;
+    title?: string; description?: string; pinned?: boolean; layout?: "grid" | "workspace";
+  }) => request<{ page: { id: string }; ui_layout: Record<string, unknown>; revision: number }>(method, "/ui-layout/pages", page),
+
+  patchGlobalUILayoutSurface: (surface: string, value: unknown[]) =>
+    request<{
+      value: unknown[];
+      ui_layout: Record<string, unknown>;
+      revision: number;
+    }>("PATCH", `/ui-layout/global/surfaces/${encodeURIComponent(surface)}`, { value }),
+
+  patchSidebarApp: (projectId: string, app: string, pinned: boolean, defaults: string[]) =>
+    request<{
+      sidebar: string[];
+      ui_layout: Record<string, unknown>;
+      revision: number;
+    }>("PATCH", `/ui-layout/projects/${encodeURIComponent(projectId)}/sidebar`, {
+      app, pinned, defaults,
+    }),
+
   prepareOnboarding: (mode: "ai") => request<{ status: string }>("POST", "/auth/onboarding/prepare", { mode }),
+  saveProductTour: (id: string, status: "skipped" | "completed") =>
+    request("PUT", "/auth/preferences", { product_tour: { id, status } }),
   completeOnboarding: (interfaceLevel?: InterfaceLevel) =>
     request<{ status: string }>("POST", "/auth/onboarding/complete", { interface_level: interfaceLevel }),
 
@@ -583,12 +607,25 @@ export interface Project {
 }
 
 export interface ProjectPresetAgent {
+  icon?: string;
   key: string;
   name: string;
   directive: string;
   mode: "autonomous" | "cautious" | "learn";
   unconscious?: boolean;
   apps?: string[];
+}
+
+export interface PresetConnectionSetup {
+  app: string;
+  title: string;
+  description: string;
+  required?: boolean;
+}
+
+export interface ProjectPresetLayouts {
+  home?: ProjectPresetWidget[] | null;
+  agent_overview?: Record<string, ProjectPresetWidget[]>;
 }
 
 export interface ProjectPreset {
@@ -608,6 +645,8 @@ export interface ProjectPreset {
   agents: ProjectPresetAgent[];
   dashboard?: string[];
   dashboard_layout?: ProjectPresetWidget[];
+  layouts?: ProjectPresetLayouts;
+  connections?: PresetConnectionSetup[];
 }
 
 export interface ProjectPresetAppPreview {
@@ -624,6 +663,9 @@ export interface ProjectPresetAgentPreview extends ProjectPresetAgent {
 }
 
 export interface ProjectPresetWidget {
+  agent_key?: string;
+  agent_id?: number;
+  setup?: PresetConnectionSetup[];
   id: string;
   component: string;
   size: "half" | "full";
@@ -639,6 +681,7 @@ export interface ProjectPresetPreview {
   apps: ProjectPresetAppPreview[];
   agents: ProjectPresetAgentPreview[];
   layout: ProjectPresetWidget[];
+  agent_layouts?: Record<string, ProjectPresetWidget[]>;
   warnings: string[];
   next_steps?: string[];
 }
@@ -660,6 +703,8 @@ export interface ProjectSetupPresetDefinition {
   agents: ProjectPresetAgent[];
   dashboard?: string[];
   dashboard_layout?: ProjectPresetWidget[];
+  layouts?: ProjectPresetLayouts;
+  connections?: PresetConnectionSetup[];
 }
 
 export interface Preset {
@@ -834,6 +879,8 @@ export const projectPresets = {
         agents: preset.definition.agents,
         dashboard: preset.definition.dashboard,
         dashboard_layout: preset.definition.dashboard_layout,
+        layouts: preset.definition.layouts,
+        connections: preset.definition.connections,
       })),
     };
   },
@@ -1019,6 +1066,8 @@ export interface Agent {
   id: number;
   user_id: number;
   name: string;
+  icon?: string;
+  icon_color?: string;
   directive: string;
   mode: RunMode;
   proactivity?: number;
@@ -1105,6 +1154,8 @@ export const instances = {
     projectId?: string,
     start?: boolean,
     opts?: {
+      icon?: string;
+      iconColor?: string;
       proactivity?: number;
       idempotencyKey?: string;
       includeChannels?: boolean;
@@ -1122,6 +1173,8 @@ export const instances = {
   ) =>
     request<Agent & { warning?: string }>("POST", "/agents", {
       name,
+      icon: opts?.icon || "robot",
+      icon_color: opts?.iconColor || "accent",
       directive: directive || "",
       mode: mode || "autonomous",
       project_id: projectId || "",
@@ -1151,6 +1204,9 @@ export const instances = {
 
   rename: (id: number, name: string) =>
     request<Agent>("PUT", `/agents/${id}`, { name }),
+
+  updateIdentity: (id: number, identity: { name?: string; icon?: string; icon_color?: string }) =>
+    request<Agent>("PUT", `/agents/${id}`, identity),
 
   delete: (id: number) => request<any>("DELETE", `/agents/${id}`),
 
@@ -1194,10 +1250,13 @@ export const instances = {
       directive?: string;
       mode?: string;
       proactivity?: number;
-      providers?: Array<{ name: string; default: boolean }>;
+      providers?: Array<{ name: string; default: boolean; service_tier?: string | null }>;
       modelOverride?: string;
+      serviceTierOverrides?: Record<string, string | null>;
       realtimeEnabled?: boolean;
       realtimeVoice?: string;
+      realtimeProvider?: string;
+      realtimeModel?: string;
       realtimeVoiceMCP?: string[];
     },
   ) =>
@@ -1206,6 +1265,7 @@ export const instances = {
       ...(opts.mode ? { mode: opts.mode } : {}),
       ...(opts.proactivity !== undefined ? { proactivity: opts.proactivity } : {}),
       ...(opts.providers ? { providers: opts.providers } : {}),
+      ...(opts.serviceTierOverrides ? { service_tier_overrides: opts.serviceTierOverrides } : {}),
       ...(opts.modelOverride !== undefined
         ? { model_override: opts.modelOverride }
         : {}),
@@ -1214,6 +1274,12 @@ export const instances = {
         : {}),
       ...(opts.realtimeVoice !== undefined
         ? { realtime_voice: opts.realtimeVoice }
+        : {}),
+      ...(opts.realtimeProvider !== undefined
+        ? { realtime_provider: opts.realtimeProvider }
+        : {}),
+      ...(opts.realtimeModel !== undefined
+        ? { realtime_model: opts.realtimeModel }
         : {}),
       ...(opts.realtimeVoiceMCP !== undefined
         ? { realtime_voice_mcp: opts.realtimeVoiceMCP }
@@ -1405,6 +1471,7 @@ export interface CredentialField {
 // -types list it replaces exposed only raw env var names, which is why
 // onboarding used to label its inputs "ANTHROPIC_API_KEY".
 export interface RuntimeCatalogEntry {
+  service_tiers?: string[];
   slug: string;
   name: string;
   description: string;
@@ -1422,6 +1489,7 @@ export interface RuntimeCatalogEntry {
 /** A connected runtime backend, as listed by GET /connections/runtime.
  *  Never carries credentials — it drives a settings screen. */
 export interface RuntimeConnection {
+  service_tiers?: string[];
   id: number;
   name: string;
   app_slug: string;
@@ -1438,6 +1506,12 @@ export interface RuntimeConnection {
   capabilities?: string[];
   /** Model picks and non-secret knobs: model_large, model_small, … */
   runtime_config: Record<string, any>;
+  realtime?: {
+    provider_key: string;
+    default_model: string;
+    models: Array<{ id: string; name: string; available: boolean }>;
+    voices: string[];
+  };
   env_vars?: string[];
 }
 
@@ -2730,6 +2804,7 @@ export const core = {
         name: string;
         default?: boolean;
         models?: Partial<Record<"large" | "medium" | "small", string>>;
+        service_tier?: string;
         realtime_voice?: string;
       }>;
       realtime_enabled?: boolean;
@@ -3012,7 +3087,16 @@ export const telemetry = {
       }>
     >("GET", `/telemetry/timeline?instance_id=${instanceId}&period=${period}`),
 
-  projectActivity: (projectId: string, limit = 80) => request<TelemetryEvent[]>("GET", `/telemetry/project-activity?${new URLSearchParams({ project_id: projectId, limit: String(limit) })}`),
+  projectActivity: (projectId: string | undefined, limit = 80, view?: "runtime") => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (projectId) params.set("project_id", projectId);
+    if (view) params.set("view", view);
+    return request<TelemetryEvent[]>("GET", `/telemetry/project-activity?${params}`);
+  },
+
+  agentsLastActive: (projectId: string) => request<Array<{ agent_id: number; last_active_at: string }>>(
+    "GET", `/telemetry/agents-last-active?project_id=${encodeURIComponent(projectId)}`,
+  ),
 
   // Project-scoped aggregate — ranks every instance in the project by
   // cost/tokens/errors over the period. Empty projectId scopes to every
@@ -3400,6 +3484,7 @@ export interface AppRow {
   icon_style?: "image" | "monochrome";
   project_id: string;
   status: "pending" | "running" | "error" | "disabled";
+  serving?: boolean;
   status_message?: string; // live phase string while pending — "Cloning…", "Building…", etc.
   error_message?: string;
   source: "git" | "registry" | "builtin" | "manual" | "integration";

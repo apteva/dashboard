@@ -36,6 +36,7 @@ export interface AuthUser {
   // false for users who registered but haven't finished the welcome
   // flow. Drives <OnboardingGate> in App.tsx.
   onboarded: boolean;
+  productTours?: Record<string, string>;
   language: DashboardLanguage;
   interfaceLevel: InterfaceLevel | null;
   uiLayout: Record<string, unknown>;
@@ -88,6 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         role: (r.role as PlatformRole) || "user",
         createdAt: r.created_at,
         onboarded: r.onboarded,
+        productTours: r.product_tours || {},
         language: normalizeDashboardLanguage(r.language),
         interfaceLevel: r.interface_level ?? null,
         uiLayout:

@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { lazy, Suspense, type ReactNode } from "react";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
 
@@ -10,7 +10,8 @@ function LegacyInstanceRedirect() {
   const { id } = useParams<{ id: string }>();
   return <Navigate to={`/agents/${id ?? ""}`} replace />;
 }
-import { ProjectProvider } from "./hooks/useProjects";
+import { ProjectProvider, useProjects } from "./hooks/useProjects";
+import { useProjectUILayout } from "./components/apps/contributions";
 import { ThemeProvider } from "./hooks/useTheme";
 import { AudienceProvider, useAudience } from "./hooks/useAudience";
 import { Layout } from "./components/Layout";
@@ -25,7 +26,7 @@ const Onboarding = lazy(() => import("./pages/Onboarding").then((m) => ({ defaul
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
 const Personal = lazy(() => import("./pages/Personal").then((m) => ({ default: m.Personal })));
 const WorkspaceSetup = lazy(() => import("./pages/WorkspaceSetup").then((m) => ({ default: m.WorkspaceSetup })));
-const Build = lazy(() => import("./pages/Build").then((m) => ({ default: m.Build })));
+const WorkspacePage = lazy(() => import("./pages/WorkspacePage").then((m) => ({ default: m.WorkspacePage })));
 const Monitor = lazy(() => import("./pages/Monitor").then((m) => ({ default: m.Monitor })));
 const Agents = lazy(() => import("./pages/Agents").then((m) => ({ default: m.Agents })));
 const Agent = lazy(() => import("./pages/Agent").then((m) => ({ default: m.Agent })));
@@ -63,13 +64,16 @@ function OnboardingGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-// The home route is stable at every interface level. Personal gets a focused
-// agent-and-conversations workspace; Business and Developer retain the
-// operational dashboard. This is presentation only — both routes remain
-// reachable and authorization continues to live on the server.
+// Explicit Home layouts also apply in Personal. Agent/conversation deep links
+// retain the focused conversation surface, as does Personal without a layout.
 function InterfaceHome() {
   const { audience } = useAudience();
-  return audience === "personal" ? <Personal /> : <Dashboard />;
+  const { currentProject } = useProjects();
+  const { project } = useProjectUILayout(currentProject?.id);
+  const [params] = useSearchParams();
+  const hasHome = Object.prototype.hasOwnProperty.call(project.slots || {}, "dashboard.home");
+  const conversationRequested = params.has("agent") || params.has("chat") || params.has("new");
+  return audience === "personal" && (!hasHome || conversationRequested) ? <Personal /> : <Dashboard />;
 }
 
 export default function App() {
@@ -107,7 +111,8 @@ export default function App() {
           >
             <Route path="/" element={<InterfaceHome />} />
             <Route path="/conversations" element={<Personal />} />
-            <Route path="/build" element={<Build />} />
+            <Route path="/pages" element={<Navigate to="/settings?tab=pages" replace />} />
+            <Route path="/pages/:pageId" element={<WorkspacePage />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/activity" element={<Navigate to="/monitor?view=activity" replace />} />
             <Route path="/monitor" element={<Monitor />} />

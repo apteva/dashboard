@@ -65,10 +65,11 @@ export function NotificationsTray() {
   }
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative shrink-0">
       <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
-        className="relative p-2 rounded hover:bg-bg-hover text-text-muted hover:text-text transition-colors"
+        className="relative inline-flex h-11 w-11 items-center justify-center rounded-lg hover:bg-bg-hover text-text-muted hover:text-text transition-colors md:h-9 md:w-9"
         title={unreadCount ? `${unreadCount} unread notifications` : "Notifications"}
         aria-label="Notifications"
       >

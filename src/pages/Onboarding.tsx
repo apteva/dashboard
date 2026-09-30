@@ -99,7 +99,7 @@ export function Onboarding() {
       <p className="mb-3 text-xs font-medium uppercase tracking-wide text-text-muted">Welcome to Apteva</p>
       {connectRequested && <button disabled={busy} onClick={() => navigate("/onboarding/setup")} className="mb-5 text-sm text-text-muted">← Back</button>}
       <h1 className="text-3xl font-semibold text-text">Connect your AI</h1>
-      <p className="mt-3 text-sm leading-6 text-text-muted">Connect a provider, then choose how to set up your workspace.</p>
+      <p className="mt-3 text-sm leading-6 text-text-muted">Connect a provider to use AI, or skip for now and explore your workspace.</p>
       {!status ? <div className="mt-6"><p className="text-sm text-text-muted">Checking AI access…</p>{error && <button disabled={busy} onClick={() => void run(load)} className="mt-4 text-sm text-accent">Retry</button>}</div> : status.provider_configured ? <div className="mt-6">
         <p className="text-sm text-text-muted">Your AI connection is ready.</p>
         <button disabled={busy} onClick={() => void run(checkAndFinish)} className="mt-5 rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-40">{busy ? progress : "Continue to setup"}</button>
@@ -108,8 +108,12 @@ export function Onboarding() {
         await connect();
         await checkAndFinish();
       })} /> : <div className="mt-6 rounded-xl border border-border bg-bg-card p-5">
-        <p className="text-sm leading-6 text-text-muted">Your workspace administrator needs to connect AI. Once they do, you can continue here without adding your own key.</p>
+        <p className="text-sm leading-6 text-text-muted">Your workspace administrator needs to connect AI. You can explore your workspace while you wait.</p>
         <button disabled={busy} onClick={() => void run(checkAndFinish)} className="mt-4 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:opacity-40">{busy ? progress : "Check again"}</button>
+      </div>}
+      {status && !status.provider_configured && <div className="mt-6 border-t border-border pt-5">
+        <button type="button" disabled={busy} onClick={() => void run(() => finish(status))} className="rounded-lg border border-border px-5 py-3 text-sm font-medium text-text hover:bg-bg-hover focus-visible:outline-accent disabled:opacity-40">Skip for now</button>
+        <p className="mt-2 text-xs leading-5 text-text-muted">AI-assisted setup and agents need a provider. You can connect one later in Settings.</p>
       </div>}
       {error && <p role="alert" className="mt-5 text-sm text-red">{error}</p>}
       {busy && <p role="status" className="mt-4 text-sm text-text-muted">{progress}</p>}
