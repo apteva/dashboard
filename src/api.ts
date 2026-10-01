@@ -2163,7 +2163,7 @@ export interface MCPServer {
   status: string; // 'running' | 'stopped' | 'reachable' | 'unprobed'
   tool_count: number;
   pid: number;
-  source: string; // 'custom' | 'managed' | 'local' | 'remote' | 'app'
+  source: string; // 'custom' | 'managed' | 'local' | 'remote' | 'app' | 'builtin'
   transport?: string; // 'stdio' | 'http'
   url?: string;
   provider_id?: number;

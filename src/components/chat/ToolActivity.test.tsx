@@ -151,7 +151,7 @@ describe("ChatToolActivity", () => {
       <ChatToolActivity tools={platformTools} parallel registry={buildToolVisualRegistry([], [])} />,
     );
     expect(html.match(/title="Apteva Server"/g)?.length).toBe(1);
-    expect(html).toContain('src="/apteva-mark-mask.png"');
+    expect(html).toContain('src="/apteva-server.svg"');
     expect(html).toContain("text-[var(--chat-tool-running)]");
     expect(html).toContain("+2");
   });

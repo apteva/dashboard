@@ -994,6 +994,7 @@ export function AgentRuntimePanel({
           </div>
           <CapabilitiesManager
             instanceId={instance.id}
+            requiredPlatform={instance.kind === "platform_helper"}
             projectId={instance.project_id || undefined}
             attached={mcpServers}
             apps={installedApps}
@@ -1302,10 +1303,10 @@ function AgentCapabilitiesView({
                   );
                   return (
                     <button key={capability.name} type="button" onClick={onManage} className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-bg-card/50 p-3 text-left hover:border-accent/50 hover:bg-bg-hover">
-                      <span className={`h-2 w-2 shrink-0 rounded-full ${capability.connected === false ? "bg-red" : "bg-green"}`} />
+                      {capability.name === "apteva-server" ? <AppIcon src="/apteva-server.svg" iconStyle="monochrome" name="Apteva Server" size="md" className="rounded-lg border border-border text-accent" /> : <span className={`h-2 w-2 shrink-0 rounded-full ${capability.connected === false ? "bg-red" : "bg-green"}`} />}
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-xs font-medium text-text">{row ? displayMCPName(row) : capabilityDisplayName(capability.name)}</span>
-                        <span className="mt-0.5 block truncate text-[10px] text-text-muted">{row ? `${row.tool_count || 0} tools · ${sourceLabel(row)}` : capability.transport || "MCP server"}</span>
+                        <span className="mt-0.5 block truncate text-[10px] text-text-muted">{capability.name === "apteva-server" ? (instance.kind === "platform_helper" ? "Built in · Required for Helper" : "Built in · Management tools") : row ? `${row.tool_count || 0} tools · ${sourceLabel(row)}` : capability.transport || "MCP server"}</span>
                       </span>
                     </button>
                   );
@@ -1615,6 +1616,7 @@ function truncateUI(value: string, max: number): string {
 
 export function CapabilitiesManager({
   instanceId,
+  requiredPlatform = false,
   projectId,
   attached,
   apps,
@@ -1624,6 +1626,7 @@ export function CapabilitiesManager({
   onDone,
 }: {
   instanceId: number;
+  requiredPlatform?: boolean;
   projectId?: string;
   attached: MCPServerConfig[];
   apps: AppRow[];
@@ -1826,7 +1829,7 @@ export function CapabilitiesManager({
 
       {((category === "integrations" || category === "attached") && visibleIntegrationRows.length > 0) && <CapabilitySection
         title="Integrations"
-        hint="Connected accounts your agent can use"
+        hint="Built-in capabilities and connected accounts your agent can use"
       >
         {visibleIntegrationRows.map((row) => {
           const connection = connections.find((c) => c.id === row.connection_id);
@@ -1837,11 +1840,11 @@ export function CapabilitiesManager({
             <CapabilityToggleRow
               key={`integration:${row.id}`}
               title={connection?.app_name || displayMCPName(row)}
-              detail={connection?.name || row.name}
-              icon={<AppIcon src={connection?.logo} name={connection?.app_name || displayMCPName(row)} size="md" framed={false} className="rounded-md bg-white text-gray-800" />}
-              meta={`${row.tool_count || 0} tools · ${scopeLabel(row)}`}
-              enabled={enabled}
-              disabled={!configFromInventory(row)}
+              detail={row.source === "builtin" ? "Manage agents, apps, and connections within this agent’s scope" : connection?.name || row.name}
+              icon={<AppIcon src={row.source === "builtin" ? "/apteva-server.svg" : connection?.logo} iconStyle={row.source === "builtin" ? "monochrome" : undefined} name={connection?.app_name || displayMCPName(row)} size="md" framed={row.source === "builtin"} className={row.source === "builtin" ? "rounded-lg border border-border text-accent" : "rounded-md bg-white text-gray-800"} />}
+              meta={row.source === "builtin" ? (requiredPlatform ? "Built in · Required for Helper" : "Built in · Optional") : `${row.tool_count || 0} tools · ${scopeLabel(row)}`}
+              enabled={enabled || (requiredPlatform && row.source === "builtin")}
+              disabled={!configFromInventory(row) || (requiredPlatform && row.source === "builtin")}
               busy={busyKey === `mcp:${name}`}
               onToggle={() => enabled ? detachInventory(row, name) : attachInventory(row, aliases)}
             />
@@ -2361,7 +2364,7 @@ function CapabilityShelf({
     });
   const custom = inventory
     .filter((row) => row.source !== "app")
-    .filter((row) => !["channels", "apteva-channels", "apteva-server"].includes(mcpName(row)))
+    .filter((row) => !["channels", "apteva-channels"].includes(mcpName(row)))
     .sort((a, b) => compareMCPRowsByAttachment(a, b, attachedKeys))
     .slice(0, 4);
 

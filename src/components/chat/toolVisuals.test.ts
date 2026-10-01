@@ -54,7 +54,7 @@ describe("tool visual registry", () => {
     expect(list.key).toBe("mcp:apteva-server");
     expect(remove.key).toBe(list.key);
     expect(remove.label).toBe("Apteva Server");
-    expect(remove.iconUrl).toBe("/apteva-mark-mask.png");
+    expect(remove.iconUrl).toBe("/apteva-server.svg");
     expect(remove.iconStyle).toBe("monochrome");
     expect(remove.brand).toBe(true);
   });

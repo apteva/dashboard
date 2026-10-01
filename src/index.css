@@ -804,6 +804,7 @@ select {
 .workspace-widget > section > header { flex-shrink: 0; }
 .workspace-widget > section > div:last-child { min-height: 0; max-height: none; overflow: auto; }
 .workspace-widget > section > div:last-child:not(.workspace-chat) { flex: 1; }
+.workspace-widget > section > .system-map-body { overflow: hidden; }
 
 /* A focused workspace already provides the same assistant next to the system. */
 body:has([data-inline-workspace-helper="true"]) .floating-chat-launcher-safe { display: none; }

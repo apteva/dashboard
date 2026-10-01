@@ -9,21 +9,23 @@ export const PRODUCT_TOUR_STATUS_EVENT = "apteva:tour-status";
 export const productTourStorageKey = (userId?: number, createdAt?: string) =>
   `apteva:tour:${userId ?? "anonymous"}:${createdAt || "unknown"}:${PRODUCT_TOUR.id}`;
 
-function locallyCompleted(key: string) {
-  try { return localStorage.getItem(key) === "completed"; } catch { return false; }
+type TourStatus = "skipped" | "completed";
+const tourStatus = (value: unknown): TourStatus | undefined => value === "skipped" || value === "completed" ? value : undefined;
+function localStatus(key: string) {
+  try { return tourStatus(localStorage.getItem(key)); } catch { return undefined; }
 }
 
-export function useProductTourCompleted() {
+function useProductTourStatus() {
   const { user } = useAuth();
   const key = productTourStorageKey(user ? user.id : undefined, user ? user.createdAt : undefined);
-  const [completedKey, setCompletedKey] = useState<string | null>(null);
+  const [reported, setReported] = useState<{ key: string; status?: TourStatus }>();
   useEffect(() => {
     const onStatus = (event: Event) => {
       const detail = (event as CustomEvent<{ key: string; status: string }>).detail;
-      if (detail?.key === key && detail.status === "completed") setCompletedKey(key);
+      if (detail?.key === key) setReported({ key, status: tourStatus(detail.status) });
     };
     const onStorage = (event: StorageEvent) => {
-      if (event.key === key && event.newValue === "completed") setCompletedKey(key);
+      if (event.key === key) setReported({ key, status: tourStatus(event.newValue) });
     };
     window.addEventListener(PRODUCT_TOUR_STATUS_EVENT, onStatus);
     window.addEventListener("storage", onStorage);
@@ -32,5 +34,11 @@ export function useProductTourCompleted() {
       window.removeEventListener("storage", onStorage);
     };
   }, [key]);
-  return (!!user && user.productTours?.[PRODUCT_TOUR.id] === "completed") || completedKey === key || locallyCompleted(key);
+  const statuses = [tourStatus(user ? user.productTours?.[PRODUCT_TOUR.id] : undefined), reported?.key === key ? reported.status : undefined, localStatus(key)];
+  // Preserve completion when a replay is skipped, while treating both outcomes
+  // as a lasting dismissal of the automatic offer and top-bar reminder.
+  return statuses.includes("completed") ? "completed" : statuses.includes("skipped") ? "skipped" : undefined;
 }
+
+export function useProductTourCompleted() { return useProductTourStatus() === "completed"; }
+export function useProductTourDismissed() { return useProductTourStatus() !== undefined; }

@@ -46,6 +46,10 @@ export function agentCardCapabilities(
   };
   for (const server of attached) {
     const name = normalized(server.name);
+    if (name === "apteva-server") {
+      add({ key: "mcp:apteva-server", name: "Apteva Server", kind: "mcp", src: "/apteva-server.svg", iconStyle: "monochrome" });
+      continue;
+    }
     const row = catalog.inventory.find((candidate) =>
       (server.url && (candidate.proxy_config?.url === server.url || candidate.url === server.url))
       || normalized(candidate.proxy_config?.name || candidate.name) === name,

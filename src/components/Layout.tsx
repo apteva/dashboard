@@ -1,6 +1,6 @@
 import { ProductTour } from "./tour/ProductTour";
 import { PRODUCT_TOUR, requestProductTour } from "./tour/config";
-import { useProductTourCompleted } from "./tour/useProductTourCompleted";
+import { useProductTourDismissed } from "./tour/useProductTourCompleted";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -103,7 +103,7 @@ export function Layout() {
   const [sidebarAppsOpen, setSidebarAppsOpen] = useState(false);
   const location = useLocation();
   const { user, logout } = useAuth();
-  const tourCompleted = useProductTourCompleted();
+  const tourDismissed = useProductTourDismissed();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const tourSidebar = useRef({ collapsed: false });
   const beginTour = useCallback(() => { tourSidebar.current = { collapsed: sidebarCollapsed }; }, [sidebarCollapsed]);
@@ -760,7 +760,7 @@ export function Layout() {
             )}
           </div>
           <div className="ml-auto flex items-center gap-2">
-          {PRODUCT_TOUR.enabled && !tourCompleted && <button type="button" data-tour="replay" onClick={requestProductTour} title="Explore Apteva" aria-label="Explore Apteva" className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-border px-3 text-xs font-semibold text-text-muted hover:border-accent hover:text-text">
+          {PRODUCT_TOUR.enabled && !tourDismissed && <button type="button" data-tour="replay" onClick={requestProductTour} title="Explore Apteva" aria-label="Explore Apteva" className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-border px-3 text-xs font-semibold text-text-muted hover:border-accent hover:text-text">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m16 8-2 6-6 2 2-6z" /></svg><span className="hidden sm:inline">Explore Apteva</span>
           </button>}
           <NotificationsTray />

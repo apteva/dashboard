@@ -36,6 +36,7 @@ function AppLogo({ src, className }: { src?: string | null; className?: string }
 }
 import { Modal } from "../components/Modal";
 import { IntegrationLogo } from "../components/integrations/IntegrationLogo";
+import { AppIcon } from "@apteva/ui-kit";
 import {
   ConnectionReauthDialog,
   isConnectionReauthable,
@@ -821,7 +822,7 @@ export function Integrations() {
             <section>
               <h2 className="mb-3 text-xs font-bold uppercase tracking-wide text-text-muted">Built-in integration</h2>
               <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-bg-card p-3 sm:p-4">
-                <IntegrationLogo src={builtInIntegration.logo} name={builtInIntegration.name} />
+                <AppIcon src="/apteva-server.svg" iconStyle="monochrome" name={builtInIntegration.name} size="md" className="rounded-lg border border-border text-accent" />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-base font-bold text-text">{builtInIntegration.name}</span>

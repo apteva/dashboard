@@ -339,6 +339,7 @@ await Bun.write("./dist/index.html", html);
     "favicon-inverse.ico",
     "safari-pinned-tab.svg",
     "apteva-mark-mask.png",
+    "apteva-server.svg",
     "apple-touch-icon.png",
     "apple-touch-icon-orange.png",
     "apple-touch-icon-safari.png",

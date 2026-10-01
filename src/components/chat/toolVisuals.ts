@@ -102,7 +102,7 @@ function connectionSources(connections: ConnectionInfo[]): ToolVisualSource[] {
 }
 
 function mcpSources(servers: MCPServer[]): ToolVisualSource[] {
-  return servers.map((server) => {
+  return servers.filter((server) => server.name !== "apteva-server").map((server) => {
     const slug = normalizeToolToken(server.name);
     return {
       key: `mcp:${server.id || slug}`,
@@ -120,7 +120,7 @@ function mcpSources(servers: MCPServer[]): ToolVisualSource[] {
 const platformSource: ToolVisualSource = {
   key: "mcp:apteva-server",
   label: "Apteva Server",
-  iconUrl: "/apteva-mark-mask.png",
+  iconUrl: "/apteva-server.svg",
   iconStyle: "monochrome",
   brand: true,
   glyph: "tool",

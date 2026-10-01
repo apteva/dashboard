@@ -1184,7 +1184,7 @@ function HelperTab() {
         <div className="p-4 sm:p-5">
           <div className="mb-4 grid gap-2 sm:grid-cols-3">
             <div className="flex items-center gap-3 rounded-md border border-border-subtle bg-bg-hover px-3 py-2">
-              <IntegrationLogo src={helperStatus?.built_in_integrations?.find((item) => item.id === "apteva-server")?.logo || "/favicon-orange.svg"} name="Apteva Server" />
+              <AppIcon src="/apteva-server.svg" iconStyle="monochrome" name="Apteva Server" size="md" className="rounded-lg border border-border text-accent" />
               <span className="min-w-0 flex-1">
                 <span className="block text-xs font-semibold text-text">Apteva Server</span>
                 <span className="block text-[10px] text-text-dim">Built-in integration · auto-attached</span>
@@ -2082,7 +2082,7 @@ function MCPServersTab() {
   const [testRunning, setTestRunning] = useState(false);
   const [showOptional, setShowOptional] = useState(false);
 
-  const load = () => mcpServers.list(currentProject?.id).then((s) => setServers(s || [])).catch(() => {});
+  const load = () => mcpServers.list(currentProject?.id).then((s) => setServers((s || []).filter((row) => row.source !== "builtin"))).catch(() => {});
 
   const openRenameMCP = (s: MCPServer) => {
     setRenameMCP(s);

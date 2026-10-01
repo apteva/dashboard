@@ -53,7 +53,7 @@ export function nativeWidgetDefinitions(context: NativeWidgetContext): WidgetDef
   const appRows = context.apps;
   const definitions: WidgetDefinition[] = [
     { key: "native:helper", label: "Apteva Helper", description: "Build through the existing Conversations chat widget.", supportedSizes: ["half", "full"], defaultSize: "half", kind: "builtin", render: (_instance, renderContext) => <HelperWidget {...context} renderContext={renderContext} /> },
-    { key: "native:system-map", label: "System map", description: "Explore agents and their configured capabilities.", supportedSizes: ["half", "full"], defaultSize: "full", kind: "builtin", render: (_instance, renderContext) => <SystemMapWidget {...context} renderContext={renderContext} /> },
+    { key: "native:system-map", label: "Agents & capabilities", description: "Compact agent cards with live status and attached apps and integrations.", supportedSizes: ["half", "full"], defaultSize: "full", kind: "builtin", render: (_instance, renderContext) => <SystemMapWidget {...context} renderContext={renderContext} /> },
     { key: "native:result-preview", label: "Result / preview", description: "Inspect selected activity and app outputs.", supportedSizes: ["half", "full"], defaultSize: "half", kind: "builtin", render: (_instance, renderContext) => <ResultPreviewWidget {...context} renderContext={renderContext} /> },
     {
       key: "native:workspace-summary",

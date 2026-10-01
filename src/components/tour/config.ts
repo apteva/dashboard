@@ -18,7 +18,7 @@ export const PRODUCT_TOUR = {
   id: "explore-apteva-v1",
   enabled: true,
   title: "Make yourself at home",
-  description: "Take a quick look around your workspace, agents, and apps. You can skip at any time.",
+  description: "Take a quick look around your workspace, agents, and apps. Skip to dismiss the guide completely, or replay it anytime in Settings → Interface.",
   steps: [
     { id: "workspace", title: "Your workspace", target: "workspace", navigation: true,
       description: "Projects keep your agents, apps, and connected accounts organized. Use this menu to switch between the workspaces you can access." },
