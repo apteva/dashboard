@@ -4,6 +4,7 @@ import {
   agentTemplates,
   apps,
   instances,
+  platformHelper,
   type Agent,
   type AgentTemplate,
   type AppRow,
@@ -37,6 +38,16 @@ export function selectPersonalConversationsContribution(
     matches.find((item) => !(item.app as AppRow).project_id) ||
     null
   );
+}
+
+/**
+ * Personal Conversations is the regular agent workspace. The platform
+ * Helper has its own floating assistant surface, so it should not appear in
+ * this panel's agent selector even though its agent remains available to the
+ * dashboard Helper widget.
+ */
+export function personalConversationAgents(agents: Agent[], helperId?: number): Agent[] {
+  return agents.filter((agent) => agent.kind !== "platform_helper" && agent.id !== helperId);
 }
 
 export function Personal() {
@@ -77,11 +88,12 @@ export function Personal() {
       return;
     }
     try {
-      const [agentRows, installed] = await Promise.all([
+      const [agentRows, installed, helper] = await Promise.all([
         instances.list(projectId),
         apps.list(projectId),
+        platformHelper.get().catch(() => null),
       ]);
-      setAgents(agentRows || []);
+      setAgents(personalConversationAgents(agentRows || [], helper?.id));
       setAppRows(installed || []);
     } finally {
       setLoadedProjectId(projectId);
