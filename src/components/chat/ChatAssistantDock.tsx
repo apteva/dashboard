@@ -5,7 +5,7 @@ import { Link, useLocation } from "react-router-dom";
 import { useProjects } from "../../hooks/useProjects";
 import { ASSISTANT_CHAT_SLOT, useAssistantDirectory, useAssistantPreferences } from "../../hooks/useChatAssistant";
 import { useRealtimeVoice } from "../../state/RealtimeVoiceContext";
-import { instances } from "../../api";
+import { instances, platformHelper } from "../../api";
 import { AgentMark } from "../AgentMark";
 import { ChatAgentPicker } from "./ChatAgentPicker";
 import { useAssistantPageContext } from "./pageContext";
@@ -19,9 +19,34 @@ export function ChatAssistantDock() {
   const workspace = location.pathname === "/" || location.pathname.startsWith("/pages/") || (location.pathname === "/settings" && params.get("tab") === "pages");
   const requested = workspace ? projects.find(project => project.id === params.get("project")) : undefined;
   const projectId = requested?.id || currentProject?.id || "";
-  return <ProjectChatAssistant key={projectId} projectId={projectId} />;
+  const [helperSetupError, setHelperSetupError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    let pending = false;
+    const ensure = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        await platformHelper.ensureDefault();
+        if (!cancelled) {
+          setHelperSetupError("");
+          window.dispatchEvent(new Event("apteva:helper-changed"));
+        }
+      } catch (reason) {
+        if (!cancelled) setHelperSetupError(reason instanceof Error ? reason.message : "Unable to prepare Helper.");
+      } finally { pending = false; }
+    };
+    const refresh = () => { void ensure(); };
+    void ensure();
+    for (const event of ["apteva:apps-changed", "apteva:connections-changed", "focus"]) window.addEventListener(event, refresh);
+    return () => {
+      cancelled = true;
+      for (const event of ["apteva:apps-changed", "apteva:connections-changed", "focus"]) window.removeEventListener(event, refresh);
+    };
+  }, [projectId, location.pathname]);
+  return <ProjectChatAssistant key={projectId} projectId={projectId} helperSetupError={helperSetupError} />;
 }
-function ProjectChatAssistant({ projectId }: { projectId: string }) {
+function ProjectChatAssistant({ projectId, helperSetupError }: { projectId: string; helperSetupError: string }) {
   const { currentProject } = useProjects();
   const pageContext = useAssistantPageContext(projectId, currentProject?.name);
   const { preferences, save } = useAssistantPreferences(projectId);
@@ -39,7 +64,8 @@ function ProjectChatAssistant({ projectId }: { projectId: string }) {
   const activeKey = selected || initialAssistantTarget(preferences, directory?.choices || []);
   useEffect(() => { setStartError(""); }, [activeKey]);
   const choice = choices.find((item) => targetKey(item.target) === activeKey);
-  const available = preferences.enabled && !!directory?.contribution;
+  const helperDisabled = preferences.defaultTarget.kind === "helper" && directory?.helper?.default_enabled === false && choices.length === 0;
+  const available = preferences.enabled && !!directory?.contribution && !helperDisabled;
   useEffect(() => {
     const ask = (event: Event) => {
       const detail = (event as CustomEvent<{ prompt?: string; context?: WidgetContext; handled?: boolean; inline?: boolean }>).detail;
@@ -76,7 +102,7 @@ function ProjectChatAssistant({ projectId }: { projectId: string }) {
     <button ref={launcher} type="button" onClick={() => { setSelected(null); refresh(); setOpen(true); }} className="floating-chat-launcher-safe touch-target fixed z-40 flex h-12 w-12 items-center justify-center rounded-full border border-accent/50 bg-accent text-bg shadow-xl hover:bg-accent-hover" title="Chat assistant" aria-label="Open chat assistant" aria-haspopup="dialog">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z" /></svg>
     </button>
-    <dialog ref={panel} tabIndex={-1} aria-label="Chat assistant" onCancel={() => setOpen(false)} onClose={() => { setOpen(false); launcher.current?.focus(); }} className={`fixed inset-auto right-0 z-50 m-0 w-full max-w-full overflow-hidden rounded-t-xl border border-border bg-bg p-0 text-text shadow-2xl sm:right-4 sm:w-[520px] sm:max-w-[calc(100vw-2rem)] sm:rounded-xl ${voiceSession ? "bottom-40 h-[min(620px,calc(100dvh-12rem))]" : "bottom-0 h-[90dvh] max-h-[90dvh] sm:bottom-4 sm:h-[min(720px,85dvh)]"}`}>
+    <dialog ref={panel} tabIndex={-1} aria-label="Chat assistant" onCancel={() => setOpen(false)} onClose={() => { setOpen(false); launcher.current?.focus(); }} className={`fixed inset-auto right-0 z-50 m-0 w-full max-w-full overflow-hidden rounded-none border border-border bg-bg p-0 text-text shadow-2xl sm:right-4 sm:w-[520px] sm:max-w-[calc(100vw-2rem)] sm:rounded-xl ${voiceSession ? "bottom-40 h-[min(620px,calc(100dvh-12rem))]" : "bottom-0 h-[100dvh] max-h-[100dvh] sm:bottom-4 sm:h-[min(720px,85dvh)]"}`}>
       {open && <div className="flex h-full min-h-0 flex-col">
         <header className="flex min-h-14 shrink-0 items-center gap-2 border-b border-border px-3">
           {preferences.allowSwitching && (choices.length > 1 || (!choice && choices.length > 0)) ? <ChatAgentPicker choices={choices} activeKey={activeKey} onSelect={(next) => {
@@ -92,7 +118,7 @@ function ProjectChatAssistant({ projectId }: { projectId: string }) {
           </Link>
           <button type="button" onClick={() => setOpen(false)} className="h-10 w-10 shrink-0 rounded text-xl text-text-muted hover:bg-bg-hover" aria-label="Close chat assistant">×</button>
         </header>
-        {error && <p role="alert" className="p-3 text-sm text-red">{error}</p>}
+        {(error || helperSetupError) && <p role="alert" className="p-3 text-sm text-red">{error || helperSetupError}</p>}
         {choice?.agent.status && choice.agent.status !== "running" && <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs text-text-muted">
           <span className="flex-1">Agent {choice.agent.status}</span>
           <button type="button" disabled={starting} onClick={async () => {
@@ -104,7 +130,7 @@ function ProjectChatAssistant({ projectId }: { projectId: string }) {
           {startError && <span role="alert" className="w-full text-red">{startError}</span>}
         </div>}
         {choice && directory?.contribution ? <div className="min-h-0 flex-1 overflow-hidden"><AssistantConversation key={`${projectId}:${choice.agent.id}`} draftRequest={draftRequest} onDismissDraft={() => setDraftRequest(undefined)} projectId={projectId} agentId={choice.agent.id}  pageContext={preferences.sharePageContext ? pageContext : undefined} slot={ASSISTANT_CHAT_SLOT} apps={directory.rows} instance={{ id: `chat-assistant:${choice.agent.id}`, component: directory.contribution.key, contribution: directory.contribution, size: "full", settings: { ...(choice.target.kind === "helper" ? helperWelcomeSettings : {}), experience: "personal", display_mode: "single", composer_layout: "compact", show_new_conversation: true, show_page_context: preferences.sharePageContext } }} /></div>
-          : <p className="p-5 text-sm text-text-muted">{loading ? "Checking agent availability…" : "This agent is unavailable. Choose another agent or update Chat assistant settings."}</p>}
+          : <div className="space-y-3 p-5 text-sm text-text-muted">{loading ? <p>Checking agent availability…</p> : directory?.helper && !directory.helper.provider_configured && preferences.defaultTarget.kind === "helper" ? <><p>Connect an AI provider to start chatting with Apteva Helper.</p><Link to="/settings?tab=providers" onClick={() => setOpen(false)} className="inline-flex rounded-lg bg-accent px-4 py-2 font-semibold text-bg">Connect AI</Link></> : <><p>This agent is unavailable. Choose another agent or update its settings.</p><Link to="/settings?tab=helper" onClick={() => setOpen(false)} className="text-accent">Helper settings →</Link></>}</div>}
       </div>}
     </dialog>
   </>;

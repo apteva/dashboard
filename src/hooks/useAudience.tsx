@@ -53,16 +53,8 @@ export const AUDIENCE_SECTIONS = {
   "nav.usage": "business",
   "nav.skills": "developer",
 
-  // Settings tabs. appearance, channels, data and account are
-  // unlisted: every audience sees them.
-  "settings.projects": "business",
-  "settings.helper": "business",
-  "settings.providers": "business",
-  "settings.subscriptions": "business",
-  "settings.apiKeys": "business",
-  "settings.users": "business",
-  "settings.mcp": "developer",
-  "settings.server": "developer",
+  // Settings navigation is stable across interface modes. Account permissions
+  // are declared in pages/settings/registry.ts and enforced by the server.
 
   // Agent detail. Details, Directive, Capabilities, Current work,
   // Pause and Delete are unlisted: every audience sees them.

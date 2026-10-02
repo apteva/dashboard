@@ -1,3 +1,4 @@
+import { beginAPIWrite } from "./utils/apiWrites";
 // All REST/JSON API endpoints live under /api/ on the server. The SPA owns
 // every other path (refresh on /instances/42 no longer collides with the
 // server's /instances/ prefix match). Static assets and the SPA catchall
@@ -35,6 +36,7 @@ function request<T>(
   const url = `${BASE}${path}`;
   const execute = async (): Promise<T> => {
     if (API_DEBUG) console.debug(`[api] → ${method} ${url}`);
+    const acknowledgeWrite = beginAPIWrite(path, method);
     const res = await fetch(url, {
       method,
       headers,
@@ -104,8 +106,10 @@ function request<T>(
       err.status = res.status;
       throw err;
     }
-    if (res.status === 204) return undefined as T;
-    return (await res.json()) as T;
+    if (res.status === 204) { acknowledgeWrite(); return undefined as T; }
+    const result = (await res.json()) as T;
+    if (!(result && typeof result === "object" && "ok" in result && result.ok === false)) acknowledgeWrite();
+    return result;
   };
 
   // Dashboard panels often request the same read model in the same render
@@ -235,7 +239,39 @@ export interface ServerSettings {
   };
 }
 
+export interface InstanceHTTPSConfig {
+  hostname: string;
+  mode: "direct" | "cloudflare" | "proxy" | "import";
+  email?: string;
+  http_port?: number;
+  https_port?: number;
+  trusted_proxy_cidrs?: string[];
+  connection_id?: number;
+  set_cloudflare_strict?: boolean;
+  trust_cloudflare?: boolean;
+  accept_acme_terms?: boolean;
+}
+export interface InstanceHTTPSStatus {
+  public_url: string;
+  state: { active?: InstanceHTTPSConfig; pending?: InstanceHTTPSConfig; phase: string; message: string; addresses?: string[]; warnings?: string[]; updated_at: string };
+  connections: { id: number; name: string }[];
+  certificate?: { issuer?: string; expires_at?: string; not_after?: string; status?: string; renewal?: string };
+}
+export const instanceHTTPS = {
+  get: () => request<InstanceHTTPSStatus>("GET", "/settings/https"),
+  setup: (config: InstanceHTTPSConfig & { cloudflare_token?: string; certificate_pem?: string; private_key_pem?: string }) => request<InstanceHTTPSStatus>("POST", "/settings/https", { ...config, action: "setup" }),
+  check: () => request<InstanceHTTPSStatus>("POST", "/settings/https", { action: "check" }),
+  retry: () => request<InstanceHTTPSStatus>("POST", "/settings/https", { action: "retry" }),
+  cancel: () => request<InstanceHTTPSStatus>("POST", "/settings/https", { action: "cancel" }),
+};
+
+export interface PublicAddressSettings {
+  public_url: string; configured: boolean; source: "db" | "env" | "unset";
+  https: boolean; verified: boolean; phase: string; updated_at: string | null; can_manage: boolean;
+}
+
 export const serverSettings = {
+  publicAddress: () => request<PublicAddressSettings>("GET", "/settings/public-address"),
   get: () => request<ServerSettings>("GET", "/settings/server"),
   update: (patch: {
     public_url?: string;
@@ -766,9 +802,11 @@ export interface AgentTemplate {
   user_id?: number;
   source: "builtin" | "app" | "user";
   source_ref?: string;
+  category?: string;
+  preset_name?: string;
   name: string;
   // Short icon name resolved by the dashboard to a stroked SVG
-  // (see TemplateIcon in pages/AgentNew.tsx). Empty / unknown names
+  // (see AgentMark). Empty / unknown names
   // fall back to a generic neutral glyph.
   icon?: string;
   description: string;
@@ -1109,6 +1147,7 @@ export interface BuiltInIntegration {
 }
 
 export interface PlatformHelperStatus {
+  default_enabled?: boolean;
   activated: boolean;
   state: "inactive" | "stopped" | "running";
   provider_configured: boolean;
@@ -1121,6 +1160,7 @@ export interface PlatformHelperStatus {
 export const platformHelper = {
   get: () => request<Agent>("GET", "/platform/helper"),
   status: () => request<PlatformHelperStatus>("GET", "/platform/helper/status"),
+  ensureDefault: () => request<PlatformHelperStatus>("POST", "/platform/helper/ensure-default", {}),
   activate: (installConversations = false) =>
     request<PlatformHelperStatus>("POST", "/platform/helper/activate", {
       install_conversations: installConversations,
@@ -3595,6 +3635,7 @@ export interface AppPreview {
 }
 
 export interface AppManifestV2 {
+  setup?: { features: AppSetupFeature[] };
   schema: string;
   name: string;
   display_name: string;
@@ -3633,6 +3674,8 @@ export interface AppManifestV2 {
 }
 
 export interface AppConfigField {
+  /** Exact app binding used by select_from_app discovery. */
+  app_role?: string;
   name: string;
   label?: string;
   /** text | password | toggle | select | select_from_integration |
@@ -3727,12 +3770,16 @@ export interface PreflightConnectionCandidate {
 }
 
 export interface PreflightAppCandidate {
+  project_id?: string;
   install_id: number;
   app_name: string;
   display_name: string;
 }
 
 export interface AppPreflight {
+  setup_features?: AppSetupFeature[];
+  current_bindings?: Record<string, AppBindingValue>;
+  project_id?: string;
   manifest: AppManifestV2;
   roles: PreflightRole[];
 }
@@ -4187,8 +4234,7 @@ export const instanceSkills = {
 };
 
 // --- Platform self-update status (apteva CLI / server / core / dashboard
-// / integrations). The action itself lives in the `apteva update` CLI
-// subcommand; the dashboard surface here is purely informational. ---
+// / integrations). Admin update jobs delegate to the existing CLI updater. ---
 
 export interface PlatformComponentStatus {
   name: string;
@@ -4226,7 +4272,25 @@ export interface PlatformStatus {
 export const platform = {
   status: () => request<PlatformStatus>("GET", "/platform-status"),
   refresh: () => request<PlatformStatus>("POST", "/platform-status/refresh"),
+  updateStatus: () => request<PlatformUpdateStatus>("GET", "/platform-update"),
+  update: (version: string, agent_policy: string) => request<PlatformUpdateStatus>("POST", "/platform-update", { version, agent_policy }),
 };
+
+export interface PlatformUpdateJob {
+  id: string;
+  state: string;
+  message: string;
+  target_version: string;
+  previous_version: string;
+  updated_at: string;
+  backup?: string;
+}
+
+export interface PlatformUpdateStatus {
+  supported: boolean;
+  reason?: string;
+  job?: PlatformUpdateJob;
+}
 
 export interface NewAgentProviderSettings {
   provider: string;
@@ -4234,3 +4298,42 @@ export interface NewAgentProviderSettings {
   inherited_provider: string;
   available_providers: string[];
 }
+
+
+export type { NotificationChannels, NotificationSubscription, NotificationSource, UserNotification, NotificationSnapshot } from "./api/notificationTypes";
+import type { NotificationChannels, NotificationSubscription, NotificationSource, UserNotification, NotificationSnapshot } from "./api/notificationTypes";
+export const userNotifications = {
+  deliveryStatus: () => request<{pending:number;failed:number}>("GET", "/notifications/delivery-status"),
+  sources: (projectId: string, installId?: number) => request<NotificationSource[]>("GET", `/notifications/sources?${new URLSearchParams({project_id: projectId, ...(installId ? {install_id: String(installId)} : {})})}`),
+  list: (before?: number) => request<NotificationSnapshot>("GET", `/notifications${before ? `?before=${before}` : ""}`),
+  get: (id: number) => request<UserNotification>("GET", `/notifications/${id}`),
+  preferences: () => request<NotificationChannels>("GET", "/notifications/preferences"),
+  setPreferences: (channels: NotificationChannels) => request<NotificationChannels>("PUT", "/notifications/preferences", channels),
+  subscribe: (value: NotificationSubscription) => request<NotificationSubscription>("PUT", "/notifications/subscriptions", value),
+  reset: (value: NotificationSubscription) => request("DELETE", "/notifications/subscriptions", value),
+  update: (id: number, changes: {read?: boolean; dismiss?: boolean}) => request("PATCH", `/notifications/${id}`, changes),
+  devices: () => request<{subscriptions: {id:string; device_name:string; platform:string; status:string; last_error?:string}[]}>("GET", "/mobile/push/subscriptions"),
+};
+
+// Guided setup is additive to existing roles/configuration; legacy apps get
+// a basic setup feature from the server.
+export interface AppSetupFeature {
+  id: string; label: string; description?: string; default?: boolean;
+  requires?: { role: string; feature?: string }[];
+  fields?: string[];
+  configure?: { entry: string };
+  readiness?: { route: string };
+}
+export interface AppSetupNode {
+  install_id?: number; feature_id?: string; role?: string; label: string;
+  status: "ready" | "configured" | "needs_setup" | "pending" | "error" | "not_enabled";
+  message?: string; project_id?: string; configure_url?: string; children?: AppSetupNode[];
+}
+export interface AppSetupState {
+  features: AppSetupFeature[]; selected_features: string[]; required_feature?: string;
+  nodes: AppSetupNode[]; project_id: string; install_status: string; shared: boolean;
+}
+export const appSetup = {
+  get: (id: number, feature?: string) => request<AppSetupState>("GET", `/apps/installs/${id}/setup${feature ? `?feature=${encodeURIComponent(feature)}` : ""}`),
+  save: (id: number, features: string[]) => request<{selected_features: string[]}>("PUT", `/apps/installs/${id}/setup`, {features}),
+};

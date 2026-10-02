@@ -1,3 +1,4 @@
+import { GuidedAppSetup } from "./GuidedAppSetup";
 // Side panel that slides in from the right when a marketplace or
 // installed app card is clicked. Single component for both contexts —
 // `mode` decides which actions surface ("install" vs "uninstall"). The
@@ -9,9 +10,10 @@
 // dim overlay rather than a full opaque scrim — the page underneath
 // stays readable so the user keeps context.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { AppIcon } from "@apteva/ui-kit";
-import type { AppBindingValue, AppImports, AppRow, AppSurfaces, AppUIComponent, ConnectionInfo, MarketplaceEntry } from "../../api";
+import type { AppImports, AppRow, AppSurfaces, AppUIComponent, ConnectionInfo, MarketplaceEntry } from "../../api";
 import { apps, integrations } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
 import { AppSurfaceBadges } from "./AppSurfaceBadges";
@@ -108,6 +110,8 @@ function viewFromProps(p: Props): View | null {
 }
 
 export function AppDetailPanel(props: Props) {
+  const setupExitGuard = useRef<() => boolean>(() => true);
+  const closePanel = () => { if (setupExitGuard.current()) props.onClose(); };
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusOverride, setStatusOverride] = useState<{ id: number; status: "running" | "disabled" } | null>(null);
   useEffect(() => setStatusOverride(null), [props.install?.install_id, props.install?.status]);
@@ -119,7 +123,7 @@ export function AppDetailPanel(props: Props) {
   useEffect(() => {
     if (!props.open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
+      if (e.key === "Escape") closePanel();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -132,7 +136,7 @@ export function AppDetailPanel(props: Props) {
     <>
       <div
         className="fixed inset-0 bg-black/30 z-40"
-        onClick={props.onClose}
+        onClick={closePanel}
         aria-hidden="true"
       />
       <aside
@@ -161,7 +165,7 @@ export function AppDetailPanel(props: Props) {
             </p>
           </div>
           <button
-            onClick={props.onClose}
+            onClick={closePanel}
             className="text-text-muted hover:text-text text-xl leading-none flex-shrink-0"
             aria-label="Close"
           >
@@ -171,7 +175,7 @@ export function AppDetailPanel(props: Props) {
 
         {/* Body — tabbed for installed mode (lots to show: bindings,
             settings, tools, deps), flat for marketplace previews. */}
-        <PanelBody view={view} props={props} />
+        <PanelBody view={view} props={props} onExitGuard={guard => { setupExitGuard.current = guard; }} />
 
         {/* Footer — primary actions. */}
         <div className="border-t border-border px-6 py-4 flex-shrink-0 flex flex-wrap gap-2">
@@ -314,7 +318,7 @@ function ComponentsSection({
 // bindings, tools list — and they keep the panel scannable instead of
 // turning into a kilometer-long scroll. Marketplace previews don't
 // have settings or bindings to edit, so they stay flat.
-function PanelBody({ view, props }: { view: View; props: Props }) {
+function PanelBody({ view, props, onExitGuard }: { view: View; props: Props; onExitGuard: (guard: () => boolean) => void }) {
   const s = view.surfaces;
   if (props.mode !== "installed") {
     return (
@@ -323,7 +327,7 @@ function PanelBody({ view, props }: { view: View; props: Props }) {
       </div>
     );
   }
-  return <TabbedBody view={view} onAgentDefaultChanged={props.onAgentDefaultChanged} />;
+  return <TabbedBody view={view} onExitGuard={onExitGuard} onAgentDefaultChanged={props.onAgentDefaultChanged} />;
 
   // helper kept inside scope so it can read s; same reading pattern as
   // before, just inlined for readability when bodies diverge.
@@ -394,7 +398,9 @@ type TabKey = "overview" | "bindings" | "settings" | "imports" | "tools";
 // their own tab so they can spread out without competing with the
 // 50-field config form for screen space. Tabs are visible at all
 // times (no hidden state); the active one underlines.
-function TabbedBody({ view, onAgentDefaultChanged }: { view: View; onAgentDefaultChanged?: (enabled: boolean) => void }) {
+function TabbedBody({ view, onAgentDefaultChanged, onExitGuard }: { view: View; onAgentDefaultChanged?: (enabled: boolean) => void; onExitGuard: (guard: () => boolean) => void }) {
+  const exitGuard = useRef<() => boolean>(() => true);
+  const {currentProject} = useProjects();
   const s = view.surfaces;
   const hasBindings =
     (s?.required_apps && s.required_apps.length > 0) ||
@@ -407,8 +413,8 @@ function TabbedBody({ view, onAgentDefaultChanged }: { view: View; onAgentDefaul
   const showImports = !!view.imports?.sources?.length;
   const tabs: { key: TabKey; label: string; visible: boolean }[] = [
     { key: "overview", label: "Overview", visible: true },
-    { key: "bindings", label: "Bindings", visible: !!showBindings },
-    { key: "settings", label: "Settings", visible: view.installId !== undefined },
+    { key: "bindings", label: "Setup & connections", visible: !!showBindings },
+    { key: "settings", label: "Advanced", visible: view.installId !== undefined },
     { key: "imports", label: "Imports", visible: showImports && view.installId !== undefined },
     { key: "tools", label: "Tools & UI", visible: !!showTools },
   ];
@@ -418,12 +424,12 @@ function TabbedBody({ view, onAgentDefaultChanged }: { view: View; onAgentDefaul
 
   return (
     <>
-      <div className="border-b border-border px-6 flex gap-5 flex-shrink-0">
+      <div className="border-b border-border px-4 sm:px-6 flex flex-wrap gap-x-4 flex-shrink-0">
         {visibleTabs.map((t) => (
           <button
             key={t.key}
             type="button"
-            onClick={() => setActive(t.key)}
+            onClick={() => { if (exitGuard.current()) setActive(t.key); }}
             className={`py-2.5 text-sm border-b-2 -mb-px transition ${
               active === t.key
                 ? "border-accent text-text"
@@ -439,10 +445,10 @@ function TabbedBody({ view, onAgentDefaultChanged }: { view: View; onAgentDefaul
           <OverviewTab view={view} onAgentDefaultChanged={onAgentDefaultChanged} />
         )}
         {active === "bindings" && view.installId !== undefined && (
-          <BindingsEditor installId={view.installId} />
+          <GuidedAppSetup onExitGuard={guard => { exitGuard.current = guard; onExitGuard(guard); }} key={view.installId} installId={view.installId} projectId={view.projectId} onDone={() => setActive("overview")} />
         )}
         {active === "settings" && view.installId !== undefined && (
-          <SettingsSection installId={view.installId} />
+          <div className="space-y-4"><Link className="inline-flex text-sm text-accent hover:underline" to={`/settings?tab=notifications&install_id=${view.installId}&project_id=${encodeURIComponent(view.projectId || currentProject?.id || "")}`}>Notification preferences →</Link><SettingsSection installId={view.installId} /></div>
         )}
         {active === "imports" && view.installId !== undefined && (
           <ImportsSection installId={view.installId} imports={view.imports} />
@@ -877,253 +883,6 @@ function LinksList({ repo, manifestUrl }: { repo?: string; manifestUrl?: string 
     </section>
   );
 }
-
-// BindingsEditor — installed-mode-only section that lets the operator
-// rebind integration roles AND requires.apps deps without
-// uninstalling. Fetches the same role summaries the install dialog
-// uses (GET /apps/installs/<id>/preflight) plus the install's
-// current bindings, renders a select per role, and PUTs the change
-// to /apps/installs/<id>/bindings on save. The server bounces the
-// sidecar so OnMount picks up the new bindings.
-//
-// Shows a one-line success/error banner after save. "Required" roles
-// can't be cleared (server 400s); the UI hides the "—" option for
-// those.
-function bindingIDs(value: AppBindingValue | undefined): number[] {
-  if (value == null) return [];
-  if (typeof value === "number") return value > 0 ? [value] : [];
-  return Array.isArray(value.ids) ? value.ids.filter((id) => id > 0) : [];
-}
-
-function bindingDefaultID(value: AppBindingValue | undefined): number | undefined {
-  const ids = bindingIDs(value);
-  if (ids.length === 0) return undefined;
-  if (value && typeof value === "object" && value.default_id && ids.includes(value.default_id)) {
-    return value.default_id;
-  }
-  return ids[0];
-}
-
-function multiBinding(ids: number[], defaultID?: number): AppBindingValue {
-  const unique = Array.from(new Set(ids.filter((id) => id > 0)));
-  if (unique.length === 0) return null;
-  const chosenDefault = defaultID && unique.includes(defaultID) ? defaultID : unique[0];
-  return { ids: unique, default_id: chosenDefault };
-}
-
-function BindingsEditor({ installId }: { installId: number }) {
-  const [roles, setRoles] = useState<any[] | null>(null);
-  const [current, setCurrent] = useState<Record<string, AppBindingValue>>({});
-  const [edits, setEdits] = useState<Record<string, AppBindingValue>>({});
-  const [saving, setSaving] = useState(false);
-  const [status, setStatus] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
-
-  const refresh = () => {
-    setStatus(null);
-    fetch(`/api/apps/installs/${installId}/preflight`, { credentials: "same-origin" })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-      .then((data) => {
-        setRoles(data.roles || []);
-        setCurrent(data.current_bindings || {});
-        setEdits({});
-      })
-      .catch((e) => setStatus({ kind: "err", msg: `Load failed: ${e.message}` }));
-  };
-  useEffect(refresh, [installId]);
-
-  if (roles === null) return null;
-  if (roles.length === 0) return null;
-
-  // Selected value = pending edit (if any) || current binding || ""
-  const valueFor = (role: string): AppBindingValue => {
-    if (role in edits) {
-      return edits[role];
-    }
-    return current[role] ?? null;
-  };
-  const selectedFor = (role: string): string => {
-    const cur = valueFor(role);
-    if (typeof cur === "number") return String(cur);
-    return bindingDefaultID(cur) ? String(bindingDefaultID(cur)) : "";
-  };
-  const dirty = Object.keys(edits).length > 0;
-
-  const onSave = async () => {
-    setSaving(true);
-    setStatus(null);
-    try {
-      const res = await apps.setBindings(installId, edits);
-      if (res.respawned) {
-        setStatus({ kind: "ok", msg: "Bindings updated. Sidecar respawned." });
-      } else {
-        setStatus({
-          kind: "err",
-          msg: `Bindings saved but respawn failed: ${res.respawn_err || "unknown"}`,
-        });
-      }
-      // Re-load so current_bindings reflects the saved state.
-      refresh();
-    } catch (e: any) {
-      setStatus({ kind: "err", msg: e.message || "save failed" });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <section className="space-y-5">
-      <div>
-        <h3 className="text-text font-semibold text-base mb-1.5">Bindings</h3>
-        <p className="text-text-dim text-sm leading-relaxed">
-          Wire integrations and app dependencies. Saving bounces the sidecar so
-          new bindings take effect on next boot.
-        </p>
-      </div>
-
-      <div className="divide-y divide-border border border-border rounded-md">
-        {roles.map((r: any) => {
-          const cands = r.kind === "integration" ? r.integration_candidates || [] : r.app_candidates || [];
-          const multiple = r.mode === "multiple";
-          const roleValue = valueFor(r.role);
-          return (
-            <div key={r.role} className="px-4 py-4 space-y-2.5">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-text font-medium text-sm">{r.label || r.role}</span>
-                {r.required ? (
-                  <span className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded bg-red/15 text-red">
-                    required
-                  </span>
-                ) : (
-                  <span className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded bg-bg-hover text-text-muted">
-                    optional
-                  </span>
-                )}
-                {r.kind && (
-                  <span className="text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 rounded bg-bg-hover text-text-muted">
-                    {r.kind}
-                  </span>
-                )}
-              </div>
-              {r.hint && (
-                <p className="text-text-dim text-xs leading-relaxed">{r.hint}</p>
-              )}
-              {!multiple ? (
-                <select
-                  className="w-full bg-bg-input border border-border rounded px-3 py-2 text-sm"
-                  value={selectedFor(r.role)}
-                  onChange={(ev) => {
-                    const v = ev.target.value;
-                    setEdits({ ...edits, [r.role]: v === "" ? null : Number(v) });
-                  }}
-                >
-                  {!r.required && <option value="">— unbound —</option>}
-                  {cands.length === 0 && (
-                    <option value="" disabled>
-                      No compatible {r.kind === "integration" ? "connections" : "apps"} in this project
-                    </option>
-                  )}
-                  {cands.map((c: any) =>
-                    r.kind === "integration" ? (
-                      <option key={c.connection_id} value={String(c.connection_id)}>
-                        {c.name} ({c.app_slug})
-                      </option>
-                    ) : (
-                      <option key={c.install_id} value={String(c.install_id)}>
-                        {c.display_name || c.app_name}
-                      </option>
-                    ),
-                  )}
-                </select>
-              ) : (
-                <div className="space-y-2">
-                  {cands.length === 0 && (
-                    <div className="text-xs text-text-muted">
-                      No compatible {r.kind === "integration" ? "connections" : "apps"} in this project
-                    </div>
-                  )}
-                  <div className="grid gap-1.5">
-                    {cands.map((c: any) => {
-                      const id = r.kind === "integration" ? c.connection_id : c.install_id;
-                      const selected = bindingIDs(roleValue).includes(id);
-                      return (
-                        <label
-                          key={id}
-                          className="flex items-center gap-2 text-sm text-text border border-border rounded px-3 py-2 bg-bg-input"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selected}
-                            onChange={(ev) => {
-                              const ids = bindingIDs(roleValue);
-                              const next = ev.target.checked ? [...ids, id] : ids.filter((x) => x !== id);
-                              setEdits({ ...edits, [r.role]: multiBinding(next, bindingDefaultID(roleValue)) });
-                            }}
-                          />
-                          <span className="truncate">
-                            {r.kind === "integration" ? `${c.name} (${c.app_slug})` : c.display_name || c.app_name}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                  {bindingIDs(roleValue).length > 1 && (
-                    <label className="grid gap-1 text-xs text-text-muted">
-                      Default
-                      <select
-                        className="w-full bg-bg-input border border-border rounded px-3 py-2 text-sm text-text"
-                        value={bindingDefaultID(roleValue) || bindingIDs(roleValue)[0] || 0}
-                        onChange={(ev) => setEdits({ ...edits, [r.role]: multiBinding(bindingIDs(roleValue), Number(ev.target.value)) })}
-                      >
-                        {cands
-                          .filter((c: any) => bindingIDs(roleValue).includes(r.kind === "integration" ? c.connection_id : c.install_id))
-                          .map((c: any) => {
-                            const id = r.kind === "integration" ? c.connection_id : c.install_id;
-                            return (
-                              <option key={id} value={id}>
-                                {r.kind === "integration" ? `${c.name} (${c.app_slug})` : c.display_name || c.app_name}
-                              </option>
-                            );
-                          })}
-                      </select>
-                    </label>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="flex items-center gap-3 pt-1">
-        <button
-          type="button"
-          disabled={!dirty || saving}
-          onClick={onSave}
-          className="px-4 py-2 bg-accent text-bg rounded text-sm font-bold disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-        {dirty && !saving && (
-          <button
-            type="button"
-            onClick={() => setEdits({})}
-            className="text-sm text-text-muted hover:text-text px-2 py-2"
-          >
-            Discard
-          </button>
-        )}
-        {status && (
-          <span
-            className={`text-xs ${status.kind === "ok" ? "text-green" : "text-red"} ml-auto`}
-          >
-            {status.msg}
-          </span>
-        )}
-      </div>
-    </section>
-  );
-}
-
 
 // ScopeButton — moves an installed app between project and global
 // scope. Two visible states:

@@ -131,6 +131,12 @@ export function Integrations() {
   const [connectionSearch, setConnectionSearch] = useState("");
   const [activeSuite, setActiveSuite] = useState<IntegrationSuite | null>(null);
   const [selectedLocalApp, setSelectedLocalApp] = useState<AppDetail | null>(null);
+  // Setup opens this existing connection flow in another tab, retaining the
+  // exact scope rather than relying on the currently selected project.
+  const [setupLink] = useState(() => new URLSearchParams(window.location.search));
+  const [connectionProject, setConnectionProject] = useState<string | undefined>();
+  const setupLinkOpened = useRef(false);
+
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [connName, setConnName] = useState("");
   // auto_mcp opt-in. Default false to match the server-side default —
@@ -213,7 +219,9 @@ export function Integrations() {
     return existing.length === 0 ? appName : `${appName} ${existing.length + 1}`;
   };
 
-  const selectLocalApp = async (slug: string) => {
+  const selectLocalApp = async (slug: string, setupProject?: string) => {
+    const targetProject = setupProject === undefined ? currentProject?.id : setupProject;
+    setConnectionProject(targetProject);
     const request = ++catalogRequest.current;
     const app = await integrations.app(slug);
     if (request !== catalogRequest.current) return;
@@ -231,7 +239,7 @@ export function Integrations() {
     setOAuthClientSecret("");
     setOAuthClientResolved(false);
     setOAuthCallbackURL("");
-    setAutoMCP(true);
+    setAutoMCP(setupProject === undefined);
     setDeviceAuth(null);
     setDeviceAuthStatus(null);
     setDeviceAuthPollTick(0);
@@ -241,7 +249,7 @@ export function Integrations() {
     // we'll show two fields plus the callback URL helper.
     if (isBrowserOAuthType(defaultIntegrationAuthType(app))) {
       try {
-        const status = await integrations.oauthClientStatus(slug, currentProject?.id);
+        const status = await integrations.oauthClientStatus(slug, targetProject);
         setOAuthClientResolved(status.resolved);
         setOAuthCallbackURL(status.callback_url);
       } catch {
@@ -250,6 +258,13 @@ export function Integrations() {
       }
     }
   };
+
+  useEffect(() => {
+    const slug = setupLink.get("setup_connection");
+    if (!slug || !setupLink.has("setup_project") || setupLinkOpened.current) return;
+    setupLinkOpened.current = true;
+    void selectLocalApp(slug, setupLink.get("setup_project") || "").catch(e => setError(e.message || "Could not open connection setup"));
+  }, [setupLink]);
 
   const handleConnectLocal = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -268,9 +283,9 @@ export function Integrations() {
         connName.trim(),
         credentials,
         authType || undefined,
-        currentProject?.id,
+        connectionProject,
         oauthCreds,
-        undefined,        // createdVia — default 'integration'
+        setupLink.get("setup_connection") ? "app_install" : undefined,
         autoMCP,          // operator's expose-to-agents choice
       );
       if ((result as ConnectCreateResponse).device_auth) {
@@ -784,6 +799,7 @@ export function Integrations() {
       <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4 flex items-center justify-between gap-4">
         <div>
           <h1 className="text-text text-lg font-bold">Integrations</h1>
+          {setupLink.get("setup_connection") && <p role="status" className="text-xs text-text-muted">App setup · {setupLink.get("setup_project") ? "Requested project" : "Shared connection"}. After connecting, return to app setup and refresh connections.</p>}
           <p className="text-text-muted text-sm mt-1">Connect apps and services to your Apteva instances.</p>
         </div>
         <button type="button" onClick={() => { setTab("local"); setCatalogOpen(true); }}

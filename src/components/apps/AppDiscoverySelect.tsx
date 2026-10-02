@@ -36,7 +36,9 @@ export function AppDiscoverySelect({
   field,
   value,
   onChange,
+  installId, projectId, requiresBinding = false,
 }: {
+  installId?: number; projectId?: string; requiresBinding?: boolean;
   field: AppDiscoveryField;
   value: string;
   onChange: (v: string) => void;
@@ -50,9 +52,15 @@ export function AppDiscoverySelect({
   useEffect(() => {
     setOptions(null);
     setErr("");
+    setLoading(false);
+    if (requiresBinding && !installId) { setErr("Connect the required app first."); return; }
     if (!field.app || !field.discovery?.route) return;
     setLoading(true);
-    const url = `/api/apps/${field.app}${field.discovery.route}`;
+    const target = new URL(`/api/apps/${encodeURIComponent(field.app)}${field.discovery.route}`, window.location.origin);
+    if (installId) target.searchParams.set("install_id", String(installId));
+    if (projectId) target.searchParams.set("project_id", projectId);
+    const url = target.pathname + target.search;
+    let cancelled = false;
     fetch(url, { credentials: "same-origin" })
       .then(async (r) => {
         if (!r.ok) {
@@ -79,14 +87,14 @@ export function AppDiscoverySelect({
             return { value: v, label: l || v };
           })
           .filter((o) => o.value !== "");
-        setOptions(opts);
+        if (!cancelled) setOptions(opts);
       })
       .catch((e) => {
-        setErr(e?.message || "discovery failed");
+        if (!cancelled) setErr(e?.message || "discovery failed");
       })
       .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [field.app, field.discovery?.route]);
+    return () => { cancelled = true; };
+  }, [field.app, field.discovery?.route, field.discovery?.response_path, field.discovery?.value_field, field.discovery?.label_field, installId, projectId, requiresBinding]);
 
   if (loading) {
     return <div className="text-text-dim text-[11px]">Loading options…</div>;

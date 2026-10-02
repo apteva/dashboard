@@ -14,7 +14,7 @@ export interface AssistantPreferences {
   lastTarget?: AssistantTarget;
 }
 export const defaultAssistantPreferences: AssistantPreferences = {
-  enabled: false, defaultTarget: { kind: "helper" }, allowSwitching: true,
+  enabled: true, defaultTarget: { kind: "helper" }, allowSwitching: true,
   targets: [{ kind: "helper" }], allAgents: false, rememberTarget: false, sharePageContext: true,
 };
 export const targetKey = (target: AssistantTarget) => target.kind === "helper" ? "helper" : `agent:${target.id}`;
@@ -26,7 +26,7 @@ export function readAssistantPreferences(project: ProjectUILayout): AssistantPre
   const raw = typeof stored === "object" ? stored.settings : undefined;
   const fallback = defaultAssistantPreferences;
   return {
-    enabled: raw?.enabled === true,
+    enabled: typeof raw?.enabled === "boolean" ? raw.enabled : fallback.enabled,
     defaultTarget: validTarget(raw?.defaultTarget) ? raw.defaultTarget : fallback.defaultTarget,
     allowSwitching: raw?.allowSwitching !== false,
     allAgents: raw?.allAgents === true,

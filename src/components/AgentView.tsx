@@ -28,7 +28,6 @@ import {
 } from "../api";
 import { useTelemetryConnectionState, useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { sleepClassName, sleepLabel, sleepProgress, sleepTitle } from "../utils/sleepStatus";
-import { threadTokenUsage } from "../utils/threadTokenUsage";
 import { useAssistantPageDetails } from "./chat/pageContext";
 import { useProjects } from "../hooks/useProjects";
 import { resolveEffectiveAgentProvider } from "../utils/providerSelection";
@@ -806,7 +805,7 @@ export function AgentRuntimePanel({
       setAppearanceSaving(false);
     }
   };
-  const [selectedRuntimeThread, setSelectedRuntimeThread] = useState("main");
+  const [selectedRuntimeThread, setSelectedRuntimeThread] = useState("");
   useAssistantPageDetails(instance.project_id || contextProject?.id || "", { viewed_agent_id: instance.id, viewed_agent_name: instance.name, thread_id: selectedRuntimeThread, tab: view });
   const [executionControl, setExecutionControl] = useState<ExecutionControlStatus>({
     mode: "auto",
@@ -833,7 +832,7 @@ export function AgentRuntimePanel({
   const telemetryConnection = useTelemetryConnectionState();
 
   useEffect(() => {
-    setSelectedRuntimeThread("main");
+    setSelectedRuntimeThread("");
     setLiveStatus(null);
   }, [instance.id]);
 
@@ -1014,8 +1013,14 @@ export function AgentRuntimePanel({
           <span className={`h-2 w-2 rounded-full ${statusLabel === "Working" ? "bg-accent motion-safe:animate-pulse" : statusLabel === "Ready" ? "bg-green" : statusLabel === "Needs attention" ? "bg-yellow" : "bg-text-dim"}`} />
           <span className="sr-only md:not-sr-only">{statusLabel}</span>
         </span>
-        <button type="button" onClick={() => setShowCapabilitiesManage(true)} className="flex min-h-9 shrink-0 items-center rounded-md border border-border px-2 text-left hover:border-accent/50 focus-visible:outline-2 focus-visible:outline-accent" aria-label="Manage capabilities">
+        <button type="button" onClick={() => setShowCapabilitiesManage(true)}
+          className="group flex min-h-10 shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-border bg-bg-card px-2 text-left transition-colors hover:border-accent hover:bg-accent/10 active:bg-accent/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          aria-label="Manage capabilities" aria-haspopup="dialog" aria-expanded={showCapabilitiesManage}
+          title="Manage apps, integrations and MCP servers">
           <AgentCapabilityIcons attached={mcpServers} skills={[]} catalog={{ apps: installedApps, connections, inventory: mcpInventory }} compact />
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0 text-text-muted transition-colors group-hover:text-accent group-focus-visible:text-accent">
+            <path d="m16 3 5 5M4 20l4-1 13-13a2.1 2.1 0 0 0-3-3L5 16l-1 4Z" />
+          </svg>
         </button>
         {instance.status === "running" ? (
           <button type="button" disabled={lifecycleBusy} onClick={() => void performLifecycleAction(togglePause)} className="hidden h-9 shrink-0 rounded-md border border-border px-3 text-xs text-text-muted hover:text-text disabled:opacity-50 sm:inline-flex sm:items-center">{lifecycleBusy ? "Updating…" : isPaused ? "Resume" : "Pause"}</button>
@@ -1038,7 +1043,6 @@ export function AgentRuntimePanel({
           className={`min-h-10 shrink-0 rounded-lg px-3 text-xs font-medium ${view === item.id ? "bg-accent/10 text-accent" : "text-text-muted hover:bg-bg-hover hover:text-text"}`}>{item.label}</button>)}
       </nav>
       {diagnostics && <>
-        <RuntimeContextStrip instanceId={instance.id} threads={threads} activeTools={activeTools} thinking={thinking} selectedThreadId={selectedRuntimeThread} onThreadSelect={selectRuntimeThread} onThreadOpen={onThreadOpen} />
         {executionControlsVisible && <div className="shrink-0 border-b border-border px-4 py-2"><ExecutionControlStrip status={executionControl} disabled={instance.status !== "running" || executionBusy !== null} busy={executionBusy} onRun={() => sendExecutionControl("run")} onPause={() => sendExecutionControl("pause")} onStep={() => sendExecutionControl("step")} onBack={restorePreviousStep} onThreadOpen={onThreadOpen} /></div>}
       </>}
 
@@ -1050,10 +1054,10 @@ export function AgentRuntimePanel({
             onDetails={onThreadOpen} onActivity={() => onViewChange("stream")} onCapabilities={() => setShowCapabilitiesManage(true)}
             />
         </div> : view === "stream" ? <div className="h-full overflow-y-auto p-3 sm:p-4"><div className="w-full"><AgentActivity toolRegistry={toolRegistry} events={events} threads={threads} loading={runtimeLoading} onDetails={onThreadOpen} /></div></div>
-        : view === "activity" ? <AgentDiagnostics instance={instance} status={liveStatus} execution={executionControl} connection={telemetryConnection} usage={usage} onActivity={() => onViewChange("stream")} onConfig={onConfig} /> : view === "capabilities" ? <AgentCapabilitiesView instance={instance} attached={mcpServers} inventory={mcpInventory} onManage={() => setShowCapabilitiesManage(true)} />
+        : view === "activity" ? <AgentDiagnostics key={instance.id} instance={instance} status={liveStatus} execution={executionControl} connection={telemetryConnection} threads={threads} activeTools={activeTools} thinking={thinking} selectedThreadId={selectedRuntimeThread} onThreadSelect={selectRuntimeThread} onThreadOpen={onThreadOpen} onConfig={onConfig} /> : view === "capabilities" ? <AgentCapabilitiesView instance={instance} attached={mcpServers} inventory={mcpInventory} onManage={() => setShowCapabilitiesManage(true)} />
         : advancedContent}
       </div>
-      {diagnostics && instance.status === "running" && <InjectPanel instanceId={instance.id} threads={threads} />}
+      {diagnostics && instance.status === "running" && <details className="shrink-0 border-t border-border"><summary className="cursor-pointer px-3 py-2 text-[11px] text-text-muted hover:text-accent">Inject a developer event</summary><InjectPanel instanceId={instance.id} threads={threads} /></details>}
 
     </section>
   );
@@ -1160,91 +1164,6 @@ function AgentRuntimeActionsMenu({
   );
 }
 
-function RuntimeContextStrip({
-  instanceId,
-  threads,
-  activeTools,
-  thinking,
-  selectedThreadId,
-  onThreadSelect,
-  onThreadOpen,
-}: {
-  instanceId: number;
-  threads: Thread[];
-  activeTools: Record<string, string>;
-  thinking: Record<string, boolean>;
-  selectedThreadId: string;
-  onThreadSelect: (id: string) => void;
-  onThreadOpen: (id: string) => void;
-}) {
-  const mainThread: Thread = { id: "main", directive: "", tools: [], iteration: 0, rate: "", model: "", age: "" };
-  const rows = threads.some((thread) => thread.id === "main") ? threads : [mainThread, ...threads];
-  const selected = rows.find((thread) => thread.id === selectedThreadId) || rows[0] || mainThread;
-  const tool = activeTools[selected.id];
-  const isThinking = !!thinking[selected.id];
-  const state = tool
-    ? `Using ${tool}`
-    : selected.realtime
-      ? "Live voice"
-      : isThinking
-        ? "Thinking"
-        : selected.sleep_state
-          ? sleepLabel(selected, { compact: true })
-        : selected.rate || "Waiting";
-  const [usage, setUsage] = useState<ReturnType<typeof threadTokenUsage> | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    let pending = false;
-    setUsage(null);
-    const load = async () => {
-      if (pending) return;
-      pending = true;
-      try {
-        const events = await telemetry.query(instanceId, "llm.done", 300, selected.id);
-        if (!cancelled) setUsage(threadTokenUsage(events));
-      } catch {
-        if (!cancelled) setUsage(null);
-      } finally { pending = false; }
-    };
-    void load();
-    const timer = window.setInterval(load, 10000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [instanceId, selected.id]);
-
-  return (
-    <div className="shrink-0 flex min-w-0 flex-wrap items-center gap-2 border-b border-border/70 bg-bg-card/30 px-3 py-2 sm:px-4">
-      <span className="text-[9px] font-bold uppercase tracking-wide text-text-dim">Thread</span>
-      {rows.length > 1 ? (
-        <select
-          value={selected.id}
-          onChange={(event) => onThreadSelect(event.target.value)}
-          className="h-8 max-w-48 rounded-md border border-border bg-bg-input px-2 text-xs text-text focus:border-accent focus:outline-none"
-          aria-label="Runtime thread"
-        >
-          {rows.map((thread) => <option key={thread.id} value={thread.id}>{thread.name || thread.id}</option>)}
-        </select>
-      ) : (
-        <span className="text-xs font-medium text-text">{selected.name || selected.id}</span>
-      )}
-      {selected.realtime && (
-        <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-accent">
-          Voice{selected.voice ? ` · ${selected.voice}` : ""}
-        </span>
-      )}
-      <span className={`h-1.5 w-1.5 rounded-full ${tool ? "bg-accent animate-pulse" : isThinking ? "bg-yellow animate-pulse" : "bg-text-dim"}`} />
-      <span className="max-w-52 truncate text-[11px] text-text-muted">{state}</span>
-      {usage && <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-dim tabular-nums" title="Selected thread · latest 300 completed LLM calls. Arrows indicate input and output tokens; cached tokens are included in input. A dash means cache usage was not reported.">
-        <span className="whitespace-nowrap">{formatCompactNumber(usage.in)} ↑</span>
-        <span className="whitespace-nowrap">{formatCompactNumber(usage.out)} ↓</span>
-        <span className="whitespace-nowrap">cached {usage.cacheReported ? formatCompactNumber(usage.cache) : "—"}</span>
-        {usage.cacheWrite > 0 && <span className="whitespace-nowrap">cache write {formatCompactNumber(usage.cacheWrite)}</span>}
-      </span>}
-      <button type="button" onClick={() => onThreadOpen(selected.id)} className="rounded px-1.5 py-1 text-[10px] text-text-dim hover:bg-bg-hover hover:text-text">Details</button>
-
-    </div>
-  );
-}
-
 function AgentCapabilitiesView({
   instance,
   attached,
@@ -1270,12 +1189,12 @@ function AgentCapabilitiesView({
             key={id}
             type="button"
             onClick={() => setSection(id)}
-            className={`rounded-md px-2.5 py-1.5 text-[11px] ${section === id ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
+            className={`cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded-md px-2.5 py-1.5 text-[11px] ${section === id ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
           >
             {label}
           </button>
         ))}
-        <button type="button" onClick={onManage} className="ml-auto rounded-md border border-accent/50 px-2.5 py-1.5 text-[11px] text-accent hover:bg-accent/10">
+        <button type="button" onClick={onManage} className="ml-auto cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded-md border border-accent/50 px-2.5 py-1.5 text-[11px] text-accent hover:bg-accent/10">
           Add apps &amp; MCPs
         </button>
       </div>
@@ -1288,7 +1207,7 @@ function AgentCapabilitiesView({
               <p className="mt-1 text-xs text-text-muted">Apps and MCP servers available to this agent. Use Add apps & MCPs to attach or remove them.</p>
             </div>
             {attached.length === 0 ? (
-              <button type="button" onClick={onManage} className="flex w-full items-center justify-between rounded-lg border border-dashed border-border px-4 py-5 text-left hover:border-accent/60 hover:bg-bg-card">
+              <button type="button" onClick={onManage} className="flex w-full cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent items-center justify-between rounded-lg border border-dashed border-border px-4 py-5 text-left hover:border-accent/60 hover:bg-bg-card">
                 <span>
                   <span className="block text-sm text-text">No capabilities attached</span>
                   <span className="mt-1 block text-xs text-text-muted">Select an app or MCP server for this agent.</span>
@@ -1302,12 +1221,13 @@ function AgentCapabilitiesView({
                     mcpCapabilityAliases(candidate).some((alias) => capabilityKey(alias) === capabilityKey(capability.name)),
                   );
                   return (
-                    <button key={capability.name} type="button" onClick={onManage} className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-bg-card/50 p-3 text-left hover:border-accent/50 hover:bg-bg-hover">
+                    <button key={capability.name} type="button" onClick={onManage} aria-haspopup="dialog" title="Manage attached capabilities" className="group flex min-w-0 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent items-center gap-3 rounded-lg border border-border bg-bg-card/50 p-3 text-left hover:border-accent hover:bg-accent/5 active:bg-accent/10">
                       {capability.name === "apteva-server" ? <AppIcon src="/apteva-server.svg" iconStyle="monochrome" name="Apteva Server" size="md" className="rounded-lg border border-border text-accent" /> : <span className={`h-2 w-2 shrink-0 rounded-full ${capability.connected === false ? "bg-red" : "bg-green"}`} />}
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-xs font-medium text-text">{row ? displayMCPName(row) : capabilityDisplayName(capability.name)}</span>
                         <span className="mt-0.5 block truncate text-[10px] text-text-muted">{capability.name === "apteva-server" ? (instance.kind === "platform_helper" ? "Built in · Required for Helper" : "Built in · Management tools") : row ? `${row.tool_count || 0} tools · ${sourceLabel(row)}` : capability.transport || "MCP server"}</span>
                       </span>
+                      <span aria-hidden="true" className="shrink-0 text-xs font-medium text-text-muted transition-colors group-hover:text-accent group-focus-visible:text-accent">Manage →</span>
                     </button>
                   );
                 })}
@@ -1773,7 +1693,7 @@ export function CapabilitiesManager({
           ] as const).map(([id, label, count]) => (
             <button key={id} type="button" aria-pressed={category === id}
               onClick={() => setCategory(id)}
-              className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${category === id ? "bg-accent/10 text-accent" : "text-text-muted hover:bg-bg-hover"}`}>
+              className={`cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${category === id ? "bg-accent/10 text-accent" : "text-text-muted hover:bg-bg-hover"}`}>
               {label} <span className="ml-1 text-[10px] opacity-70">{count}</span>
             </button>
           ))}
@@ -1784,7 +1704,7 @@ export function CapabilitiesManager({
       {!loading && (category === "attached" ? visibleCount === 0 : category === "apps" ? visibleAppRows.length + visibleOrphanAppRows.length === 0 : category === "integrations" ? visibleIntegrationRows.length === 0 : visibleCustomRows.length === 0) && (
         <div className="px-4 py-10 text-center">
           <p className="text-sm text-text-muted">{normalizedQuery ? "No capabilities match your search." : category === "attached" ? "No capabilities attached yet." : "Nothing available in this category yet."}</p>
-          {category === "attached" && !normalizedQuery && <button type="button" onClick={() => setCategory("apps")} className="mt-4 rounded-lg border border-border px-3 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent">+ Add apps</button>}
+          {category === "attached" && !normalizedQuery && <button type="button" onClick={() => setCategory("apps")} className="mt-4 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded-lg border border-border px-3 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent">+ Add apps</button>}
         </div>
       )}
       {((category === "apps" || category === "attached") && (visibleAppRows.length > 0 || visibleOrphanAppRows.length > 0)) && <CapabilitySection
@@ -1881,7 +1801,7 @@ export function CapabilitiesManager({
       </div>
       <div className="shrink-0 flex items-center justify-between gap-3 border-t border-border px-5 py-3">
         <span className="text-[11px] text-text-dim">{attached.length} attached · Changes apply immediately</span>
-        {onDone && <button type="button" onClick={onDone} className="rounded-lg border border-border px-4 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent">Done</button>}
+        {onDone && <button type="button" onClick={onDone} className="cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded-lg border border-border px-4 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent">Done</button>}
       </div>
     </div>
   );

@@ -326,6 +326,10 @@ body.apteva-shell-active #root {
   right: max(1.25rem, calc(var(--safe-area-right) + 0.75rem));
   bottom: max(1.25rem, calc(var(--safe-area-bottom) + 0.75rem));
 }
+/* Reserve the fixed launcher's width plus a gap beside wizard actions. */
+body:has(.floating-chat-launcher-safe) .chat-launcher-action-footer {
+  padding-right: max(5rem, calc(var(--safe-area-right) + 4.5rem));
+}
 .chat-component-frame {
   min-width: 0;
   max-width: 100%;

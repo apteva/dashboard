@@ -15,31 +15,9 @@
 // settings UI to maintain.
 
 import { useEffect, useState } from "react";
-import { AppDiscoverySelect } from "./AppDiscoverySelect";
-
-interface SchemaField {
-  name: string;
-  label?: string;
-  type?: string;
-  description?: string;
-  required?: boolean;
-  default?: string;
-  options?: string[];
-  // Extended fields for select_from_app (and select_from_integration —
-  // the integration variant isn't rendered post-install yet because
-  // it needs the install's binding context, but the type carries
-  // through so we don't drop fields on edit-save round-trips).
-  app?: string;
-  integration_role?: string;
-  fallback?: "text" | "";
-  discovery?: {
-    tool?: string;
-    route?: string;
-    response_path?: string;
-    value_field?: string;
-    label_field?: string;
-  };
-}
+import { apps, type AppConfigField, type AppPreflight } from "../../api";
+import { ConfigFieldInput } from "./SetupFields";
+type SchemaField = AppConfigField;
 
 interface Props {
   installId: number;
@@ -49,6 +27,7 @@ interface Props {
 }
 
 export function SettingsSection({ installId, onSaved }: Props) {
+  const [preflight, setPreflight] = useState<AppPreflight | null>(null);
   const [schema, setSchema] = useState<SchemaField[] | null>(null);
   const [original, setOriginal] = useState<Record<string, unknown>>({});
   const [draft, setDraft] = useState<Record<string, unknown>>({});
@@ -60,6 +39,8 @@ export function SettingsSection({ installId, onSaved }: Props) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setPreflight(null);
+    apps.preflightInstalled(installId).then(data => { if (!cancelled) setPreflight(data); }).catch(() => {});
     fetch(`/api/apps/installs/${installId}/config`, { credentials: "same-origin" })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -153,6 +134,7 @@ export function SettingsSection({ installId, onSaved }: Props) {
           <FieldRow
             key={field.name}
             field={field}
+            preflight={preflight}
             value={draft[field.name]}
             onChange={(v) => setDraft((d) => ({ ...d, [field.name]: v }))}
           />
@@ -187,13 +169,15 @@ function FieldRow({
   field,
   value,
   onChange,
+  preflight,
 }: {
+  preflight: AppPreflight | null;
   field: SchemaField;
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
   const valStr = typeof value === "string" ? value : value == null ? "" : String(value);
-  const placeholder = field.default || "";
+
 
   return (
     <label className="flex flex-col gap-1">
@@ -203,49 +187,9 @@ function FieldRow({
       {field.description && (
         <span className="text-text-dim text-[11px] leading-snug">{field.description}</span>
       )}
-      {field.type === "select_from_app" ? (
-        <AppDiscoverySelect
-          field={field}
-          value={valStr}
-          onChange={(v) => onChange(v)}
-        />
-      ) : field.type === "select" && Array.isArray(field.options) ? (
-        <select
-          value={valStr}
-          onChange={(e) => onChange(e.target.value)}
-          className="bg-bg-input border border-border rounded px-2 py-1 text-sm text-text focus:outline-none focus:border-accent"
-        >
-          {!valStr && <option value="">{placeholder ? `default: ${placeholder}` : "Choose…"}</option>}
-          {field.options.map((opt) => (
-            <option key={opt} value={opt}>
-              {opt}
-            </option>
-          ))}
-        </select>
-      ) : field.type === "toggle" ? (
-        <input
-          type="checkbox"
-          checked={value === true || value === "true"}
-          onChange={(e) => onChange(e.target.checked)}
-          className="w-4 h-4 self-start"
-        />
-      ) : field.type === "password" ? (
-        <input
-          type="password"
-          value={valStr}
-          placeholder={placeholder}
-          onChange={(e) => onChange(e.target.value)}
-          className="bg-bg-input border border-border rounded px-2 py-1 text-sm text-text focus:outline-none focus:border-accent"
-        />
-      ) : (
-        <input
-          type="text"
-          value={valStr}
-          placeholder={placeholder}
-          onChange={(e) => onChange(e.target.value)}
-          className="bg-bg-input border border-border rounded px-2 py-1 text-sm text-text focus:outline-none focus:border-accent"
-        />
-      )}
+      <ConfigFieldInput field={field} value={value == null ? field.default || "" : valStr}
+        onChange={v => onChange(["toggle", "bool", "boolean"].includes(field.type || "") ? v === "true" : v)}
+        bindings={preflight?.current_bindings || {}} roles={preflight?.roles} projectId={preflight?.project_id} />
     </label>
   );
 }

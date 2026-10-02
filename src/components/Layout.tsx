@@ -10,6 +10,7 @@ import { useAuth } from "../hooks/useAuth";
 import { useAudience, type AudienceSection } from "../hooks/useAudience";
 import { AccountMenu } from "./AccountMenu";
 import { NotificationsTray } from "./NotificationsTray";
+import { PlatformUpdateAction } from "./PlatformUpdateAction";
 import {
   apps,
   instances,
@@ -657,14 +658,14 @@ export function Layout() {
           <span className="text-text-muted text-xs" title={versionTip}>
             v{version}
           </span>
-          {platformStatus?.update_available && (
+          {platformStatus && (
             <button
               type="button"
               onClick={() => setUpdateModalOpen(true)}
-              className="text-xs px-2 py-0.5 rounded bg-yellow/15 text-yellow hover:bg-yellow/25 transition-colors"
+              className={`text-xs px-2 py-0.5 rounded transition-colors ${platformStatus.update_available ? "bg-yellow/15 text-yellow hover:bg-yellow/25" : "text-text-muted hover:bg-bg-hover"}`}
               title="Click for update details"
             >
-              update available
+              {platformStatus.update_available ? "update available" : "Updates"}
             </button>
           )}
         </div>
@@ -778,12 +779,7 @@ export function Layout() {
   );
 }
 
-// Small inline modal for the "update available" pill. The platform
-// status is read-only here — we don't trigger the update from the
-// dashboard. The instruction copy adapts to the install method (npx,
-// docker, source, standalone tarball); we can only guess from the
-// browser, so we list the canonical commands and let the operator
-// pick the relevant one.
+// Installation instructions remain available alongside the persistent updater.
 function PlatformUpdateModal(props: {
   status: PlatformStatus;
   refreshing: boolean;
@@ -800,12 +796,13 @@ function PlatformUpdateModal(props: {
       onClick={onClose}
     >
       <div
-        className="bg-bg border border-border rounded-lg shadow-xl max-w-lg w-full p-6"
+        className="bg-bg border border-border rounded-lg shadow-xl max-w-lg w-full max-h-[90dvh] overflow-y-auto p-4 sm:p-6"
+        role="dialog" aria-modal="true" aria-label="Platform updates"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between mb-4">
           <div>
-            <h2 className="text-lg font-medium">Platform update available</h2>
+            <h2 className="text-lg font-medium">{status.update_available ? "Platform update available" : "Platform updates"}</h2>
             {status.bundle_version && (
               <p className="text-text-muted text-xs mt-0.5">
                 Bundle v{status.bundle_version}
@@ -851,7 +848,10 @@ function PlatformUpdateModal(props: {
           ))}
         </div>
 
-        <div className="bg-border/30 rounded p-3 mb-4 text-xs">
+        <PlatformUpdateAction status={status} />
+
+        <details className="rounded border border-border p-3 mb-4 text-xs" open={status.install_method === "source" || status.install_method === "docker" || status.install_method === "packaged"}>
+          <summary className="cursor-pointer font-medium">Update from the terminal</summary>
           <div className="font-medium mb-2">
             {updateInstructionsTitle(status.install_method)}
           </div>
@@ -863,7 +863,7 @@ function PlatformUpdateModal(props: {
               {updateInstructionsNote(status.install_method)}
             </div>
           )}
-        </div>
+        </details>
 
         <div className="flex items-center justify-between text-xs text-text-muted">
           <span>Last checked: {polled}</span>
@@ -1056,7 +1056,7 @@ function updateInstructionsBody(method: string | undefined): string {
     case "docker":
       return "docker pull apteva:latest\ndocker compose up -d";
     case "source":
-      return "cd <your monorepo>\ngit pull\n./scripts/build-local.sh";
+      return "# Update the component repositories, then from the workspace:\n./scripts/build-local.sh";
     case "packaged":
       return "# pick the right one for your distro\nsudo apt upgrade apteva\n# or: sudo dnf upgrade apteva\n# or: sudo pacman -Syu apteva";
     case "systemd-user":
@@ -1077,10 +1077,10 @@ function updateInstructionsNote(method: string | undefined): string | null {
   switch (method) {
     case "systemd-user":
     case "systemd-system":
-      return "The unit's SuccessExitStatus=11 + Restart=on-failure picks up the new binary through bin/current.";
+      return "Apteva restarts the service and checks that it is healthy after the update.";
     case "launchd-user":
     case "launchd-system":
-      return "launchd's KeepAlive picks up the new binary through bin/current after the SIGTERM drain.";
+      return "Apteva restarts the service and checks that it is healthy after the update.";
     case "foreground":
       return "After the swap, re-run apteva to start the new version.";
     default:

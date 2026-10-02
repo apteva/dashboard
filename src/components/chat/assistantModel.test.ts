@@ -9,8 +9,8 @@ const choices: AssistantChoice[] = [
   { target: { kind: "agent", id: 3 }, agent: { id: 3, name: "Finance" } as Agent },
 ];
 describe("chat assistant preferences", () => {
-  test("is opt-in and defaults to Helper without requiring a numeric Helper identity", () => {
-    expect(readAssistantPreferences({})).toMatchObject({ enabled: false, defaultTarget: { kind: "helper" } });
+  test("defaults to enabled and Helper without requiring a numeric Helper identity", () => {
+    expect(readAssistantPreferences({})).toMatchObject({ enabled: true, defaultTarget: { kind: "helper" } });
   });
   test("only explicitly allowed targets appear and switching off restricts to default", () => {
     const preferences = { ...defaultAssistantPreferences, targets: [choices[1]!.target] };
