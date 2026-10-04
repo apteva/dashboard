@@ -72,7 +72,7 @@ test("manual preset setup previews first and applies edited agent configuration"
   fireEvent.change(name, { target: { value: "Clinic assistant" } });
   fireEvent.click(screen.getByRole("button", { name: "Confirm and create workspace" }));
   await screen.findByText("Your setup is ready");
-  expect(projectPresets.apply).toHaveBeenCalledWith("p", { preset_id: business.id, description: "Research clinics", agent_overrides: [{ key: "leads", name: "Clinic assistant", directive: "Research leads for Research clinics", mode: "cautious" }], interface_level: undefined });
+  expect(projectPresets.apply).toHaveBeenCalledWith("p", { retry_setup_steps: [], preset_id: business.id, description: "Research clinics", agent_overrides: [{ key: "leads", name: "Clinic assistant", directive: "Research leads for Research clinics", mode: "cautious" }], interface_level: undefined });
   expect(finish).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Finish setup" }));
   await waitFor(() => expect(finish).toHaveBeenCalledWith("/", "business"));

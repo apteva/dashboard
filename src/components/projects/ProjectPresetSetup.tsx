@@ -1,3 +1,4 @@
+import { PresetSetupSteps } from "./PresetSetupSteps";
 import { useEffect, useMemo, useState } from "react";
 import {
   projectPresets,
@@ -38,12 +39,13 @@ const HIDDEN_DASHBOARD_COMPONENTS = new Set(["native:inbox"]);
 
 function visibleDashboardComponents(preset: ProjectPreset): string[] {
   const components = preset.layouts?.home?.map((widget) => widget.component) || preset.dashboard_layout?.map((widget) => widget.component) || preset.dashboard || [];
-  return components.filter((component) => !HIDDEN_DASHBOARD_COMPONENTS.has(component));
+  const visible = components.filter((component) => !HIDDEN_DASHBOARD_COMPONENTS.has(component));
+  return visible;
 }
 
 export function presetCountSummary(preset: ProjectPreset) {
   const agents = preset.agents.length;
-  const apps = new Set(preset.agents.flatMap((agent) => agent.apps || [])).size;
+  const apps = new Set([...preset.agents.flatMap((agent) => agent.apps || []), ...(preset.setup || []).map((step) => step.app)]).size;
   const widgets = visibleDashboardComponents(preset).length + Object.values(preset.layouts?.agent_overview || {}).reduce((total, layout) => total + layout.length, 0);
   return `${agents} agent${agents === 1 ? "" : "s"} · ${apps} app${apps === 1 ? "" : "s"} · ${widgets} widget${widgets === 1 ? "" : "s"}`;
 }
@@ -79,6 +81,7 @@ export function ProjectPresetSetup({
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState("");
   const [applied, setApplied] = useState("");
+  const [setupResult, setSetupResult] = useState<{ presetId: string; progress: Awaited<ReturnType<typeof projectPresets.apply>>["setup"] } | null>(null);
 
   useEffect(() => {
     onStateChange?.({ busy: applying, ready: Boolean(applied) });
@@ -122,7 +125,7 @@ export function ProjectPresetSetup({
     setError("");
   };
 
-  const apply = async () => {
+  const apply = async (retrySetupSteps: string[] = []) => {
     if (!project || !selectedPreset) {
       setError("Choose a template to continue.");
       return;
@@ -136,13 +139,19 @@ export function ProjectPresetSetup({
     setApplied("");
     try {
       const result = await projectPresets.apply(project.id, {
+        retry_setup_steps: retrySetupSteps,
         preset_id: selectedPreset.id,
         description: description.trim(),
       });
+      setSetupResult({ presetId: selectedPreset.id, progress: result.setup });
+      if (result.status !== "applied") {
+        setError(result.warnings?.join(" ") || "App setup needs attention. Completed steps are saved.");
+        return;
+      }
       const created = result.created_agents.length;
       const existing = result.existing_agents.length;
       const warnings = result.warnings?.length
-        ? ` ${result.warnings.length} app or widget${result.warnings.length === 1 ? "" : "s"} still need attention.`
+        ? ` ${result.warnings.length} setup item${result.warnings.length === 1 ? "" : "s"} still need attention.`
         : "";
       setApplied(`Setup created. ${created} agent${created === 1 ? "" : "s"} created${existing ? `, ${existing} already present` : ""}.${warnings}`);
       await refreshAuth?.().catch(() => {});
@@ -238,13 +247,14 @@ export function ProjectPresetSetup({
 
       <button
         type="button"
-        onClick={apply}
+        onClick={() => void apply()}
         disabled={applying || !selectedPreset}
         className="px-5 py-2 bg-accent text-bg rounded-lg text-sm font-bold hover:bg-accent-hover disabled:opacity-50"
       >
         {applying ? "Creating setup…" : "Create setup"}
       </button>
 
+      <PresetSetupSteps steps={selectedPreset?.setup} progress={setupResult?.presetId === selectedPreset?.id ? setupResult?.progress : undefined} retry={(keys) => void apply(keys)} />
       {error && <div className="text-red text-sm">{error}</div>}
       {applied && <div className="border border-green/40 bg-green/5 text-green rounded-lg p-4 text-sm">{applied}</div>}
     </fieldset>
@@ -253,7 +263,7 @@ export function ProjectPresetSetup({
 
 export function PresetLayoutPreview({ preset, standalone = false }: { preset: ProjectPreset; standalone?: boolean }) {
   const [surface, setSurface] = useState("home");
-  const home = preset.layouts?.home || preset.dashboard_layout || visibleDashboardComponents(preset).map((component) => ({ id: component, component, size: "half" as const }));
+  const home = [...(preset.layouts?.home || preset.dashboard_layout || visibleDashboardComponents(preset).map((component) => ({ id: component, component, size: "half" as const })))];
   const agents = preset.agents.filter((agent) => preset.layouts?.agent_overview?.[agent.key]);
   const widgets = surface === "home" ? home : preset.layouts?.agent_overview?.[surface] || [];
   if (!home.length && !agents.length) return standalone ? <p className="text-sm leading-relaxed text-text-muted">This preset uses the default page layouts. You can add and arrange widgets after setup.</p> : null;

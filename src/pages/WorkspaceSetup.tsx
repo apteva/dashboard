@@ -1,3 +1,4 @@
+import { PresetSetupSteps } from "../components/projects/PresetSetupSteps";
 import { useEffect, useRef, useState } from "react";
 import { AppIcon } from "@apteva/ui-kit";
 import { Link, useNavigate } from "react-router-dom";
@@ -263,11 +264,11 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
     setDraft(next);
   });
 
-  const apply = () => void run(async () => {
+  const apply = (retrySetupSteps: string[] = []) => void run(async () => {
     if (!draft || !preview) return;
     if (!draft.description.trim()) throw new Error("Describe what you would like this workspace to help with.");
     await save(draft);
-    const applied = await projectPresets.apply(projectId, { preset_id: draft.preset_id, description: draft.description, agent_overrides: draft.agent_overrides, interface_level: draft.interface_level });
+    const applied = await projectPresets.apply(projectId, { retry_setup_steps: retrySetupSteps, preset_id: draft.preset_id, description: draft.description, agent_overrides: draft.agent_overrides, interface_level: draft.interface_level });
     setResult(applied);
     window.dispatchEvent(new Event("apteva:agents-changed"));
     window.dispatchEvent(new Event("apteva:apps-changed"));
@@ -379,6 +380,7 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
         {interfacePicker}
       </>}
       <PresetContentsSummary preset={preview.preset} />
+      <PresetSetupSteps steps={preview.preset.setup} progress={result?.setup || preview.setup_progress} retry={result ? apply : undefined} />
       {!result && <details className="rounded-xl border border-border p-4"><summary className="cursor-pointer text-sm font-medium">Customize agents <span className="font-normal text-text-dim">· Optional</span></summary><p className="mt-3 text-xs text-text-muted">The preset provides names, instructions, and behavior. Open these settings only if you want to change them.</p><div className="mt-4 space-y-3">
         {preview.agents.map((agent) => {
           const spec = preview.preset.agents.find((item) => item.key === agent.key);
@@ -401,8 +403,8 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
       </div></details>}
       {!!preview.preset.connections?.length && <PresetConnectionGuide steps={preview.preset.connections} projectId={projectId} enabled={!!result} />}
       {!!preview.warnings?.length && !result && <details className="rounded-lg border border-border p-4 text-sm text-text-muted"><summary className="cursor-pointer font-medium text-text">App and widget availability</summary><p className="mt-2">Setup will install the available apps. Apps or widgets that still need attention will be listed afterward.</p><div className="mt-3 space-y-2">{preview.warnings.map((warning, i) => <p key={i}>{warning}</p>)}</div></details>}
-      {!result && <div className="sticky bottom-0 border-t border-border bg-bg py-4 pb-[max(1rem,env(safe-area-inset-bottom))]"><p className="mb-3 text-xs leading-relaxed text-text-muted">This will create {preview.agents.length} agent{preview.agents.length === 1 ? "" : "s"}, install missing apps, and add the planned widgets. Existing workspace content is preserved.</p>{error && <p role="alert" className="mb-3 text-sm text-red">{error}</p>}<button onClick={apply} className="min-h-11 w-full rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-50 sm:w-auto">{busy ? "Creating your workspace…" : "Confirm and create workspace"}</button></div>}
-      {result && <SetupResult result={result} retry={apply} finish={finish} />}
+      {!result && <div className="sticky bottom-0 border-t border-border bg-bg py-4 pb-[max(1rem,env(safe-area-inset-bottom))]"><p className="mb-3 text-xs leading-relaxed text-text-muted">This will create {preview.agents.length} agent{preview.agents.length === 1 ? "" : "s"}, install missing apps, and add the planned widgets. Existing workspace content is preserved.</p>{error && <p role="alert" className="mb-3 text-sm text-red">{error}</p>}<button onClick={() => apply()} className="min-h-11 w-full rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-50 sm:w-auto">{busy ? "Creating your workspace…" : "Confirm and create workspace"}</button></div>}
+      {result && <SetupResult result={result} retry={() => apply()} finish={finish} />}
     </fieldset>}
     {busy && <p role="status" className="mt-4 text-sm text-text-muted">Preparing your setup…</p>}
     {result && error && <p role="alert" className="mt-4 text-sm text-red">{error}</p>}
@@ -648,7 +650,7 @@ function isPlannedSetupNotice(warning: string) {
 
 function SetupResult({ result, retry, finish }: { result: ApplyResult; retry: () => void; finish: (destination: string) => void }) {
   const agents = [...result.created_agents, ...result.existing_agents];
-  const ready = agents.length > 0 && agents.every((agent) => agent.status === "running") && !result.warnings?.length;
+  const ready = result.status === "applied" && agents.length > 0 && agents.every((agent) => agent.status === "running") && !result.warnings?.length;
   const destination = "/";
   return <section className="space-y-3 rounded-xl border border-border p-4" aria-label="Setup result">
     <h2 className="font-semibold text-text">{ready ? "Your setup is ready" : "Your setup needs attention"}</h2>

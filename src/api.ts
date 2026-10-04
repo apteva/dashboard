@@ -664,7 +664,25 @@ export interface ProjectPresetLayouts {
   agent_overview?: Record<string, ProjectPresetWidget[]>;
 }
 
+export interface ProjectPresetSetupStep {
+  min_app_version?: string;
+  requires_operator?: boolean;
+  description?: string;
+  key: string;
+  app: string;
+  tool: string;
+  title?: string;
+  input?: Record<string, unknown>;
+}
+
+export interface ProjectPresetSetupProgress {
+  key: string;
+  status: "pending" | "running" | "completed" | "blocked" | "uncertain";
+  error?: string;
+}
+
 export interface ProjectPreset {
+  setup?: ProjectPresetSetupStep[];
   interface_level?: InterfaceLevel;
   id: string;
   kind?: "project_setup";
@@ -709,6 +727,7 @@ export interface ProjectPresetWidget {
 }
 
 export interface ProjectPresetPreview {
+  setup_progress?: ProjectPresetSetupProgress[];
   interface_level?: InterfaceLevel;
   preset: ProjectPreset;
   planner: "selected" | "meta" | "deterministic";
@@ -725,6 +744,7 @@ export interface ProjectPresetPreview {
 export type SetupAgentOverride = Pick<ProjectPresetAgentPreview, "key" | "name" | "directive" | "mode">;
 
 export interface ProjectPresetApplyInput {
+  retry_setup_steps?: string[];
   interface_level?: InterfaceLevel;
   agent_overrides?: SetupAgentOverride[];
   preset_id: string;
@@ -732,6 +752,7 @@ export interface ProjectPresetApplyInput {
 }
 
 export interface ProjectSetupPresetDefinition {
+  setup?: ProjectPresetSetupStep[];
   interface_level?: InterfaceLevel;
   category: "personal" | "work" | "development" | "business";
   match?: string[];
@@ -919,6 +940,7 @@ export const projectPresets = {
         dashboard_layout: preset.definition.dashboard_layout,
         layouts: preset.definition.layouts,
         connections: preset.definition.connections,
+        setup: preset.definition.setup,
       })),
     };
   },
@@ -938,7 +960,8 @@ export const projectPresets = {
     ),
   apply: (projectId: string, input: ProjectPresetApplyInput) =>
     request<{
-      status: "applied";
+      status: "applied" | "needs_attention";
+      setup?: ProjectPresetSetupProgress[];
       project_id: string;
       preset_id: string;
       created_agents: Array<{ id: number; name: string; status: string }>;
@@ -1101,6 +1124,7 @@ export interface BehaviorSync {
 export type RunMode = "autonomous" | "cautious" | "learn";
 
 export interface Agent {
+  builtins?: Array<{ name: string; provider: string }>;
   id: number;
   user_id: number;
   name: string;
@@ -1199,6 +1223,8 @@ export const instances = {
       proactivity?: number;
       idempotencyKey?: string;
       includeChannels?: boolean;
+      defaultProvider?: string;
+      builtinOverrides?: AgentBuiltinOverrides;
       unconscious?: boolean;
       // Setup-step selections — explicit lists of apps + integration
       // connections the operator wants attached as MCP servers on
@@ -1213,6 +1239,7 @@ export const instances = {
   ) =>
     request<Agent & { warning?: string }>("POST", "/agents", {
       name,
+      ...(opts?.defaultProvider || opts?.builtinOverrides ? { config: JSON.stringify({ ...(opts.defaultProvider ? { default_provider: opts.defaultProvider } : {}), ...(opts.builtinOverrides ? { builtin_overrides: opts.builtinOverrides } : {}) }) } : {}),
       icon: opts?.icon || "robot",
       icon_color: opts?.iconColor || "accent",
       directive: directive || "",
@@ -1293,6 +1320,7 @@ export const instances = {
       providers?: Array<{ name: string; default: boolean; service_tier?: string | null }>;
       modelOverride?: string;
       serviceTierOverrides?: Record<string, string | null>;
+      builtinOverrides?: AgentBuiltinOverrides;
       realtimeEnabled?: boolean;
       realtimeVoice?: string;
       realtimeProvider?: string;
@@ -1306,6 +1334,7 @@ export const instances = {
       ...(opts.proactivity !== undefined ? { proactivity: opts.proactivity } : {}),
       ...(opts.providers ? { providers: opts.providers } : {}),
       ...(opts.serviceTierOverrides ? { service_tier_overrides: opts.serviceTierOverrides } : {}),
+      ...(opts.builtinOverrides ? { builtin_overrides: opts.builtinOverrides } : {}),
       ...(opts.modelOverride !== undefined
         ? { model_override: opts.modelOverride }
         : {}),
@@ -1528,7 +1557,14 @@ export interface RuntimeCatalogEntry {
 
 /** A connected runtime backend, as listed by GET /connections/runtime.
  *  Never carries credentials — it drives a settings screen. */
+export interface BuiltinOption { type: string; enum?: string[]; required?: boolean; default?: unknown }
+export interface BuiltinDescriptor { name: string; type: string; experimental?: boolean; options?: Record<string, BuiltinOption> }
+export interface BuiltinSetting { enabled: boolean; options?: Record<string, any> }
+export type AgentBuiltinOverrides = Record<string, Record<string, BuiltinSetting | null>>;
+
 export interface RuntimeConnection {
+  builtin_capabilities?: BuiltinDescriptor[];
+  builtin_unavailable?: string;
   service_tiers?: string[];
   id: number;
   name: string;
@@ -2063,7 +2099,7 @@ export const integrations = {
    *  to clear it and fall back to the provider default. */
   updateRuntimeConfig: (
     connectionId: number,
-    patch: Record<string, string | null>,
+    patch: Record<string, unknown>,
   ) =>
     request<Record<string, any>>(
       "PATCH",
@@ -2828,6 +2864,7 @@ export const core = {
   // entry annotated with `connected: true`).
   config: (instanceId: number) =>
     request<{
+      builtin_overrides?: AgentBuiltinOverrides;
       directive: string;
       mode: RunMode;
       proactivity?: number;

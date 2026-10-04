@@ -95,7 +95,8 @@ test("late template accounts seed once, refresh preserves removals, and create k
         resources: [{ name: "folder", label: "Folder" }],
       }) as any,
   );
-  integrations.runtimeConnections = mock(async () => [{ role: "llm" }] as any);
+  integrations.newAgentProvider = mock(async () => ({ effective_provider: "openai" }) as any);
+  integrations.runtimeConnections = mock(async () => [{ id: 1, provider_key: "openai", app_name: "OpenAI", role: "llm" }] as any);
   integrations.connections = mock(() => lateConnections);
   instances.create = mock(async () => ({ id: 999 }) as any);
   render(
@@ -175,7 +176,8 @@ async function mountRequiredAppFixture(status: "pending" | "error" | "disabled")
  apps.install=mock(async()=>({install_id:3}) as any);
  apps.marketplace=mock(async()=>({apps:[]}) as any);
  apps.permissions=mock(async()=>({permissions:[],resources:[]}) as any);
- integrations.runtimeConnections=mock(async()=>[{role:"llm"}] as any);
+ integrations.newAgentProvider=mock(async()=>({effective_provider:"openai"}) as any);
+ integrations.runtimeConnections=mock(async()=>[{id:1,provider_key:"openai",app_name:"OpenAI",role:"llm"}] as any);
  integrations.connections=mock(async()=>[]);
  instances.create=mock(async()=>({id:999}) as any);
  render(<MemoryRouter initialEntries={["/agents/new"]}><Routes><Route path="/agents/new" element={<AgentNew/>}/><Route path="/agents/999" element={<p>Agent created</p>}/></Routes></MemoryRouter>);

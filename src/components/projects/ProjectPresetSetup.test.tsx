@@ -121,6 +121,7 @@ describe("ProjectPresetSetup", () => {
     expect(await screen.findByText(/Setup created/)).toBeTruthy();
     const apply = calls.find((call) => call.url.endsWith("/setup/apply"));
     expect(apply?.body).toEqual({
+      retry_setup_steps: [],
       preset_id: "business-lead-generation",
       description: "Qualify medical clinic leads and prepare outreach for review",
     });

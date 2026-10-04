@@ -371,11 +371,17 @@ function ensureRequiredWidgets(instances: WidgetInstance[], definitions: WidgetD
 
 export function normalizeStoredWidgets(values: unknown[], definitions: WidgetDefinition[]): WidgetInstance[] {
   const byKey = new Map(definitions.map((item) => [item.key, item]));
+  let hasTasks = values.some((value) => typeof value === "string" ? value === "tasks:task-overview" : !!value && typeof value === "object" && "component" in value && value.component === "tasks:task-overview");
   return values.flatMap((value, index) => {
     const legacy = typeof value === "string";
     if (!legacy && (!value || typeof value !== "object" || Array.isArray(value))) return [];
     const raw = legacy ? null : value as Partial<WidgetInstance>;
-    const component = legacy ? value : raw?.component;
+    let component = legacy ? value : raw?.component;
+    if (component === "native:starter-assignments") {
+      if (hasTasks) return [];
+      component = "tasks:task-overview";
+      hasTasks = true;
+    }
     if (typeof component !== "string") return [];
     const definition = byKey.get(component);
     const supported = definition?.supportedSizes || ["half", "full"];

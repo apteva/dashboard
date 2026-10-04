@@ -1,3 +1,4 @@
+import { BuiltinGlyph, builtinLabel } from "./ProviderBuiltins";
 import { AppIcon } from "@apteva/ui-kit";
 import { useMemo } from "react";
 import type { AppRow, ConnectionInfo, InstanceSkill, MCPServer, MCPServerConfig } from "../api";
@@ -11,7 +12,8 @@ export interface AgentCapabilityCatalog {
 type CapabilityIcon = {
   key: string;
   name: string;
-  kind: "app" | "integration" | "skill" | "mcp";
+  kind: "app" | "integration" | "skill" | "mcp" | "model";
+  builtinName?: string;
   src?: string;
   iconStyle?: string;
 };
@@ -82,17 +84,18 @@ export function agentCardCapabilities(
       add({ key: `skill:${skill.skill_id || skill.slug}`, name: skill.name || skill.slug, kind: "skill" });
     }
   }
-  const order = { app: 0, integration: 1, skill: 2, mcp: 3 };
+  const order = { app: 0, integration: 1, skill: 2, mcp: 3, model: 4 };
   return [...found.values()].sort((a, b) => order[a.kind] - order[b.kind] || a.name.localeCompare(b.name));
 }
 
-export function AgentCapabilityIcons({ attached, skills, catalog, compact = false }: {
+export function AgentCapabilityIcons({ attached, skills, catalog, compact = false, builtins = [] }: {
+  builtins?: Array<{ name: string; provider: string }>;
   attached: MCPServerConfig[];
   skills: InstanceSkill[];
   catalog: AgentCapabilityCatalog;
   compact?: boolean;
 }) {
-  const capabilities = useMemo(() => agentCardCapabilities(attached, skills, catalog), [attached, skills, catalog]);
+  const capabilities = useMemo(() => [...agentCardCapabilities(attached, skills, catalog), ...builtins.map((capability): CapabilityIcon => ({ key: `builtin:${capability.provider}:${capability.name}`, name: `${builtinLabel(capability.name)} · ${capability.provider}`, kind: "model", builtinName: capability.name }))], [attached, skills, catalog, builtins]);
   const shown = capabilities.slice(0, 4);
   const hidden = capabilities.slice(4);
   return <div className={`flex min-w-0 items-center gap-2 ${compact ? "" : "mt-3 border-t border-border/70 pt-3"}`}>
@@ -103,7 +106,7 @@ export function AgentCapabilityIcons({ attached, skills, catalog, compact = fals
           role="img" aria-label={`${capability.kind}: ${capability.name}`}
           title={`${capability.kind === "mcp" ? "MCP server" : capability.kind}: ${capability.name}`}
           className={`${compact && index > 0 ? "hidden sm:inline-flex" : "inline-flex"} h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-bg-input text-accent`}>
-          {capability.src
+          {capability.builtinName ? <BuiltinGlyph name={capability.builtinName} /> : capability.src
             ? <AppIcon src={capability.src} iconStyle={capability.iconStyle} name={capability.name} size="sm"
                 framed={false} className={capability.kind === "integration" ? "rounded bg-white text-gray-800" : "rounded"} />
             : capability.kind === "skill" ? <span aria-hidden="true" className="text-sm">✦</span>

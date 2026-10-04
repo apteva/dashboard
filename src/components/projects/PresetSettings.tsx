@@ -1,3 +1,4 @@
+import { PresetSetupSteps } from "./PresetSetupSteps";
 import { useEffect, useMemo, useState } from "react";
 import {
   presets as presetsAPI,
@@ -20,7 +21,7 @@ function widgetCount(preset: Preset) {
 }
 
 function presetSummary(preset: Preset) {
-  const apps = new Set(preset.definition.agents.flatMap((agent) => agent.apps || [])).size;
+  const apps = new Set([...preset.definition.agents.flatMap((agent) => agent.apps || []), ...(preset.definition.setup || []).map((step) => step.app)]).size;
   const agents = preset.definition.agents.length;
   const widgets = widgetCount(preset);
   return `${agents} agent${agents === 1 ? "" : "s"} · ${apps} app${apps === 1 ? "" : "s"} · ${widgets} widget${widgets === 1 ? "" : "s"}`;
@@ -173,6 +174,7 @@ function PresetDetails({ preset }: { preset: Preset }) {
           {agent.apps?.length ? <div className="mt-1 text-text-muted">Apps: {agent.apps.join(", ")}</div> : null}
         </div>
       ))}
+      <PresetSetupSteps steps={preset.definition.setup} />
       {widgets.length > 0 && <div className="text-text-muted">Home: {widgets.join(", ")}</div>}
     </div>
   );

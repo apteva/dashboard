@@ -1,3 +1,4 @@
+import { ProviderBuiltinDefaults } from "../../components/ProviderBuiltins";
 import { ServiceTierSelect } from "../../components/ServiceTierSelect";
 import { useState, useEffect, useCallback } from "react";
 
@@ -491,6 +492,7 @@ export function ProvidersTab() {
                         </div>
                       )}
                       <ServiceTierSelect connection={connection} value={connection.runtime_config?.service_tier || ""} disabled={busy} onChange={(value) => void handleServiceTier(connection, value)} />
+                      <ProviderBuiltinDefaults connection={connection} onSaved={load} disabled={busy} />
                       <div className="space-y-1.5">
                         {(["large", "medium", "small"] as const).map((tier) => (
                           <label

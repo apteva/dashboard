@@ -1,3 +1,5 @@
+import { ProviderBuiltinsEditor, agentBuiltins, agentBuiltinPatch, BuiltinGlyph, builtinLabel } from "./ProviderBuiltins";
+import type { AgentBuiltinOverrides } from "../api";
 import { ServiceTierSelect, agentServiceTiers, serviceTierPatch } from "./ServiceTierSelect";
 import { AppIcon } from "@apteva/ui-kit";
 import { AgentIconPicker, AgentMark, suggestedAgentIcon } from "./AgentMark";
@@ -1017,7 +1019,7 @@ export function AgentRuntimePanel({
           className="group flex min-h-10 shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-border bg-bg-card px-2 text-left transition-colors hover:border-accent hover:bg-accent/10 active:bg-accent/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           aria-label="Manage capabilities" aria-haspopup="dialog" aria-expanded={showCapabilitiesManage}
           title="Manage apps, integrations and MCP servers">
-          <AgentCapabilityIcons attached={mcpServers} skills={[]} catalog={{ apps: installedApps, connections, inventory: mcpInventory }} compact />
+          <AgentCapabilityIcons builtins={instance.builtins} attached={mcpServers} skills={[]} catalog={{ apps: installedApps, connections, inventory: mcpInventory }} compact />
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0 text-text-muted transition-colors group-hover:text-accent group-focus-visible:text-accent">
             <path d="m16 3 5 5M4 20l4-1 13-13a2.1 2.1 0 0 0-3-3L5 16l-1 4Z" />
           </svg>
@@ -1054,7 +1056,7 @@ export function AgentRuntimePanel({
             onDetails={onThreadOpen} onActivity={() => onViewChange("stream")} onCapabilities={() => setShowCapabilitiesManage(true)}
             />
         </div> : view === "stream" ? <div className="h-full overflow-y-auto p-3 sm:p-4"><div className="w-full"><AgentActivity toolRegistry={toolRegistry} events={events} threads={threads} loading={runtimeLoading} onDetails={onThreadOpen} /></div></div>
-        : view === "activity" ? <AgentDiagnostics key={instance.id} instance={instance} status={liveStatus} execution={executionControl} connection={telemetryConnection} threads={threads} activeTools={activeTools} thinking={thinking} selectedThreadId={selectedRuntimeThread} onThreadSelect={selectRuntimeThread} onThreadOpen={onThreadOpen} onConfig={onConfig} /> : view === "capabilities" ? <AgentCapabilitiesView instance={instance} attached={mcpServers} inventory={mcpInventory} onManage={() => setShowCapabilitiesManage(true)} />
+        : view === "activity" ? <AgentDiagnostics key={instance.id} instance={instance} status={liveStatus} execution={executionControl} connection={telemetryConnection} threads={threads} activeTools={activeTools} thinking={thinking} selectedThreadId={selectedRuntimeThread} onThreadSelect={selectRuntimeThread} onThreadOpen={onThreadOpen} onConfig={onConfig} /> : view === "capabilities" ? <AgentCapabilitiesView onConfigure={onConfig} instance={instance} attached={mcpServers} inventory={mcpInventory} onManage={() => setShowCapabilitiesManage(true)} />
         : advancedContent}
       </div>
       {diagnostics && instance.status === "running" && <details className="shrink-0 border-t border-border"><summary className="cursor-pointer px-3 py-2 text-[11px] text-text-muted hover:text-accent">Inject a developer event</summary><InjectPanel instanceId={instance.id} threads={threads} /></details>}
@@ -1165,6 +1167,7 @@ function AgentRuntimeActionsMenu({
 }
 
 function AgentCapabilitiesView({
+  onConfigure,
   instance,
   attached,
   inventory,
@@ -1174,6 +1177,7 @@ function AgentCapabilitiesView({
   attached: MCPServerConfig[];
   inventory: MCPServer[];
   onManage: () => void;
+  onConfigure: () => void;
 }) {
   const [section, setSection] = useState<"connections" | "skills" | "apps">("connections");
 
@@ -1202,6 +1206,10 @@ function AgentCapabilitiesView({
       <div className="min-h-0 flex-1">
         {section === "connections" ? (
           <div className="h-full overflow-y-auto p-4 sm:p-5">
+            <section className="mb-5 space-y-2">
+              <div className="flex items-center justify-between gap-2"><h2 className="text-sm font-semibold text-text">Model capabilities</h2><button type="button" onClick={onConfigure} className="cursor-pointer text-xs text-accent hover:underline">Configure</button></div>
+              {instance.builtins?.length ? <div className="flex flex-wrap gap-2">{instance.builtins.map((item) => <button key={`${item.provider}:${item.name}`} type="button" onClick={onConfigure} className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-3 py-2 text-left hover:border-accent"><span className="text-accent"><BuiltinGlyph name={item.name} /></span><span><span className="block text-xs text-text">{builtinLabel(item.name)}</span><span className="block text-[10px] text-text-muted">{item.provider}</span></span></button>)}</div> : <p className="text-xs text-text-dim">No built-in model capabilities enabled.</p>}
+            </section>
             <div className="mb-4">
               <h2 className="text-sm font-semibold text-text">Attached capabilities</h2>
               <p className="mt-1 text-xs text-text-muted">Apps and MCP servers available to this agent. Use Add apps & MCPs to attach or remove them.</p>
@@ -1209,7 +1217,7 @@ function AgentCapabilitiesView({
             {attached.length === 0 ? (
               <button type="button" onClick={onManage} className="flex w-full cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent items-center justify-between rounded-lg border border-dashed border-border px-4 py-5 text-left hover:border-accent/60 hover:bg-bg-card">
                 <span>
-                  <span className="block text-sm text-text">No capabilities attached</span>
+                  <span className="block text-sm text-text">No apps or MCP servers attached</span>
                   <span className="mt-1 block text-xs text-text-muted">Select an app or MCP server for this agent.</span>
                 </span>
                 <span className="text-xs font-semibold text-accent">Add capability</span>
@@ -2427,6 +2435,9 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   const { shows } = useAudience();
   const [providerList, setProviderList] = useState<RuntimeConnection[]>([]);
   const [serviceTierOverrides, setServiceTierOverrides] = useState<Record<string, string | null>>({});
+  const [builtinOverrides, setBuiltinOverrides] = useState<AgentBuiltinOverrides>({});
+  const [builtinsValid, setBuiltinsValid] = useState(true);
+  const [savedBuiltinConfig, setSavedBuiltinConfig] = useState(instance.config);
   const [availableModels, setAvailableModels] = useState<Record<number, ModelInfo[]>>({});
   const [loadingModels, setLoadingModels] = useState<number | null>(null);
   const [defaultProvider, setDefaultProvider] = useState("");
@@ -2465,8 +2476,12 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
 
     setDefaultProvider("");
     setServiceTierOverrides(agentServiceTiers(instance.config));
+    setBuiltinOverrides(agentBuiltins(instance.config));
+    setSavedBuiltinConfig(instance.config);
+    setBuiltinsValid(true);
 
     core.config(instance.id).then((config) => {
+      if (config.builtin_overrides) { const saved = JSON.stringify({ builtin_overrides: config.builtin_overrides }); setSavedBuiltinConfig(saved); setBuiltinOverrides(agentBuiltins(saved)); }
       setDirective(config.directive);
       setMode(config.mode);
       setProactivity(config.proactivity ?? instance.proactivity ?? defaultProactivity);
@@ -2555,6 +2570,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   const selectedRealtimeVoice = realtimeVoices.includes(realtimeVoice) ? realtimeVoice : realtimeVoices[0];
 
   const handleSave = async () => {
+    if (!builtinsValid) { setError("Complete the model capability options before saving."); return; }
     setSaving(true); setError("");
     try {
       // Save model selections through the narrow server route. OAuth-backed
@@ -2584,6 +2600,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         proactivity,
         providers: provs,
         serviceTierOverrides: serviceTierPatch(instance.config, serviceTierOverrides),
+        builtinOverrides: agentBuiltinPatch(savedBuiltinConfig, builtinOverrides),
         realtimeEnabled,
         realtimeProvider: realtimeAvailable ? realtimeProvider : undefined,
         realtimeModel: realtimeAvailable ? realtimeModel : undefined,
@@ -2663,6 +2680,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         )}
 
         {shows("agent.provider") && <ServiceTierSelect connection={selectedDetail} inherit value={serviceTierOverrides[defaultProvider]} disabled={saving} onChange={(value) => setServiceTierOverrides((current) => ({ ...current, [defaultProvider]: value }))} />}
+        {shows("agent.provider") && <ProviderBuiltinsEditor key={defaultProvider} connection={selectedDetail} inherit value={builtinOverrides[defaultProvider] || {}} disabled={saving} onValidityChange={setBuiltinsValid} onChange={(value) => setBuiltinOverrides((current) => ({ ...current, [defaultProvider]: value }))} />}
 
         {/* Models */}
         {shows("agent.provider") && selectedDetail && (
@@ -2851,7 +2869,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
             className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors">
             Cancel
           </button>
-          <button onClick={handleSave} disabled={saving}
+          <button onClick={handleSave} disabled={saving || !builtinsValid}
             className="px-4 py-2 bg-accent text-bg rounded-lg text-sm font-bold hover:bg-accent-hover transition-colors disabled:opacity-50">
             {saving ? "Saving..." : "Save"}
           </button>

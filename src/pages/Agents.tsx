@@ -569,7 +569,7 @@ export function Agents() {
                       </div>
                     </div>
                     <AgentActivityLine live={live} running={isRunning} lastActiveAt={lastActive[inst.id]} now={now} />
-                    <AgentCapabilityIcons attached={attachedMCPs} skills={assignedSkills} catalog={capabilityCatalog} />
+                    <AgentCapabilityIcons builtins={inst.builtins} attached={attachedMCPs} skills={assignedSkills} catalog={capabilityCatalog} />
                     <AppContributionArea slot="dashboard.agent_card" projectId={projectId} agentId={inst.id} className="mt-3" />
                   </Link>
                   <div className="absolute right-2 top-2 z-20">
@@ -633,7 +633,7 @@ export function Agents() {
 
                     <div className="min-w-0">
                       <div className="mb-1 text-[9px] font-bold uppercase tracking-wide text-text-dim lg:hidden">Capabilities</div>
-                      <AgentCapabilityChips skills={assignedSkills} mcpNames={mcpNames} compact />
+                      <AgentCapabilityIcons builtins={inst.builtins} attached={mainMCPs[inst.id] || EMPTY_MCP_CONFIGS} skills={assignedSkills} catalog={capabilityCatalog} compact />
                     </div>
 
                     <div className="absolute right-3 top-3 z-20 flex items-center justify-end lg:static">

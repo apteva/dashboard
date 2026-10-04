@@ -1,6 +1,7 @@
+import { PresetSetupSteps } from "./PresetSetupSteps";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { AppIcon } from "@apteva/ui-kit";
-import { apps, type ProjectPreset } from "../../api";
+import { apps, type ProjectPreset, type ProjectPresetAgent } from "../../api";
 import { AgentMark } from "../AgentMark";
 import { PresetMark } from "./PresetMark";
 import { Modal } from "../Modal";
@@ -16,7 +17,22 @@ function includedApps(preset: ProjectPreset) {
     ...preset.agents.flatMap((agent) => agent.apps || []),
     ...widgets.map((widget) => widget.component.split(":")[0]!).filter((name) => name !== "native"),
     ...(preset.connections || []).map((step) => step.app),
+    ...(preset.setup || []).map((step) => step.app),
   ])];
+}
+
+// Keep the first role sentence consistent between the overview and full team tab.
+function agentRoleSummary(agent: ProjectPresetAgent) {
+  return agent.directive
+    .replace(/Use this project description as your operating context: \{\{description\}\}\.\s*/i, "")
+    .replace(/\{\{description\}\}/g, "your goals")
+    .trim().split(/(?<=[.!?])\s/)[0] || "Customize this agent’s role in the next step.";
+}
+
+// Show the apps that distinguish this preset before common workspace utilities.
+function mainPresetApps(names: string[]) {
+  const shared = new Set(["tasks", "a2a", "conversations"]);
+  return [...names.filter((name) => !shared.has(name)), ...names.filter((name) => shared.has(name))];
 }
 
 export function PresetChooser({ catalog, selectedId, category, query, projectId, busy, error, scrollPosition, onScrollPosition, onSelect, onCategory, onQuery, onUse, onBack }: {
@@ -63,7 +79,7 @@ export function PresetChooser({ catalog, selectedId, category, query, projectId,
   const selected = catalog.find((preset) => preset.id === selectedId) || null;
   const search = query.trim().toLocaleLowerCase();
   const visible = catalog.filter((preset) => (search || !category || preset.category === category) && (!search ||
-    `${preset.name} ${preset.description} ${(preset.highlights || []).join(" ")} ${includedApps(preset).join(" ")}`.toLocaleLowerCase().includes(search)));
+    `${preset.name} ${preset.description} ${(preset.highlights || []).join(" ")} ${preset.agents.map((agent) => agent.name).join(" ")} ${includedApps(preset).join(" ")}`.toLocaleLowerCase().includes(search)));
   const select = (preset: ProjectPreset | null) => { onSelect(preset); if (!wide) setSheetOpen(true); };
   const footer = <div className="shrink-0 border-t border-border bg-bg p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-5">
     {error && <p role="alert" className="mb-3 text-sm text-red">{error}</p>}
@@ -80,7 +96,7 @@ export function PresetChooser({ catalog, selectedId, category, query, projectId,
       <p className="mt-2 max-w-2xl text-sm leading-relaxed text-text-muted">A preset brings together agents, apps, and page layouts for a particular purpose. Explore what’s included, then make it yours.</p>
     </header>
     {!wide && !sheetOpen && error && <p role="alert" className="mb-3 shrink-0 text-sm text-red">{error}</p>}
-    <div className="grid min-h-0 flex-1 gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,1fr)] xl:gap-7 [@media(max-height:550px)]:min-h-[420px]">
+    <div className="grid min-h-0 flex-1 gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(420px,1.15fr)] xl:gap-7 [@media(max-height:550px)]:min-h-[420px]">
       <div className="flex min-h-0 min-w-0 flex-col">
         <div className="shrink-0 space-y-3 pb-4">
           <input type="search" disabled={busy} aria-label="Search presets" placeholder="Search by purpose or app…" value={query} onChange={(event) => { onQuery(event.target.value); catalogScroll.current?.scrollTo({ top: 0 }); }} className="min-h-11 w-full rounded-lg border border-border bg-bg-input px-3 text-sm text-text focus:border-accent focus:outline-none" />
@@ -136,7 +152,9 @@ function PresetPreview({ preset, visuals }: { preset: ProjectPreset | null; visu
 
   if (!preset) return <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-4 sm:p-5"><PresetMark size="md" /><div><p className="text-xs font-medium text-accent">Your own starting point</p><h2 className="mt-2 text-2xl font-semibold">Start from scratch</h2><p className="mt-3 text-sm leading-relaxed text-text-muted">Start with an empty workspace and add what you need, whenever you need it.</p></div><div className="rounded-lg border border-dashed border-border p-5"><p className="text-sm font-medium">No preset agents or apps</p><p className="mt-2 text-xs leading-relaxed text-text-muted">You can create agents, install apps, connect accounts, and arrange widgets later. The next step is your workspace summary.</p></div></div>;
   const appNames = includedApps(preset);
-  const appLabel = (name: string) => visuals[name]?.display_name || name.replaceAll("-", " ");
+  const appLabel = (name: string) => visuals[name]?.display_name || ({ crm: "CRM", a2a: "Agent to Agent" } as Record<string, string>)[name] || name.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  const mainApps = mainPresetApps(appNames).slice(0, 6);
+  const showTab = (tab: PreviewTab) => { setActiveTab(tab); tabButtons.current[previewTabs.findIndex((item) => item.id === tab)]?.focus(); };
   return <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
     <header className="shrink-0 px-4 pb-3 pt-4 sm:px-5 sm:pt-5">
       <div className="flex items-center gap-3"><PresetMark preset={preset} size="md" /><div className="min-w-0"><p className="text-[10px] font-medium capitalize text-accent">{preset.category} workspace</p><h2 className="mt-1 break-words text-lg font-semibold sm:text-xl">{preset.name}</h2></div></div>
@@ -161,18 +179,46 @@ function PresetPreview({ preset, visuals }: { preset: ProjectPreset | null; visu
         className={`min-h-11 min-w-0 border-b-2 px-1 text-xs font-medium focus-visible:outline focus-visible:outline-accent focus-visible:-outline-offset-4 ${activeTab === tab.id ? "border-accent text-accent" : "border-transparent text-text-muted hover:text-text"}`}
       >{tab.label}</button>)}
     </div>
-    <div ref={content} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5 [scrollbar-gutter:stable]">
+    <div ref={content} className="@container min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5 [scrollbar-gutter:stable]">
       {previewTabs.map((tab) => <div key={tab.id} role="tabpanel" id={`${id}-panel-${tab.id}`} aria-labelledby={`${id}-tab-${tab.id}`} hidden={activeTab !== tab.id} tabIndex={0} className="space-y-5 focus-visible:outline-accent">
         {tab.id === "overview" && <>
           <p className="text-sm leading-relaxed text-text-muted">{preset.description}</p>
-          <div className="grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => { setActiveTab("agents"); tabButtons.current[1]?.focus(); }} className="rounded-lg border border-border p-3 text-left hover:border-accent focus-visible:outline-accent"><span className="text-lg font-semibold text-accent">{preset.agents.length}</span><span className="ml-2 text-xs text-text-muted">{preset.agents.length === 1 ? "agent" : "agents"} →</span></button>
-            <button type="button" onClick={() => { setActiveTab("apps"); tabButtons.current[2]?.focus(); }} className="rounded-lg border border-border p-3 text-left hover:border-accent focus-visible:outline-accent"><span className="text-lg font-semibold text-accent">{appNames.length}</span><span className="ml-2 text-xs text-text-muted">{appNames.length === 1 ? "app" : "apps"} →</span></button>
+          <div className="grid items-start gap-5 @[36rem]:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
+            <section aria-label="Included agents" className="min-w-0">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold">Your team <span className="ml-1 font-normal text-text-dim">{preset.agents.length}</span></h3>
+                <button type="button" onClick={() => showTab("agents")} className="min-h-8 shrink-0 text-xs text-accent hover:underline focus-visible:outline-accent" aria-label="View all agent details">Details →</button>
+              </div>
+              <ul className="space-y-3">
+                {preset.agents.map((agent) => <li key={agent.key} className="flex items-start gap-2.5 rounded-lg border border-border p-3">
+                  <AgentMark icon={agent.icon} size="sm" />
+                  <div className="min-w-0 flex-1">
+                    <h4 className="break-words text-xs font-semibold leading-5 text-text">{agent.name}</h4>
+                    <p className="mt-0.5 break-words text-xs leading-5 text-text-muted">{agentRoleSummary(agent)}</p>
+                  </div>
+                </li>)}
+              </ul>
+            </section>
+            <section aria-label="Main included apps" className="min-w-0">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold">Main apps</h3>
+                <button type="button" onClick={() => showTab("apps")} className="min-h-8 shrink-0 text-xs text-accent hover:underline focus-visible:outline-accent">All {appNames.length} →</button>
+              </div>
+              <ul className="grid grid-cols-2 gap-2 @[36rem]:grid-cols-1">
+                {mainApps.map((name) => <li key={name} className="flex min-w-0 items-center gap-2 rounded-lg border border-border px-2.5 py-2.5">
+                  <span className="shrink-0"><AppIcon src={visuals[name]?.icon} iconStyle={visuals[name]?.icon_style} name={appLabel(name)} size="xs" /></span>
+                  <span className="min-w-0 break-words text-xs font-medium leading-5 text-text">{appLabel(name)}</span>
+                </li>)}
+              </ul>
+              {appNames.length > mainApps.length && <button type="button" onClick={() => showTab("apps")} className="mt-2 min-h-8 text-left text-[11px] text-text-muted hover:text-accent focus-visible:outline-accent">+{appNames.length - mainApps.length} more apps included →</button>}
+              {!appNames.length && <p className="text-xs text-text-muted">Add apps to this workspace later.</p>}
+            </section>
           </div>
+          <PresetSetupSteps steps={preset.setup} />
           {!!preset.highlights?.length && <section><h3 className="mb-3 text-xs font-semibold">What this workspace does</h3><ul className="space-y-3">{preset.highlights.map((text) => <li key={text} className="flex gap-2 text-xs leading-5 text-text-muted"><span className="text-accent" aria-hidden="true">✓</span>{text}</li>)}</ul></section>}
           <p className="text-xs leading-5 text-text-dim">You can customize the agents before creating your workspace, then connect accounts and arrange widgets afterwards.</p>
         </>}
-        {tab.id === "agents" && <section><h3 className="mb-3 text-xs font-semibold">Your agents · {preset.agents.length}</h3><div className="space-y-2">{preset.agents.map((agent) => <div key={agent.key} className="flex gap-3 rounded-lg border border-border p-3"><AgentMark icon={agent.icon} size="sm" /><div className="min-w-0"><h4 className="break-words text-sm font-medium">{agent.name}</h4><p className="mt-1 text-xs leading-5 text-text-muted">{agent.directive.replace(/Use this project description as your operating context: \{\{description\}\}\.\s*/i, "").replace(/\{\{description\}\}/g, "your goals").split(/(?<=[.!?])\s/).slice(0, 1).join(" ")}</p><p className="mt-2 text-[10px] capitalize text-text-dim">{agent.mode} · {(agent.apps || []).length} apps</p><div className="mt-2 flex flex-wrap gap-1.5" aria-label={`Apps for ${agent.name}`}>{(agent.apps || []).map((name) => <span key={name} title={appLabel(name)}><AppIcon src={visuals[name]?.icon} iconStyle={visuals[name]?.icon_style} name={appLabel(name)} size="xs" /></span>)}</div></div></div>)}</div></section>}
+        {tab.id === "agents" && <section><h3 className="mb-3 text-xs font-semibold">Your agents · {preset.agents.length}</h3><div className="space-y-2">{preset.agents.map((agent) => <div key={agent.key} className="flex gap-3 rounded-lg border border-border p-3"><AgentMark icon={agent.icon} size="sm" /><div className="min-w-0"><h4 className="break-words text-sm font-medium">{agent.name}</h4><p className="mt-1 text-xs leading-5 text-text-muted">{agentRoleSummary(agent)}</p><p className="mt-2 text-[10px] capitalize text-text-dim">{agent.mode} · {(agent.apps || []).length} apps</p><div className="mt-2 flex flex-wrap gap-1.5" aria-label={`Apps for ${agent.name}`}>{(agent.apps || []).map((name) => <span key={name} title={appLabel(name)}><AppIcon src={visuals[name]?.icon} iconStyle={visuals[name]?.icon_style} name={appLabel(name)} size="xs" /></span>)}</div></div></div>)}</div></section>}
         {tab.id === "apps" && <>
           <section><h3 className="mb-3 text-xs font-semibold">Included apps · {appNames.length}</h3><div className="grid grid-cols-2 gap-2">{appNames.map((name) => <div key={name} className="flex min-w-0 items-center gap-2 rounded-lg border border-border p-2"><AppIcon src={visuals[name]?.icon} iconStyle={visuals[name]?.icon_style} name={name} size="xs" /><span className="min-w-0 break-words text-xs text-text-muted">{appLabel(name)}</span></div>)}</div></section>
           {!!preset.connections?.length && <section className="border-t border-border pt-4"><h3 className="text-xs font-semibold">Accounts and setup</h3><p className="mt-1 text-[11px] leading-5 text-text-dim">Connect accounts after installation, or come back later.</p><ul className="mt-3 space-y-3">{preset.connections.map((step) => <li key={`${step.app}:${step.title}`}><p className="text-xs font-medium">{step.title}{step.required ? " · Required for this workflow" : ""}</p><p className="mt-1 text-xs leading-5 text-text-muted">{step.description}</p></li>)}</ul></section>}

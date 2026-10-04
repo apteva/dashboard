@@ -1,3 +1,5 @@
+import { ProviderBuiltinsEditor } from "../components/ProviderBuiltins";
+import type { RuntimeConnection, AgentBuiltinOverrides } from "../api";
 import { PickerOption } from "../components/PickerOption";
 import { ProactivityControl } from "../components/ProactivityControl";
 import { defaultProactivity, proactivityLabel } from "../agentBehavior";
@@ -237,6 +239,13 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
   const [state, setState] = useState<WizardState>(INITIAL);
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [hasProvider, setHasProvider] = useState<boolean | null>(null);
+  const [runtimeProviders, setRuntimeProviders] = useState<RuntimeConnection[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const [providerDefault, setProviderDefault] = useState("");
+  const [builtinOverrides, setBuiltinOverrides] = useState<AgentBuiltinOverrides>({});
+  const [builtinsValid, setBuiltinsValid] = useState(true);
+  const effectiveProvider = selectedProvider || providerDefault || runtimeProviders[0]?.provider_key || "";
+  const builtinConnection = runtimeProviders.find((c) => c.provider_key === effectiveProvider);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nameValidationAttempted, setNameValidationAttempted] = useState(false);
@@ -264,12 +273,14 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
     let cancelled = false;
     setInstalledAppsLoaded(false);
     setConnectionsLoaded(false);
+    setSelectedProvider(""); setBuiltinOverrides({}); setRuntimeProviders([]); setProviderDefault("");
+    integrations.newAgentProvider(currentProject?.id).then((settings) => { if (!cancelled) setProviderDefault(settings.effective_provider || ""); }).catch(() => {});
     seededConnectionsTemplate.current = null;
     connectionInventoryProject.current = null;
     agentTemplates.list().then(setTemplates).catch(() => setTemplates([]));
     integrations
       .runtimeConnections(currentProject?.id)
-      .then((list) => setHasProvider(list.some((c) => c.role === "llm")))
+      .then((list) => { if (cancelled) return; const seen = new Set<string>(); const providers = list.filter((c) => c.role === "llm" && !c.provider_key.endsWith("-realtime") && !seen.has(c.provider_key) && !!seen.add(c.provider_key)); setRuntimeProviders(providers); setHasProvider(providers.length > 0); })
       .catch(() => setHasProvider(false));
     appsAPI
       .list(currentProject?.id)
@@ -461,6 +472,7 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
 
   const create = async () => {
     if (!validateStep()) return;
+    if (!builtinsValid) { setError("Complete the model capability options in Details before creating the agent."); setStepIdx(1); return; }
     setCreating(true);
     setError(null);
     setInstallProgress({});
@@ -493,6 +505,8 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
         currentProject?.id,
         startNow,
         {
+          defaultProvider: selectedProvider || undefined,
+          builtinOverrides,
           icon: state.icon,
           proactivity: state.proactivity,
           includeChannels: state.includeChannels,
@@ -538,7 +552,18 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
             />
           )}
           {step.id === "details" && (
+            <>
             <DetailsStep state={state} setState={setState} nameError={nameError} nameInputRef={nameInputRef} />
+            {!!runtimeProviders.length && <div className="mt-4 space-y-3">
+              <label className="block text-xs font-semibold text-text-muted">AI provider
+                <select value={selectedProvider} onChange={(e) => setSelectedProvider(e.target.value)} className="mt-1 block w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-sm text-text">
+                  <option value="">Workspace default{builtinConnection && !selectedProvider ? ` (${builtinConnection.app_name})` : ""}</option>
+                  {runtimeProviders.map((c) => <option key={c.id} value={c.provider_key}>{c.app_name}</option>)}
+                </select>
+              </label>
+              <ProviderBuiltinsEditor key={effectiveProvider} connection={builtinConnection} inherit value={builtinOverrides[effectiveProvider] || {}} onValidityChange={setBuiltinsValid} onChange={(value) => setBuiltinOverrides((old) => ({ ...old, [effectiveProvider]: value }))} />
+            </div>}
+            </>
           )}
           {step.id === "setup" && (
             <SetupStep

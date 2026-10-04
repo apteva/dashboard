@@ -30,7 +30,7 @@ const presetSymbols: Record<string, SymbolName> = {
   "personal-assistant": "compass", "personal-household": "home", "personal-wellbeing": "wellbeing", "personal-creator": "creator",
   "work-executive": "briefcase", "work-sales": "sales", "work-support": "support", "work-research": "research", "work-youtube-to-blog": "video",
   "business-lead-generation": "target", "business-professional-services": "services", "business-ecommerce": "shop", "business-local-services": "location", "business-webinars": "webinar",
-  "development-software": "code", "development-engineering-team": "team", "development-devops": "servers", "development-qa": "quality", "development-data": "chart",
+  "development-software": "code", "development-engineering-team": "team", "development-product-team": "team", "development-devops": "servers", "development-qa": "quality", "development-data": "chart",
 };
 const categorySymbols: Record<ProjectPreset["category"], SymbolName> = {
   personal: "compass", business: "shop", work: "briefcase", development: "code",
