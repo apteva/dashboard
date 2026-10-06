@@ -7,6 +7,7 @@ import { useOptionalAuth } from "../../hooks/useAuth";
 import { usePanelEvents } from "../../hooks/usePanelEvents";
 import {
   ChatComponentMount,
+  componentAllowedInSlot,
   type InstalledAppRow,
   type UIComponentSpec,
   useInstalledApps,
@@ -250,13 +251,7 @@ export interface Contribution {
 
 export type DashboardScope = "project" | "global";
 
-export function supportsDashboardScope(spec: UIComponentSpec, scope: DashboardScope): boolean {
-  // Existing components remain project-only until they explicitly opt into
-  // the stronger global data/permission contract.
-  return scope === "project"
-    ? !spec.dashboard_scopes || spec.dashboard_scopes.includes("project")
-    : !!spec.dashboard_scopes?.includes("global");
-}
+export { supportsDashboardScope } from "./chatComponents";
 
 export interface ResolvedWidgetInstance extends WidgetInstance {
   contribution: Contribution;
@@ -273,9 +268,7 @@ export function contributionsFor(
     // Keep its widgets mounted so routine upgrades do not collapse the grid.
     if (app.status && app.status !== "running" && !app.serving) continue;
     for (const spec of app.ui_components || []) {
-      const pageSlot = slot.startsWith("page.");
-      if (!spec.slots?.includes(slot) && !(pageSlot && (spec.slots?.includes("dashboard.home") || spec.slots?.includes("project.page")))) continue;
-      if ((slot === "dashboard.home" || pageSlot) && !supportsDashboardScope(spec, scope)) continue;
+      if (!spec.slots || !componentAllowedInSlot(spec, slot, scope)) continue;
       out.push({ app, spec, key: contributionKey(app.name, spec.name) });
     }
   }
