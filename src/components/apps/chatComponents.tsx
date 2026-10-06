@@ -111,6 +111,31 @@ interface ComponentModuleScope {
   projectId?: string;
 }
 
+/**
+ * Custom workspace pages use a generated `page.<id>` surface. App widgets
+ * declared for the dashboard home are also valid on those pages; the page
+ * layout editor already treats them as the same project-scoped widget family.
+ * Keep this rule in one place so rendering matches contribution discovery.
+ */
+export function supportsDashboardScope(spec: UIComponentSpec, scope: "project" | "global"): boolean {
+  // Existing widgets stay project-only until explicitly opting into global data.
+  return scope === "project"
+    ? !spec.dashboard_scopes || spec.dashboard_scopes.includes("project")
+    : !!spec.dashboard_scopes?.includes("global");
+}
+
+export function componentAllowedInSlot(
+  spec: UIComponentSpec,
+  slot: string,
+  scope: "project" | "global" = "project",
+): boolean {
+  const pageSlot = slot.startsWith("page.");
+  const allowed = !spec.slots || spec.slots.includes(slot) || (pageSlot && (
+    spec.slots.includes("dashboard.home") || spec.slots.includes("project.page")
+  ));
+  return allowed && (!(slot === "dashboard.home" || pageSlot) || supportsDashboardScope(spec, scope));
+}
+
 export function buildChatComponentModuleURL(
   appName: string,
   entry: string,
@@ -219,7 +244,7 @@ export function ChatComponentMount({
   if (!spec) {
     return <ComponentMissing reason={`component "${comp.app}:${comp.name}" not declared`} />;
   }
-  if (spec.slots && !spec.slots.includes(slot)) {
+  if (!componentAllowedInSlot(spec, slot, dashboardScope)) {
     return <ComponentMissing reason={`component "${comp.app}:${comp.name}" not allowed in slot "${slot}"`} />;
   }
   const Lazy = loadComponent(app.name, spec.entry, app.version, app.source, {
