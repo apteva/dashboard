@@ -1,5 +1,6 @@
 import { PresetConnectionGuide } from "../projects/PresetConnectionGuide";
-import { AppIcon } from "@apteva/ui-kit";
+import { WidgetGallery } from "./WidgetGallery";
+import { WidgetIcon } from "./WidgetIcon";
 import { Modal } from "../Modal";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -34,6 +35,8 @@ export interface WidgetDefinition {
   required?: boolean;
   kind?: "builtin" | "app";
   providerLabel?: string;
+  /** Stable source identity, independent of its display name. */
+  providerKey?: string;
   render: (instance: WidgetInstance, renderContext?: WidgetRenderContext) => ReactNode;
 }
 
@@ -43,6 +46,7 @@ export function WidgetCanvas({
   slot,
   definitions,
   editing,
+  keepEditingWhenEmpty = false,
   onEditingChange,
   onVisibleComponentsChange,
   galleryRequest = 0,
@@ -58,6 +62,8 @@ export function WidgetCanvas({
   slot: string;
   definitions: WidgetDefinition[];
   editing: boolean;
+  /** Custom pages keep their editor available before the first widget exists. */
+  keepEditingWhenEmpty?: boolean;
   onEditingChange: (editing: boolean) => void;
   onVisibleComponentsChange?: (components: string[]) => void;
   galleryRequest?: number;
@@ -112,8 +118,8 @@ export function WidgetCanvas({
   useEffect(() => {
     if (!definitionsReady) return;
     onVisibleComponentsChange?.(visible.map((instance) => instance.component));
-    if (visible.length === 0 && editing) onEditingChange(false);
-  }, [definitionsReady, editing, onEditingChange, onVisibleComponentsChange, visibleComponentsKey]);
+    if (visible.length === 0 && editing && !keepEditingWhenEmpty) onEditingChange(false);
+  }, [definitionsReady, editing, keepEditingWhenEmpty, onEditingChange, onVisibleComponentsChange, visibleComponentsKey]);
 
   const persist = (next: WidgetInstance[]) => {
     if (layoutScope === "project" && !projectId) return;
@@ -229,6 +235,7 @@ export function WidgetCanvas({
                     >
                       ⋮⋮
                     </button>
+                    <WidgetIcon definition={definition} size="sm" />
                     <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-text">
                       {definition.label}
                     </span>
@@ -411,91 +418,6 @@ function newWidgetID(component: string) {
   return `${component}:${suffix}`;
 }
 
-function WidgetGallery({
-  definitions,
-  configured,
-  onAdd,
-  onClose,
-}: {
-  definitions: WidgetDefinition[];
-  configured: WidgetInstance[];
-  onAdd: (definition: WidgetDefinition) => void;
-  onClose: () => void;
-}) {
-  const builtins = definitions.filter((definition) => definition.kind === "builtin" || definition.key.startsWith("native:"));
-  const appWidgets = definitions.filter((definition) => !builtins.includes(definition));
-  return (
-    <div className="relative z-[110]"><Modal open onClose={onClose} ariaLabel="Widget gallery" width="max-w-2xl">
-      <div className="flex max-h-[82dvh] w-full flex-col overflow-hidden">
-        <header className="flex items-center border-b border-border px-5 py-4">
-          <div>
-            <h2 className="text-sm font-bold text-text">Add a widget</h2>
-            <p className="mt-1 text-[10px] text-text-dim">Choose from Apteva and your installed apps.</p>
-          </div>
-          <button type="button" className="ml-auto text-lg text-text-dim hover:text-text" onClick={onClose}>×</button>
-        </header>
-        <div className="min-h-0 flex-1 space-y-5 overflow-auto p-5">
-          <WidgetGalleryGroup label="Built-in" definitions={builtins} configured={configured} onAdd={onAdd} />
-          {appWidgets.length > 0 && (
-            <WidgetGalleryGroup label="Installed apps" definitions={appWidgets} configured={configured} onAdd={onAdd} />
-          )}
-        </div>
-      </div>
-    </Modal></div>
-  );
-}
-
-function WidgetGalleryGroup({
-  label,
-  definitions,
-  configured,
-  onAdd,
-}: {
-  label: string;
-  definitions: WidgetDefinition[];
-  configured: WidgetInstance[];
-  onAdd: (definition: WidgetDefinition) => void;
-}) {
-  return (
-    <section>
-      <h3 className="mb-2 text-[10px] font-bold uppercase tracking-wide text-text-dim">{label}</h3>
-      <div className="grid gap-3 sm:grid-cols-2">
-        {definitions.map((definition) => {
-          const count = configured.filter((item) => item.component === definition.key).length;
-          return (
-            <article key={definition.key} className="flex min-h-28 flex-col rounded-lg border border-border bg-bg-subtle p-4 hover:border-accent/55">
-                <div className="flex items-start gap-3">
-                  <AppIcon name={definition.label} src={definition.icon} iconStyle={definition.iconStyle} size="sm" />
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-xs font-bold text-text">{definition.label}</h3>
-                      {definition.suggested && (
-                        <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-accent">
-                          Recommended
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-1 text-[10px] leading-4 text-text-dim">{definition.description || "Dashboard widget"}</p>
-                    {definition.providerLabel && (
-                      <p className="mt-1 text-[9px] text-text-dim">{definition.providerLabel}</p>
-                    )}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  disabled={definition.required && count > 0}
-                  onClick={() => onAdd(definition)}
-                  className="mt-auto self-end rounded-md border border-accent px-3 py-1.5 text-[9px] font-bold text-accent hover:bg-accent/10 disabled:cursor-default disabled:opacity-50"
-                >
-                  {definition.required && count ? "Always shown" : count ? "Add another" : "Add"}
-                </button>
-            </article>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
 
 function WidgetSettingsDialog({
   definition,

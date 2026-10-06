@@ -44,7 +44,7 @@ import { ThreadDetailModal, formatContextResetResult } from "./ThreadDetailModal
 import { AppPanels } from "./AppPanels";
 import { Modal } from "./Modal";
 import { SkillsPanel } from "./SkillsPanel";
-import { structureDirectiveDraft } from "../utils/directiveMarkdown";
+import { AgentInstructionsEditor } from "./AgentInstructionsEditor";
 import { useAudience, audienceShows, type AudienceSection } from "../hooks/useAudience";
 import { AgentOverview } from "./AgentOverview";
 import { AgentActivity } from "./AgentActivity";
@@ -2445,6 +2445,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   const [modelMedium, setModelMedium] = useState("");
   const [modelSmall, setModelSmall] = useState("");
   const [directive, setDirective] = useState("");
+  const directiveEdited = useRef(false);
   const [mode, setMode] = useState("");
   const [proactivity, setProactivity] = useState(defaultProactivity);
   const [realtimeEnabled, setRealtimeEnabled] = useState(false);
@@ -2465,6 +2466,8 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
 
   useEffect(() => {
     if (!open) return;
+    let active = true;
+    directiveEdited.current = false;
     // Model catalogs can change while the dashboard stays open (for example
     // when a provider exposes a newly released model). Do not retain the
     // previous modal session's list when reopening the editor.
@@ -2481,8 +2484,9 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
     setBuiltinsValid(true);
 
     core.config(instance.id).then((config) => {
+      if (!active) return;
       if (config.builtin_overrides) { const saved = JSON.stringify({ builtin_overrides: config.builtin_overrides }); setSavedBuiltinConfig(saved); setBuiltinOverrides(agentBuiltins(saved)); }
-      setDirective(config.directive);
+      if (!directiveEdited.current) setDirective(config.directive);
       setMode(config.mode);
       setProactivity(config.proactivity ?? instance.proactivity ?? defaultProactivity);
       setDefaultProvider(resolveEffectiveAgentProvider(instance.config || "{}", config.providers));
@@ -2503,6 +2507,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
       setRealtimeCapabilityOptions(capabilityOptions);
       setRealtimeVoiceMCP((config.realtime_voice_mcp || []).filter((name) => availableNames.has(name)));
     }).catch(() => {
+      if (!active) return;
       setDefaultProvider(resolveEffectiveAgentProvider(instance.config || "{}"));
       setRealtimeAvailable(false);
       setRealtimeEnabled(false);
@@ -2515,8 +2520,9 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
 
     integrations
       .runtimeConnections(instance.project_id)
-      .then((list) => setProviderList((list || []).filter((c, index, rows) => c.role === "llm" && rows.findIndex((row) => row.provider_key === c.provider_key) === index)))
+      .then((list) => { if (active) setProviderList((list || []).filter((c, index, rows) => c.role === "llm" && rows.findIndex((row) => row.provider_key === c.provider_key) === index)); })
       .catch(() => {});
+    return () => { active = false; };
   }, [open, instance.id]);
 
   // When provider selection changes, load its current model settings
@@ -2595,7 +2601,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         ? providerList.map((c) => ({ name: c.provider_key, default: c.provider_key === defaultProvider }))
         : undefined;
       const result = await instances.updateConfig(instance.id, {
-        directive: directive || undefined,
+        directive,
         mode: mode || undefined,
         proactivity,
         providers: provs,
@@ -2786,12 +2792,12 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
                   >
                     {realtimeModelOptions.map((model) => (
                       <option key={model.id} value={model.id} disabled={!model.available}>
-                        {model.name}{model.available ? "" : " · requires Core update"}
+                        {model.name}{model.available ? "" : " · unavailable"}
                       </option>
                     ))}
                   </select>
                   {realtimeCatalog?.models.some((model) => !model.available) && (
-                    <p className="mt-1 text-[11px] text-text-muted">Gemini 3.8 Live will be selectable after the agent Core protocol update.</p>
+                    <p className="mt-1 text-[11px] text-text-muted">Some live models are currently unavailable in the integration catalog.</p>
                   )}
                 </div>
               )}
@@ -2838,29 +2844,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         </div>
         )}
 
-        {/* Directive */}
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-text-muted text-xs font-bold uppercase tracking-wide block">Directive</label>
-            <button
-              type="button"
-              onClick={() => setDirective((cur) => structureDirectiveDraft(cur, instance.name))}
-              className="text-accent text-xs hover:underline"
-            >
-              Structure
-            </button>
-          </div>
-          <textarea
-            value={directive}
-            onChange={(e) => setDirective(e.target.value)}
-            rows={7}
-            className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent resize-none font-mono"
-            placeholder={"# Role\nYou are...\n\n# Goals\n- ..."}
-          />
-          <p className="text-text-dim text-xs mt-1">
-            Stable markdown sections help later edits target one part of the directive.
-          </p>
-        </div>
+        <AgentInstructionsEditor value={directive} onChange={(next) => { directiveEdited.current = true; setDirective(next); }} agentName={instance.name} />
 
         {error && <p className="text-red text-xs">{error}</p>}
 

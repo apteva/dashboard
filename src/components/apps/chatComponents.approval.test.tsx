@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { chat, type ChatMessageRow } from "../../api";
-import { ChatComponentMount } from "./chatComponents";
+import { ChatComponentMount, componentAllowedInSlot, type UIComponentSpec } from "./chatComponents";
 
 const originalMessageAction = chat.messageAction;
 
@@ -59,5 +59,21 @@ describe("chat approval cards", () => {
         note: "Do not replace it until legal reviews the copy.",
       }]);
     });
+  });
+});
+
+describe("component slot compatibility", () => {
+  const spec: UIComponentSpec = {
+    name: "tables-diagnostics",
+    entry: "/ui/TablesDiagnosticsWidget.mjs",
+    slots: ["dashboard.home"],
+  };
+
+  test("allows dashboard widgets on generated page slots", () => {
+    expect(componentAllowedInSlot(spec, "page.50e70d75b13031e3adff2e799b45c566")).toBe(true);
+  });
+
+  test("keeps unrelated slots rejected", () => {
+    expect(componentAllowedInSlot(spec, "chat.message_attachment")).toBe(false);
   });
 });

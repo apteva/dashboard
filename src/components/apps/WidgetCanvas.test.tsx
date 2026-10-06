@@ -24,7 +24,7 @@ describe("WidgetCanvas editing", () => {
         galleryRequest={1}
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "Add" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add Test widget" }));
     await screen.findByTestId("widget-content");
     view.rerender(
       <WidgetCanvas
@@ -55,7 +55,7 @@ describe("WidgetCanvas editing", () => {
 
     expect(container.querySelector("[data-widget-canvas]")).toBeNull();
     expect(screen.queryByText("Add your first widget")).toBeNull();
-    expect(await screen.findByText("Built-in")).toBeTruthy();
+    expect(await screen.findByText(/Built-in widgets/)).toBeTruthy();
     expect(screen.getByText("Test widget")).toBeTruthy();
     await waitFor(() => expect(onVisibleComponentsChange).toHaveBeenCalledWith([]));
   });

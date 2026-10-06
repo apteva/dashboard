@@ -5,5 +5,5 @@ export function pageHref(page: WorkspacePage, projectId?: string) {
 }
 
 export function pageEditorHref(page: WorkspacePage, projectId?: string) {
-  return `/settings?tab=pages&page=${encodeURIComponent(page.id)}&${page.scope === "global" ? "scope=global" : `project=${encodeURIComponent(projectId || "")}`}`;
+  return `${pageHref(page, projectId)}&edit=1`;
 }

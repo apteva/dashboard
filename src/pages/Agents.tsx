@@ -6,7 +6,7 @@ import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { Modal } from "../components/Modal";
 import { sleepClassName, sleepLabel, sleepTitle, type SleepLike } from "../utils/sleepStatus";
-import { structureDirectiveDraft } from "../utils/directiveMarkdown";
+import { AgentInstructionsEditor } from "../components/AgentInstructionsEditor";
 import { AppContributionArea, ContributionManager } from "../components/apps/contributions";
 import { AgentIconPicker, AgentMark, suggestedAgentIcon } from "../components/AgentMark";
 import { AgentCapabilityIcons, type AgentCapabilityCatalog } from "../components/AgentCapabilityIcons";
@@ -143,7 +143,6 @@ export function Agents() {
   const saveEdit = async () => {
     if (!editTarget) return;
     const trimmedName = editName.trim();
-    const trimmedDirective = editDirective.trim();
     if (!trimmedName) { setEditError("Name cannot be empty"); return; }
     setEditSaving(true);
     setEditError("");
@@ -154,9 +153,9 @@ export function Agents() {
       // audit trail.
       const nameChanged = trimmedName !== editTarget.name;
       const appearanceChanged = editIcon !== (editTarget.icon || "robot") || editTarget.icon_color !== "accent";
-      const directiveChanged = trimmedDirective !== (editTarget.directive || "").trim();
+      const directiveChanged = editDirective !== (editTarget.directive || "");
       if (nameChanged || appearanceChanged) await instances.updateIdentity(editTarget.id, { ...(nameChanged ? { name: trimmedName } : {}), icon: editIcon, icon_color: "accent" });
-      if (directiveChanged) await instances.updateConfig(editTarget.id, { directive: trimmedDirective });
+      if (directiveChanged) await instances.updateConfig(editTarget.id, { directive: editDirective });
       closeEditModal();
       load();
       window.dispatchEvent(new Event("apteva:agents-changed"));
@@ -388,7 +387,7 @@ export function Agents() {
       // (or on the instance page) when they want it running. Avoids having
       // a fresh instance consume tokens before the user has had a chance
       // to configure directive / MCPs / channels.
-      await instances.create(name.trim(), directive.trim(), createMode, projectId, false, {
+      await instances.create(name.trim(), directive, createMode, projectId, false, {
         icon: createIcon,
         // includeChannels deliberately omitted: the server default is
         // now false — the conversations app owns the chat surface.
@@ -687,7 +686,7 @@ export function Agents() {
         {editTarget && (
           <form
             onSubmit={(e) => { e.preventDefault(); void saveEdit(); }}
-            className="page-safe-bottom max-h-[90dvh] w-full max-w-[620px] space-y-4 overflow-y-auto p-4 sm:p-6"
+            className="page-safe-bottom max-h-[90dvh] w-full space-y-4 overflow-y-auto p-4 sm:p-6"
           >
             <div>
               <h2 className="text-text text-base font-bold">Edit agent</h2>
@@ -707,34 +706,8 @@ export function Agents() {
               />
             </div>
             <AgentIconPicker icon={editIcon} onIconChange={setEditIcon} compact />
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="block text-text-muted text-sm">
-                  Directive
-                  <span className="text-text-dim text-xs ml-2 font-normal">
-                    (the system prompt the agent reads at every think)
-                  </span>
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setEditDirective((cur) => structureDirectiveDraft(cur, editName))}
-                  className="text-accent text-xs hover:underline"
-                >
-                  Structure
-                </button>
-              </div>
-              <textarea
-                value={editDirective}
-                onChange={(e) => setEditDirective(e.target.value)}
-                rows={10}
-                className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text font-mono resize-y focus:outline-none focus:border-accent"
-                placeholder={"# Role\nYou are...\n\n# Goals\n- ..."}
-              />
-              <p className="text-text-dim text-xs mt-1">
-                Saving updates the running core in place. Markdown sections
-                make future edits safer.
-              </p>
-            </div>
+            <AgentInstructionsEditor value={editDirective} onChange={setEditDirective} agentName={editName} />
+            <p className="text-text-dim text-xs">Saving applies your instructions to the running agent.</p>
             {editError && (
               <div className="text-red text-xs bg-red/10 border border-red/30 rounded px-3 py-2">
                 {editError}
@@ -806,7 +779,7 @@ export function Agents() {
           covers the full viewport regardless of which list row the
           user was viewing when they clicked + New Agent. */}
       <Modal open={showCreate} onClose={() => { setShowCreate(false); setError(""); }}>
-        <form onSubmit={handleCreate} className="page-safe-bottom max-h-[90dvh] w-full max-w-[520px] space-y-4 overflow-y-auto p-4 sm:p-6">
+        <form onSubmit={handleCreate} className="page-safe-bottom max-h-[90dvh] w-full space-y-4 overflow-y-auto p-4 sm:p-6">
           <h2 className="text-text text-base font-bold">Create agent</h2>
           <div>
             <label className="block text-text-muted text-sm mb-2">Name</label>
@@ -820,27 +793,7 @@ export function Agents() {
             />
           </div>
           <AgentIconPicker icon={createIcon} onIconChange={setCreateIcon} />
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="block text-text-muted text-sm">Directive (optional)</label>
-              <button
-                type="button"
-                onClick={() => setDirective((cur) => structureDirectiveDraft(cur, name))}
-                className="text-accent text-xs hover:underline"
-              >
-                Structure
-              </button>
-            </div>
-            <textarea
-              value={directive}
-              onChange={(e) => setDirective(e.target.value)}
-              className="w-full bg-bg-input border border-border rounded-lg px-4 py-3 text-sm text-text font-mono focus:outline-none focus:border-accent resize-y h-32"
-              placeholder={"# Role\nYou are...\n\n# Goals\n- ..."}
-            />
-            <p className="text-text-dim text-xs mt-1">
-              Stable markdown sections make future updates safer.
-            </p>
-          </div>
+          <AgentInstructionsEditor value={directive} onChange={setDirective} agentName={name} />
           <div>
             <label className="block text-text-muted text-sm mb-2">Safety mode</label>
             <div className="flex gap-2">

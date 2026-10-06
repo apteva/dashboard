@@ -31,14 +31,11 @@ import {
 
 import { useWidgetVisibility } from "../components/apps/useWidgetVisibility";
 
-export function Dashboard({ page, pageProjectId, pageEditor = false }: {
+export function Dashboard({ page, pageProjectId }: {
   page?: WorkspacePage;
   pageProjectId?: string;
-  pageEditor?: boolean;
 } = {}) {
-  usePageTitle(page ? (pageEditor ? ["Settings", "Pages", page.title] : page.title) : "Home");
-  const canEdit = !page || pageEditor;
-  const focused = page?.layout === "workspace" && !pageEditor;
+  usePageTitle(page?.title || "Home");
   const [selectionRevision, setSelectionRevision] = useState(0);
   const [assistantRevision, setAssistantRevision] = useState(0);
 
@@ -50,9 +47,11 @@ export function Dashboard({ page, pageProjectId, pageEditor = false }: {
   const selectedProject = allProjects ? undefined : page ? requestedProject : requestedProject || currentProject || undefined;
   const projectId = selectedProject?.id;
   const widgetSlot = page ? `page.${page.id}` : "dashboard.home";
-  const [editingLayout, setEditingLayout] = useState(pageEditor);
+  const editingRequested = !!page && searchParams.get("edit") === "1";
+  const [editingLayout, setEditingLayout] = useState(editingRequested);
+  const focused = page?.layout === "workspace" && !editingLayout;
   const [galleryRequest, setGalleryRequest] = useState(0);
-  const { components: visibleWidgetComponents, reported: widgetsReported, onVisibleChange: handleVisibleComponentsChange } = useWidgetVisibility(JSON.stringify([projectId, allProjects, widgetSlot, pageEditor]));
+  const { components: visibleWidgetComponents, reported: widgetsReported, onVisibleChange: handleVisibleComponentsChange } = useWidgetVisibility(JSON.stringify([projectId, allProjects, widgetSlot]));
   const [selectedResource, setSelectedResource] = useState<WidgetResourceRef>();
   const [activityId, setActivityId] = useState<string>();
   const [preview, setPreview] = useState<WidgetPreview>();
@@ -71,9 +70,28 @@ export function Dashboard({ page, pageProjectId, pageEditor = false }: {
   const system = useWorkspaceSystem(data, activity.rows, allProjects ? "global" : projectId || "", needsData);
 
   useEffect(() => {
-    setEditingLayout(pageEditor);
+    setEditingLayout(editingRequested);
+  }, [projectId, allProjects, page?.id, editingRequested]);
+  useEffect(() => {
     setSelectedResource(undefined); setActivityId(undefined); setPreview(undefined); setActionError("");
-  }, [projectId, allProjects, page?.id, pageEditor]);
+  }, [projectId, allProjects, page?.id]);
+
+  const handleEditingChange = useCallback((editing: boolean) => {
+    setEditingLayout(editing);
+    if (!editing) setGalleryRequest(0);
+    if (page) {
+      setSearchParams(previous => {
+        const next = new URLSearchParams(previous);
+        if (editing) next.set("edit", "1");
+        else next.delete("edit");
+        return next;
+      }, { replace: true });
+    }
+  }, [page?.id, setSearchParams]);
+  const openWidgetGallery = () => {
+    if (page) handleEditingChange(true);
+    setGalleryRequest(value => value + 1);
+  };
 
   const errorCount = stats.reduce((sum, row) => sum + row.errors, 0);
   const projectNames = useMemo(
@@ -142,6 +160,7 @@ export function Dashboard({ page, pageProjectId, pageEditor = false }: {
       suggested: contribution.spec.suggested,
       kind: "app",
       providerLabel: contribution.app.display_name || contribution.app.name,
+      providerKey: contribution.app.name,
       render: (instance, renderContext) => (allProjects || projectId) ? (
         <ContributionMount
           instance={{ ...instance, contribution }}
@@ -165,7 +184,7 @@ export function Dashboard({ page, pageProjectId, pageEditor = false }: {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <header className="border-b border-border px-4 py-3 sm:px-6 sm:py-4">
-        <div className={`flex items-center justify-between gap-3 ${focused ? "flex-nowrap" : "flex-wrap"}`}>
+        <div className={`flex items-center justify-between gap-3 ${focused ? "flex-wrap sm:flex-nowrap" : "flex-wrap"}`}>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2.5">
               <div className="flex items-center gap-2">
@@ -191,7 +210,7 @@ export function Dashboard({ page, pageProjectId, pageEditor = false }: {
               {page ? page.description || "Your workspace widgets." : "What needs attention and what your agents are doing now."}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex max-w-full flex-wrap items-center gap-2">
             {!page && <label className="min-w-0 sm:w-44">
               <span className="sr-only">Home scope</span>
               <select
@@ -203,39 +222,42 @@ export function Dashboard({ page, pageProjectId, pageEditor = false }: {
                 {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
               </select>
             </label>}
-            {canEdit && <><button
+            <button
               type="button"
               data-tour="add-widget"
-              onClick={() => setGalleryRequest((value) => value + 1)}
+              onClick={openWidgetGallery}
               className="rounded-md border border-border px-3 py-2 text-xs font-semibold text-text-muted hover:border-accent hover:text-text"
             >
               Add widget
             </button>
             <button
               type="button"
-              onClick={() => setEditingLayout((value) => !value)}
+              onClick={() => handleEditingChange(!editingLayout)}
+              aria-pressed={editingLayout}
               className={`rounded-md border px-3 py-2 text-xs font-semibold ${editingLayout ? "border-accent bg-accent/10 text-accent" : "border-border text-text-muted hover:border-accent hover:text-text"}`}
             >
-              {editingLayout ? "Done" : "Edit layout"}
+              {editingLayout ? "Done" : page ? "Edit page" : "Edit layout"}
             </button>
-            </>}
             {!page && <NewAgentButton />}
-            {page && !pageEditor && <Link className="shrink-0 whitespace-nowrap rounded-md border border-border px-3 py-2 text-xs font-semibold text-text-muted hover:text-text" to={`/settings?tab=pages&page=${encodeURIComponent(page.id)}&${page.scope === "global" ? "scope=global" : `project=${encodeURIComponent(pageProjectId || "")}`}`}>Edit page</Link>}
           </div>
         </div>
       </header>
 
       <main className={`page-safe-bottom min-h-0 flex-1 p-3 sm:p-4 ${focused ? "flex flex-col overflow-hidden" : "overflow-auto"}`}>
         {(data.errors.length > 0 || actionError) && <div role="status" className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-yellow/30 p-3 text-xs text-text-muted"><span className="flex-1">{actionError || data.errors.join(" ")}</span>{data.errors.length > 0 && <button className="text-accent" onClick={data.refresh}>Refresh</button>}{actionError && <button className="text-accent" onClick={() => setActionError("")}>Dismiss</button>}</div>}
-        {page && installedAppsReady && widgetsReported && visibleWidgetComponents.length === 0 && <p className="mb-4 rounded-lg border border-dashed border-border p-6 text-center text-sm text-text-muted">{pageEditor ? "Add widgets to compose this page. You can resize, reorder, and configure each one." : "This page has no widgets yet. Choose Edit page to set it up."}</p>}
+        {page && installedAppsReady && widgetsReported && visibleWidgetComponents.length === 0 && <div className="mb-4 rounded-lg border border-dashed border-border p-6 text-center">
+          <p className="text-sm text-text-muted">{editingLayout ? "Add widgets to compose this page. You can resize, reorder, and configure each one." : "This page has no widgets yet."}</p>
+          <button type="button" onClick={openWidgetGallery} className="mt-3 min-h-10 rounded-md border border-accent bg-accent px-4 text-xs font-semibold text-bg hover:brightness-110">Add your first widget</button>
+        </div>}
         {focused ? <div className="min-h-0 flex-1"><WorkspaceCanvas projectId={projectId} slot={widgetSlot} definitions={widgetDefinitions} context={widgetContext} onAction={handleWidgetAction} ready={scopeReady && installedAppsReady} onVisibleChange={handleVisibleComponentsChange} selectionRevision={selectionRevision} assistantRevision={assistantRevision} /></div> : <WidgetCanvas
           workspaceLayout={page?.layout === "workspace"}
           projectId={projectId}
           layoutScope={allProjects ? "global" : "project"}
           slot={widgetSlot}
           definitions={widgetDefinitions}
-          editing={canEdit && editingLayout}
-          onEditingChange={setEditingLayout}
+          editing={editingLayout}
+          keepEditingWhenEmpty={!!page}
+          onEditingChange={handleEditingChange}
           onVisibleComponentsChange={handleVisibleComponentsChange}
           galleryRequest={galleryRequest}
           definitionsReady={scopeReady && installedAppsReady}

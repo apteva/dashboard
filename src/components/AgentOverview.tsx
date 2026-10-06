@@ -73,7 +73,7 @@ export function AgentOverview({ instance, projectId, audience, toolRegistry, eve
       description: contribution.spec.description, icon: contribution.app.icon, iconStyle: contribution.app.icon_style,
       supportedSizes: supportedWidgetSizes(contribution.spec), defaultSize: defaultWidgetSize(contribution.spec),
       defaultSettings: defaultWidgetSettings(contribution.spec), settingsSchema: contribution.spec.settings_schema,
-      kind: "app", providerLabel: contribution.app.display_name || contribution.app.name,
+      kind: "app", providerLabel: contribution.app.display_name || contribution.app.name, providerKey: contribution.app.name,
       suggested: contribution.spec.suggested && (!contribution.spec.recommended_views?.length || contribution.spec.recommended_views.includes(audience)),
       render: (widget, renderContext) => <ContributionMount instance={{ ...widget, contribution }} apps={apps} slot={SLOT} projectId={projectId} agentId={instance.id} widgetContext={renderContext?.context} widgetActions={renderContext?.actions} />,
     })),

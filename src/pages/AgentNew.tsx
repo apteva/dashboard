@@ -27,7 +27,7 @@ import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { Modal } from "../components/Modal";
 import { ConnectIntegrationModal } from "../components/integrations/ConnectIntegrationModal";
-import { structureDirectiveDraft } from "../utils/directiveMarkdown";
+import { AgentInstructionsEditor } from "../components/AgentInstructionsEditor";
 
 // AgentNew — guided "build your first agent" wizard. Four steps:
 //
@@ -460,7 +460,7 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
         templateID: t.id,
         name,
         icon: suggestedAgentIcon(t.icon),
-        directive: structureDirectiveDraft(t.directive, name),
+        directive: t.directive || "",
         mode: t.mode as Mode,
         unconscious: t.unconscious,
         recommendedApps: t.recommended_apps || [],
@@ -907,42 +907,12 @@ function DetailsStep({ state, setState, nameError, nameInputRef }: DetailsStepPr
       <AgentIconPicker icon={state.icon}
         onIconChange={(icon) => setState((current) => ({ ...current, icon }))} />
 
-      <div>
-        <div className="flex items-center justify-between mb-1.5">
-          <label htmlFor="agent-directive" className="block text-text-muted text-xs">Instructions</label>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() =>
-                setState((s) => ({
-                  ...s,
-                  directive: structureDirectiveDraft(s.directive, s.name),
-                }))
-              }
-              className="text-accent text-xs hover:underline"
-            >
-              Structure
-            </button>
-          </div>
-        </div>
-        <textarea
-          id="agent-directive"
-          value={state.directive}
-          onChange={(e) =>
-            setState((s) => ({
-              ...s,
-              directive: (e.target as HTMLTextAreaElement).value,
-            }))
-          }
-          rows={16}
-          className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text font-mono leading-relaxed focus:outline-none focus:border-accent resize-y"
-          placeholder={"# Role\nYou are...\n\n# Goals\n- ..."}
-          spellCheck={false}
-        />
-        <p className="text-text-muted text-xs mt-1.5">
-          Describe its role, goals, and any rules it should follow. Use headings to organize longer instructions.
-        </p>
-      </div>
+      <AgentInstructionsEditor
+        key={state.templateID || "scratch"}
+        value={state.directive}
+        agentName={state.name}
+        onChange={(directive) => setState((current) => ({ ...current, directive }))}
+      />
 
       </section>
       <div className="min-w-0 space-y-5">

@@ -1329,7 +1329,7 @@ export const instances = {
     },
   ) =>
     request<Agent & { behavior_sync?: BehaviorSync }>("PUT", `/agents/${id}/config`, {
-      ...(opts.directive ? { directive: opts.directive } : {}),
+      ...(opts.directive !== undefined ? { directive: opts.directive } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
       ...(opts.proactivity !== undefined ? { proactivity: opts.proactivity } : {}),
       ...(opts.providers ? { providers: opts.providers } : {}),
