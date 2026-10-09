@@ -100,7 +100,7 @@ export function AgentCapabilityIcons({ attached, skills, catalog, compact = fals
   const hidden = capabilities.slice(4);
   return <div className={`flex min-w-0 items-center gap-2 ${compact ? "" : "mt-3 border-t border-border/70 pt-3"}`}>
     <span className={`${compact ? "hidden lg:inline" : ""} shrink-0 text-[10px] font-semibold uppercase tracking-wide text-text-dim`}>Capabilities</span>
-    {shown.length === 0 ? <span className="truncate text-xs text-text-dim">{compact ? "+" : "None attached"}</span> : (
+    {shown.length === 0 ? <span className="inline-flex h-7 min-w-0 items-center truncate text-xs text-text-dim">{compact ? "+" : "None attached"}</span> : (
       <div className="flex min-w-0 items-center gap-1.5" aria-label="Attached capabilities">
         {shown.map((capability, index) => <span key={capability.key}
           role="img" aria-label={`${capability.kind}: ${capability.name}`}

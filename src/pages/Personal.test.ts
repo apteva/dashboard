@@ -79,7 +79,9 @@ describe("Personal Conversations workspace", () => {
 
   test("uses the shared theme-aware agent icon collection", () => {
     const personal = readFileSync(new URL("./Personal.tsx", import.meta.url), "utf8");
-    const mark = readFileSync(new URL("../components/AgentMark.tsx", import.meta.url), "utf8");
+    const wrapper = readFileSync(new URL("../components/AgentMark.tsx", import.meta.url), "utf8");
+    expect(wrapper).toContain('from "@apteva/ui-kit"');
+    const mark = readFileSync(new URL("../../../ui-kit/src/AgentMark.tsx", import.meta.url), "utf8");
     expect(personal).toContain('import { AgentMark, suggestedAgentIcon } from "../components/AgentMark"');
     expect(mark).toContain("function AgentMark");
     expect(mark).toContain('stroke="currentColor"');

@@ -23,9 +23,11 @@ function setup(initial: MCPServerConfig[] = []) {
  }
  render(<Fixture/>);
 }
-test('opens on a focused attached overview and browses one category at a time',async()=>{
+test('shows attached capabilities first and filters the unified catalog',async()=>{
  setup([inventory[0].proxy_config as MCPServerConfig]);
- expect(screen.getAllByRole('checkbox')).toHaveLength(1);
+ expect(screen.getAllByRole('checkbox')).toHaveLength(3);
+ expect(screen.getByRole('region',{name:'Attached'}).textContent).toContain('Tasks');
+ expect(screen.getByRole('region',{name:'Available to add'}).textContent).toContain('GitHub');
  expect(screen.getByRole('checkbox',{name:/Tasks/}).getAttribute('aria-checked')).toBe('true');
  fireEvent.click(screen.getByRole('button',{name:'Integrations 1'}));
  await waitFor(()=>expect(screen.getByRole('checkbox',{name:/GitHub Work account/})).toBeTruthy());
@@ -37,18 +39,17 @@ test('opens on a focused attached overview and browses one category at a time',a
 });
 test('searches apps and attaches/removes through the existing API',async()=>{
  setup();
- await waitFor(()=>expect(screen.getByText('No capabilities attached yet.')).toBeTruthy());
- fireEvent.click(screen.getByRole('button',{name:'+ Add apps'}));
+ await waitFor(()=>expect(screen.getByRole('region',{name:'Available to add'})).toBeTruthy());
  fireEvent.change(screen.getByRole('textbox',{name:'Search capabilities'}),{target:{value:'no match'}});
  expect(screen.queryByRole('checkbox')).toBeNull();
  fireEvent.change(screen.getByRole('textbox',{name:'Search capabilities'}),{target:{value:'Tasks'}});
  const option=screen.getByRole('checkbox',{name:/Tasks/});
- expect(option.textContent).toContain('Project app · v1.0');
+ expect(option.textContent).toContain('App · Project · 3 tools');
  fireEvent.click(option);
- await waitFor(()=>expect(option.getAttribute('aria-checked')).toBe('true'));
+ await waitFor(()=>expect(screen.getByRole('checkbox',{name:/Tasks/}).getAttribute('aria-checked')).toBe('true'));
  expect(core.mutateMCPServers).toHaveBeenCalledWith(1103,[1],'add');
- fireEvent.click(option);
- await waitFor(()=>expect(option.getAttribute('aria-checked')).toBe('false'));
+ fireEvent.click(screen.getByRole('checkbox',{name:/Tasks/}));
+ await waitFor(()=>expect(screen.getByRole('checkbox',{name:/Tasks/}).getAttribute('aria-checked')).toBe('false'));
  expect(core.mutateMCPServers).toHaveBeenCalledWith(1103,[1],'remove');
 });
 test('a failed attachment remains unselected and shows the error',async()=>{

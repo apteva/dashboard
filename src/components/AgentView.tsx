@@ -1573,8 +1573,11 @@ export function CapabilitiesManager({
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<"attached" | "apps" | "integrations" | "custom">("attached");
-  const showAttachedOnly = category === "attached";
+  const [category, setCategory] = useState<"all" | "apps" | "integrations" | "custom">("all");
+  const capabilityListRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (capabilityListRef.current) capabilityListRef.current.scrollTop = 0;
+  }, [category, query]);
 
   const loadInventory = useCallback(() => {
     setLoading(true);
@@ -1589,10 +1592,6 @@ export function CapabilitiesManager({
     loadInventory();
   }, [loadInventory]);
 
-  const attachedNames = useMemo(
-    () => new Set(attached.map((server) => server.name)),
-    [attached],
-  );
   const attachedKeys = useMemo(() => attachedCapabilityKeys(attached), [attached]);
 
   const refreshAttached = async () => {
@@ -1657,29 +1656,103 @@ export function CapabilitiesManager({
   const orphanAppRows = inventoryProp
     .filter((row) => row.source === "app" && !matchedAppInventoryIDs.has(row.id))
     .sort((a, b) => displayMCPName(a).localeCompare(displayMCPName(b)));
+  type CapabilityOption = {
+    key: string;
+    category: "apps" | "integrations" | "custom";
+    title: string;
+    detail: string;
+    meta: string;
+    icon?: ReactNode;
+    enabled: boolean;
+    disabled?: boolean;
+    busy?: boolean;
+    search: Array<string | undefined>;
+    onToggle: () => void;
+  };
+  const options: CapabilityOption[] = [
+    ...appRows.map((app): CapabilityOption => {
+      const row = findAppInventoryRow(app, appInventoryByKey);
+      const name = row ? mcpName(row) : app.name;
+      const enabled = row ? inventoryRowIsAttached(attached, row)
+        : attached.some((server) => mcpURLInstallID(server.url) === String(app.install_id));
+      return {
+        key: `app:${app.install_id}`, category: "apps",
+        title: app.display_name || app.name,
+        detail: app.description || "Tools and skills for your agent",
+        meta: `App · ${app.project_id ? "Project" : "Global"} · ${app.surfaces?.mcp_tool_count || 0} tools`,
+        icon: <AppIcon src={app.icon} iconStyle={app.icon_style} name={app.display_name || app.name} size="md" className="text-accent" />,
+        enabled, disabled: !row, busy: busyKey === `mcp:${name}`,
+        search: [app.display_name, app.name, app.description, row?.name, row?.description],
+        onToggle: () => row && (enabled ? detachInventory(row, name) : attachInventory(row)),
+      };
+    }),
+    ...orphanAppRows.map((row): CapabilityOption => {
+      const name = mcpName(row);
+      const enabled = inventoryRowIsAttached(attached, row);
+      return {
+        key: `app-orphan:${row.id}`, category: "apps", title: displayMCPName(row),
+        detail: row.name, meta: `App · ${scopeLabel(row)} · ${row.tool_count || 0} tools`,
+        enabled, disabled: !configFromInventory(row), busy: busyKey === `mcp:${name}`,
+        search: [row.name, row.description],
+        onToggle: () => enabled ? detachInventory(row, name) : attachInventory(row),
+      };
+    }),
+    ...integrationRows.map((row): CapabilityOption => {
+      const connection = connections.find((item) => item.id === row.connection_id);
+      const name = mcpName(row);
+      const enabled = inventoryRowIsAttached(attached, row);
+      const required = requiredPlatform && row.source === "builtin";
+      return {
+        key: `integration:${row.id}`, category: "integrations",
+        title: connection?.app_name || displayMCPName(row),
+        detail: row.source === "builtin" ? "Manage agents, apps, and connections within this agent’s scope" : connection?.name || row.name,
+        icon: <AppIcon src={row.source === "builtin" ? "/apteva-server.svg" : connection?.logo} iconStyle={row.source === "builtin" ? "monochrome" : undefined} name={connection?.app_name || displayMCPName(row)} size="md" framed={row.source === "builtin"} className={row.source === "builtin" ? "rounded-lg border border-border text-accent" : "rounded-md bg-white text-gray-800"} />,
+        meta: row.source === "builtin" ? (required ? "Built in · Required for Helper" : "Built in · Management tools") : `Integration · ${scopeLabel(row)} · ${row.tool_count || 0} tools`,
+        enabled: enabled || required, disabled: !configFromInventory(row) || required,
+        busy: busyKey === `mcp:${name}`,
+        search: [row.name, row.description, name, connection?.app_name, connection?.name],
+        onToggle: () => enabled ? detachInventory(row, name) : attachInventory(row),
+      };
+    }),
+    ...customRows.map((row): CapabilityOption => {
+      const name = mcpName(row);
+      const enabled = inventoryRowIsAttached(attached, row);
+      return {
+        key: `custom:${row.id}`, category: "custom", title: displayMCPName(row),
+        detail: row.name, meta: `MCP server · ${row.tool_count || 0} tools · ${row.transport || "stdio"}`,
+        enabled, disabled: !configFromInventory(row), busy: busyKey === `mcp:${name}`,
+        search: [row.name, row.description, name],
+        onToggle: () => enabled ? detachInventory(row, name) : attachInventory(row),
+      };
+    }),
+  ];
+  // Directly configured or unavailable attachments must still be visible.
+  for (const server of attached) {
+    if (inventoryProp.some((row) => inventoryRowIsAttached([server], row)) ||
+      appRows.some((app) => mcpURLInstallID(server.url) === String(app.install_id))) continue;
+    options.push({
+      key: `attached:${server.name}`, category: "custom",
+      title: capabilityDisplayName(server.name), detail: "Attached directly; not available in the capability catalog.",
+      meta: "MCP server · Not in catalog", enabled: true, disabled: true,
+      search: [server.name], onToggle: () => {},
+    });
+  }
   const normalizedQuery = query.trim().toLowerCase();
-  const matchesQuery = (...values: Array<string | undefined>) =>
-    !normalizedQuery || values.some((value) => String(value || "").toLowerCase().includes(normalizedQuery));
-  const visibleAppRows = appRows.filter((app) => {
-    const row = findAppInventoryRow(app, appInventoryByKey);
-    const enabled = capabilityIsAttached(attachedKeys, appCapabilityAliases(app, row));
-    return (!showAttachedOnly || enabled) && matchesQuery(app.display_name, app.name, app.description, row?.name, row?.description);
-  });
-  const visibleOrphanAppRows = orphanAppRows.filter((row) =>
-    (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description),
+  const visibleOptions = options
+    .filter((option) => (category === "all" || option.category === category) &&
+      (!normalizedQuery || option.search.some((value) => String(value || "").toLowerCase().includes(normalizedQuery))))
+    .sort((a, b) => a.title.localeCompare(b.title) || a.key.localeCompare(b.key));
+  const attachedOptions = visibleOptions.filter((option) => option.enabled);
+  const availableOptions = visibleOptions.filter((option) => !option.enabled);
+  const totalAttached = options.filter((option) => option.enabled).length;
+  const renderOption = ({ key, ...option }: CapabilityOption) => (
+    <CapabilityToggleRow key={key} {...option} />
   );
-  const visibleIntegrationRows = integrationRows.filter((row) =>
-    (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description, mcpName(row), connections.find((c) => c.id === row.connection_id)?.app_name, connections.find((c) => c.id === row.connection_id)?.name),
-  );
-  const visibleCustomRows = customRows.filter((row) =>
-    (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description, mcpName(row)),
-  );
-  const visibleCount = visibleAppRows.length + visibleOrphanAppRows.length + visibleIntegrationRows.length + visibleCustomRows.length;
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
-      <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-border bg-bg-card px-4 py-3">
-        <div className="relative min-w-[14rem] flex-1">
+      <div className="shrink-0 space-y-2 border-b border-border bg-bg-card px-3 py-3 sm:px-4">
+        <div className="relative min-w-0">
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dim">
             <circle cx="11" cy="11" r="7" />
             <path d="m20 20-4-4" />
@@ -1688,151 +1761,65 @@ export function CapabilitiesManager({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             aria-label="Search capabilities"
-            placeholder="Search apps and MCP servers…"
+            placeholder="Search capabilities…"
             className="h-10 w-full rounded-lg border border-border bg-bg-input pl-9 pr-3 text-sm text-text placeholder:text-text-dim focus:border-accent focus:outline-none"
           />
         </div>
-        <div className="flex w-full flex-wrap items-center gap-1" aria-label="Capability categories">
+        <div className="grid grid-cols-4 gap-1" aria-label="Capability categories">
           {([
-            ["attached", "Attached", attached.length],
-            ["apps", "Apps", appRows.length + orphanAppRows.length],
-            ["integrations", "Integrations", integrationRows.length],
-            ["custom", "MCP servers", customRows.length],
+            ["all", "All", options.length],
+            ["apps", "Apps", options.filter((option) => option.category === "apps").length],
+            ["integrations", "Integrations", options.filter((option) => option.category === "integrations").length],
+            ["custom", "MCP servers", options.filter((option) => option.category === "custom").length],
           ] as const).map(([id, label, count]) => (
             <button key={id} type="button" aria-pressed={category === id}
               onClick={() => setCategory(id)}
-              className={`cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${category === id ? "bg-accent/10 text-accent" : "text-text-muted hover:bg-bg-hover"}`}>
-              {label} <span className="ml-1 text-[10px] opacity-70">{count}</span>
+              className={`flex min-w-0 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-2 text-[11px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:flex-row sm:gap-1.5 sm:text-xs ${category === id ? "bg-accent/10 text-accent" : "text-text-muted hover:bg-bg-hover"}`}>
+              <span>{label}</span><span className="text-[10px] opacity-70">{count}</span>
             </button>
           ))}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto space-y-5 p-3" style={{ maxHeight: "min(55vh, 520px)" }}>
-      {error && <div role="alert" className="rounded-lg border border-red/40 bg-red/10 p-3 text-xs text-red">{error}</div>}
-      {!loading && (category === "attached" ? visibleCount === 0 : category === "apps" ? visibleAppRows.length + visibleOrphanAppRows.length === 0 : category === "integrations" ? visibleIntegrationRows.length === 0 : visibleCustomRows.length === 0) && (
-        <div className="px-4 py-10 text-center">
-          <p className="text-sm text-text-muted">{normalizedQuery ? "No capabilities match your search." : category === "attached" ? "No capabilities attached yet." : "Nothing available in this category yet."}</p>
-          {category === "attached" && !normalizedQuery && <button type="button" onClick={() => setCategory("apps")} className="mt-4 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded-lg border border-border px-3 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent">+ Add apps</button>}
-        </div>
-      )}
-      {((category === "apps" || category === "attached") && (visibleAppRows.length > 0 || visibleOrphanAppRows.length > 0)) && <CapabilitySection
-        title="Apps"
-        hint="Tools and skills for your agent"
-      >
-        {visibleAppRows.map((app) => {
-          const row = findAppInventoryRow(app, appInventoryByKey);
-          const aliases = appCapabilityAliases(app, row);
-          const name = row ? mcpName(row) : app.name;
-          const enabled = capabilityIsAttached(attachedKeys, aliases);
-          return (
-            <CapabilityToggleRow
-              key={`app:${app.install_id}`}
-              title={app.display_name || app.name}
-              detail={`${app.project_id ? "Project app" : "Global app"} · v${app.version} · ${app.description || "Tools for your agent"}`}
-              icon={<AppIcon src={app.icon} iconStyle={app.icon_style} name={app.display_name || app.name} size="md" className="text-accent" />}
-              meta={`${app.surfaces?.mcp_tool_count || 0} tools`}
-              enabled={enabled}
-              disabled={!row}
-              busy={busyKey === `mcp:${name}`}
-              onToggle={() => row && (enabled ? detachInventory(row, name) : attachInventory(row, aliases))}
-            />
-          );
-        })}
-        {visibleOrphanAppRows.map((row) => {
-          const name = mcpName(row);
-          const enabled = attachedNames.has(name);
-          return (
-            <CapabilityToggleRow
-              key={`app-orphan:${row.id}`}
-              title={displayMCPName(row)}
-              detail={row.name}
-              meta={`${row.tool_count || 0} tools`}
-              enabled={enabled}
-              busy={busyKey === `mcp:${name}`}
-              onToggle={() => enabled ? detachInventory(row, name) : attachInventory(row)}
-            />
-          );
-        })}
-      </CapabilitySection>}
-
-      {((category === "integrations" || category === "attached") && visibleIntegrationRows.length > 0) && <CapabilitySection
-        title="Integrations"
-        hint="Built-in capabilities and connected accounts your agent can use"
-      >
-        {visibleIntegrationRows.map((row) => {
-          const connection = connections.find((c) => c.id === row.connection_id);
-          const name = mcpName(row);
-          const aliases = mcpCapabilityAliases(row);
-          const enabled = capabilityIsAttached(attachedKeys, aliases);
-          return (
-            <CapabilityToggleRow
-              key={`integration:${row.id}`}
-              title={connection?.app_name || displayMCPName(row)}
-              detail={row.source === "builtin" ? "Manage agents, apps, and connections within this agent’s scope" : connection?.name || row.name}
-              icon={<AppIcon src={row.source === "builtin" ? "/apteva-server.svg" : connection?.logo} iconStyle={row.source === "builtin" ? "monochrome" : undefined} name={connection?.app_name || displayMCPName(row)} size="md" framed={row.source === "builtin"} className={row.source === "builtin" ? "rounded-lg border border-border text-accent" : "rounded-md bg-white text-gray-800"} />}
-              meta={row.source === "builtin" ? (requiredPlatform ? "Built in · Required for Helper" : "Built in · Optional") : `${row.tool_count || 0} tools · ${scopeLabel(row)}`}
-              enabled={enabled || (requiredPlatform && row.source === "builtin")}
-              disabled={!configFromInventory(row) || (requiredPlatform && row.source === "builtin")}
-              busy={busyKey === `mcp:${name}`}
-              onToggle={() => enabled ? detachInventory(row, name) : attachInventory(row, aliases)}
-            />
-          );
-        })}
-      </CapabilitySection>}
-
-      {((category === "custom" || category === "attached") && visibleCustomRows.length > 0) && <CapabilitySection
-        title="MCP servers"
-        hint="Custom tools and services"
-      >
-        {visibleCustomRows.map((row) => {
-          const name = mcpName(row);
-          const aliases = mcpCapabilityAliases(row);
-          const enabled = capabilityIsAttached(attachedKeys, aliases);
-          return (
-            <CapabilityToggleRow
-              key={`custom:${row.id}`}
-              title={displayMCPName(row)}
-              detail={row.name}
-              meta={`${row.tool_count || 0} tools · ${row.transport || "stdio"}`}
-              enabled={enabled}
-              disabled={!configFromInventory(row)}
-              busy={busyKey === `mcp:${name}`}
-              onToggle={() => enabled ? detachInventory(row, name) : attachInventory(row, aliases)}
-            />
-          );
-        })}
-      </CapabilitySection>}
-
-      {loading && (
-        <div className="text-center text-xs text-text-muted py-2">Loading capabilities…</div>
-      )}
+      <div ref={capabilityListRef} className="min-h-0 flex-1 overflow-y-auto space-y-4 p-3" style={{ maxHeight: "min(55dvh, 520px)" }}>
+        {error && <div role="alert" className="rounded-lg border border-red/40 bg-red/10 p-3 text-xs text-red">{error}</div>}
+        {attachedOptions.length > 0 && (
+          <CapabilitySection title="Attached" count={attachedOptions.length} hint="This agent can use these capabilities">
+            {attachedOptions.map(renderOption)}
+          </CapabilitySection>
+        )}
+        {availableOptions.length > 0 && (
+          <CapabilitySection title="Available to add" count={availableOptions.length} hint="Select a capability to attach it">
+            {availableOptions.map(renderOption)}
+          </CapabilitySection>
+        )}
+        {!loading && visibleOptions.length === 0 && (
+          <div className="px-4 py-10 text-center">
+            <p className="text-sm text-text-muted">{normalizedQuery ? "No capabilities match your search." : "Nothing available in this category yet."}</p>
+          </div>
+        )}
+        {loading && <div className="py-2 text-center text-xs text-text-muted">Loading capabilities…</div>}
       </div>
-      <div className="shrink-0 flex items-center justify-between gap-3 border-t border-border px-5 py-3">
-        <span className="text-[11px] text-text-dim">{attached.length} attached · Changes apply immediately</span>
+      <div className="shrink-0 flex items-center justify-between gap-3 border-t border-border px-4 py-3 sm:px-5">
+        <span className="text-[11px] text-text-dim">{totalAttached} attached · Changes apply immediately</span>
         {onDone && <button type="button" onClick={onDone} className="cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded-lg border border-border px-4 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent">Done</button>}
       </div>
     </div>
   );
 }
 
-function CapabilitySection({
-  title,
-  hint,
-  children,
-}: {
+function CapabilitySection({ title, count, hint, children }: {
   title: string;
+  count: number;
   hint: string;
   children: ReactNode;
 }) {
   return (
-    <section>
-      <div className="mb-2 flex items-baseline justify-between gap-3 min-w-0">
-        <h3 className="text-[10px] uppercase tracking-wide text-text-muted font-bold shrink-0">{title}</h3>
-        <span className="hidden sm:block text-[10px] text-text-dim truncate min-w-0">{hint}</span>
+    <section aria-label={title}>
+      <div className="mb-2 flex min-w-0 items-center justify-between gap-3 px-1">
+        <h3 className="shrink-0 text-xs font-semibold text-text-muted">{title} <span className="ml-1 text-[10px] text-text-dim">{count}</span></h3>
+        <span className="hidden min-w-0 truncate text-[10px] text-text-dim sm:block">{hint}</span>
       </div>
-      <div className="space-y-1">
-        {children}
-      </div>
+      <div className="space-y-1">{children}</div>
     </section>
   );
 }
@@ -1850,8 +1837,8 @@ function CapabilityToggleRow({ title, detail, meta, icon, enabled, disabled, bus
   return <PickerOption
     name={title}
     description={truncateUI(detail, 180)}
-    badge={busy ? "Updating…" : disabled ? "Unavailable" : meta}
-    icon={icon || <AppIcon name={title} size="md" className="text-accent" />}
+    badge={busy ? "Updating…" : disabled && !enabled ? "Unavailable" : meta}
+    icon={<span className="flex h-10 w-10 shrink-0 items-center justify-center">{icon || <AppIcon name={title} size="md" className="text-accent" />}</span>}
     selected={enabled}
     disabled={disabled || busy}
     onToggle={onToggle}
@@ -1948,7 +1935,7 @@ function appInstallAliases(installID?: number | string | null): string[] {
 
 function mcpCapabilityAliases(row: MCPServer): string[] {
   const url = row.proxy_config?.url || row.url || "";
-  const installID = mcpURLInstallID(url);
+  const installID = row.source === "app" ? inventoryAppInstallID(row) : mcpURLInstallID(url);
   return uniqueCapabilityAliases([
     row.name,
     mcpName(row),
@@ -1995,6 +1982,22 @@ function mcpRowIsAttached(attachedKeys: Set<string>, row: MCPServer): boolean {
   return capabilityIsAttached(attachedKeys, mcpCapabilityAliases(row));
 }
 
+function inventoryAppInstallID(row: MCPServer): string {
+  return mcpURLInstallID(row.proxy_config?.url || row.url) || row.upstream_id?.match(/^app:(\d+)$/)?.[1] || "";
+}
+
+function inventoryRowIsAttached(servers: MCPServerConfig[], row: MCPServer): boolean {
+  const installID = row.source === "app" ? inventoryAppInstallID(row) : "";
+  const aliases = new Set(mcpCapabilityAliases(row).map(capabilityKey));
+  return servers.some((server) => {
+    const attachedInstallID = mcpURLInstallID(server.url);
+    // Two installations can share a slug and display name. Their stable IDs
+    // take precedence so attaching one never selects the other installation.
+    if (installID && attachedInstallID) return installID === attachedInstallID;
+    return attachedMCPAliases(server).some((alias) => aliases.has(capabilityKey(alias)));
+  });
+}
+
 function compareMCPRowsByAttachment(a: MCPServer, b: MCPServer, attachedKeys: Set<string>): number {
   const aAttached = mcpRowIsAttached(attachedKeys, a);
   const bAttached = mcpRowIsAttached(attachedKeys, b);
@@ -2011,9 +2014,11 @@ function removeAttachedByAliases(servers: MCPServerConfig[], aliases: string[]):
 }
 
 function findAppInventoryRow(app: AppRow, inventoryByKey: Map<string, MCPServer>): MCPServer | undefined {
-  for (const alias of appCapabilityAliases(app)) {
+  for (const alias of [...appInstallAliases(app.install_id), ...appCapabilityAliases(app)]) {
     const row = inventoryByKey.get(capabilityKey(alias));
-    if (row) return row;
+    if (!row) continue;
+    const installID = inventoryAppInstallID(row);
+    if (!installID || installID === String(app.install_id)) return row;
   }
   return undefined;
 }
