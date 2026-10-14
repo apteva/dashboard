@@ -2,8 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { useState } from "react";
-import type { CredentialField } from "../../api";
-import { CredentialValueInput } from "./CredentialFields";
+import type { AppDetail, CredentialField } from "../../api";
+import { CredentialFields, CredentialValueInput } from "./CredentialFields";
+import { defaultIntegrationAuthType } from "../../utils/integrationAuth";
 
 const privateKeyField: CredentialField = {
   name: "private_key",
@@ -12,6 +13,43 @@ const privateKeyField: CredentialField = {
 };
 
 describe("CredentialValueInput", () => {
+  test("YouTube catalog opens OAuth setup without asking for issued tokens", () => {
+    // YouTube's legacy catalog entry has unannotated OAuth response fields.
+    const detail: AppDetail = {
+      slug: "youtube-api", name: "YouTube", description: "", logo: null,
+      categories: [], auth_types: ["bearer", "oauth2"], tool_count: 0,
+      has_webhooks: false, base_url: "https://www.googleapis.com/youtube/v3", tools: [],
+      auth: {
+        types: ["bearer", "oauth2"], oauth2: {},
+        credential_fields: [
+          { name: "token", label: "access_token" },
+          { name: "refresh_token", label: "refresh_token" },
+          { name: "expires_in", label: "expires_in" },
+          { name: "expires_at", label: "expires_at" },
+          { name: "token_type", label: "token_type" },
+        ],
+      },
+    };
+    expect(defaultIntegrationAuthType(detail)).toBe("oauth2");
+    const html = renderToStaticMarkup(
+      <CredentialFields
+        detail={detail}
+        credentials={{}}
+        setCredentials={() => {}}
+        oauthClientID=""
+        setOAuthClientID={() => {}}
+        oauthClientSecret=""
+        setOAuthClientSecret={() => {}}
+        oauthClientResolved={false}
+      />,
+    );
+    expect(html).toContain("OAuth client ID");
+    expect(html).toContain("OAuth client secret");
+    for (const name of ["access_token", "refresh_token", "expires_in", "expires_at", "token_type"]) {
+      expect(html).not.toContain(name);
+    }
+  });
+
   test("renders closed credential choices as a select with its catalog default", () => {
     const html = renderToStaticMarkup(
       <CredentialValueInput
