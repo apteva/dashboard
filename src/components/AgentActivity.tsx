@@ -18,6 +18,8 @@ function thoughtContent(event: RuntimeEventItem) {
 }
 
 function eventTitle(event: RuntimeEventItem) {
+  if (event.raw.type === "realtime.assistant") return "Agent said";
+  if (event.raw.type === "realtime.user") return "Operator said";
   if (event.kind === "thought") return event.status === "running" ? "Thinking · in progress" : "Thought · completed";
   if (event.kind === "tool") return `${runtimeToolLabel(event.toolName || event.label, "")} · ${event.status === "error" ? "failed" : event.status === "running" ? "in progress" : event.status === "success" ? "finished" : "activity"}`;
   return event.label;
@@ -28,7 +30,8 @@ function eventDetail(event: RuntimeEventItem) {
 }
 
 function sourceLabel(event: RuntimeEventItem, registry: ToolVisualRegistry) {
-  return event.kind === "tool" ? resolveToolVisual(event.toolName || event.label, registry).label : agentActivityKind(event);
+  const source = event.kind === "tool" ? resolveToolVisual(event.toolName || event.label, registry).label : agentActivityKind(event);
+  return event.voiceThreadId ? `Voice · ${source}` : source;
 }
 
 function timeLabel(time: string) {
@@ -78,10 +81,10 @@ export function AgentActivity({ events, loading, compact = false, onDetails, too
   // Resolve by key on each render so an open thought continues receiving text.
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const selectedEvent = events.find((event) => (event.activityId || event.key) === selectedKey) || null;
-  const threadIds = Array.from(new Set([...threads.map((item) => item.id), ...events.map((event) => event.threadId || "main")]));
+  const threadIds = Array.from(new Set([...threads.map((item) => item.id), ...events.flatMap((event) => [event.threadId || "main", ...(event.voiceThreadId ? [event.voiceThreadId] : [])])]));
   const visible = [...events].reverse().filter((event) => {
     if (compact) return true;
-    if (thread && (event.threadId || "main") !== thread) return false;
+    if (thread && (event.threadId || "main") !== thread && event.voiceThreadId !== thread) return false;
     if (filter === "thoughts" && event.kind !== "thought") return false;
     if (filter === "tools" && event.kind !== "tool") return false;
     if (filter === "events" && agentActivityKind(event) !== "Event") return false;
@@ -160,6 +163,8 @@ export function AgentEventDetails({ event, onClose, onDetails, toolRegistry }: {
           <div className="mt-3 space-y-3">
             <dl className="flex flex-wrap gap-x-6 gap-y-2 text-xs text-text-muted">
               <div><dt>Thread</dt><dd className="break-all text-text">{event.threadId || "main"}</dd></div>
+              {event.voiceThreadId && <div><dt>Voice conversation</dt><dd className="break-all text-text">{event.voiceThreadId}</dd></div>}
+              {event.raw.data?.transcript && <div><dt>Transcript status</dt><dd className="break-all text-text">{String(event.raw.data.transcript.status || "")} · {String(event.raw.data.transcript.finalization_reason || "")}</dd></div>}
               <div><dt>Event type</dt><dd className="break-all text-text">{event.raw.type}</dd></div>
               {event.durationMs != null && <div><dt>Duration</dt><dd className="text-text">{(event.durationMs / 1000).toFixed(2)}s</dd></div>}
             </dl>

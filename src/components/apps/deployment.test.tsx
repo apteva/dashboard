@@ -48,3 +48,55 @@ test("deployment panel resumes persisted progress after reopening and does not d
  await waitFor(()=>expect(view.getByRole("status")).toBeTruthy());expect(writes).toBe(0);
  expect(view.queryByText("Scale replicas")).toBeNull();
 });
+
+test("backend without a catalog accepts a schema-based target without probing an endpoint", async () => {
+  admin();
+  let reads = 0;
+  replace(appDeployments, "backends", async () => ({ backends: [{ app_install_id: 9, id: "runner", display_name: "Remote runner", endpoint: "/private", capabilities: { runtime_kinds: ["source"], target_schema: { properties: { resource_type: { const: "compute.machine" } } } } }] }));
+  replace(appDeployments, "targets", async () => { reads++; throw new Error("should not be requested"); });
+  let chosen: DeploymentPlacement | undefined;
+  function Picker() { const [p, setP] = useState<DeploymentPlacement>({ type: "local" }); chosen = p; return <DeploymentPlacementEditor value={p} onChange={setP} manifestYaml="schema: test" />; }
+  const view = render(<AuthProvider><Picker /></AuthProvider>);
+  await waitFor(() => expect(view.getByRole("option", { name: "Remote runner · #9" })).toBeTruthy());
+  fireEvent.change(view.getByLabelText("Run on"), { target: { value: "9:runner" } });
+  await waitFor(() => expect(view.getByLabelText("Target ID")).toBeTruthy());
+  expect(view.queryByLabelText("Target type")).toBeNull();
+  expect(deploymentSelectionReady(chosen)).toBe(false);
+  fireEvent.change(view.getByLabelText("Target ID"), { target: { value: "1" } });
+  expect(chosen!.target).toEqual({ app_install_id: 9, resource_type: "compute.machine", resource_id: "1" });
+  expect(deploymentSelectionReady(chosen)).toBe(true);
+  expect(reads).toBe(0);
+});
+
+test("failed advertised target listing can use manual selection and still runs preflight", async () => {
+  admin();
+  replace(appDeployments, "backends", async () => ({ backends: [{ app_install_id: 4, id: "worker", display_name: "Compute", endpoint: "/private", capabilities: { target_listing: true, runtime_kinds: ["source"], target_schema: { properties: { resource_type: { const: "compute.slot" } } } } }] }));
+  replace(appDeployments, "targets", async () => { throw new Error("backend target catalog returned HTTP 405"); });
+  let preflight: any;
+  replace(appDeployments, "preflight", async (input: any) => { preflight = input; return { compatible: true, checks: [] }; });
+  function Picker() { const [p, setP] = useState<DeploymentPlacement>({ type: "local" }); return <DeploymentPlacementEditor value={p} onChange={setP} manifestYaml="schema: test" />; }
+  const view = render(<AuthProvider><Picker /></AuthProvider>);
+  await waitFor(() => expect(view.getByRole("option", { name: "Compute · #4" })).toBeTruthy());
+  fireEvent.change(view.getByLabelText("Run on"), { target: { value: "4:worker" } });
+  await waitFor(() => expect(view.getByRole("alert").textContent).toContain("HTTP 405"));
+  fireEvent.click(view.getByRole("button", { name: "Enter target ID manually" }));
+  fireEvent.change(view.getByLabelText("Target ID"), { target: { value: "host-a" } });
+  fireEvent.click(view.getByRole("button", { name: "Check deployment" }));
+  await waitFor(() => expect(preflight?.placement?.target).toEqual(remote.deployment!.target));
+});
+
+test("saving an inventory mapping refreshes discovery for the same backend", async () => {
+  admin();
+  let mapping: any;
+  replace(appDeployments, "backends", async () => ({ backends: [{ app_install_id: 4, id: "worker", display_name: "Compute", endpoint: "/private", target_discovery: mapping, capabilities: { runtime_kinds: ["source"], target_schema: { properties: { resource_type: { const: "compute.slot" } } } } }] }));
+  replace(appDeployments, "register", async (backend: any) => { mapping = backend.target_discovery; return backend; });
+  replace(appDeployments, "targets", async () => ({ targets: [{ ref: remote.deployment!.target, name: "Trial host", available: true, status: "ready" }] }));
+  function Picker() { const [p, setP] = useState<DeploymentPlacement>({ type: "local" }); return <DeploymentPlacementEditor value={p} onChange={setP} manifestYaml="schema: test" />; }
+  const view = render(<AuthProvider><Picker /></AuthProvider>);
+  await waitFor(() => expect(view.getByRole("option", { name: "Compute · #4" })).toBeTruthy());
+  fireEvent.change(view.getByLabelText("Run on"), { target: { value: "4:worker" } });
+  fireEvent.change(view.getByLabelText("path"), { target: { value: "/private/inventory" } });
+  fireEvent.click(view.getByRole("button", { name: "Save target discovery", hidden: true }));
+  await waitFor(() => expect(view.getByRole("option", { name: "Trial host" })).toBeTruthy());
+  expect(mapping.path).toBe("/private/inventory");
+});

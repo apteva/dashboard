@@ -1,3 +1,4 @@
+import { transcriptKey, newerRealtimeEvent } from "../realtime/events";
 import { runtimeToolLabel } from "./runtimeToolLabel";
 import type { TelemetryEvent } from "../api";
 import { formatToolPayload } from "./runtimePayload";
@@ -16,6 +17,7 @@ export interface RuntimeEventItem {
   toolArgs?: string;
   toolResult?: string;
   threadId?: string;
+  voiceThreadId?: string;
   status?: "running" | "success" | "error" | "info";
   durationMs?: number;
   time: string;
@@ -218,7 +220,7 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
   if (ev.type === "realtime.user" || ev.type === "realtime.assistant") {
     return {
       ...base,
-      key: ev.id || `${ev.type}:${threadId}:${ev.time}`,
+      key: transcriptKey(ev),
       kind: ev.type === "realtime.user" ? "channel" : "thought",
       label: ev.type === "realtime.user" ? "Operator said" : "Agent said",
       detail: compactText(data.text),
@@ -237,6 +239,11 @@ function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
     };
   }
 
+  if (ev.type === "realtime.execution_started" || ev.type === "realtime.execution_completed") {
+    const completed = ev.type === "realtime.execution_completed";
+    return { ...base, key: `voice-execution:${threadId}:${data.request_id || data.thread_id || ev.id}`, kind: "thread",
+      label: completed ? "Voice execution completed" : "Voice execution started", detail: compactText(data.thread_id), voiceThreadId: threadId, status: completed ? (data.status === "failed" ? "error" : "success") : "running" };
+  }
   if (ev.type === "thread.spawn") {
     return {
       ...base,
@@ -318,7 +325,17 @@ export function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent):
   }
   const item = normalizeRuntimeEvent(ev);
   if (!item) return prev;
+  const relation = prev.find((row) => (row.raw.type === "realtime.execution_started" || row.raw.type === "realtime.execution_completed") && row.raw.data?.thread_id === ev.thread_id);
+  if (relation) item.voiceThreadId = relation.threadId;
+  if (ev.type === "realtime.execution_started" || ev.type === "realtime.execution_completed") {
+    prev = prev.map((row) => row.threadId === ev.data?.thread_id ? { ...row, voiceThreadId: ev.thread_id } : row);
+  }
   let idx = prev.findIndex((r) => r.key === item.key);
+  if (ev.type === "realtime.user" || ev.type === "realtime.assistant") {
+    if (idx < 0) return orderedRuntimeEvents([...prev, item]);
+    if (!newerRealtimeEvent(prev[idx].raw, ev)) return prev;
+    return orderedRuntimeEvents(prev.map((row, i) => i === idx ? { ...item, time: row.time, activityId: row.activityId } : row));
+  }
   if (idx < 0 && item.kind === "tool" && item.toolName) {
     idx = findRecentRuntimeTool(prev, item);
   }
@@ -326,6 +343,7 @@ export function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent):
     idx = findRecentRuntimeThought(prev, item);
   }
   if (idx >= 0) {
+    if ((ev.type === "realtime.execution_started" || ev.type === "realtime.execution_completed") && !newerRealtimeEvent(prev[idx].raw, ev)) return prev;
     const next = [...prev];
     const prevItem = next[idx];
     if (item.kind === "tool" && prevItem.status !== "running" && item.status === "running") {

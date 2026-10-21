@@ -1,3 +1,5 @@
+import { realtimeSelection, type RealtimeProviderConfig } from "../realtime/config";
+import type { RealtimeExecutionConfig } from "../api";
 import { ProviderBuiltinsEditor, agentBuiltins, agentBuiltinPatch, BuiltinGlyph, builtinLabel } from "./ProviderBuiltins";
 import type { AgentBuiltinOverrides } from "../api";
 import { ServiceTierSelect, agentServiceTiers, serviceTierPatch } from "./ServiceTierSelect";
@@ -2458,12 +2460,8 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   const [realtimeVoice, setRealtimeVoice] = useState("marin");
   const [realtimeProvider, setRealtimeProvider] = useState("");
   const [realtimeModel, setRealtimeModel] = useState("");
-  const [realtimeProviders, setRealtimeProviders] = useState<Array<{
-    name: string;
-    default?: boolean;
-    models?: Partial<Record<"large" | "medium" | "small", string>>;
-    realtime_voice?: string;
-  }>>([]);
+  const [realtimeProviders, setRealtimeProviders] = useState<RealtimeProviderConfig[]>([]);
+  const [realtimeExecution, setRealtimeExecution] = useState<RealtimeExecutionConfig>({ mode: "thread" });
   const [realtimeVoiceMCP, setRealtimeVoiceMCP] = useState<string[]>([]);
   const [realtimeCapabilityOptions, setRealtimeCapabilityOptions] = useState<MCPServerConfig[]>([]);
   const [saving, setSaving] = useState(false);
@@ -2495,8 +2493,9 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
       setMode(config.mode);
       setProactivity(config.proactivity ?? instance.proactivity ?? defaultProactivity);
       setDefaultProvider(resolveEffectiveAgentProvider(instance.config || "{}", config.providers));
-      const voiceProviders = (config.providers || []).filter((provider) => provider.name.endsWith("-realtime"));
-      const selectedVoiceProvider = voiceProviders.find((provider) => provider.default) || voiceProviders[0];
+      const selection = realtimeSelection(config);
+      const voiceProviders = selection.providers;
+      const selectedVoiceProvider = selection.provider;
       const capabilityOptions = (config.mcp_servers || []).filter((server) =>
         server.name !== "channels" &&
         server.name !== "apteva-channels" &&
@@ -2505,10 +2504,11 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
       const availableNames = new Set(capabilityOptions.map((server) => server.name));
       setRealtimeProviders(voiceProviders);
       setRealtimeProvider(selectedVoiceProvider?.name || "");
-      setRealtimeModel(selectedVoiceProvider?.models?.large || "");
+      setRealtimeModel(selection.model);
+      setRealtimeExecution(selection.execution || { mode: "thread" });
       setRealtimeAvailable(!!selectedVoiceProvider);
       setRealtimeEnabled(config.realtime_enabled ?? !!selectedVoiceProvider);
-      setRealtimeVoice(config.realtime_voice || selectedVoiceProvider?.realtime_voice || "marin");
+      setRealtimeVoice(selection.voice);
       setRealtimeCapabilityOptions(capabilityOptions);
       setRealtimeVoiceMCP((config.realtime_voice_mcp || []).filter((name) => availableNames.has(name)));
     }).catch(() => {
@@ -2575,11 +2575,13 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
     selectedRealtimeConfig?.models?.medium,
     selectedRealtimeConfig?.models?.small,
   ].filter((model): model is string => !!model))).map((model) => ({ id: model, name: model, available: true }));
-  const realtimeVoices = realtimeCatalog?.voices || (realtimeProvider === "openai-realtime"
+  const selectedRealtimeModel = realtimeCatalog?.models.find((model) => model.id === realtimeModel);
+  const realtimeVoices = selectedRealtimeModel?.voices || realtimeCatalog?.voices || (realtimeProvider === "openai-realtime"
     ? ["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"]
     : [selectedRealtimeConfig?.realtime_voice || realtimeVoice]);
-  const selectedRealtimeVoice = realtimeVoices.includes(realtimeVoice) ? realtimeVoice : realtimeVoices[0];
+  const selectedRealtimeVoice = realtimeVoices.includes(realtimeVoice) ? realtimeVoice : selectedRealtimeModel?.default_voice || realtimeVoices[0];
 
+  const executionCapabilities = selectedRealtimeConfig?.capabilities?.[realtimeModel];
   const handleSave = async () => {
     if (!builtinsValid) { setError("Complete the model capability options before saving."); return; }
     setSaving(true); setError("");
@@ -2602,9 +2604,14 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         }
       }
 
-      const provs = defaultProvider
+      const provs: Array<{ name: string; default: boolean; realtime_execution?: RealtimeExecutionConfig }> = defaultProvider
         ? providerList.map((c) => ({ name: c.provider_key, default: c.provider_key === defaultProvider }))
-        : undefined;
+        : [];
+      if (realtimeAvailable && realtimeProvider && (executionCapabilities?.core_execution || selectedRealtimeConfig?.realtime_execution)) {
+        const existing = provs.find((provider) => provider.name === realtimeProvider);
+        if (existing) existing.realtime_execution = realtimeExecution;
+        else provs.push({ name: realtimeProvider, default: false, realtime_execution: realtimeExecution });
+      }
       const result = await instances.updateConfig(instance.id, {
         directive,
         mode: mode || undefined,
@@ -2778,11 +2785,12 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
                       setRealtimeProvider(name);
                       setRealtimeModel(provider?.models?.large || "");
                       setRealtimeVoice(provider?.realtime_voice || "");
+                      setRealtimeExecution(provider?.realtime_execution || { mode: "thread" });
                     }}
                     className="w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-xs text-text focus:border-accent focus:outline-none"
                   >
                     {realtimeProviders.map((provider) => (
-                      <option key={provider.name} value={provider.name}>{provider.name.replace("-realtime", "").replace(/^./, (letter) => letter.toUpperCase())}</option>
+                      <option key={provider.name} value={provider.name}>{provider.integration.replace(/^./, (letter) => letter.toUpperCase())}</option>
                     ))}
                   </select>
                 </div>
@@ -2792,7 +2800,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
                   <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-text-dim">Live model</label>
                   <select
                     value={realtimeModel}
-                    onChange={(event) => setRealtimeModel(event.target.value)}
+                    onChange={(event) => { setRealtimeModel(event.target.value); setRealtimeVoice(""); setRealtimeExecution({ mode: "thread" }); }}
                     className="w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-xs text-text focus:border-accent focus:outline-none"
                   >
                     {realtimeModelOptions.map((model) => (
@@ -2818,6 +2826,21 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
                   ))}
                 </select>
               </div>
+              {!executionCapabilities && selectedRealtimeConfig?.capabilities && <p className="text-[11px] text-text-muted">Save this model selection to load its supported execution options from Core.</p>}
+              {executionCapabilities?.core_execution && (
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-text-muted">Advanced voice execution</summary>
+                  <p className="mt-2 text-[11px] text-text-muted">Core manages tools and permissions in both modes. The backend model is separate from the voice model.</p>
+                  <label className="mt-3 block text-[10px] text-text-dim">Backend inference</label>
+                  <select aria-label="Backend inference" value={realtimeExecution.mode || "thread"}
+                    onChange={(event) => setRealtimeExecution(event.target.value === "provider" ? { mode: "provider", provider: selectedRealtimeConfig?.integration, model: "large" } : { mode: "thread" })}
+                    className="mt-1 w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-xs text-text">
+                    <option value="thread">Agent model</option>
+                    {executionCapabilities.provider_execution && <option value="provider">Voice-provider delegation</option>}
+                  </select>
+                  {realtimeExecution.mode === "provider" && <p className="mt-2 text-[11px] text-text-muted">Uses this voice provider’s configured large text model.</p>}
+                </details>
+              )}
               <div>
                 <div className="text-[10px] font-bold uppercase tracking-wide text-text-dim">Voice capabilities</div>
                 <p className="mt-1 text-[11px] text-text-muted">Optional MCP servers available during calls. Main keeps its complete capability set.</p>

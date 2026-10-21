@@ -1,3 +1,4 @@
+import type { CoreProviderConfig, RealtimeConfig } from "./realtime/config";
 import { beginAPIWrite } from "./utils/apiWrites";
 // All REST/JSON API endpoints live under /api/ on the server. The SPA owns
 // every other path (refresh on /instances/42 no longer collides with the
@@ -1317,7 +1318,7 @@ export const instances = {
       directive?: string;
       mode?: string;
       proactivity?: number;
-      providers?: Array<{ name: string; default: boolean; service_tier?: string | null }>;
+      providers?: Array<{ name: string; default: boolean; service_tier?: string | null; realtime_execution?: RealtimeExecutionConfig }>;
       modelOverride?: string;
       serviceTierOverrides?: Record<string, string | null>;
       builtinOverrides?: AgentBuiltinOverrides;
@@ -1585,7 +1586,7 @@ export interface RuntimeConnection {
   realtime?: {
     provider_key: string;
     default_model: string;
-    models: Array<{ id: string; name: string; available: boolean }>;
+    models: Array<{ id: string; name: string; available: boolean; voices?: string[]; default_voice?: string }>;
     voices: string[];
   };
   env_vars?: string[];
@@ -2619,12 +2620,21 @@ export interface RealtimeThreadResponse {
   };
 }
 
+export interface RealtimeExecutionConfig {
+  mode?: "thread" | "provider";
+  provider?: string;
+  model?: string;
+}
+
 export interface RealtimeAvailability {
   enabled: boolean;
   available: boolean;
   voice: string;
   mcp: string[];
   provider: string;
+  model?: string;
+  modelTier?: "large" | "medium" | "small";
+  execution?: RealtimeExecutionConfig;
 }
 
 const REALTIME_DASHBOARD_DIRECTIVE = `
@@ -2783,6 +2793,10 @@ export const core = {
     opts: {
       voice?: string;
       provider?: string;
+      model?: string;
+      realtime_execution?: RealtimeExecutionConfig;
+      directive?: string;
+      initial_message?: string;
       mcp?: string[];
       tools?: string[];
     },
@@ -2795,6 +2809,10 @@ export const core = {
         ephemeral: true,
         voice: opts.voice || undefined,
         provider: opts.provider || undefined,
+        model: opts.model || undefined,
+        realtime_execution: opts.realtime_execution,
+        directive: opts.directive,
+        initial_message: opts.initial_message,
         mcp: opts.mcp || [],
         tools: opts.tools || [],
         bridge_disconnect_ttl_seconds: 45,
@@ -2877,13 +2895,10 @@ export const core = {
       execution_checkpoints?: ExecutionCheckpointMeta[];
       auto_approve?: string[];
       mcp_servers?: MCPServerConfig[];
-      providers?: Array<{
-        name: string;
-        default?: boolean;
-        models?: Partial<Record<"large" | "medium" | "small", string>>;
-        service_tier?: string;
-        realtime_voice?: string;
-      }>;
+      providers?: CoreProviderConfig[];
+      realtime_providers?: RealtimeConfig["realtime_providers"];
+      realtime_provider?: string;
+      realtime_model?: string;
       realtime_enabled?: boolean;
       realtime_voice?: string;
       realtime_voice_mcp?: string[];

@@ -3,6 +3,7 @@ import { AgentToolIcon } from "./AgentToolIcon";
 import { resolveToolVisual, type ToolVisualRegistry } from "./chat/toolVisuals";
 
 export function agentActivityKind(event: RuntimeEventItem) {
+  if (event.raw.type === "realtime.user" || event.raw.type === "realtime.assistant") return "Message";
   if (event.kind === "tool") return "Tool";
   if (event.kind === "error" || event.status === "error") return "Error";
   if (event.raw.type === "event.received") return "Event";

@@ -170,6 +170,13 @@ export function Apps() {
   const [deploymentLocation,setDeploymentLocation]=useState("");
   const [deploymentBackend,setDeploymentBackend]=useState("");
   const [deploymentTarget,setDeploymentTarget]=useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const activeFilterCount = [deploymentLocation, deploymentBackend, deploymentTarget].filter(Boolean).length;
+  const clearDeploymentFilters = () => {
+    setDeploymentLocation("");
+    setDeploymentBackend("");
+    setDeploymentTarget("");
+  };
   const [detailInitialTab,setDetailInitialTab]=useState<"overview"|"deployment">("overview");
   const [marketplaceSearch, setMarketplaceSearch] = useState("");
   const [marketplaceQuery, setMarketplaceQuery] = useState("");
@@ -460,7 +467,7 @@ export function Apps() {
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="flex flex-col gap-2 rounded-lg border border-border bg-bg-card p-2 sm:flex-row sm:items-center">
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-card p-2">
               <label className="relative min-w-0 flex-1 sm:max-w-xl">
                 <span className="sr-only">Search installed apps</span>
                 <svg
@@ -495,14 +502,28 @@ export function Apps() {
                   </button>
                 )}
               </label>
-              <span className="px-1 text-[11px] tabular-nums text-text-dim sm:ml-auto sm:shrink-0">
-                {installedSearch.trim() ? `${filteredInstalled.length} of ${installedRows.length}` : `${installedRows.length}`} installed
+              <button
+                type="button"
+                onClick={() => setFiltersOpen(true)}
+                aria-label={`Filter installed apps${activeFilterCount ? ` (${activeFilterCount} active)` : ""}`}
+                aria-haspopup="dialog"
+                className={`flex h-10 shrink-0 items-center gap-2 rounded-md border px-2.5 text-xs transition-colors ${activeFilterCount ? "border-accent/50 bg-accent/10 text-accent" : "border-border text-text-muted hover:bg-bg-hover hover:text-text"}`}
+              >
+                <svg viewBox="0 0 20 20" className="h-4 w-4" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                  <path d="M3 5h14M3 10h14M3 15h14" />
+                  <path d="M7 3v4m6 1v4m-5 1v4" />
+                </svg>
+                <span className="hidden sm:inline">Filters</span>
+                {activeFilterCount > 0 && <span className="tabular-nums">{activeFilterCount}</span>}
+              </button>
+              <span className="ml-auto hidden shrink-0 px-1 text-[11px] tabular-nums text-text-dim sm:block">
+                {installedSearch.trim() || activeFilterCount ? `${filteredInstalled.length} of ${installedRows.length}` : `${installedRows.length}`} installed
               </span>
               <button
                 type="button"
                 onClick={openUpdateAll}
                 disabled={projectUpdates.length === 0}
-                className="min-h-10 shrink-0 rounded border border-yellow/60 px-3 py-1.5 text-xs font-medium leading-5 text-yellow transition-colors hover:bg-yellow/10 disabled:border-border disabled:text-text-dim disabled:opacity-70 sm:min-h-0 sm:px-2.5 sm:py-1 sm:text-[11px]"
+                className="h-10 shrink-0 rounded-md border border-yellow/60 px-2.5 text-[11px] font-medium text-yellow transition-colors hover:bg-yellow/10 disabled:border-border disabled:text-text-dim disabled:opacity-70"
                 title={
                   projectUpdates.length > 0
                     ? `Update ${projectUpdates.length} app${projectUpdates.length === 1 ? "" : "s"} installed in ${currentProject?.name || "this project"}`
@@ -515,20 +536,15 @@ export function Apps() {
               </button>
             </div>
 
-            <div className="flex flex-wrap gap-2" aria-label="Deployment filters">
-              <select aria-label="Deployment location" className="min-h-10 rounded border border-border bg-bg-input px-2 text-xs" value={deploymentLocation} onChange={e=>{setDeploymentLocation(e.target.value);setDeploymentBackend("");setDeploymentTarget("")}}><option value="">All locations</option><option value="local">This Server</option><option value="remote">Remote</option></select>
-              <select aria-label="Execution backend" className="min-h-10 rounded border border-border bg-bg-input px-2 text-xs" value={deploymentBackend} onChange={e=>{setDeploymentBackend(e.target.value);setDeploymentTarget("")}}><option value="">All backends</option>{Array.from(new Map(installedRows.filter(r=>r.deployment?.backend).map(r=>[`${r.deployment!.backend!.app_install_id}:${r.deployment!.backend!.backend_id}`,r.deployment!.backend_name || r.deployment!.backend!.backend_id])).entries()).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select>
-              <select aria-label="Deployment target filter" className="min-h-10 rounded border border-border bg-bg-input px-2 text-xs" value={deploymentTarget} onChange={e=>setDeploymentTarget(e.target.value)}><option value="">All targets</option>{Array.from(new Map(installedRows.filter(r=>r.deployment?.type==="backend"&&deploymentMatches(r,"",deploymentBackend,"")).map(r=>[`${r.deployment!.target.app_install_id}:${r.deployment!.target.resource_type}:${r.deployment!.target.resource_id}`,r.deployment!.target_name || r.deployment!.target.resource_id])).entries()).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select>
-            </div>
             {filteredInstalled.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center">
-                <p className="text-sm text-text-muted">No installed apps match “{installedSearch.trim()}”.</p>
+                <p className="text-sm text-text-muted">{installedSearch.trim() ? `No installed apps match “${installedSearch.trim()}”${activeFilterCount ? " with these filters" : ""}.` : "No installed apps match these filters."}</p>
                 <button
                   type="button"
-                  onClick={() => setInstalledSearch("")}
+                  onClick={() => { setInstalledSearch(""); clearDeploymentFilters(); }}
                   className="mt-2 text-xs text-accent hover:underline"
                 >
-                  Clear search
+                  {activeFilterCount ? installedSearch.trim() ? "Clear search and filters" : "Clear filters" : "Clear search"}
                 </button>
               </div>
             ) : (
@@ -589,6 +605,42 @@ export function Apps() {
           refreshInstalled();
         }}
       />
+
+      <Modal open={filtersOpen} onClose={() => setFiltersOpen(false)} width="max-w-sm" ariaLabel="Filter installed apps">
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <h3 className="text-sm font-bold text-text">Filter apps</h3>
+          <button type="button" onClick={() => setFiltersOpen(false)} aria-label="Close filters" className="flex h-8 w-8 items-center justify-center rounded text-lg text-text-muted hover:bg-bg-hover hover:text-text">×</button>
+        </div>
+        <div className="space-y-4 overflow-y-auto p-5">
+          <label className="block space-y-1.5 text-xs text-text-muted">
+            <span>Location</span>
+            <select className="h-10 w-full rounded-md border border-border bg-bg-input px-3 text-sm text-text" value={deploymentLocation} onChange={e => { setDeploymentLocation(e.target.value); setDeploymentBackend(""); setDeploymentTarget(""); }}>
+              <option value="">All locations</option>
+              <option value="local">This Server</option>
+              <option value="remote">Remote</option>
+            </select>
+          </label>
+          <label className="block space-y-1.5 text-xs text-text-muted">
+            <span>Backend</span>
+            <select className="h-10 w-full rounded-md border border-border bg-bg-input px-3 text-sm text-text disabled:opacity-40" disabled={deploymentLocation === "local"} value={deploymentBackend} onChange={e => { setDeploymentBackend(e.target.value); setDeploymentTarget(""); }}>
+              <option value="">All backends</option>
+              {Array.from(new Map(installedRows.filter(r => r.deployment?.backend).map(r => [`${r.deployment!.backend!.app_install_id}:${r.deployment!.backend!.backend_id}`, r.deployment!.backend_name || r.deployment!.backend!.backend_id])).entries()).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </select>
+          </label>
+          <label className="block space-y-1.5 text-xs text-text-muted">
+            <span>Target</span>
+            <select className="h-10 w-full rounded-md border border-border bg-bg-input px-3 text-sm text-text disabled:opacity-40" disabled={deploymentLocation === "local"} value={deploymentTarget} onChange={e => setDeploymentTarget(e.target.value)}>
+              <option value="">All targets</option>
+              {Array.from(new Map(installedRows.filter(r => r.deployment?.type === "backend" && deploymentMatches(r, "", deploymentBackend, "")).map(r => [`${r.deployment!.target.app_install_id}:${r.deployment!.target.resource_type}:${r.deployment!.target.resource_id}`, r.deployment!.target_name || r.deployment!.target.resource_id])).entries()).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </select>
+          </label>
+          <p className="text-xs tabular-nums text-text-dim" aria-live="polite">{filteredInstalled.length} of {installedRows.length} apps</p>
+        </div>
+        <div className="flex items-center justify-between border-t border-border px-5 py-3">
+          <button type="button" onClick={clearDeploymentFilters} disabled={!activeFilterCount} className="min-h-10 text-xs text-text-muted hover:text-text disabled:opacity-40">Reset filters</button>
+          <button type="button" onClick={() => setFiltersOpen(false)} className="min-h-10 rounded-md bg-accent px-4 text-xs font-bold text-bg hover:opacity-80">Done</button>
+        </div>
+      </Modal>
 
       <UpdateAllAppsModal
         open={updateAllOpen}
