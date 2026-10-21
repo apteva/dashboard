@@ -1,6 +1,9 @@
+import { DeploymentPlacementEditor, deploymentSelectionReady } from "./DeploymentPlacementEditor";
+import { AppDeploymentPanel } from "./AppDeploymentPanel";
+import type { DeploymentPlacement } from "../../api";
 import { useEffect, useRef, useState } from "react";
 import { AppIcon } from "@apteva/ui-kit";
-import { apps, appSetup, type AppPreflight, type AppSetupFeature, type AppSetupState, type AppSetupNode, type AppBindingValue, type PreflightRole } from "../../api";
+import { appDeployments, apps, appSetup, type AppPreflight, type AppSetupFeature, type AppSetupState, type AppSetupNode, type AppBindingValue, type PreflightRole } from "../../api";
 import { RolePicker, InlineConnectIntegration, ConfigFieldInput, bindingIDs, addBindingSelection, type RoleIntent } from "./SetupFields";
 
 type Frame = { key: number; label?: string; installId?: number; manifestURL?: string; preflight?: AppPreflight; projectId: string; feature?: string; parentRole?: string; onCreated?: (id: number) => void };
@@ -80,6 +83,8 @@ function SetupStep({frame,active,revision,onOpen,onCreated,onDone,reportState,on
   const [error,setError]=useState("");
   const [notice,setNotice]=useState("");
   const [advanced,setAdvanced]=useState(false);
+  const installKey = useRef(crypto.randomUUID());
+  const [placement,setPlacement]=useState<DeploymentPlacement>({type:"local"});
   const [connectRole,setConnectRole]=useState("");
   const loaded=useRef(false);
   const generation=useRef(0);
@@ -120,7 +125,7 @@ function SetupStep({frame,active,revision,onOpen,onCreated,onDone,reportState,on
     const timer = window.setInterval(() => void refresh(), 5000);
     return () => window.clearInterval(timer);
   }, [active, busy, installId, state?.install_status]);
-  const dirty = (!!installId && loaded.current && savedSelected === null) || JSON.stringify(config)!==JSON.stringify(originalConfig) || JSON.stringify(bindings)!==JSON.stringify(originalBindings) || (savedSelected !== null && JSON.stringify(selected)!==JSON.stringify(savedSelected)) || (!installId && !!pf && JSON.stringify(selected)!==JSON.stringify(featuresFor(pf).filter(f=>f.default || f.id===frame.feature).map(f=>f.id)));
+  const dirty = (!installId && placement.type === "backend") || (!!installId && loaded.current && savedSelected === null) || JSON.stringify(config)!==JSON.stringify(originalConfig) || JSON.stringify(bindings)!==JSON.stringify(originalBindings) || (savedSelected !== null && JSON.stringify(selected)!==JSON.stringify(savedSelected)) || (!installId && !!pf && JSON.stringify(selected)!==JSON.stringify(featuresFor(pf).filter(f=>f.default || f.id===frame.feature).map(f=>f.id)));
   reportState({busy,dirty});
   if(loading || !pf)return <div className="space-y-3"><p role={error?"alert":"status"}>{error || "Loading setup…"}</p>{error&&<button className={button} onClick={()=>void refresh(true)}>Retry</button>}</div>;
   const m=pf.manifest;
@@ -148,11 +153,16 @@ function SetupStep({frame,active,revision,onOpen,onCreated,onDone,reportState,on
     } catch(e){setError(e instanceof Error?e.message:"Could not open dependency setup")}finally{setBusy(false)}
   };
   const save=async()=>{
+    if(!installId && !deploymentSelectionReady(placement)){setError("Choose a deployment target first.");return;}
     setBusy(true);setError("");setNotice("");
     let id=installId;
     try {
       if(!id) {
-        const result=await apps.install({manifestUrl:frame.manifestURL,projectId:scope,config,bindings});
+        if (placement.type === "backend") {
+          const check = await appDeployments.preflight({manifest_url:frame.manifestURL,project_id:scope,placement});
+          if (!check.compatible) throw new Error(check.checks.filter(c=>c.status==="blocked").map(c=>`${c.name}: ${c.message}`).join("; "));
+        }
+        const result=await apps.install({manifestUrl:frame.manifestURL,projectId:scope,config,bindings,placement:placement.type==="backend"?placement:undefined,idempotencyKey:installKey.current});
         id=result.install_id;setInstallId(id);loaded.current=true;
         setOriginalBindings({...bindings});setOriginalConfig({...config});setSavedSelected(null);
         onCreated(id);
@@ -199,12 +209,15 @@ function SetupStep({frame,active,revision,onOpen,onCreated,onDone,reportState,on
       <button className={button} onClick={()=>void refresh()}>Refresh connections</button>
     </div>}
     {step===2 && <div className="space-y-4">
+      {!installId && <DeploymentPlacementEditor value={placement} onChange={setPlacement} projectId={scope} manifestUrl={frame.manifestURL} runtimeKind={m.runtime?.kind} publicRoutes={!!m.runtime?.ingress} />}
       {fields.map(f=><div key={f.name} className="space-y-1"><label className="block text-sm font-medium">{f.label || f.name}{(f.required||requiredFields.has(f.name))&&<span className="ml-2 text-xs text-text-muted">Required for setup</span>}</label><ConfigFieldInput field={f} value={config[f.name]??f.default??""} onChange={v=>setConfig(old=>({...old,[f.name]:v}))} bindings={bindings} projectId={scope} roles={pf.roles}/>{f.description&&<p className="text-xs text-text-muted">{f.description}</p>}</div>)}
       {wanted.filter(f=>f.configure).map(f=><div key={f.id} className="rounded-lg border border-border p-3"><p className="mb-2 text-sm">{f.label}: complete the app’s own setup, then return here.</p>{installId?<a className="text-sm text-accent" target="_blank" rel="noreferrer" href={`/api/apps/${encodeURIComponent(m.name)}${f.configure!.entry}?install_id=${installId}${scope?`&project_id=${encodeURIComponent(scope)}`:""}`}>Open {f.label} setup ↗</a>:<p className="text-xs text-text-muted">Available after installation. Install now and continue here.</p>}</div>)}
       {!fields.length&&!wanted.some(f=>f.configure)&&<p className="text-sm text-text-muted">No additional settings for these features.</p>}
       <label className="flex min-h-11 items-center gap-2 text-xs text-text-muted"><input type="checkbox" checked={advanced} onChange={e=>setAdvanced(e.target.checked)}/>Show advanced settings</label>
     </div>}
     {step===3 && <div className="space-y-3">
+      {!installId && <DeploymentPlacementEditor value={placement} onChange={setPlacement} projectId={scope} manifestUrl={frame.manifestURL} runtimeKind={m.runtime?.kind} publicRoutes={!!m.runtime?.ingress} />}
+      {installId && <details><summary className="cursor-pointer text-sm">Deployment status and operations</summary><AppDeploymentPanel installId={installId} projectId={scope} /></details>}
       <p className="text-sm">{installId?"Last saved setup status":"Review your setup"}</p>
       {installId&&state?<StatusTree nodes={state.nodes} onOpen={(id,f)=>void openInstalled(id,f)}/>:<><p className="text-sm text-text-muted">{wanted.map(f=>f.label).join(", ") || "No optional features selected"}</p><ul className="space-y-2 text-sm">{visibleRoles.map(r=><li key={r.role}>{r.label||r.role}: {bindingIDs(bindings[r.role]).length?"Selected · readiness checked after saving":"Not connected"}</li>)}</ul><p className="text-xs text-text-muted">Live readiness checks run after installation. Installing an app does not mean its selected features are ready.</p></>}
       {!!baseBlockers.length&&<ul className="list-inside list-disc text-sm text-warn">{baseBlockers.map(b=><li key={b}>{b}</li>)}</ul>}
@@ -215,7 +228,7 @@ function SetupStep({frame,active,revision,onOpen,onCreated,onDone,reportState,on
     </fieldset>
     <footer className="flex flex-wrap justify-between gap-2 border-t border-border pt-3">
       <button disabled={busy} className={button} onClick={()=>step>0?setStep(step-1):finish()}>{step>0?"Back":installId?"Finish later":"Cancel"}</button>
-      {step<3?<button disabled={busy} className={`${button} text-accent`} onClick={()=>setStep(step+1)}>Continue →</button>:<div className="flex flex-wrap gap-2">{installId&&<button disabled={busy} className={button} onClick={finish}>Done</button>}<button disabled={busy||(!installId&&!!baseBlockers.length)} className={`${button} bg-accent text-bg`} onClick={()=>void save()}>{busy?"Saving…":installId?"Save setup":"Install & continue"}</button></div>}
+      {step<3?<button disabled={busy} className={`${button} text-accent`} onClick={()=>setStep(step+1)}>Continue →</button>:<div className="flex flex-wrap gap-2">{installId&&<button disabled={busy} className={button} onClick={finish}>Done</button>}<button disabled={busy||(!installId&&(!!baseBlockers.length||!deploymentSelectionReady(placement)))} className={`${button} bg-accent text-bg`} onClick={()=>void save()}>{busy?"Saving…":installId?"Save setup":"Install & continue"}</button></div>}
     </footer>
   </div>;
 }

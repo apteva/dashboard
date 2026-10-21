@@ -3335,7 +3335,8 @@ export const apps = {
       config: opts.config || {},
       upgrade_policy: opts.upgradePolicy || "manual",
       ...(opts.bindings ? { bindings: opts.bindings } : {}),
-    }),
+      ...(opts.placement ? { placement: opts.placement } : {}),
+    }, opts.idempotencyKey ? {"Idempotency-Key":opts.idempotencyKey} : undefined),
 
   uninstall: (installId: number) =>
     request<{ status: string }>("DELETE", `/apps/installs/${installId}`),
@@ -3550,6 +3551,7 @@ export interface MarketplaceEntry {
 }
 
 export interface AppRow {
+  deployment?: DeploymentSummary;
   install_id: number;
   app_id: number;
   name: string;
@@ -3672,6 +3674,7 @@ export interface AppPreview {
 }
 
 export interface AppManifestV2 {
+  runtime?: {kind: string; ingress?: Record<string,unknown>};
   setup?: { features: AppSetupFeature[] };
   schema: string;
   name: string;
@@ -3758,6 +3761,8 @@ export interface AppConfigFieldDiscovery {
 }
 
 export interface AppInstallOptions {
+  placement?: DeploymentPlacement;
+  idempotencyKey?: string;
   manifestUrl?: string;
   manifestYaml?: string;
   repo?: string;
@@ -4373,4 +4378,44 @@ export interface AppSetupState {
 export const appSetup = {
   get: (id: number, feature?: string) => request<AppSetupState>("GET", `/apps/installs/${id}/setup${feature ? `?feature=${encodeURIComponent(feature)}` : ""}`),
   save: (id: number, features: string[]) => request<{selected_features: string[]}>("PUT", `/apps/installs/${id}/setup`, {features}),
+};
+
+// Backend-neutral managed app deployment console.
+export interface DeploymentResource { app_install_id: number; resource_type: string; resource_id: string }
+export interface DeploymentBackendRef { app_install_id: number; backend_id: string }
+export interface DeploymentPlacement {
+  type: "local" | "backend";
+  backend?: DeploymentBackendRef;
+  target?: DeploymentResource;
+  gateway_url?: string;
+  ingress?: { hostname: string; dns_app_install_id?: number; domain?: string; dns_project_id?: string };
+  options?: Record<string, unknown>;
+}
+export interface DeploymentSummary {
+  type: "local" | "backend"; managed: boolean; backend?: DeploymentBackendRef;
+  backend_name?: string; target: DeploymentResource; target_name?: string;
+  state: string; message?: string; checked_at?: string; admission_state?: string; public_url?: string;
+}
+export interface DeploymentTarget { ref: DeploymentResource; name: string; status: string; available: boolean; reason?: string; platform?: string; region?: string }
+export interface DeploymentBackend {
+  app_install_id: number; id: string; endpoint: string; display_name?: string;
+  target_discovery?: { path: string; items?: string; id_field: string; name_field: string; status_field?: string; ready_value?: string; resource_type: string };
+  capabilities: { target_listing?: boolean; managed_ingress?: boolean; snapshots?: boolean; replicas?: boolean; resource_controls?: boolean; runtime_kinds: string[]; options_schema?: Record<string, any>; target_schema?: Record<string, any> };
+}
+export interface DeploymentOperation { id: string; install_id: number; kind: string; phase: string; status: string; deployment_id?: string; error?: string; created_at: string; updated_at: string }
+export interface DeploymentRecord { id: string; generation: number; status: string; created_at: string; placement: DeploymentPlacement; manifest: { version: string; runtime?: {kind:string;ingress?:Record<string,unknown>} }; execution: { state: string; ready: boolean; browser_endpoint?: string; endpoints?: Record<string, string> } }
+export interface DeploymentDetail { can_scale?: boolean; placement: DeploymentPlacement; active_deployment_id: string; pending_deployment_id: string; deployments: DeploymentRecord[]; summary: DeploymentSummary; operations: DeploymentOperation[] }
+export interface DeploymentPreflight { compatible: boolean; placement: DeploymentPlacement; checks: { name: string; status: string; message?: string }[] }
+export const appDeployments = {
+  backends: () => request<{ backends: DeploymentBackend[] }>("GET", "/apps/execution-backends"),
+  register: (backend: DeploymentBackend) => request<DeploymentBackend>("POST", "/apps/execution-backends", backend),
+  targets: (backend: DeploymentBackendRef, projectId = "", q = "", cursor = "") => request<{ targets: DeploymentTarget[]; next_cursor?: string }>("GET", `/apps/deployment-targets?${new URLSearchParams({ backend_install_id: String(backend.app_install_id), backend_id: backend.backend_id, project_id: projectId, q, cursor })}`),
+  preflight: (input: { install_id?: number; manifest_url?: string; manifest_yaml?: string; project_id?: string; placement: DeploymentPlacement }) => request<DeploymentPreflight>("POST", "/apps/deployment-preflight", input),
+  get: (id: number) => request<DeploymentDetail>("GET", `/apps/installs/${id}/deployment`),
+  action: (id: number, action: "deploy" | "activate" | "restart" | "stop" | "delete" | "discard", placement?: DeploymentPlacement, key: string = crypto.randomUUID()) => request<DeploymentOperation>("POST", `/apps/installs/${id}/deployment/${action}`, placement ? { placement } : {}, { "Idempotency-Key": key }),
+  scale: (id: number, replicas: number) => request("POST", `/apps/installs/${id}/deployment/scale`, {replicas}),
+  operation: (id: number, op: string) => request<DeploymentOperation>("GET", `/apps/installs/${id}/deployment/operations/${encodeURIComponent(op)}`),
+  retry: (id: number, op: string) => request<DeploymentOperation>("POST", `/apps/installs/${id}/deployment/operations/${encodeURIComponent(op)}/retry`, {}),
+  cancel: (id: number, op: string) => request<{ cancel_requested: boolean }>("POST", `/apps/installs/${id}/deployment/operations/${encodeURIComponent(op)}/cancel`, {}),
+  logs: (id: number, cursor = "") => request<{ lines: string[]; cursor?: string }>("GET", `/apps/installs/${id}/deployment/logs?cursor=${encodeURIComponent(cursor)}`),
 };

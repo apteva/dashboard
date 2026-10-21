@@ -1,3 +1,6 @@
+import { DeploymentBadge, deploymentMatches } from "../components/apps/DeploymentBadge";
+import { DeploymentPlacementEditor, deploymentSelectionReady } from "../components/apps/DeploymentPlacementEditor";
+import type { DeploymentPlacement } from "../api";
 import { GuidedAppSetup } from "../components/apps/GuidedAppSetup";
 import { RolePicker, requiredConfigFields, RequiredConfigFields, hasBindingSelection, addBindingSelection, multiBinding, type RoleIntent } from "../components/apps/SetupFields";
 import { useState, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
@@ -5,6 +8,7 @@ import { useAssistantPageDetails } from "../components/chat/pageContext";
 import { Link } from "react-router-dom";
 import { AppIcon as SharedAppIcon } from "@apteva/ui-kit";
 import {
+  appDeployments,
   apps,
   integrations,
   type AppRow,
@@ -163,6 +167,10 @@ export function Apps() {
   const [marketplaceTotal, setMarketplaceTotal] = useState(0);
   const [marketplaceCategories, setMarketplaceCategories] = useState<Record<string, number>>({});
   const [installedSearch, setInstalledSearch] = useState("");
+  const [deploymentLocation,setDeploymentLocation]=useState("");
+  const [deploymentBackend,setDeploymentBackend]=useState("");
+  const [deploymentTarget,setDeploymentTarget]=useState("");
+  const [detailInitialTab,setDetailInitialTab]=useState<"overview"|"deployment">("overview");
   const [marketplaceSearch, setMarketplaceSearch] = useState("");
   const [marketplaceQuery, setMarketplaceQuery] = useState("");
   const [marketplaceCategory, setMarketplaceCategory] = useState<string>("");
@@ -303,7 +311,7 @@ export function Apps() {
   // project's pending installs from scratch.
   useEffect(() => {
     if (tab !== "installed") return;
-    const anyPending = installedRows.some((r) => r.status === "pending");
+    const anyPending = installedRows.some((r) => r.status === "pending" || r.deployment?.managed);
     if (!anyPending) return;
     let cancelled = false;
     const projectId = currentProject?.id;
@@ -339,9 +347,10 @@ export function Apps() {
   }, [installedRows, detailInstall]);
 
   const filteredInstalled = useMemo(
-    () => filterInstalledApps(installedRows, installedSearch),
-    [installedRows, installedSearch],
+    () => filterInstalledApps(installedRows, installedSearch).filter(r=>deploymentMatches(r,deploymentLocation,deploymentBackend,deploymentTarget)),
+    [installedRows, installedSearch,deploymentLocation,deploymentBackend,deploymentTarget],
   );
+  useEffect(()=>{const open=(event:Event)=>{const id=(event as CustomEvent<{installId:number}>).detail?.installId;const row=installedRows.find(r=>r.install_id===id);if(row){setDetailInitialTab("deployment");setDetailInstall(row)}};window.addEventListener("apteva:open-deployment",open);return()=>window.removeEventListener("apteva:open-deployment",open)},[installedRows]);
   const projectUpdates = useMemo(
     () => projectAppsWithUpdates(installedRows, currentProject?.id),
     [installedRows, currentProject?.id],
@@ -506,6 +515,11 @@ export function Apps() {
               </button>
             </div>
 
+            <div className="flex flex-wrap gap-2" aria-label="Deployment filters">
+              <select aria-label="Deployment location" className="min-h-10 rounded border border-border bg-bg-input px-2 text-xs" value={deploymentLocation} onChange={e=>{setDeploymentLocation(e.target.value);setDeploymentBackend("");setDeploymentTarget("")}}><option value="">All locations</option><option value="local">This Server</option><option value="remote">Remote</option></select>
+              <select aria-label="Execution backend" className="min-h-10 rounded border border-border bg-bg-input px-2 text-xs" value={deploymentBackend} onChange={e=>{setDeploymentBackend(e.target.value);setDeploymentTarget("")}}><option value="">All backends</option>{Array.from(new Map(installedRows.filter(r=>r.deployment?.backend).map(r=>[`${r.deployment!.backend!.app_install_id}:${r.deployment!.backend!.backend_id}`,r.deployment!.backend_name || r.deployment!.backend!.backend_id])).entries()).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select>
+              <select aria-label="Deployment target filter" className="min-h-10 rounded border border-border bg-bg-input px-2 text-xs" value={deploymentTarget} onChange={e=>setDeploymentTarget(e.target.value)}><option value="">All targets</option>{Array.from(new Map(installedRows.filter(r=>r.deployment?.type==="backend"&&deploymentMatches(r,"",deploymentBackend,"")).map(r=>[`${r.deployment!.target.app_install_id}:${r.deployment!.target.resource_type}:${r.deployment!.target.resource_id}`,r.deployment!.target_name || r.deployment!.target.resource_id])).entries()).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select>
+            </div>
             {filteredInstalled.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center">
                 <p className="text-sm text-text-muted">No installed apps match “{installedSearch.trim()}”.</p>
@@ -527,7 +541,7 @@ export function Apps() {
                     key={r.install_id}
                     app={r}
                     onChange={refreshInstalled}
-                    onOpenDetails={() => setDetailInstall(r)}
+                    onOpenDetails={() => {setDetailInitialTab("overview");setDetailInstall(r)}}
                   />
                 ))}
               </div>
@@ -606,6 +620,7 @@ export function Apps() {
         }}
       />
       <AppDetailPanel
+        initialTab={detailInitialTab}
         open={detailInstall !== null}
         mode="installed"
         install={detailInstall ?? undefined}
@@ -1381,6 +1396,7 @@ function AppListRow({
         ) : (
           <Pill className="bg-border text-text-muted">global</Pill>
         )}
+        <DeploymentBadge app={app} />
         {app.source === "builtin" && <Pill className="bg-blue/15 text-blue">built-in</Pill>}
         {app.default_for_new_agents && <Pill className="bg-accent/15 text-accent">default</Pill>}
         {app.deprecated && <Pill className="bg-red/15 text-red">deprecated</Pill>}
@@ -1674,6 +1690,9 @@ function InstallModal({
   const setupExitGuard = useRef<() => boolean>(() => true);
   const closeInstall = () => { if (setupExitGuard.current()) onClose(); };
   const [manifestUrl, setManifestUrl] = useState("");
+  const installRequestKey=useRef(crypto.randomUUID());
+  const [deploymentPlacement,setDeploymentPlacement]=useState<DeploymentPlacement>({type:"local"});
+
   const [preview, setPreview] = useState<AppPreview | null>(null);
   const [preflight, setPreflight] = useState<AppPreflight | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -1733,6 +1752,7 @@ function InstallModal({
       }, 0);
     }
     if (!open) {
+      setDeploymentPlacement({type:"local"}); installRequestKey.current=crypto.randomUUID();
       // Reset when closed so the next open is clean.
       setManifestUrl("");
       setPreview(null);
@@ -1747,6 +1767,7 @@ function InstallModal({
   }, [open, initialManifestUrl]);
 
   const reset = () => {
+    setDeploymentPlacement({type:"local"}); installRequestKey.current=crypto.randomUUID();
     setManifestUrl("");
     setPreview(null);
     setPreflight(null);
@@ -1833,6 +1854,7 @@ function InstallModal({
     return !r.required && intent?.kind === "install_app" && !intent.appName;
   });
   const installBlockers = [
+    ...(!deploymentSelectionReady(deploymentPlacement) ? ["Choose a deployment target"] : []),
     ...requiredRolesUnbound.map((r) => `Connect or install ${r.label || r.role}`),
     ...requiredFieldsUnfilled.map((f) => `Fill in ${f.label || f.name}`),
     ...optionalConnectionsUnfinished.map((r) => `Finish connecting ${r.label || r.role}, or deselect it`),
@@ -1846,11 +1868,15 @@ function InstallModal({
   const [installStep, setInstallStep] = useState("");
 
   const doInstall = async () => {
-    if (!preview || !canInstall) return;
+    if (!preview || !canInstall || !deploymentSelectionReady(deploymentPlacement)) return;
     setError("");
     setInstalling(true);
     setInstallStep("");
     try {
+      if (deploymentPlacement.type === "backend") {
+        const check = await appDeployments.preflight({manifest_url:manifestUrl,project_id:scope === "global" ? "" : projectId,placement:deploymentPlacement});
+        if (!check.compatible) throw new Error(check.checks.filter(c=>c.status==="blocked").map(c=>`${c.name}: ${c.message}`).join("; "));
+      }
       // Resolve install_app intents — connection intents are
       // already-resolved (the Connect button creates them
       // synchronously and writes the binding before the operator
@@ -1887,6 +1913,8 @@ function InstallModal({
         manifestUrl,
         projectId: scope === "global" ? "" : projectId,
         config,
+        placement: deploymentPlacement.type==="backend" ? deploymentPlacement : undefined,
+        idempotencyKey:installRequestKey.current,
         bindings: finalBindings,
       });
       reset();
@@ -1947,6 +1975,7 @@ function InstallModal({
       ) : preview.manifest.setup && preflight ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"><GuidedAppSetup onExitGuard={guard => { setupExitGuard.current = guard; }} key={manifestUrl} preflight={preflight} manifestURL={manifestUrl} projectId={scope === "global" ? "" : projectId} onDone={() => { reset(); onInstalled(); }} /></div>
       ) : (
+        <><DeploymentPlacementEditor value={deploymentPlacement} onChange={setDeploymentPlacement} projectId={scope==="global"?"":projectId} manifestUrl={manifestUrl} runtimeKind={preview.manifest.runtime?.kind} publicRoutes={!!preview.manifest.runtime?.ingress} />
         <PreviewAndConfigure
           preview={preview}
           preflight={preflight}
@@ -1981,7 +2010,7 @@ function InstallModal({
             setScope("project");
           }}
           onConfirm={doInstall}
-        />
+        /></>
       )}
     </Modal>
   );

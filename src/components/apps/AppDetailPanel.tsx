@@ -1,3 +1,4 @@
+import { AppDeploymentPanel } from "./AppDeploymentPanel";
 import { GuidedAppSetup } from "./GuidedAppSetup";
 // Side panel that slides in from the right when a marketplace or
 // installed app card is clicked. Single component for both contexts —
@@ -24,6 +25,7 @@ import { AppStatusAction } from "./AppStatusAction";
 type Mode = "marketplace" | "installed";
 
 interface Props {
+  initialTab?: "overview" | "deployment";
   open: boolean;
   onClose: () => void;
   mode: Mode;
@@ -327,7 +329,7 @@ function PanelBody({ view, props, onExitGuard }: { view: View; props: Props; onE
       </div>
     );
   }
-  return <TabbedBody view={view} onExitGuard={onExitGuard} onAgentDefaultChanged={props.onAgentDefaultChanged} />;
+  return <TabbedBody initialTab={props.initialTab} view={view} onExitGuard={onExitGuard} onAgentDefaultChanged={props.onAgentDefaultChanged} />;
 
   // helper kept inside scope so it can read s; same reading pattern as
   // before, just inlined for readability when bodies diverge.
@@ -392,13 +394,13 @@ function FlatBody({ view }: { view: View }) {
   );
 }
 
-type TabKey = "overview" | "bindings" | "settings" | "imports" | "tools";
+type TabKey = "overview" | "bindings" | "settings" | "imports" | "tools" | "deployment";
 
 // TabbedBody — installed-mode render. Bindings and Settings each get
 // their own tab so they can spread out without competing with the
 // 50-field config form for screen space. Tabs are visible at all
 // times (no hidden state); the active one underlines.
-function TabbedBody({ view, onAgentDefaultChanged, onExitGuard }: { view: View; onAgentDefaultChanged?: (enabled: boolean) => void; onExitGuard: (guard: () => boolean) => void }) {
+function TabbedBody({ view, onAgentDefaultChanged, onExitGuard, initialTab }: { initialTab?: "overview" | "deployment"; view: View; onAgentDefaultChanged?: (enabled: boolean) => void; onExitGuard: (guard: () => boolean) => void }) {
   const exitGuard = useRef<() => boolean>(() => true);
   const {currentProject} = useProjects();
   const s = view.surfaces;
@@ -413,13 +415,15 @@ function TabbedBody({ view, onAgentDefaultChanged, onExitGuard }: { view: View; 
   const showImports = !!view.imports?.sources?.length;
   const tabs: { key: TabKey; label: string; visible: boolean }[] = [
     { key: "overview", label: "Overview", visible: true },
+    { key: "deployment", label: "Deployment", visible: view.installId !== undefined && view.installId > 0 },
     { key: "bindings", label: "Setup & connections", visible: !!showBindings },
     { key: "settings", label: "Advanced", visible: view.installId !== undefined },
     { key: "imports", label: "Imports", visible: showImports && view.installId !== undefined },
     { key: "tools", label: "Tools & UI", visible: !!showTools },
   ];
   const visibleTabs = tabs.filter((t) => t.visible);
-  const [active, setActive] = useState<TabKey>("overview");
+  const [active, setActive] = useState<TabKey>(initialTab || "overview");
+  useEffect(() => { setActive(initialTab || "overview"); }, [initialTab, view.installId]);
   void hasBindings;
 
   return (
@@ -441,6 +445,7 @@ function TabbedBody({ view, onAgentDefaultChanged, onExitGuard }: { view: View; 
         ))}
       </div>
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-7">
+        {active === "deployment" && view.installId !== undefined && <AppDeploymentPanel installId={view.installId} projectId={view.projectId} />}
         {active === "overview" && (
           <OverviewTab view={view} onAgentDefaultChanged={onAgentDefaultChanged} />
         )}
