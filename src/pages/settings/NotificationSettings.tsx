@@ -40,12 +40,16 @@ export function NotificationSettings() {
   const installID=Number(search.get("install_id"))||undefined;
   const scopeKey=`${projectID}:${installID||""}`; const scopeRef=useRef(scopeKey);scopeRef.current=scopeKey;
   const [delivery,setDelivery]=useState({pending:0,failed:0});
+  const [preview,setPreview]=useState<"hidden"|"content"|null>(null);
+  const [savingPreview,setSavingPreview]=useState(false);
   const [prefs,setPrefs]=useState<NotificationChannels|null>(null);const [sources,setSources]=useState<NotificationSource[]>([]);const [devices,setDevices]=useState<{device_name:string;platform:string;status:string}[]>([]);
   const [error,setError]=useState("");const [loading,setLoading]=useState(true);const [saving,setSaving]=useState(false);const [browser,setBrowser]=useState(permission);const [filter,setFilter]=useState("");const generation=useRef(0);
   useEffect(()=>{const id=++generation.current;setLoading(true);setError("");setSources([]);
     Promise.all([userNotifications.preferences(),userNotifications.sources(projectID,installID),userNotifications.devices(),userNotifications.deliveryStatus()]).then(([p,s,d,status])=>{if(id!==generation.current)return;setPrefs(p);setSources(s);setDevices(d.subscriptions);setDelivery(status);}).catch(e=>{if(id===generation.current)setError(e.message);}).finally(()=>{if(id===generation.current)setLoading(false);});
     return ()=>{generation.current++;};
   },[projectID,installID]);
+  useEffect(()=>{let canceled=false;userNotifications.previews().then(p=>{if(!canceled)setPreview(p.mobile_preview);}).catch(()=>{if(!canceled)setPreview(null);});return()=>{canceled=true;};},[]);
+  async function savePreview(enabled:boolean){setSavingPreview(true);setError("");try{const p=await userNotifications.setPreviews({mobile_preview:enabled?"content":"hidden"});setPreview(p.mobile_preview);}catch{setError("Couldn’t save notification previews. Please try again.");}finally{setSavingPreview(false);}}
   async function refresh(){if(scopeRef.current!==scopeKey)return;const id=generation.current;const rows=await userNotifications.sources(projectID,installID);if(id===generation.current&&scopeRef.current===scopeKey)setSources(rows);window.dispatchEvent(new Event("apteva.notificationsChanged"));}
   async function savePreferences(value:NotificationChannels){setSaving(true);setError("");try{await userNotifications.setPreferences(value);setPrefs(value);window.dispatchEvent(new Event("apteva.notificationsChanged"));}catch(e){setError(e instanceof Error?e.message:"Could not save preferences");}finally{setSaving(false);}}
   const matching=sources.filter(s=>`${s.name} ${s.definition.name} ${s.definition.description||""}`.toLowerCase().includes(filter.toLowerCase()));
@@ -55,6 +59,7 @@ export function NotificationSettings() {
     {error&&<p role="alert" className="text-sm text-red">{error}</p>}
     {prefs&&<section className="rounded-xl border border-border p-4 space-y-4"><div><h3 className="font-medium">Your delivery preferences</h3><p className="text-sm text-text-muted mt-1">Pause a delivery method across all apps. Your individual subscriptions stay saved.</p></div>
       <ChannelChoices value={prefs} disabled={saving} onChange={value=>void savePreferences(value)} />
+      {preview!==null&&<div className="space-y-1"><label className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" aria-label="Show notification previews" className="accent-accent" checked={preview==="content"} disabled={savingPreview} onChange={e=>void savePreview(e.target.checked)}/>Show notification previews</label><p className="text-xs text-text-muted">Include titles and message text in phone notifications. When off, content stays on your server. When on, previews pass through the Push relay and Apple or Google. Your phone’s lock-screen settings still apply.</p></div>}
       <div className="text-xs text-text-muted space-y-2">
         <p>Desktop: {browser==="granted" ? "permission granted on this browser" : browser==="denied" ? "blocked — allow notifications in your browser’s site settings" : browser==="unsupported" ? "not supported in this browser" : "permission needed on this browser"}.</p>
         {browser==="default"&&<button className="text-accent hover:underline" onClick={async()=>{setError("");try{setBrowser(await Notification.requestPermission());}catch{setError("Could not request desktop notification permission.");}}}>Allow desktop notifications</button>}

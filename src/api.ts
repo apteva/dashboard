@@ -4381,6 +4381,8 @@ export interface NewAgentProviderSettings {
 export type { NotificationChannels, NotificationSubscription, NotificationSource, UserNotification, NotificationSnapshot } from "./api/notificationTypes";
 import type { NotificationChannels, NotificationSubscription, NotificationSource, UserNotification, NotificationSnapshot } from "./api/notificationTypes";
 export const userNotifications = {
+  previews: () => request<import("./api/notificationTypes").NotificationPreviewPreferences>("GET", "/notifications/previews"),
+  setPreviews: (value: import("./api/notificationTypes").NotificationPreviewPreferences) => request<import("./api/notificationTypes").NotificationPreviewPreferences>("PUT", "/notifications/previews", value),
   deliveryStatus: () => request<{pending:number;failed:number}>("GET", "/notifications/delivery-status"),
   sources: (projectId: string, installId?: number) => request<NotificationSource[]>("GET", `/notifications/sources?${new URLSearchParams({project_id: projectId, ...(installId ? {install_id: String(installId)} : {})})}`),
   list: (before?: number) => request<NotificationSnapshot>("GET", `/notifications${before ? `?before=${before}` : ""}`),

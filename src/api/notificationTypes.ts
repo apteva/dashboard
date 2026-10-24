@@ -1,6 +1,7 @@
 /** Personal notifications require a platform user session or private user key.
  * Installation tokens and delegated app identities cannot access an owner's inbox. */
 export interface NotificationChannels { in_app: boolean; tab: boolean; desktop: boolean; mobile: boolean }
+export interface NotificationPreviewPreferences { mobile_preview: "hidden" | "content" }
 export interface NotificationSubscription {
   install_id: number; project_id: string; type: string; key: string;
   filters: Record<string, string>; channels: NotificationChannels;
