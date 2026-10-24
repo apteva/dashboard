@@ -18,9 +18,14 @@
 
 import { Component, lazy, Suspense } from "react";
 import type { ComponentType, LazyExoticComponent, ReactNode } from "react";
+import { AppHostSurface } from "./hostUI";
+import type { AppHost, HostUI } from "@apteva/ui-kit";
 import { AppIdentityProvider, type AppIdentity } from "@apteva/ui-kit";
 
 export interface NativePanelProps {
+  /** Host-owned mount metadata, removed before passing props to the app. */
+  hostSurface?: { hostUI?: HostUI; foreground?: boolean; surface: string };
+  host?: AppHost;
   appName: string;
   installId: number;
   projectId: string;
@@ -104,11 +109,13 @@ export function resolvePanelComponent(
   // doesn't take down the surrounding dashboard view. The user sees
   // a small contained error card with the panel name; everything
   // around it (sidebar, header, other tabs) keeps working.
-  const Wrapped: ComponentType<NativePanelProps> = (props) => (
+  const Wrapped: ComponentType<NativePanelProps> = ({hostSurface, ...props}) => (
     <PanelErrorBoundary appName={appName} entry={entry}>
       <Suspense fallback={<div className="p-6 text-text-dim text-sm">Loading panel…</div>}>
         <AppIdentityProvider value={scope?.identity ?? null}>
-          <Lazy {...props} />
+          <AppHostSurface projectId={props.projectId} installId={props.installId} surface={hostSurface?.surface || entry} foreground={hostSurface?.foreground} hostUI={hostSurface?.hostUI}>
+            {host => <Lazy {...props} host={host} />}
+          </AppHostSurface>
         </AppIdentityProvider>
       </Suspense>
     </PanelErrorBoundary>

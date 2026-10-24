@@ -1,3 +1,5 @@
+import { AppHostSurface } from "./hostUI";
+import type { AppHost, HostUI } from "@apteva/ui-kit";
 // Inline chat components: the dashboard side of the
 // `respond(components=…)` flow. The agent attaches a render hint to
 // a chat message; the chat panel mounts the matching component below
@@ -40,6 +42,7 @@ import type { WidgetActionBridge, WidgetContext } from "./widgetContext";
 // ─── manifest-side types ────────────────────────────────────────────
 
 export interface UIComponentSpec {
+  host_ui?: HostUI;
   name: string;            // "file-card"
   entry: string;           // "/ui/FileCard.mjs"
   slots?: string[];        // ["chat.message_attachment"]
@@ -56,6 +59,7 @@ export interface UIComponentSpec {
   default_size?: "half" | "full";
   props_schema?: Record<string, unknown>;
   settings_schema?: Record<string, unknown>;
+  settings_ui?: import("./widgetSettings").WidgetSettingsUI;
 }
 
 // We get app rows from /api/apps. The handler now exposes
@@ -92,6 +96,7 @@ function componentsFor(app: InstalledAppRow): UIComponentSpec[] {
 // ─── Component module cache ─────────────────────────────────────────
 
 interface NativeComponentProps {
+  host?: AppHost;
   /** Forwarded from the agent's respond(components=) call. */
   [key: string]: unknown;
   /** Injected by the host so the component can scope its fetches/events. */
@@ -262,14 +267,18 @@ export function ChatComponentMount({
             iconStyle: app.icon_style,
           }}
         >
-          <Lazy
+          <AppHostSurface projectId={projectId || ""} installId={app.install_id} surface={slot+":"+comp.name}
+            foreground={!!widgetContext?.hostForeground} hostUI={spec.host_ui}>
+          {host => <Lazy
             {...(comp.props ?? {})}
+            host={host}
             projectId={projectId}
             installId={app.install_id}
             dashboardScope={dashboardScope}
             widgetContext={widgetContext}
             widgetActions={widgetActions}
-          />
+          />}
+          </AppHostSurface>
         </AppIdentityProvider>
       </Suspense>
     </ComponentBoundary>

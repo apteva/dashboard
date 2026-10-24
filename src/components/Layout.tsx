@@ -1,3 +1,4 @@
+import { HostUIProvider } from "./apps/hostUI";
 import { ProductTour } from "./tour/ProductTour";
 import { PRODUCT_TOUR, requestProductTour } from "./tour/config";
 import { useProductTourDismissed } from "./tour/useProductTourCompleted";
@@ -674,6 +675,7 @@ export function Layout() {
   );
 
   return (
+    <HostUIProvider scope={`${location.key}:${currentProject?.id || ""}`}>
     <div className="app-shell flex h-dvh min-h-dvh bg-bg overflow-hidden">
       {/* Sidebar */}
       <nav className={`hidden md:flex shrink-0 border-r border-border flex-col transition-[width] duration-200 ${sidebarCollapsed ? "w-16" : "w-56"}`} aria-label="Main navigation">
@@ -776,6 +778,7 @@ export function Layout() {
       <ChatAssistantDock />
       <ProductTour key={user ? user.id : "guest"} navPaths={navItems.map((item) => item.to)} onStart={beginTour} onPrepare={prepareTour} onEnd={endTour} />
     </div>
+    </HostUIProvider>
   );
 }
 

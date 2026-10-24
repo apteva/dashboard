@@ -33,7 +33,7 @@ export function AccountTab({ security = false }: { security?: boolean }) {
   const joined = user.createdAt ? new Date(user.createdAt).toLocaleDateString() : "";
 
   return (
-    <div className="space-y-5 max-w-4xl">
+    <div className="w-full space-y-5">
       <div>
         <h2 className="text-text text-base font-bold">{security ? "Account security" : "Your account"}</h2>
         <p className="text-text-muted text-sm mt-1">Manage your account settings.</p>

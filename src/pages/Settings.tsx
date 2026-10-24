@@ -76,7 +76,7 @@ function SectionIcon({ section }: { section: SettingsSection }) {
 
 function RestrictedScreen({ screen }: { screen: SettingsScreen }) {
   const { user } = useAuth();
-  return <section className="max-w-3xl rounded-lg border border-border bg-bg-card p-5">
+  return <section className="w-full rounded-lg border border-border bg-bg-card p-5">
     <h2 className="text-base font-semibold">{screen.title}</h2>
     <p className="mt-2 text-sm text-text-muted">{screen.permission === "admin" ? "Managed by your administrator. Your account can’t change these server-wide settings." : "Your account doesn’t have permission to manage this setting. Contact your administrator for access."}</p>
     {screen.id === "providers" && user && <div className="mt-4 border-t border-border pt-4 text-sm"><h3 className="font-medium">Available AI</h3><p className="mt-2 text-text-muted">{user.managedLLM.configured ? "Your administrator provides AI for this account." : "Your administrator manages provider access."}</p>{user.managedLLM.models.length > 0 && <p className="mt-2 break-words text-xs text-text-muted">Models: {user.managedLLM.models.join(", ")}</p>}</div>}
@@ -144,7 +144,7 @@ export function Settings() {
         <p className="mt-auto px-3 pt-6 text-[11px] leading-relaxed text-text-dim">Settings stay available in every interface mode. Your account permissions control what you can change.</p>
       </nav>
       <main ref={scrollArea} className="page-safe-bottom min-w-0 flex-1 overflow-y-auto p-4 sm:p-6">
-        <div className="mx-auto w-full max-w-6xl">
+        <div className="w-full">
           {searching ? <section className="space-y-4"><h2 className="text-base font-semibold">{entries.length} setting{entries.length === 1 ? "" : "s"} found</h2>{entries.length ? cards : <p className="text-sm text-text-muted">No settings match “{query}”. Try “public URL”, “Helper”, or “password”.</p>}<button onClick={() => setQuery("")} className="text-sm text-accent">Clear search</button></section> : <>
             {screen && <div className="mb-5 flex flex-wrap items-center gap-3">{!directSection && <button onClick={() => openSection(section.id)} className="min-h-9 text-xs text-accent hover:underline">← {section.title}</button>}<span className="text-xs text-text-dim">{settingsScopeLabel(screen, currentProject?.name)}</span>{hasChanges && <span role="status" className="text-xs text-warn">Unsaved changes</span>}</div>}
             {!screen && !tab && <section className="flex flex-col gap-5"><div><h2 className="text-lg font-semibold">{section.title}</h2><p className="mt-1 text-sm text-text-muted">{section.description}</p></div>{(section.id === "general" || section.id === "server") && <div className={section.id === "general" ? "order-last md:order-none" : undefined}><ConnectionSummary compact /></div>}{cards}</section>}

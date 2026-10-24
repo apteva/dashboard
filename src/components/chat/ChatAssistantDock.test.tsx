@@ -1,7 +1,9 @@
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
+import { AppHostSurface, HostUIProvider } from "../apps/hostUI";
+import type { AppHost } from "@apteva/ui-kit";
 import { defaultAssistantPreferences, type AssistantPreferences } from "./assistantModel";
 
 let projectId = "project-one";
@@ -9,6 +11,7 @@ let preferences: AssistantPreferences = { ...defaultAssistantPreferences };
 let directory: any = null;
 let voiceSession: any = null;
 const save = mock(async (_value: AssistantPreferences) => {});
+const unmounts = mock(() => {});
 const mounts = mock((_props: any) => {});
 const insertDraft = mock(async (_text: string, options: any) => ({ requestId: options.requestId, status: "applied" }));
 const originals = {
@@ -28,11 +31,13 @@ mock.module("../../hooks/useChatAssistant", () => ({
 mock.module("../../state/RealtimeVoiceContext", () => ({ useRealtimeVoice: () => ({ session: voiceSession }) }));
 mock.module("../apps/contributions", () => ({ ContributionMount: (props: any) => {
   mounts(props);
+  const [draft, setDraft] = useState("");
+  useEffect(() => () => unmounts(), []);
   useEffect(() => {
     props.composerRef?.({ insertText: insertDraft });
     return () => props.composerRef?.(null);
   }, [props.composerRef]);
-  return <div>Conversations app: {props.projectId}/{props.agentId}</div>;
+  return <div>Conversations app: {props.projectId}/{props.agentId}<input aria-label="Assistant draft fixture" value={draft} onChange={event => setDraft(event.target.value)} /></div>;
 } }));
 const { ChatAssistantDock } = await import("./ChatAssistantDock");
 const { ChatAssistantSettings } = await import("./ChatAssistantSettings");
@@ -47,7 +52,7 @@ beforeEach(() => {
     { target: { kind: "helper" }, agent: { id: 1, name: "Apteva Helper" } },
     { target: { kind: "agent", id: 2 }, agent: { id: 2, name: "Research" } },
   ] };
-  mounts.mockClear(); save.mockClear(); insertDraft.mockClear();
+  mounts.mockClear(); unmounts.mockClear(); save.mockClear(); insertDraft.mockClear();
 });
 afterEach(cleanup);
 afterAll(() => {
@@ -59,7 +64,47 @@ afterAll(() => {
   HTMLDialogElement.prototype.close = originals.close;
 });
 function Dock() { return <MemoryRouter><ChatAssistantDock /></MemoryRouter>; }
+function Suppress({ host, policy = "hidden" }: { host: AppHost; policy?: "auto" | "hidden" }) {
+  useEffect(() => host.ui.request({chatAssistant:{launcher:policy}}),[host,policy]);
+  return null;
+}
+function Scene({ hidden = false, policy = "hidden" }: { hidden?: boolean; policy?: "auto" | "hidden" }) {
+  return <HostUIProvider scope="route"><Dock />{hidden && <AppHostSurface projectId={projectId} installId={42} surface="panel" foreground>{host => <Suppress host={host} policy={policy} />}</AppHostSurface>}</HostUIProvider>;
+}
 describe("Conversations-powered chat assistant", () => {
+  test("suppression preserves the open conversation, unsent draft and voice session", () => {
+    const session = { agentId: 1, id: "ongoing-voice" };
+    voiceSession = session;
+    const view = render(<Scene />);
+    fireEvent.click(screen.getByRole("button", {name:"Open chat assistant"}));
+    fireEvent.change(screen.getByRole("textbox",{name:"Assistant draft fixture"}),{target:{value:"Unsent draft"}});
+    view.rerender(<Scene hidden />);
+    expect(screen.queryByRole("button",{name:"Open chat assistant"})).toBeNull();
+    expect(screen.getByRole("dialog",{name:"Chat assistant"})).toBeTruthy();
+    expect((screen.getByRole("textbox",{name:"Assistant draft fixture"}) as HTMLInputElement).value).toBe("Unsent draft");
+    expect(unmounts).not.toHaveBeenCalled();
+    expect(voiceSession).toBe(session);
+    expect(save).not.toHaveBeenCalled();
+    view.rerender(<Scene />);
+    expect(screen.getByRole("button",{name:"Open chat assistant"})).toBeTruthy();
+    expect((screen.getByRole("textbox",{name:"Assistant draft fixture"}) as HTMLInputElement).value).toBe("Unsent draft");
+  });
+  test("settings opens the existing assistant while launcher is suppressed", () => {
+    render(<><Scene hidden /><MemoryRouter><ChatAssistantSettings /></MemoryRouter></>);
+    expect(screen.queryByRole("button",{name:"Open chat assistant"})).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open assistant" }));
+    expect(screen.getByText("Conversations app: project-one/1")).toBeTruthy();
+    expect(insertDraft).not.toHaveBeenCalled();
+  });
+  test("auto never overrides a disabled user preference", () => {
+    preferences = {...preferences,enabled:false};
+    render(<Scene hidden policy="auto" />);
+    act(() => window.dispatchEvent(new Event("apteva:assistant-open",{cancelable:true})));
+    expect(screen.queryByRole("button",{name:"Open chat assistant"})).toBeNull();
+    expect(mounts).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
   test("Helper actions open the dock and insert once after lazy mount without replay on reopen", async () => {
     render(<Dock />);
     const detail = { prompt: "Explain this result", context: { projectId }, handled: false, inline: false };

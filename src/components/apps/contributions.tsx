@@ -1,3 +1,5 @@
+import { settingsDefaults, settingProperties as schemaProperties } from "./widgetSettings";
+import { WidgetConfiguration } from "./WidgetConfiguration";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Ref } from "react";
 import type { ConversationComposerHandle } from "../chat/conversationComposer";
@@ -198,7 +200,7 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
   }, [layoutScope, projectId, publishDocument, user]);
 
   const updateSurface = useCallback(
-    async (surface: string, widgets: WidgetInstance[]) => {
+    async (surface: string, widgets: WidgetInstance[], options?: {rejectOnError?:boolean}) => {
       if (layoutScope === "project" && !projectId) return;
       const stored = serializeWidgetInstances(widgets);
       const current = documentRef.current;
@@ -231,8 +233,17 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
           publishDocument(confirmed, response.revision);
           setSaveState("saved");
         }
-      } catch {
-        if (surfaceSaveVersions.get(queueKey) === version) setSaveState("error");
+      } catch (error) {
+        if (surfaceSaveVersions.get(queueKey) === version) {
+          const latest=documentRef.current;
+          const rollback=layoutScope==="global"?confirmedDocumentRef.current.global:confirmedDocumentRef.current.projects?.[projectId!];
+          const currentScope=layoutScope==="global"?latest.global:latest.projects?.[projectId!];
+          const restored={...currentScope,slots:{...currentScope?.slots}};
+          if(rollback?.slots && Object.hasOwn(rollback.slots,surface))restored.slots[surface]=rollback.slots[surface];else delete restored.slots[surface];
+          publishDocument(layoutScope==="global"?{...latest,global:restored}:{...latest,projects:{...latest.projects,[projectId!]:restored}});
+          setSaveState("error");
+        }
+        if(options?.rejectOnError)throw error;
       } finally {
         if (surfaceSaveQueues.get(queueKey) === request) surfaceSaveQueues.delete(queueKey);
       }
@@ -371,12 +382,7 @@ function normalizedWidgetSize(
 export function defaultWidgetSettings(
   spec: UIComponentSpec,
 ): Record<string, unknown> {
-  const properties = schemaProperties(spec.settings_schema);
-  return Object.fromEntries(
-    Object.entries(properties)
-      .filter(([, property]) => Object.prototype.hasOwnProperty.call(property, "default"))
-      .map(([name, property]) => [name, property.default]),
-  );
+  return settingsDefaults(spec.settings_schema);
 }
 
 export function widgetInstancesFor(
@@ -635,6 +641,8 @@ export function ContributionManager({
   const apps = useInstalledApps(projectId);
   const { project, updateSurface } = useProjectUILayout(projectId);
   const [open, setOpen] = useState(false);
+  const [configuration,setConfiguration]=useState<{scope:string;item:Contribution;instance:WidgetInstance;adding:boolean}|null>(null);
+  const configurationScope=JSON.stringify([projectId,slot,agentId,threadId]);
   const [dragging, setDragging] = useState<string | null>(null);
   const eligibleKeys = useEligibleContributionKeys(projectId, slot, agentId, threadId);
   const options = useMemo(
@@ -646,22 +654,13 @@ export function ContributionManager({
   if (!projectId) return null;
   const configuredAll = storedWidgetInstancesFor(options, slot, project);
   const configured = widgetInstancesFor(options, slot, project);
-  const persist = (next: WidgetInstance[]) => {
-    void updateSurface(slot, next);
-  };
+  const persist = (next: WidgetInstance[],strict=false) => updateSurface(slot,next,{rejectOnError:strict});
   const add = (item: Contribution) => {
-    persist([
-      ...configuredAll,
-      {
-        id: newWidgetInstanceID(item.key),
-        component: item.key,
-        size: defaultWidgetSize(item.spec),
-        settings: defaultWidgetSettings(item.spec),
-      },
-    ]);
+    const instance={id:newWidgetInstanceID(item.key),component:item.key,size:defaultWidgetSize(item.spec),settings:defaultWidgetSettings(item.spec)};
+    if(Object.keys(item.spec.settings_schema?.properties||{}).length){setConfiguration({scope:configurationScope,item,instance,adding:true});return;}
+    void persist([...configuredAll,instance]);
   };
-  const patchInstance = (id: string, patch: Partial<WidgetInstance>) =>
-    persist(configuredAll.map((item) => item.id === id ? { ...item, ...patch } : item));
+  const patchInstance=(id:string,patch:Partial<WidgetInstance>)=>persist(configuredAll.map(item=>item.id===id?{...item,...patch}:item));
   const remove = (id: string) =>
     persist(configuredAll.filter((item) => item.id !== id));
   const move = (id: string, targetID: string) => {
@@ -685,6 +684,14 @@ export function ContributionManager({
       >
         {label}
       </button>
+      {configuration && configuration.scope===configurationScope && options.some(item=>item.key===configuration.item.key&&item.app.install_id===configuration.item.app.install_id) && <WidgetConfiguration
+        key={`${configurationScope}:${configuration.instance.id}:${configuration.item.app.install_id}`}
+        label={configuration.item.spec.label||configuration.item.spec.name} schema={configuration.item.spec.settings_schema} ui={configuration.item.spec.settings_ui}
+        settings={configuration.instance.settings||{}} app={configuration.item.app.name} installId={configuration.item.app.install_id} projectId={projectId} adding={configuration.adding}
+        renderPreview={(settings,ctx)=><ContributionMount instance={{...configuration.instance,settings,contribution:configuration.item}} apps={apps} slot={slot} projectId={projectId} agentId={agentId} threadId={threadId} widgetContext={ctx.context} widgetActions={ctx.actions}/>}
+        onSave={settings=>persist(configuration.adding?[...configuredAll,{...configuration.instance,settings}]:configuredAll.map(widget=>widget.id===configuration.instance.id?{...widget,settings}:widget),true)}
+        onClose={()=>setConfiguration(null)}
+      />}
       {open && (
         <div
           className="fixed inset-0 z-[100] grid place-items-center p-4"
@@ -786,11 +793,7 @@ export function ContributionManager({
                               ))}
                             </div>
                           )}
-                          <WidgetSettingsEditor
-                            schema={item.spec.settings_schema}
-                            settings={instance.settings || {}}
-                            onChange={(settings) => patchInstance(instance.id, { settings })}
-                          />
+                          {!!Object.keys(item.spec.settings_schema?.properties||{}).length && <button type="button" className="mt-3 min-h-10 rounded-lg border border-border px-3 text-sm" onClick={()=>setConfiguration({scope:configurationScope,item,instance:structuredClone({...instance,contribution:undefined}),adding:false})}>Configure</button>}
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
                           <button
@@ -880,27 +883,6 @@ export function ContributionManager({
   );
 }
 
-interface WidgetSettingProperty {
-  type?: string;
-  title?: string;
-  description?: string;
-  default?: unknown;
-  enum?: unknown[];
-  minimum?: number;
-  maximum?: number;
-}
-
-function schemaProperties(schema?: Record<string, unknown>): Record<string, WidgetSettingProperty> {
-  if (!schema || typeof schema.properties !== "object" || !schema.properties || Array.isArray(schema.properties)) {
-    return {};
-  }
-  return Object.fromEntries(
-    Object.entries(schema.properties).filter(
-      ([, property]) => Boolean(property) && typeof property === "object" && !Array.isArray(property),
-    ),
-  ) as Record<string, WidgetSettingProperty>;
-}
-
 function newWidgetInstanceID(component: string): string {
   const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
@@ -921,73 +903,7 @@ function WidgetFootprintPreview({ size }: { size: WidgetSize }) {
   );
 }
 
-export function WidgetSettingsEditor({
-  schema,
-  settings,
-  onChange,
-}: {
-  schema?: Record<string, unknown>;
-  settings: Record<string, unknown>;
-  onChange: (settings: Record<string, unknown>) => void;
-}) {
-  const properties = schemaProperties(schema);
-  if (Object.keys(properties).length === 0) return null;
-  const set = (name: string, value: unknown) => onChange({ ...settings, [name]: value });
-  return (
-    <div className="mt-3 grid gap-2 border-t border-border pt-3 sm:grid-cols-2">
-      {Object.entries(properties).map(([name, property]) => {
-        const label = property.title || name.replaceAll("_", " ");
-        const value = settings[name] ?? property.default;
-        if (property.type === "boolean") {
-          return (
-            <label key={name} className="flex cursor-pointer items-center gap-2 text-[10px] text-text-muted">
-              <input
-                type="checkbox"
-                checked={Boolean(value)}
-                onChange={(event) => set(name, event.target.checked)}
-                className="accent-accent"
-              />
-              <span className="capitalize">{label}</span>
-            </label>
-          );
-        }
-        if (property.enum?.length) {
-          return (
-            <label key={name} className="text-[9px] text-text-dim">
-              <span className="mb-1 block capitalize">{label}</span>
-              <select
-                value={String(value ?? "")}
-                onChange={(event) => set(name, event.target.value)}
-                className="w-full rounded border border-border bg-bg-input px-2 py-1.5 text-[10px] text-text"
-              >
-                {property.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}
-              </select>
-            </label>
-          );
-        }
-        return (
-          <label key={name} className="text-[9px] text-text-dim">
-            <span className="mb-1 block capitalize">{label}</span>
-            <input
-              type={property.type === "integer" || property.type === "number" ? "number" : "text"}
-              min={property.minimum}
-              max={property.maximum}
-              value={String(value ?? "")}
-              onChange={(event) => set(
-                name,
-                property.type === "integer" || property.type === "number"
-                  ? Number(event.target.value)
-                  : event.target.value,
-              )}
-              className="w-full rounded border border-border bg-bg-input px-2 py-1.5 text-[10px] text-text"
-            />
-            {property.description && <span className="mt-1 block">{property.description}</span>}
-          </label>
-        );
-      })}
-    </div>
-  );
-}
+export { WidgetSettingsEditor } from "./WidgetSettingsEditor";
 
 export function SidebarAppManager({
   projectId,

@@ -1,3 +1,4 @@
+import { agentAppRecommendations } from "./agentAppRecommendations";
 import { ProviderBuiltinsEditor } from "../components/ProviderBuiltins";
 import type { RuntimeConnection, AgentBuiltinOverrides } from "../api";
 import { PickerOption } from "../components/PickerOption";
@@ -93,7 +94,6 @@ export interface WizardState {
   proactivity: number;
   unconscious: boolean;
   includeChannels: boolean;
-  recommendedApps: string[]; // surface-only, no install in this flow
   optionalAppSlugs?: string[]; // Explicit setup choices, installed through the usual app flow
   highlights: string[];
   // Explicit selections; project app defaults seed once, template connections
@@ -118,14 +118,13 @@ export const INITIAL: WizardState = {
   boundAppInstallIDs: new Set<number>(),
   boundConnectionIDs: new Set<number>(),
   appAccess: {},
-  recommendedApps: [],
   optionalAppSlugs: [],
   highlights: [],
 };
 
 // Opted-in recommendations use the same install, review and attachment path
 // as template apps. Merely showing a recommendation never selects it.
-function wizardAppRequirements(template: AgentTemplate | null | undefined, state: WizardState): Requirement[] {
+export function wizardAppRequirements(template: AgentTemplate | null | undefined, state: WizardState): Requirement[] {
   const requirements = template?.requirements || [];
   return [
     ...requirements.map((requirement) => requirement.kind === "app" && state.optionalAppSlugs?.includes(requirement.slug || "")
@@ -305,8 +304,8 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
       });
     appsAPI
       .marketplace(currentProject?.id)
-      .then((res) => setMarketplace(res.apps))
-      .catch(() => setMarketplace([]));
+      .then((res) => { if (!cancelled) setMarketplace(res.apps); })
+      .catch(() => { if (!cancelled) setMarketplace([]); });
     integrationsAPI
       .connections(currentProject?.id)
       .then((list) => { if (!cancelled) { connectionInventoryProject.current = currentProject?.id || ""; setConnections(list); setConnectionsLoaded(true); } })
@@ -359,11 +358,11 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
   // skipped. Returns when every required app has reached `running`
   // (or throws on first install error). Parallel POSTs are safe —
   // apps_loader serializes the build step server-side via semaphore.
-  const installRequiredApps = async (tpl: AgentTemplate): Promise<AppRow[]> => {
+  const installRequiredApps = async (requirements: Requirement[]): Promise<AppRow[]> => {
     // Re-read status at submission: an existing row may still be queued or
     // have failed since the wizard loaded. Presence alone is not readiness.
     const currentApps = await appsAPI.list(currentProject?.id);
-    const slugs = [...new Set(tpl.requirements
+    const slugs = [...new Set(requirements
       .filter((r) => r.kind === "app" && r.required && r.slug)
       .map((r) => r.slug!))];
     if (slugs.length === 0) return currentApps;
@@ -463,7 +462,6 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
         directive: t.directive || "",
         mode: t.mode as Mode,
         unconscious: t.unconscious,
-        recommendedApps: t.recommended_apps || [],
         optionalAppSlugs: [],
         highlights: t.highlights || [],
       };
@@ -483,10 +481,10 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
       // are deferred to the agent detail page so the wizard stays
       // short and predictable.
       const selectedTemplate = templates.find((t) => t.id === state.templateID);
-      const tpl = selectedTemplate ? { ...selectedTemplate, requirements: wizardAppRequirements(selectedTemplate, state) } : undefined;
-      const appsAtCreate = tpl ? await installRequiredApps(tpl) : installedApps;
+      const requirements = wizardAppRequirements(selectedTemplate, state);
+      const appsAtCreate = await installRequiredApps(requirements);
       const requiredAppSlugs = new Set(
-        (tpl?.requirements || [])
+        requirements
           .filter((r) => r.kind === "app" && r.required && r.slug)
           .map((r) => r.slug!),
       );
@@ -988,12 +986,6 @@ interface SetupStepProps {
   projectId?: string;
 }
 
-const ESSENTIAL_APPS: Record<string, string> = {
-  conversations: "Give your agent a place to talk with you.",
-  tasks: "Let your agent track and complete tasks.",
-  storage: "Keep files and results in one place.",
-};
-
 export function SetupStep({
   allowAppManagement = true,
   template,
@@ -1031,6 +1023,7 @@ export function SetupStep({
     (r) => r.kind === "integration",
   );
   const requiredSlugs = new Set(requiredApps.map((r) => r.slug!));
+  const templateRequiredSlugs = new Set((template?.requirements || []).filter(r => r.kind === "app" && r.required && r.slug).map(r => r.slug!));
   const effectiveIDs = effectiveAgentAppInstallIDs(
     state.boundAppInstallIDs,
     installedApps,
@@ -1059,40 +1052,18 @@ export function SetupStep({
       app.status === "pending" ||
       selectedIDs.has(app.install_id),
   );
-  const essentials = Object.keys(ESSENTIAL_APPS).flatMap((name) => {
-    if (selectedApps.some((app) => app.name === name)) return [];
-    const candidates = availableApps.filter(
-      (app) => app.name === name && app.status === "running",
-    );
-    const best =
-      candidates.find((app) => !!projectId && app.project_id === projectId) ||
-      candidates[0];
-    return best ? [best] : [];
-  });
-  const collaborationRequired = (template?.requirements || []).some((requirement) => requirement.kind === "app" && requirement.slug === "a2a" && requirement.required);
-  const collaborationApp = installedApps.find((app) => app.name === "a2a" && app.status === "running")
-    || installedApps.find((app) => app.name === "a2a");
-  const collaborationCatalog = marketplace.find((app) => app.name === "a2a" && !app.deprecated);
-  const collaborationSelected = state.optionalAppSlugs?.includes("a2a") || selectedApps.some((app) => app.name === "a2a");
-  const toggleCollaboration = () => setState((current) => {
-    const optionalAppSlugs = (current.optionalAppSlugs || []).filter((slug) => slug !== "a2a");
-    const boundAppInstallIDs = new Set(current.boundAppInstallIDs);
-    const appAccess = { ...current.appAccess };
-    if (collaborationSelected) {
-      for (const app of installedApps.filter((app) => app.name === "a2a")) {
-        boundAppInstallIDs.delete(app.install_id);
-        delete appAccess[app.install_id];
-      }
-    } else optionalAppSlugs.push("a2a");
-    return { ...current, optionalAppSlugs, boundAppInstallIDs, appAccess };
-  });
+  const templateRecommended = template?.recommended_apps || [];
+  const selectedSlugs = new Set([...selectedApps.map(app => app.name), ...requiredSlugs]);
+  const recommendationPool = agentAppRecommendations(installedApps, marketplace, templateRecommended, new Set(), projectId);
+  const recommendations = recommendationPool.filter(item => !selectedSlugs.has(item.slug));
+  const isRecommended = (app: AppRow) => !!app.agent_setup?.recommended || templateRecommended.includes(app.name);
   const matches = (...values: (string | undefined)[]) =>
     values.join(" ").toLowerCase().includes(query.trim().toLowerCase());
   const filteredApps = availableApps
-    .filter((app) => matches(app.display_name, app.name, app.description))
+    .filter((app) => matches(app.display_name, app.name, app.description, app.agent_setup?.reason))
     .sort(
       (a, b) =>
-        Number(!!ESSENTIAL_APPS[b.name]) - Number(!!ESSENTIAL_APPS[a.name]) ||
+        Number(isRecommended(b)) - Number(isRecommended(a)) ||
         a.display_name.localeCompare(b.display_name),
     );
   const filteredConnections = connections.filter(
@@ -1163,23 +1134,28 @@ export function SetupStep({
   const toggleApp = (id: number) => {
     if (
       installedApps.some(
-        (app) => app.install_id === id && requiredSlugs.has(app.name),
+        (app) => app.install_id === id && templateRequiredSlugs.has(app.name),
       )
     )
       return;
     setState((current) => {
       const next = new Set(current.boundAppInstallIDs);
       const appAccess = { ...current.appAccess };
-      if (next.has(id)) {
+      if (selectedIDs.has(id)) {
         next.delete(id);
         delete appAccess[id];
       } else {
         next.add(id);
         appAccess[id] = appAccess[id] || defaultAppAccessDraft();
       }
-      return { ...current, boundAppInstallIDs: next, appAccess };
+      return { ...current, boundAppInstallIDs: next, appAccess, optionalAppSlugs: (current.optionalAppSlugs || []).filter(slug => slug !== installedApps.find(app => app.install_id === id)?.name) };
     });
   };
+  const toggleQueuedApp = (slug: string) => setState(current => ({
+    ...current, optionalAppSlugs: current.optionalAppSlugs?.includes(slug)
+      ? current.optionalAppSlugs.filter(value => value !== slug)
+      : [...(current.optionalAppSlugs || []), slug],
+  }));
   const updateAppAccess = (id: number, patch: Partial<AppAccessDraft>) =>
     setState((current) => ({
       ...current,
@@ -1240,23 +1216,6 @@ export function SetupStep({
         </p>
       )}
 
-      {!collaborationRequired && (
-        <div className="rounded-lg border border-border bg-bg-card p-4">
-          <label className="flex cursor-pointer items-start gap-3">
-            <input type="checkbox" checked={!!collaborationSelected} onChange={toggleCollaboration}
-              disabled={!collaborationSelected && !collaborationApp && !collaborationCatalog}
-              className="mt-1 h-4 w-4 shrink-0 accent-[var(--accent)]" />
-            <AppIcon src={collaborationApp?.icon || collaborationCatalog?.icon} iconStyle={collaborationApp?.icon_style || collaborationCatalog?.icon_style} name="Agent to Agent" size="sm" />
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-text">Work with other agents <span className="ml-1 text-xs font-normal text-text-dim">Optional</span></span>
-              <span className="mt-1 block text-xs leading-relaxed text-text-muted">Add Agent to Agent (A2A) if this agent will delegate tasks, ask specialists for help, or share results. Other participating agents also need A2A.</span>
-              <span className="mt-2 block text-xs text-text-dim">{collaborationApp?.status === "running" ? "Uses your existing A2A app." : collaborationApp ? "Check the existing A2A app in Apps before creating this agent." : collaborationCatalog ? "Installs A2A when you create this agent, if selected." : "A2A is unavailable in the app catalog. You can add it later."} Remote peers are configured separately.</span>
-            </span>
-          </label>
-          <p className="mt-3 text-xs text-text-dim">Want it for every new agent? Enable “Default for new agents” on A2A in Apps.</p>
-        </div>
-      )}
-
       <section aria-labelledby="setup-apps-heading" className="space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -1283,7 +1242,7 @@ export function SetupStep({
         </div>
         <div className={gridClass}>
           {selectedApps.map((app) => {
-            const required = requiredSlugs.has(app.name);
+            const required = (template?.requirements || []).some(r => r.kind === "app" && r.slug === app.name && r.required);
             const permissionCatalog = permissionCatalogs[app.install_id];
             const scoped =
               !!permissionCatalog?.permissions?.length &&
@@ -1322,14 +1281,14 @@ export function SetupStep({
                   )}
                 </div>
                 <p className="mt-3 line-clamp-2 text-xs leading-relaxed text-text-muted">
-                  {ESSENTIAL_APPS[app.name] || app.description}
+                  {app.agent_setup?.reason || app.description}
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {required && (
+                  {requiredSlugs.has(app.name) && (
                     <span className={badgeClass}>{state.optionalAppSlugs?.includes(app.name) ? "Added during setup" : "Required by template"}</span>
                   )}
-                  {ESSENTIAL_APPS[app.name] && (
-                    <span className={badgeClass}>Essential</span>
+                  {isRecommended(app) && (
+                    <span className={badgeClass}>Recommended</span>
                   )}
                   {app.default_for_new_agents && !required && (
                     <span className="text-[10px] text-text-muted">
@@ -1397,6 +1356,7 @@ export function SetupStep({
                       requirement.slug}
                   </h4>
                 </div>
+                {state.optionalAppSlugs?.includes(requirement.slug || "") && !templateRequiredSlugs.has(requirement.slug || "") && <button type="button" aria-label={`Remove ${entry?.display_name || requirement.slug}`} onClick={() => toggleQueuedApp(requirement.slug!)} className="mt-2 text-xs text-text-muted hover:text-red">Remove</button>}
                 <p className="mt-3 text-xs leading-relaxed text-text-muted">
                   {requirement.reason ||
                     "This app is required by the selected template."}
@@ -1429,45 +1389,19 @@ export function SetupStep({
             No apps selected yet. Add the tools this agent should use.
           </p>
         )}
-        {essentials.length > 0 && (
-          <div className="rounded-lg border border-border p-4">
-            <h4 className="text-xs font-semibold text-text">
-              Useful essentials{" "}
-              <span className="ml-2 font-normal text-text-muted">
-                Already installed
-              </span>
-            </h4>
-            <div className="mt-3 flex flex-wrap gap-3">
-              {essentials.map((app) => (
-                <button
-                  type="button"
-                  key={app.install_id}
-                  onClick={() => toggleApp(app.install_id)}
-                  className="flex items-center gap-3 rounded-lg bg-bg-card px-3 py-2 text-left hover:bg-bg-hover"
-                  aria-label={`Add ${app.display_name || app.name}`}
-                >
-                  <AppIcon
-                    src={app.icon}
-                    iconStyle={app.icon_style}
-                    name={app.display_name || app.name}
-                    size="sm"
-                    className="text-accent"
-                  />
-                  <span>
-                    <span className="block text-xs font-semibold text-text">
-                      {app.display_name || app.name}
-                    </span>
-                    <span className="block text-[11px] text-text-muted">
-                      {app.project_id ? "Project" : "Global"} ·{" "}
-                      {ESSENTIAL_APPS[app.name]}
-                    </span>
-                  </span>
-                  <span className="text-accent">+</span>
-                </button>
-              ))}
-            </div>
+        {recommendations.length > 0 && <div className="space-y-2" aria-label="Recommended apps">
+          <h4 className="text-xs font-semibold text-text">Recommended apps</h4>
+          <div className="divide-y divide-border rounded-lg border border-border">
+            {recommendations.map(item => {
+              const canAdd = item.installed ? item.installed.status === "running" : allowAppManagement && !!item.catalog?.manifest_url;
+              return <div key={item.slug} className="flex min-w-0 items-center gap-3 p-3">
+                <AppIcon src={item.icon} iconStyle={item.iconStyle} name={item.name} size="sm" />
+                <div className="min-w-0 flex-1"><p className="text-xs font-semibold">{item.name}</p><p className="text-xs text-text-muted">{item.reason}</p><p className="mt-1 text-[11px] text-text-dim">{item.installed ? item.installed.status === "running" ? item.installed.project_id ? "Installed in this project" : "Shared global installation" : `Unavailable · ${item.installed.status}` : "Installs when you create the agent"}</p></div>
+                <button type="button" aria-label={`Add ${item.name}`} disabled={!canAdd} className={`${buttonClass} disabled:opacity-40`} onClick={() => item.installed ? toggleApp(item.installed.install_id) : toggleQueuedApp(item.slug)}>Add</button>
+              </div>;
+            })}
           </div>
-        )}
+        </div>}
       </section>
 
       <section
@@ -1687,15 +1621,15 @@ export function SetupStep({
                 <PickerOption
                   key={app.install_id}
                   selected={selectedIDs.has(app.install_id)}
-                  disabled={requiredSlugs.has(app.name)}
+                  disabled={templateRequiredSlugs.has(app.name)}
                   onToggle={() => toggleApp(app.install_id)}
                   name={app.display_name || app.name}
-                  description={`${app.project_id ? "Project" : "Global"} · v${app.version}${ESSENTIAL_APPS[app.name] ? ` · ${ESSENTIAL_APPS[app.name]}` : app.description ? ` · ${app.description}` : ""}`}
+                  description={`${app.project_id ? "Project" : "Global"} · v${app.version}${app.agent_setup?.reason ? ` · ${app.agent_setup.reason}` : app.description ? ` · ${app.description}` : ""}`}
                   badge={
                     requiredSlugs.has(app.name)
                       ? "Required by template"
-                      : ESSENTIAL_APPS[app.name]
-                        ? "Essential"
+                      : isRecommended(app)
+                        ? "Recommended"
                         : undefined
                   }
                   icon={
@@ -1709,7 +1643,15 @@ export function SetupStep({
                   }
                 />
               ))}
-              {filteredApps.length === 0 && (
+              {recommendationPool.filter(item => !item.installed && matches(item.name, item.slug, item.reason)).map(item => <PickerOption
+                key={`catalog:${item.slug}`}
+                name={item.name} description={`${item.reason} · Installs on Create`}
+                badge={templateRequiredSlugs.has(item.slug) ? "Required by template" : "Recommended"}
+                selected={requiredSlugs.has(item.slug)} disabled={templateRequiredSlugs.has(item.slug) || !allowAppManagement || !item.catalog?.manifest_url}
+                onToggle={() => toggleQueuedApp(item.slug)}
+                icon={<AppIcon src={item.icon} iconStyle={item.iconStyle} name={item.name} size="md" />}
+              />)}
+              {filteredApps.length === 0 && !recommendationPool.some(item => !item.installed && matches(item.name, item.slug, item.reason)) && (
                 <p className="p-5 text-sm text-text-muted">
                   {query
                     ? "No installed apps match your search."
@@ -1813,7 +1755,7 @@ export function SetupStep({
           <div className="flex flex-wrap items-center gap-3 text-xs text-text-muted">
             <span>
               {picker === "apps"
-                ? selectedApps.length
+                ? selectedApps.length + missingApps.length
                 : selectedConnections.length}{" "}
               selected
             </span>

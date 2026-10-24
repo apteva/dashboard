@@ -17,12 +17,13 @@ export function ChatAssistantSettings() {
   const choices = directory?.choices || [];
   const defaultAvailable = choices.some((choice) => targetKey(choice.target) === targetKey(draft.defaultTarget));
   const fieldClass = "grid gap-2 text-sm text-text";
-  return <div className="mx-auto max-w-3xl space-y-5">
+  return <div className="w-full space-y-5">
     <header><h2 className="text-base font-bold text-text">Chat assistant</h2><p className="mt-1 text-sm text-text-muted">Your floating chat button in {currentProject?.name}. Shown by default when Conversations is available; hide it here at any time. Preferences apply to your account in this project.</p></header>
     {loading && <p className="text-xs text-text-muted">Checking available agents…</p>}
     {error && <p role="alert" className="text-sm text-red">{error} <button onClick={refresh} className="underline">Retry</button></p>}
     {!loading && !available && <p className="rounded-lg border border-border p-4 text-sm text-text-muted">Requires Conversations to be installed and running in this project or globally. <Link to="/apps" className="text-accent">Manage apps</Link></p>}
     <section className="grid gap-6 rounded-lg border border-border bg-bg-card p-5">
+      {preferences.enabled && available && <div><button type="button" onClick={() => window.dispatchEvent(new Event("apteva:assistant-open", { cancelable: true }))} className="min-h-10 rounded-md border border-border px-4 text-sm text-text hover:border-accent">Open assistant</button></div>}
       <label className="grid gap-1 text-sm text-text"><span className="flex items-center gap-3"><input type="checkbox" checked={draft.sharePageContext} onChange={event => setDraft({ ...draft, sharePageContext: event.target.checked })} />Share current page context</span><span className="text-xs text-text-muted">Shares project and page identifiers with each message, never page contents or form values. You can remove context above the composer.</span></label>
       <label className="flex items-center gap-3 text-sm text-text"><input type="checkbox" checked={draft.enabled} disabled={!available && !draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />Show floating chat button</label>
       <label className={fieldClass}>Default agent

@@ -157,6 +157,7 @@ export function Dashboard({ page, pageProjectId }: {
       defaultSize: defaultWidgetSize(contribution.spec),
       defaultSettings: defaultWidgetSettings(contribution.spec),
       settingsSchema: contribution.spec.settings_schema,
+      settingsUI: contribution.spec.settings_ui, sourceApp: contribution.app.name, sourceInstallId: contribution.app.install_id,
       suggested: contribution.spec.suggested,
       kind: "app",
       providerLabel: contribution.app.display_name || contribution.app.name,

@@ -401,7 +401,7 @@ export function SetupFlow({ projectId, userId, onFinish, initialInterfaceLevel =
           </section>;
         })}
       </div></details>}
-      {!!preview.preset.connections?.length && <PresetConnectionGuide steps={preview.preset.connections} projectId={projectId} enabled={!!result} />}
+      {!!preview.preset.connections?.length && <PresetConnectionGuide steps={preview.preset.connections} projectId={projectId} enabled={!!result} compact={preview.agents.length === 1} />}
       {!!preview.warnings?.length && !result && <details className="rounded-lg border border-border p-4 text-sm text-text-muted"><summary className="cursor-pointer font-medium text-text">App and widget availability</summary><p className="mt-2">Setup will install the available apps. Apps or widgets that still need attention will be listed afterward.</p><div className="mt-3 space-y-2">{preview.warnings.map((warning, i) => <p key={i}>{warning}</p>)}</div></details>}
       {!result && <div className="sticky bottom-0 border-t border-border bg-bg py-4 pb-[max(1rem,env(safe-area-inset-bottom))]"><p className="mb-3 text-xs leading-relaxed text-text-muted">This will create {preview.agents.length} agent{preview.agents.length === 1 ? "" : "s"}, install missing apps, and add the planned widgets. Existing workspace content is preserved.</p>{error && <p role="alert" className="mb-3 text-sm text-red">{error}</p>}<button onClick={() => apply()} className="min-h-11 w-full rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-bg disabled:opacity-50 sm:w-auto">{busy ? "Creating your workspace…" : "Confirm and create workspace"}</button></div>}
       {result && <SetupResult result={result} retry={() => apply()} finish={finish} />}
@@ -651,13 +651,13 @@ function isPlannedSetupNotice(warning: string) {
 function SetupResult({ result, retry, finish }: { result: ApplyResult; retry: () => void; finish: (destination: string) => void }) {
   const agents = [...result.created_agents, ...result.existing_agents];
   const ready = result.status === "applied" && agents.length > 0 && agents.every((agent) => agent.status === "running") && !result.warnings?.length;
-  const destination = "/";
+  const destination = agents.length === 1 ? `/conversations?agent=${agents[0]!.id}` : "/";
   return <section className="space-y-3 rounded-xl border border-border p-4" aria-label="Setup result">
     <h2 className="font-semibold text-text">{ready ? "Your setup is ready" : "Your setup needs attention"}</h2>
     <p className="text-sm text-text-muted">{result.created_agents.length} agents created · {result.existing_agents.length} existing agents reused</p>
     {agents.map((agent) => <p key={agent.id} className="text-sm text-text">{agent.name} · {agent.status}</p>)}
     {result.warnings?.map((warning, index) => <p key={index} className="text-sm text-text-muted">{warning}</p>)}
-    <div className="flex flex-wrap gap-2">{!!agents.length && <button onClick={() => finish(destination)} className={secondaryClass}>Finish setup</button>}{!ready && <button onClick={retry} className={secondaryClass}>Retry setup</button>}</div>
+    <div className="flex flex-wrap gap-2">{!!agents.length && <button onClick={() => finish(destination)} className={secondaryClass}>{agents.length === 1 && ready ? `Talk to ${agents[0]!.name}` : "Finish setup"}</button>}{!ready && <button onClick={retry} className={secondaryClass}>Retry setup</button>}</div>
   </section>;
 }
 
