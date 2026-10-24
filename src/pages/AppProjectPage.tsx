@@ -15,6 +15,7 @@ import { usePageTitle } from "../hooks/usePageTitle";
 import { useAssistantPageDetails } from "../components/chat/pageContext";
 import { resolvePanelComponent } from "../components/apps/nativePanels";
 
+import { AppHostFrame } from "../components/apps/hostUI";
 import { LiveAppPanel } from "../components/apps/LiveAppPanel";
 import { ProjectAppWorkspaceRail } from "../components/apps/ProjectAppWorkspaceRail";
 
@@ -151,6 +152,7 @@ export function AppProjectPage() {
       <div className="h-full">
         <LiveAppPanel
           component={Native}
+          hostSurface={{hostUI:panel.host_ui, foreground:true, surface:panel.slot+":"+panel.entry}}
           appName={app.name}
           installId={app.install_id}
           projectId={panelProjectId}
@@ -169,12 +171,9 @@ export function AppProjectPage() {
 
   return (
     <div className="h-full">
-      <iframe
-        src={src}
-        title={`${app.display_name || app.name} — ${panel.label}`}
-        className="w-full h-full border-0"
-        sandbox="allow-scripts allow-same-origin"
-      />
+      <AppHostFrame src={src} title={`${app.display_name || app.name} — ${panel.label}`}
+        projectId={panelProjectId} installId={app.install_id} surface={panel.slot+":"+panel.entry}
+        foreground hostUI={panel.host_ui} />
     </div>
   );
 }

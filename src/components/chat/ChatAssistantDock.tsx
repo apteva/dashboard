@@ -1,3 +1,4 @@
+import { useHostLauncherHidden } from "../apps/hostUI";
 import { AssistantConversation } from "./AssistantConversation";
 import { helperDraftRequest, helperWelcomeSettings, type HelperDraftRequest } from "./conversationComposer";
 import { useEffect, useRef, useState } from "react";
@@ -47,6 +48,7 @@ export function ChatAssistantDock() {
   return <ProjectChatAssistant key={projectId} projectId={projectId} helperSetupError={helperSetupError} />;
 }
 function ProjectChatAssistant({ projectId, helperSetupError }: { projectId: string; helperSetupError: string }) {
+  const launcherHidden = useHostLauncherHidden(projectId);
   const { currentProject } = useProjects();
   const pageContext = useAssistantPageContext(projectId, currentProject?.name);
   const { preferences, save } = useAssistantPreferences(projectId);
@@ -80,6 +82,11 @@ function ProjectChatAssistant({ projectId, helperSetupError }: { projectId: stri
     window.addEventListener("apteva:helper-prompt", ask);
     return () => window.removeEventListener("apteva:helper-prompt", ask);
   }, [available, choices, projectId]);
+  useEffect(() => {
+    const show = (event: Event) => { if (available) { event.preventDefault(); setOpen(true); refresh(); } };
+    window.addEventListener("apteva:assistant-open", show);
+    return () => window.removeEventListener("apteva:assistant-open", show);
+  }, [available, refresh]);
   // A preference change must not leave a previously allowed target mounted.
   const configuration = JSON.stringify([preferences.defaultTarget, preferences.allowSwitching, preferences.targets]);
   useEffect(() => { setSelected(null); }, [configuration]);
@@ -99,9 +106,9 @@ function ProjectChatAssistant({ projectId, helperSetupError }: { projectId: stri
   }, [open]);
   if (!available) return null;
   return <>
-    <button ref={launcher} type="button" onClick={() => { setSelected(null); refresh(); setOpen(true); }} className="floating-chat-launcher-safe touch-target fixed z-40 flex h-12 w-12 items-center justify-center rounded-full border border-accent/50 bg-accent text-bg shadow-xl hover:bg-accent-hover" title="Chat assistant" aria-label="Open chat assistant" aria-haspopup="dialog">
+    {!launcherHidden && <button ref={launcher} type="button" onClick={() => { setSelected(null); refresh(); setOpen(true); }} className="floating-chat-launcher-safe touch-target fixed z-40 flex h-12 w-12 items-center justify-center rounded-full border border-accent/50 bg-accent text-bg shadow-xl hover:bg-accent-hover" title="Chat assistant" aria-label="Open chat assistant" aria-haspopup="dialog">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z" /></svg>
-    </button>
+    </button>}
     <dialog ref={panel} tabIndex={-1} aria-label="Chat assistant" onCancel={() => setOpen(false)} onClose={() => { setOpen(false); launcher.current?.focus(); }} className={`fixed inset-auto right-0 z-50 m-0 w-full max-w-full overflow-hidden rounded-none border border-border bg-bg p-0 text-text shadow-2xl sm:right-4 sm:w-[520px] sm:max-w-[calc(100vw-2rem)] sm:rounded-xl ${voiceSession ? "bottom-40 h-[min(620px,calc(100dvh-12rem))]" : "bottom-0 h-[100dvh] max-h-[100dvh] sm:bottom-4 sm:h-[min(720px,85dvh)]"}`}>
       {open && <div className="flex h-full min-h-0 flex-col">
         <header className="flex min-h-14 shrink-0 items-center gap-2 border-b border-border px-3">

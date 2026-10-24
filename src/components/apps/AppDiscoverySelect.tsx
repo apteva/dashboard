@@ -17,9 +17,8 @@
 // The route must be something the app exposes on its HTTPRoutes()
 // surface — typically a list endpoint already used by the app's own
 // panel.
-
-import { useEffect, useState } from "react";
-
+import { useAppDiscovery } from "./appDiscovery";
+export { pluckList, pluckField } from "./appDiscovery";
 export interface AppDiscoveryField {
   name?: string;
   app?: string;
@@ -31,149 +30,66 @@ export interface AppDiscoveryField {
     label_field?: string;
   };
 }
-
 export function AppDiscoverySelect({
   field,
   value,
   onChange,
-  installId, projectId, requiresBinding = false,
+  installId,
+  projectId,
+  requiresBinding = false,
 }: {
-  installId?: number; projectId?: string; requiresBinding?: boolean;
   field: AppDiscoveryField;
   value: string;
-  onChange: (v: string) => void;
+  onChange: (value: string) => void;
+  installId?: number;
+  projectId?: string;
+  requiresBinding?: boolean;
 }) {
-  const [options, setOptions] = useState<{ value: string; label: string }[] | null>(
-    null,
-  );
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string>("");
-
-  useEffect(() => {
-    setOptions(null);
-    setErr("");
-    setLoading(false);
-    if (requiresBinding && !installId) { setErr("Connect the required app first."); return; }
-    if (!field.app || !field.discovery?.route) return;
-    setLoading(true);
-    const target = new URL(`/api/apps/${encodeURIComponent(field.app)}${field.discovery.route}`, window.location.origin);
-    if (installId) target.searchParams.set("install_id", String(installId));
-    if (projectId) target.searchParams.set("project_id", projectId);
-    const url = target.pathname + target.search;
-    let cancelled = false;
-    fetch(url, { credentials: "same-origin" })
-      .then(async (r) => {
-        if (!r.ok) {
-          let body = "";
-          try {
-            body = await r.text();
-          } catch {
-            /* ignore */
-          }
-          if (r.status === 404) {
-            throw new Error(
-              `${field.app} app not installed — install it first to populate this list`,
-            );
-          }
-          const trim = body.length > 120 ? body.slice(0, 120) + "…" : body;
-          throw new Error(`HTTP ${r.status}: ${trim}`);
-        }
-        const data = await r.json();
-        const items = pluckList(data, field.discovery?.response_path || "");
-        const opts = items
-          .map((it) => {
-            const v = pluckField(it, field.discovery?.value_field || "");
-            const l = pluckField(it, field.discovery?.label_field || "");
-            return { value: v, label: l || v };
-          })
-          .filter((o) => o.value !== "");
-        if (!cancelled) setOptions(opts);
-      })
-      .catch((e) => {
-        if (!cancelled) setErr(e?.message || "discovery failed");
-      })
-      .finally(() => setLoading(false));
-    return () => { cancelled = true; };
-  }, [field.app, field.discovery?.route, field.discovery?.response_path, field.discovery?.value_field, field.discovery?.label_field, installId, projectId, requiresBinding]);
-
-  if (loading) {
-    return <div className="text-text-dim text-[11px]">Loading options…</div>;
-  }
-
-  const hasOptions = options && options.length > 0;
-  const showFallback = !hasOptions && field.fallback === "text";
-
-  if (showFallback) {
+  const d = field.discovery;
+  const { options, error, loading, retry } = useAppDiscovery({
+    app: field.app,
+    route: d?.route,
+    installId,
+    projectId,
+    responsePath: d?.response_path,
+    valueField: d?.value_field,
+    labelField: d?.label_field,
+    enabled: !requiresBinding || !!installId,
+  });
+  if (requiresBinding && !installId)
+    return <p className="text-xs text-red">Connect the required app first.</p>;
+  if (loading) return <p className="text-xs text-text-dim">Loading options…</p>;
+  if (!options.length)
     return (
-      <>
-        <div className="text-yellow text-[11px] leading-snug">
-          {err
-            ? `Couldn't auto-list options: ${err}.`
-            : `No options returned by ${field.app} — enter the value manually.`}
-        </div>
-        <input
-          type="text"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="value"
-          className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
-        />
-      </>
-    );
-  }
-
-  if (!hasOptions) {
-    return (
-      <div className="text-red text-[11px]">
-        {err || "No options returned by discovery."}
+      <div className="space-y-2">
+        <p className="text-xs text-text-muted">
+          {error || "No options returned by discovery."}
+        </p>
+        <button type="button" onClick={retry} className="text-xs text-accent">
+          Retry
+        </button>
+        {field.fallback === "text" && (
+          <input
+            type="text"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            className="w-full rounded border border-border bg-bg-card px-2 py-1 text-sm"
+          />
+        )}
       </div>
     );
-  }
-
   return (
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full bg-bg-card border border-border rounded px-2 py-1 text-sm"
+      className="w-full rounded border border-border bg-bg-card px-2 py-1 text-sm"
     >
       <option value="">(choose…)</option>
-      {options!.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
+      {options.map((option, index) => (
+        <option key={index} value={String(option.value)}>
+          {option.label}
         </option>
       ))}
     </select>
   );
-}
-
-// pluckList walks a JSON path through `data`, returning whatever's
-// at the end as an array. Path uses "." to descend object keys;
-// missing keys → []. Empty path = use `data` itself.
-export function pluckList(data: unknown, path: string): unknown[] {
-  if (!path) {
-    return Array.isArray(data) ? data : [];
-  }
-  let cur: unknown = data;
-  for (const seg of path.split(".")) {
-    if (cur == null || typeof cur !== "object") return [];
-    cur = (cur as Record<string, unknown>)[seg];
-  }
-  if (cur == null) return [];
-  return Array.isArray(cur) ? cur : [cur];
-}
-
-// pluckField extracts one named field from an item; empty path
-// returns the item itself if it's a string. Coerces numbers/booleans
-// to string so the dropdown value can round-trip through the config
-// store (which is string-keyed).
-export function pluckField(item: unknown, field: string): string {
-  if (!field) {
-    return typeof item === "string" ? item : "";
-  }
-  if (item == null || typeof item !== "object") return "";
-  const v = (item as Record<string, unknown>)[field];
-  if (v == null) return "";
-  if (typeof v === "string") return v;
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  return "";
 }

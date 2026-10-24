@@ -1,13 +1,13 @@
 import { PresetConnectionGuide } from "../projects/PresetConnectionGuide";
 import { WidgetGallery } from "./WidgetGallery";
 import { WidgetIcon } from "./WidgetIcon";
-import { Modal } from "../Modal";
+import { WidgetConfiguration } from "./WidgetConfiguration";
+import type { WidgetSettingsUI } from "./widgetSettings";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   reorderWidgetInstances,
   useProjectUILayout,
-  WidgetSettingsEditor,
   type WidgetInstance,
   type WidgetSize,
 } from "./contributions";
@@ -28,6 +28,9 @@ export interface WidgetDefinition {
   defaultSize: WidgetSize;
   defaultSettings?: Record<string, unknown>;
   settingsSchema?: Record<string, unknown>;
+  settingsUI?: WidgetSettingsUI;
+  sourceApp?: string;
+  sourceInstallId?: number;
   suggested?: boolean;
   /** Show this widget on a fresh layout before the user customizes it. */
   defaultVisible?: boolean;
@@ -79,9 +82,17 @@ export function WidgetCanvas({
   className?: string;
 }) {
   const { project, updateSurface, saveState } = useProjectUILayout(projectId, layoutScope);
+  const [activePane, setActivePane] = useState<string | null>(null);
+  useEffect(() => setActivePane(null), [projectId, slot]);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [dragging, setDragging] = useState<string | null>(null);
-  const [settingsID, setSettingsID] = useState<string | null>(null);
+  const [configuration, setConfiguration] = useState<{
+    scope: string;
+    instance: WidgetInstance;
+    adding: boolean;
+    installId?: number;
+  } | null>(null);
+  const configurationScope = JSON.stringify([projectId, layoutScope, slot]);
   const widgetActions = useMemo(() => createWidgetActionBridge(onWidgetAction), [onWidgetAction]);
   const renderContext = useMemo<WidgetRenderContext>(() => ({
     context: context || { scope: layoutScope },
@@ -121,25 +132,25 @@ export function WidgetCanvas({
     if (visible.length === 0 && editing && !keepEditingWhenEmpty) onEditingChange(false);
   }, [definitionsReady, editing, keepEditingWhenEmpty, onEditingChange, onVisibleComponentsChange, visibleComponentsKey]);
 
-  const persist = (next: WidgetInstance[]) => {
+  const persist = (next: WidgetInstance[], strict = false) => {
     if (layoutScope === "project" && !projectId) return;
-    void updateSurface(slot, ensureRequiredWidgets(next, definitions));
+    return updateSurface(slot, ensureRequiredWidgets(next, definitions), { rejectOnError: strict });
   };
   const add = (definition: WidgetDefinition) => {
     if (definition.required && configured.some((item) => item.component === definition.key)) return;
-    persist([
-      ...configured,
-      {
-        id: newWidgetID(definition.key),
-        component: definition.key,
-        size: definition.defaultSize,
-        settings: { ...(definition.defaultSettings || {}) },
-      },
-    ]);
+    const instance: WidgetInstance = {
+      id: newWidgetID(definition.key), component: definition.key, size: definition.defaultSize,
+      settings: { ...(definition.defaultSettings || {}) },
+    };
     setGalleryOpen(false);
+    if (Object.keys(definition.settingsSchema?.properties || {}).length) {
+      setConfiguration({ scope: configurationScope, instance, adding: true, installId: definition.sourceInstallId });
+      return;
+    }
+    void persist([...configured, instance]);
   };
-  const patchWidget = (id: string, patch: Partial<WidgetInstance>) =>
-    persist(configured.map((item) => item.id === id ? { ...item, ...patch } : item));
+  const patchWidget = (id: string, patch: Partial<WidgetInstance>) => persist(configured.map((item) => item.id === id ? { ...item, ...patch } : item));
+
   const remove = (id: string) => {
     const instance = configured.find((item) => item.id === id);
     if (instance && byKey.get(instance.component)?.required) return;
@@ -147,12 +158,9 @@ export function WidgetCanvas({
   };
   const move = (id: string, target: string) =>
     persist(reorderWidgetInstances(configured, id, target));
-  const activeSettings = settingsID
-    ? configured.find((item) => item.id === settingsID)
-    : undefined;
-  const activeSettingsDefinition = activeSettings
-    ? byKey.get(activeSettings.component)
-    : undefined;
+  const activeSettings = configuration?.scope === configurationScope ? configuration : null;
+  const activeSettingsDefinition = activeSettings ? byKey.get(activeSettings.instance.component) : undefined;
+
 
   return (
     <section className="space-y-3">
@@ -207,6 +215,8 @@ export function WidgetCanvas({
             return (
               <div
                 key={instance.id}
+                onFocusCapture={() => setActivePane(instance.id)}
+                onPointerDownCapture={() => setActivePane(instance.id)}
                 onDragEnd={() => setDragging(null)}
                 onDragOver={(event) => editing && event.preventDefault()}
                 onDrop={() => {
@@ -257,7 +267,7 @@ export function WidgetCanvas({
                     {definition.settingsSchema && (
                       <button
                         type="button"
-                        onClick={() => setSettingsID(instance.id)}
+                        onClick={() => setConfiguration({scope:configurationScope,instance:structuredClone(instance),adding:false,installId:definition.sourceInstallId})}
                         className="flex h-10 w-10 sm:h-7 sm:w-7 items-center justify-center rounded text-[11px] text-text-muted hover:bg-bg-hover hover:text-text"
                         aria-label={`Configure ${definition.label}`}
                       >
@@ -292,7 +302,7 @@ export function WidgetCanvas({
                   </div>
                 )}
                 <div className={`min-w-0 ${editing ? "min-h-0 flex-1" : "h-full"}`}>
-                  {instance.agent_id === -1 ? <p className="rounded-lg border border-border p-4 text-sm text-text-muted">This widget is waiting for its preset agent. Retry workspace setup to finish creating it.</p> : definition.render(instance, renderContext)}
+                  {instance.agent_id === -1 ? <p className="rounded-lg border border-border p-4 text-sm text-text-muted">This widget is waiting for its preset agent. Retry workspace setup to finish creating it.</p> : definition.render(instance, { ...renderContext, context: { ...renderContext.context, hostForeground: workspaceLayout && !editing && (activePane || visible.find(item => (item.placement || "main") === "main")?.id || visible[0]?.id) === instance.id } })}
                   {!!instance.setup?.length && <PresetConnectionGuide steps={instance.setup} projectId={projectId || undefined} compact /> }
                 </div>
               </div>
@@ -309,12 +319,22 @@ export function WidgetCanvas({
           onClose={() => setGalleryOpen(false)}
         />
       )}
-      {activeSettings && activeSettingsDefinition && (
-        <WidgetSettingsDialog
-          definition={activeSettingsDefinition}
-          settings={activeSettings.settings || {}}
-          onChange={(settings) => patchWidget(activeSettings.id, { settings })}
-          onClose={() => setSettingsID(null)}
+      {activeSettings && activeSettingsDefinition && activeSettings.installId===activeSettingsDefinition.sourceInstallId && (
+        <WidgetConfiguration key={`${configurationScope}:${activeSettings.instance.id}:${activeSettings.installId}`}
+          label={activeSettingsDefinition.label} schema={activeSettingsDefinition.settingsSchema} ui={activeSettingsDefinition.settingsUI}
+          app={activeSettingsDefinition.sourceApp} installId={activeSettingsDefinition.sourceInstallId} projectId={projectId||undefined}
+          settings={activeSettings.instance.settings||{}} adding={activeSettings.adding} context={renderContext.context}
+          renderPreview={(settings,previewContext)=>activeSettingsDefinition.render({...activeSettings.instance,settings},previewContext)}
+          onSave={settings => {
+            if (!activeSettings.adding && !configured.some(widget => widget.id === activeSettings.instance.id)) {
+              throw new Error("This widget was removed. Add it again to configure it.");
+            }
+            const next = activeSettings.adding
+              ? [...configured, { ...activeSettings.instance, settings }]
+              : configured.map(widget => widget.id === activeSettings.instance.id ? { ...widget, settings } : widget);
+            return persist(next, true);
+          }}
+          onClose={()=>setConfiguration(null)}
         />
       )}
     </section>
@@ -416,32 +436,4 @@ function newWidgetID(component: string) {
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   return `${component}:${suffix}`;
-}
-
-
-function WidgetSettingsDialog({
-  definition,
-  settings,
-  onChange,
-  onClose,
-}: {
-  definition: WidgetDefinition;
-  settings: Record<string, unknown>;
-  onChange: (settings: Record<string, unknown>) => void;
-  onClose: () => void;
-}) {
-  return (
-    <div className="relative z-[115]"><Modal open onClose={onClose} ariaLabel={`Configure ${definition.label}`} width="max-w-lg">
-      <div className="max-h-[82dvh] w-full overflow-y-auto p-5">
-        <div className="flex items-center">
-          <h2 className="text-sm font-bold text-text">{definition.label}</h2>
-          <button type="button" onClick={onClose} className="ml-auto text-lg text-text-dim hover:text-text">×</button>
-        </div>
-        <WidgetSettingsEditor schema={definition.settingsSchema} settings={settings} onChange={onChange} />
-        <div className="mt-5 flex justify-end">
-          <button type="button" onClick={onClose} className="rounded-md border border-accent bg-accent px-4 py-2 text-xs font-bold text-bg">Done</button>
-        </div>
-      </div>
-    </Modal></div>
-  );
 }

@@ -1,3 +1,4 @@
+import type { HostUI } from "@apteva/ui-kit";
 import type { CoreProviderConfig, RealtimeConfig } from "./realtime/config";
 import { beginAPIWrite } from "./utils/apiWrites";
 // All REST/JSON API endpoints live under /api/ on the server. The SPA owns
@@ -643,7 +644,13 @@ export interface Project {
   provisioning_preset_id?: string;
 }
 
+export interface AgentCapability {
+  name: string;
+  allowed_tools: string[];
+}
+
 export interface ProjectPresetAgent {
+  capabilities?: AgentCapability[];
   icon?: string;
   key: string;
   name: string;
@@ -683,6 +690,7 @@ export interface ProjectPresetSetupProgress {
 }
 
 export interface ProjectPreset {
+  recommended?: boolean;
   setup?: ProjectPresetSetupStep[];
   interface_level?: InterfaceLevel;
   id: string;
@@ -753,6 +761,7 @@ export interface ProjectPresetApplyInput {
 }
 
 export interface ProjectSetupPresetDefinition {
+  recommended?: boolean;
   setup?: ProjectPresetSetupStep[];
   interface_level?: InterfaceLevel;
   category: "personal" | "work" | "development" | "business";
@@ -933,6 +942,7 @@ export const projectPresets = {
         revision: preset.revision,
         name: preset.name,
         description: preset.description,
+        recommended: preset.definition.recommended,
         category: preset.definition.category,
         interface_level: preset.definition.interface_level,
         highlights: preset.definition.highlights,
@@ -3540,7 +3550,13 @@ export interface AppGrantsResponse {
   grants: AppGrantRule[];
 }
 
+export interface AgentSetupRecommendation {
+  recommended?: boolean;
+  reason?: string;
+}
+
 export interface MarketplaceEntry {
+  agent_setup?: AgentSetupRecommendation;
   name: string;
   display_name: string;
   version: string;
@@ -3566,6 +3582,7 @@ export interface MarketplaceEntry {
 }
 
 export interface AppRow {
+  agent_setup?: AgentSetupRecommendation;
   deployment?: DeploymentSummary;
   install_id: number;
   app_id: number;
@@ -3623,6 +3640,7 @@ export interface EventDecl {
 }
 
 export interface AppUIPanel {
+  host_ui?: HostUI;
   slot: string; // "project.page" | "instance.tab" | "instance.status" | "settings.app"
   label: string;
   icon: string;
@@ -3632,6 +3650,7 @@ export interface AppUIPanel {
 
 // Manifest entry — what the app declared. Mirrors sdk.UIComponent.
 export interface AppUIComponent {
+  host_ui?: HostUI;
   name: string;
   entry: string;
   slots: string[];
@@ -3646,6 +3665,7 @@ export interface AppUIComponent {
   default_size?: "half" | "full";
   props_schema?: Record<string, unknown>;
   settings_schema?: Record<string, unknown>;
+  settings_ui?: import("./components/apps/widgetSettings").WidgetSettingsUI;
   preview_props?: Record<string, unknown>;
 }
 
@@ -3707,6 +3727,7 @@ export interface AppManifestV2 {
     mcp_tools?: { name: string; description: string }[];
     prompt_fragments?: { file: string; position: string }[];
     ui_panels?: {
+      host_ui?: HostUI;
       slot: string;
       label: string;
       icon?: string;

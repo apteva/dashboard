@@ -21,7 +21,7 @@ export function DataTab() {
   };
 
   return (
-    <div className="space-y-5 max-w-4xl">
+    <div className="w-full space-y-5">
       <div>
         <h2 className="text-text text-base font-bold">Telemetry cleanup</h2>
         <p className="text-text-muted text-sm mt-1">

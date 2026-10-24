@@ -47,3 +47,22 @@ test("reopening progress shows the persisted job and prevents another start", as
   await view.findByText("Reconnecting");
   expect(view.queryByRole("button", { name: /Update to/ })).toBeNull();
 });
+
+test("hosted handoff phases keep a second update disabled", async () => {
+  setup({ supported: true, job: { id: "handoff", state: "transferring", message: "Keeping application data", target_version: "1.2.3", previous_version: "1.2.2", updated_at: new Date().toISOString() } });
+  const view = render(<PlatformUpdateAction status={status} />);
+  await view.findByText("Switching server");
+  expect(view.queryByRole("button", { name: /Update to/ })).toBeNull();
+});
+
+test("successful update leaves active conversations open until the user reloads", async () => {
+  const reload = spyOn(window.location, "reload").mockImplementation(() => {});
+  restores.push(() => reload.mockRestore());
+  setup({ supported: true, job: { id: "complete", state: "succeeded", message: "Updated", target_version: "1.2.3", previous_version: "1.2.2", updated_at: new Date().toISOString() } });
+  const view = render(<PlatformUpdateAction status={status} />);
+  const button = await view.findByRole("button", { name: "Reload dashboard" });
+  await Bun.sleep(1700);
+  expect(reload).not.toHaveBeenCalled();
+  fireEvent.click(button);
+  expect(reload).toHaveBeenCalledTimes(1);
+});

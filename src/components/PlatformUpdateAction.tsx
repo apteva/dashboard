@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { platform, type PlatformStatus, type PlatformUpdateStatus } from "../api";
 import { useAuth } from "../hooks/useAuth";
 
@@ -6,7 +6,7 @@ const terminal = new Set(["succeeded", "failed", "rolled_back", "recovery_requir
 const phases: Record<string, string> = {
   queued: "Preparing", preparing: "Preparing", downloading: "Downloading",
   verifying: "Verifying", preflight: "Checking database", activating: "Activating",
-  restarting: "Reconnecting", rolling_back: "Restoring previous version",
+  restarting: "Reconnecting", warming: "Warming candidate", draining: "Finishing active work", transferring: "Switching server", recovering: "Recovering server", rolling_back: "Restoring previous version",
   succeeded: "Updated", failed: "Update failed", rolled_back: "Previous version restored",
   recovery_required: "Recovery required",
 };
@@ -19,7 +19,6 @@ export function PlatformUpdateAction({ status }: { status: PlatformStatus }) {
   const [disconnected, setDisconnected] = useState(false);
   const [error, setError] = useState("");
   const [policy, setPolicy] = useState("restart");
-  const reloadScheduled = useRef(false);
   const job = view?.job;
   const active = !!job && !terminal.has(job.state);
   const stale = active && Date.now() - new Date(job.updated_at).getTime() > 120_000;
@@ -42,19 +41,6 @@ export function PlatformUpdateAction({ status }: { status: PlatformStatus }) {
     return () => { stopped = true; clearTimeout(timer); };
   }, [isAdmin]);
 
-  useEffect(() => {
-    if (job?.state !== "succeeded" || reloadScheduled.current) return;
-    const key = `apteva:platform-update:${job.id}`;
-    try {
-      if (sessionStorage.getItem(key)) return;
-    } catch { return; }
-    reloadScheduled.current = true;
-    const timer = setTimeout(() => {
-      try { sessionStorage.setItem(key, "reloaded"); } catch { return; }
-      window.location.reload();
-    }, 1500);
-    return () => { clearTimeout(timer); reloadScheduled.current = false; };
-  }, [job?.id, job?.state]);
 
   async function start() {
     if (!status.bundle_version || submitting || active) return;

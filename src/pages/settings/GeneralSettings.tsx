@@ -37,7 +37,7 @@ export function AppearanceTab() {
   }
 
   return (
-    <div className="flex flex-col gap-8 max-w-3xl">
+    <div className="flex w-full flex-col gap-8">
       <div>
         <h2 className="text-text font-medium mb-1">{t("settings.appearance.title")}</h2>
         <p className="text-text-muted text-sm">
@@ -47,7 +47,7 @@ export function AppearanceTab() {
 
       <section>
         <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">{t("settings.appearance.theme")}</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <ThemeCard
             value="terminal"
             label={t("settings.appearance.themeTerminal")}
@@ -140,7 +140,7 @@ export function InterfaceTab() {
   }
 
   return (
-    <div className="flex flex-col gap-8 max-w-3xl">
+    <div className="flex w-full flex-col gap-8">
       <div>
         <h2 className="text-text font-medium mb-1">{t("settings.interface.title")}</h2>
         <p className="text-text-muted text-sm">{t("settings.interface.description")}</p>
@@ -154,7 +154,7 @@ export function InterfaceTab() {
         <h3 className="text-text-muted text-xs uppercase tracking-wide mb-3">
           {t("settings.interface.level")}
         </h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-3xl">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {AUDIENCES.map((value) => (
             <button
               key={value}

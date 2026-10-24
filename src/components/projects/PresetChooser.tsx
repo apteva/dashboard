@@ -1,3 +1,4 @@
+import { PresetCapabilityNotice } from "./PresetCapabilityNotice";
 import { PresetSetupSteps } from "./PresetSetupSteps";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { AppIcon } from "@apteva/ui-kit";
@@ -43,6 +44,7 @@ export function PresetChooser({ catalog, selectedId, category, query, projectId,
 }) {
   const [wide, setWide] = useState(() => window.matchMedia("(min-width: 1280px)").matches);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [showMore, setShowMore] = useState(false);
   const [visuals, setVisuals] = useState<Record<string, AppVisual>>({});
   const catalogScroll = useRef<HTMLDivElement>(null);
   const initialScroll = useRef(scrollPosition);
@@ -78,8 +80,10 @@ export function PresetChooser({ catalog, selectedId, category, query, projectId,
 
   const selected = catalog.find((preset) => preset.id === selectedId) || null;
   const search = query.trim().toLocaleLowerCase();
-  const visible = catalog.filter((preset) => (search || !category || preset.category === category) && (!search ||
+  const matching = catalog.filter((preset) => (search || !category || preset.category === category) && (!search ||
     `${preset.name} ${preset.description} ${(preset.highlights || []).join(" ")} ${preset.agents.map((agent) => agent.name).join(" ")} ${includedApps(preset).join(" ")}`.toLocaleLowerCase().includes(search)));
+  const hasRecommendations = matching.some((preset) => preset.recommended);
+  const visible = !search && !showMore && hasRecommendations ? matching.filter((preset) => preset.recommended || preset.id === selectedId) : matching;
   const select = (preset: ProjectPreset | null) => { onSelect(preset); if (!wide) setSheetOpen(true); };
   const footer = <div className="shrink-0 border-t border-border bg-bg p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-5">
     {error && <p role="alert" className="mb-3 text-sm text-red">{error}</p>}
@@ -93,7 +97,7 @@ export function PresetChooser({ catalog, selectedId, category, query, projectId,
     <header className="mb-4 shrink-0 sm:mb-5">
       <button type="button" disabled={busy} onClick={onBack} className="mb-3 min-h-9 text-sm text-text-muted hover:text-text disabled:opacity-40">← Setup options</button>
       <h1 className="text-2xl font-semibold sm:text-3xl">Choose your starting point</h1>
-      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-text-muted">A preset brings together agents, apps, and page layouts for a particular purpose. Explore what’s included, then make it yours.</p>
+      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-text-muted">Start with one assistant for Personal or Work. You can ask it to create specialists later, or explore more templates.</p>
     </header>
     {!wide && !sheetOpen && error && <p role="alert" className="mb-3 shrink-0 text-sm text-red">{error}</p>}
     <div className="grid min-h-0 flex-1 gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(420px,1.15fr)] xl:gap-7 [@media(max-height:550px)]:min-h-[420px]">
@@ -112,13 +116,14 @@ export function PresetChooser({ catalog, selectedId, category, query, projectId,
             {visible.map((preset) => {
               const appNames = includedApps(preset);
               return <button type="button" key={preset.id} disabled={busy} aria-pressed={selectedId === preset.id} onClick={() => select(preset)} className={`flex min-w-0 flex-col rounded-xl border p-4 text-left transition-colors focus-visible:outline-accent disabled:opacity-50 ${selectedId === preset.id ? "border-accent bg-accent/5" : "border-border hover:border-accent/50 hover:bg-bg-hover"}`}>
-                <div className="mb-3 flex w-full items-center gap-2"><PresetMark preset={preset} /><span className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-text-dim">{preset.category}</span>{selectedId === preset.id && <span className="text-xs text-accent" aria-label="Selected">✓</span>}</div>
+                <div className="mb-3 flex w-full items-center gap-2"><PresetMark preset={preset} /><span className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-text-dim">{preset.recommended ? "Recommended" : preset.category}</span>{selectedId === preset.id && <span className="text-xs text-accent" aria-label="Selected">✓</span>}</div>
                 <h2 className="text-sm font-semibold">{preset.name}</h2>
                 <p className="mt-2 line-clamp-2 text-xs leading-5 text-text-muted">{preset.description}</p>
                 <div className="mt-auto pt-4"><div className="flex items-center gap-1.5" aria-label="Included apps">{appNames.slice(0, 5).map((name) => <span key={name} title={visuals[name]?.display_name || name}><AppIcon src={visuals[name]?.icon} iconStyle={visuals[name]?.icon_style} name={name} size="xs" /></span>)}{appNames.length > 5 && <span className="ml-1 text-[10px] text-text-dim">+{appNames.length - 5}</span>}</div><p className="mt-2 text-[10px] leading-4 text-text-dim">{presetCountSummary(preset)}</p></div>
               </button>;
             })}
           </div>
+          {!search && hasRecommendations && <button type="button" disabled={busy} onClick={() => setShowMore(!showMore)} className={`${secondary} mt-3 w-full`}>{showMore ? "Show recommended presets" : `More templates (${matching.filter((preset) => !preset.recommended).length})`}</button>}
           {visible.length === 0 && <div className="rounded-xl border border-dashed border-border p-6 text-center"><p className="text-sm text-text-muted">No presets match these filters.</p><button type="button" onClick={() => { onQuery(""); onCategory(""); }} className={`${secondary} mt-3`}>Clear filters</button></div>}
         </div>
       </div>
@@ -186,7 +191,7 @@ function PresetPreview({ preset, visuals }: { preset: ProjectPreset | null; visu
           <div className="grid items-start gap-5 @[36rem]:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
             <section aria-label="Included agents" className="min-w-0">
               <div className="mb-2 flex items-center justify-between gap-2">
-                <h3 className="text-xs font-semibold">Your team <span className="ml-1 font-normal text-text-dim">{preset.agents.length}</span></h3>
+                <h3 className="text-xs font-semibold">{preset.agents.length === 1 ? "Your starter agent" : "Your team"} <span className="ml-1 font-normal text-text-dim">{preset.agents.length}</span></h3>
                 <button type="button" onClick={() => showTab("agents")} className="min-h-8 shrink-0 text-xs text-accent hover:underline focus-visible:outline-accent" aria-label="View all agent details">Details →</button>
               </div>
               <ul className="space-y-3">
@@ -214,6 +219,7 @@ function PresetPreview({ preset, visuals }: { preset: ProjectPreset | null; visu
               {!appNames.length && <p className="text-xs text-text-muted">Add apps to this workspace later.</p>}
             </section>
           </div>
+          <PresetCapabilityNotice agents={preset.agents} />
           <PresetSetupSteps steps={preset.setup} />
           {!!preset.highlights?.length && <section><h3 className="mb-3 text-xs font-semibold">What this workspace does</h3><ul className="space-y-3">{preset.highlights.map((text) => <li key={text} className="flex gap-2 text-xs leading-5 text-text-muted"><span className="text-accent" aria-hidden="true">✓</span>{text}</li>)}</ul></section>}
           <p className="text-xs leading-5 text-text-dim">You can customize the agents before creating your workspace, then connect accounts and arrange widgets afterwards.</p>

@@ -1,4 +1,4 @@
-import { afterEach, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import {
   act,
   cleanup,
@@ -22,6 +22,7 @@ import {
 const originals = [agentTemplates, apps, instances, integrations].map(
   (target) => ({ target, values: { ...target } }),
 );
+beforeEach(() => { integrations.newAgentProvider = mock(async () => ({ provider: "", inherited_provider: "", effective_provider: "openai", available_providers: ["openai"] })); });
 afterEach(() => {
   cleanup();
   for (const { target, values } of originals) Object.assign(target, values);
@@ -219,4 +220,40 @@ test("a queued required app that fails never creates an incomplete agent", async
   expect(instances.create).not.toHaveBeenCalled();
   expect(apps.install).not.toHaveBeenCalled();
   expect((screen.getByRole("button", { name: "Create agent →" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+
+test("an uninstalled manifest recommendation installs only on confirmed Create and attaches its returned installation", async () => {
+  const template = { id: "starter", name: "Starter", directive: "Help with research.", mode: "learn", requirements: [], recommended_apps: [] } as unknown as AgentTemplate;
+  const entry = { name: "research-tools", display_name: "Research Tools", version: "1.0", manifest_url: "https://example.test/research/apteva.yaml", agent_setup: { recommended: true, reason: "Research new topics." } };
+  let installed = false;
+  agentTemplates.list = mock(async () => [template]);
+  apps.list = mock(async () => installed ? [{ install_id: 77, name: entry.name, display_name: entry.display_name, status: "running", project_id: "", surfaces: {} }] as any : []);
+  apps.marketplace = mock(async () => ({ apps: [entry] }) as any);
+  apps.install = mock(async () => { installed = true; return { install_id: 77 } as any; });
+  apps.permissions = mock(async () => ({ permissions: [], resources: [] }) as any);
+  integrations.runtimeConnections = mock(async () => [{ role: "llm", provider_key: "openai" }] as any);
+  integrations.connections = mock(async () => []);
+  instances.create = mock(async () => ({ id: 999 }) as any);
+  render(<MemoryRouter initialEntries={["/agents/new"]}><Routes><Route path="/agents/new" element={<AgentNew />} /><Route path="/agents/999" element={<p>Agent created</p>} /></Routes></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", { name: /Starter/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue to details →" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue to setup →" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Add Research Tools" }));
+  expect(apps.install).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Remove Research Tools" }));
+  expect(screen.queryByText("Will install when you create the agent")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "+ Add apps" }));
+  const picker = within(screen.getByRole("dialog", { name: "Choose apps" }));
+  fireEvent.click(picker.getByRole("checkbox", { name: /Research Tools/ }));
+  fireEvent.click(picker.getByRole("button", { name: "Done" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue to review →" }));
+  expect(screen.getByText("Research Tools (will be installed)")).toBeTruthy();
+  expect(apps.install).not.toHaveBeenCalled();
+  expect(instances.create).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Create agent →" }));
+  await screen.findByText("Agent created");
+  expect(apps.install).toHaveBeenCalledTimes(1);
+  expect(apps.install).toHaveBeenCalledWith({ manifestUrl: entry.manifest_url, projectId: undefined });
+  expect((instances.create as ReturnType<typeof mock>).mock.calls[0]![5].boundAppInstallIDs).toEqual([77]);
 });

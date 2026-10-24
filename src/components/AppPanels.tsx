@@ -1,3 +1,5 @@
+import type { HostUI } from "@apteva/ui-kit";
+import { AppHostFrame } from "./apps/hostUI";
 import { useEffect, useState } from "react";
 import { apps, type AppRow } from "../api";
 import { resolvePanelComponent } from "./apps/nativePanels";
@@ -26,11 +28,14 @@ export function AppPanels({
   className?: string;
   onLoad?: (panels: PanelInstance[]) => void;
 }) {
+  const [loadedScope, setLoadedScope] = useState("");
   const [panels, setPanels] = useState<PanelInstance[]>([]);
+  const [activePanel, setActivePanel] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
+    setPanels([]); setActivePanel(""); setError("");
     apps
       .list(projectId)
       .then((rows) => {
@@ -48,12 +53,13 @@ export function AppPanels({
                 label: p.label,
                 icon: p.icon,
                 entry: p.entry,
+                hostUI: p.host_ui,
                 version: r.version,
               });
             }
           }
         }
-        setPanels(collected);
+        setPanels(collected); setLoadedScope(`${projectId}:${slot}`);
         onLoad?.(collected);
       })
       .catch((e) => setError(e.message || "panel load failed"));
@@ -64,17 +70,17 @@ export function AppPanels({
   }, [slot, projectId]);
 
   if (error) return <div className="text-red text-xs">{error}</div>;
-  if (panels.length === 0) return null;
+  if (panels.length === 0 || loadedScope !== `${projectId}:${slot}`) return null;
 
   return (
     <div className={className}>
       {panels.map((p) => (
-        <AppPanelMount
-          key={`${p.installId}#${p.entry}`}
-          panel={p}
-          instanceId={instanceId}
-          projectId={projectId || ""}
-        />
+        <div key={`${projectId}:${p.installId}#${p.entry}`} className="contents"
+          onFocusCapture={() => setActivePanel(`${p.installId}#${p.entry}`)}
+          onPointerDownCapture={() => setActivePanel(`${p.installId}#${p.entry}`)}>
+          <AppPanelMount panel={p} instanceId={instanceId} projectId={projectId || ""}
+            foreground={slot === "instance.tab" && (activePanel || `${panels[0].installId}#${panels[0].entry}`) === `${p.installId}#${p.entry}`} />
+        </div>
       ))}
     </div>
   );
@@ -84,7 +90,9 @@ function AppPanelMount({
   panel,
   instanceId,
   projectId,
+  foreground,
 }: {
+  foreground: boolean;
   panel: PanelInstance;
   instanceId?: number;
   projectId: string;
@@ -96,6 +104,7 @@ function AppPanelMount({
   if (Native) {
     return (
       <Native
+        hostSurface={{foreground,hostUI:panel.hostUI,surface:panel.slot+":"+panel.entry}}
         appName={panel.appName}
         installId={panel.installId}
         projectId={projectId}
@@ -103,10 +112,11 @@ function AppPanelMount({
       />
     );
   }
-  return <AppPanelFrame panel={panel} instanceId={instanceId} />;
+  return <AppPanelFrame panel={panel} instanceId={instanceId} projectId={projectId} foreground={foreground} />;
 }
 
 export interface PanelInstance {
+  hostUI?: HostUI;
   installId: number;
   appName: string;
   appDisplay: string;
@@ -117,12 +127,13 @@ export interface PanelInstance {
   version: string;
 }
 
-function AppPanelFrame({ panel, instanceId }: { panel: PanelInstance; instanceId?: number }) {
+function AppPanelFrame({ panel, instanceId, projectId, foreground }: { panel: PanelInstance; instanceId?: number; projectId: string; foreground: boolean }) {
   // The sidecar's static handler serves panel.entry at <sidecar>/ui/...
   // The platform proxies that under /api/apps/<name>/ui/..., so a
   // relative URL the iframe can resolve from the dashboard origin is:
   const params = new URLSearchParams({
     install_id: String(panel.installId),
+    project_id: projectId,
     ...(instanceId ? { agent_id: String(instanceId) } : {}),
     // token is forwarded automatically via the cookie on same-origin
     // requests; no need to splice it into the URL for now.
@@ -138,12 +149,9 @@ function AppPanelFrame({ panel, instanceId }: { panel: PanelInstance; instanceId
         : "h-full min-h-[300px]";
   return (
     <div className={`border border-border rounded ${height} overflow-hidden`}>
-      <iframe
-        src={src}
-        title={`${panel.appDisplay} — ${panel.label}`}
-        className="w-full h-full border-0"
-        sandbox="allow-scripts allow-same-origin"
-      />
+      <AppHostFrame src={src} title={`${panel.appDisplay} — ${panel.label}`}
+        projectId={projectId} installId={panel.installId} surface={panel.slot+":"+panel.entry}
+        foreground={foreground} hostUI={panel.hostUI} />
     </div>
   );
 }

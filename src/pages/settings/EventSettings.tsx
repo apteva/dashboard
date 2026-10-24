@@ -230,7 +230,7 @@ export function SubscriptionsTab() {
   };
 
   return (
-    <div className="space-y-6 max-w-4xl">
+    <div className="w-full space-y-6">
       <div>
         <h2 className="text-text text-base font-bold">Events &amp; webhooks</h2>
         <p className="text-text-muted text-sm mt-1">

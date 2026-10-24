@@ -1,6 +1,6 @@
 import { ProviderBuiltinDefaults } from "../../components/ProviderBuiltins";
 import { ServiceTierSelect } from "../../components/ServiceTierSelect";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useId } from "react";
 
 import { AppIcon } from "@apteva/ui-kit";
 import { auth, integrations, runtimeEntryAsAppDetail, type RuntimeCatalogEntry, type RuntimeConnection, type ConnectionInfo, type ConnectCreateResponse, type DeviceAuthStart, type ConnectionTestResult, type ProviderUsageSnapshot } from "../../api";
@@ -24,6 +24,9 @@ export function ProvidersTab() {
   const [catalog, setCatalog] = useState<RuntimeCatalogEntry[]>([]);
   const [connected, setConnected] = useState<RuntimeConnection[]>([]);
   const defaults = useNewAgentProviderDefault(currentProject?.id, connected);
+  const detailsPrefix = useId();
+  const [expandedProviders, setExpandedProviders] = useState<Record<string, boolean>>({});
+  useEffect(() => setExpandedProviders({}), [currentProject?.id]);
   const [showAddProvider, setShowAddProvider] = useState(false);
   const [providerSearch, setProviderSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -309,7 +312,7 @@ export function ProvidersTab() {
     catalog.find((entry) => entry.provider_key === key)?.name || key;
 
   return (
-    <div className="space-y-5 max-w-4xl">
+    <div className="w-full space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-text text-lg font-bold">Providers</h2>
@@ -319,7 +322,7 @@ export function ProvidersTab() {
               : "Your model providers, across all projects."}
           </p>
           <p className="text-text-dim text-xs mt-1">
-            Set the default on a card to use it for new agents. Existing agents
+            Expand a provider to view its settings or set the default for new agents. Existing agents
             keep their provider.
           </p>
         </div>
@@ -404,7 +407,7 @@ export function ProvidersTab() {
           </button>
         </div>
       )}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+      {providerGroups.length > 0 && <div className="overflow-hidden rounded-lg border border-border divide-y divide-border">
         {providerGroups.map(([groupKey, group]) => {
           const first = group[0]!;
           const entry = catalog.find(
@@ -420,208 +423,213 @@ export function ProvidersTab() {
           const canSelectDefault =
             activeScope &&
             defaults.settings?.available_providers.includes(first.provider_key);
+          const expanded = !!expandedProviders[groupKey];
+          const detailsID = `${detailsPrefix}-${encodeURIComponent(groupKey)}`;
           return (
             <section
               key={groupKey}
               aria-label={`${first.app_name || first.provider_key} ${first.scope} provider`}
-              className={`min-w-0 rounded-xl border p-4 ${isDefault ? "border-accent/60" : "border-border"}`}
+              className="min-w-0"
             >
-              <div className="flex items-center gap-3 mb-4">
-                <AppIcon
-                  src={entry?.logo || undefined}
-                  name={first.app_name || first.provider_key}
-                  size="md"
-                  framed={false}
-                />
-                <div className="min-w-0 flex-1">
-                  <h3 className="text-text text-sm font-bold truncate">
-                    {first.app_name || first.provider_key}
-                  </h3>
-                  <span className="text-xs text-text-muted">
-                    {first.scope === "global"
-                      ? "Shared across projects"
-                      : currentProject?.name || "Project connection"}
-                    {group.length > 1 ? ` · ${group.length} credentials` : ""}
-                  </span>
-                </div>
-              </div>
-              <div className="divide-y divide-border">
-                {group.map((connection, index) => {
-                  const busy = busyID === connection.id;
-                  const result = testResultByID[connection.id];
-                  const content = (
-                    <div className="space-y-3 pb-3">
-                      {group.length > 1 && (
-                        <label className="flex items-center gap-2 text-xs text-text-muted">
-                          <input
-                            type="radio"
-                            name={`primary-${groupKey}`}
-                            checked={connection.is_primary}
-                            onChange={() => void handleMakePrimary(connection)}
-                            disabled={busy}
-                            className="accent-accent"
-                            aria-label={`Use ${connection.name} as the primary credential`}
+              <button
+                type="button"
+                aria-label={`${first.app_name || first.provider_key} ${first.scope} provider details`}
+                aria-expanded={expanded}
+                aria-controls={detailsID}
+                onClick={() => setExpandedProviders(current => ({ ...current, [groupKey]: !current[groupKey] }))}
+                className="flex min-h-14 w-full items-center gap-3 px-4 py-3 text-left hover:bg-bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+              >
+                <AppIcon src={entry?.logo || undefined} name={first.app_name || first.provider_key} size="sm" framed={false} />
+                <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text">{first.app_name || first.provider_key}</span>
+                <span className="hidden w-52 min-w-0 truncate text-xs text-text-muted xl:block">
+                  {first.scope === "global" ? "Shared across projects" : currentProject?.name || "Project connection"}
+                  {group.length > 1 ? ` · ${group.length} credentials` : ""}
+                </span>
+                <span className={`shrink-0 text-xs ${isDefault ? "text-accent" : "text-text-dim"}`}>
+                  {isDefault ? "Default" : !activeScope ? "Project takes priority" : ""}
+                </span>
+                <svg aria-hidden="true" className={`shrink-0 text-text-muted transition-transform ${expanded ? "rotate-90" : ""}`} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m9 5 7 7-7 7" /></svg>
+              </button>
+              <div id={detailsID} hidden={!expanded} className="border-t border-border p-4 sm:p-5">
+                <p className="mb-4 text-xs text-text-muted xl:hidden">{first.scope === "global" ? "Shared across projects" : currentProject?.name || "Project connection"}{group.length > 1 ? ` · ${group.length} credentials` : ""}</p>
+                <div className="divide-y divide-border">
+                  {group.map((connection, index) => {
+                    const busy = busyID === connection.id;
+                    const result = testResultByID[connection.id];
+                    const content = (
+                      <div className="space-y-3 pb-3">
+                        {group.length > 1 && (
+                          <label className="flex items-center gap-2 text-xs text-text-muted">
+                            <input
+                              type="radio"
+                              name={`primary-${groupKey}`}
+                              checked={connection.is_primary}
+                              onChange={() => void handleMakePrimary(connection)}
+                              disabled={busy}
+                              className="accent-accent"
+                              aria-label={`Use ${connection.name} as the primary credential`}
+                            />
+                            Use this credential for{" "}
+                            {first.app_name || first.provider_key}
+                          </label>
+                        )}
+                        {!!connection.capabilities?.includes(
+                          "subscription_usage",
+                        ) && (
+                          <ProviderUsageSummary
+                            usage={usageByID[connection.id]}
+                            loading={usageLoadingByID[connection.id]}
+                            refreshing={
+                              usageLoadingByID[connection.id] &&
+                              !!usageByID[connection.id]
+                            }
+                            error={usageErrorByID[connection.id]}
+                            onRefresh={() => void loadUsage(connection.id, true)}
+                            onOpenDetails={() => {
+                              const usage = usageByID[connection.id];
+                              if (usage) setUsageDetails({ connection, usage });
+                            }}
                           />
-                          Use this credential for{" "}
-                          {first.app_name || first.provider_key}
-                        </label>
-                      )}
-                      {!!connection.capabilities?.includes(
-                        "subscription_usage",
-                      ) && (
-                        <ProviderUsageSummary
-                          usage={usageByID[connection.id]}
-                          loading={usageLoadingByID[connection.id]}
-                          refreshing={
-                            usageLoadingByID[connection.id] &&
-                            !!usageByID[connection.id]
-                          }
-                          error={usageErrorByID[connection.id]}
-                          onRefresh={() => void loadUsage(connection.id, true)}
-                          onOpenDetails={() => {
-                            const usage = usageByID[connection.id];
-                            if (usage) setUsageDetails({ connection, usage });
-                          }}
-                        />
-                      )}
-                      {connection.runtime_config?.model_selection_errors && (
-                        <div role="alert" className="text-xs text-red-400 space-y-1">
-                          {Object.entries(connection.runtime_config.model_selection_errors).map(([tier, message]) => (
-                            <p key={tier}>{String(message)}</p>
+                        )}
+                        {connection.runtime_config?.model_selection_errors && (
+                          <div role="alert" className="text-xs text-red-400 space-y-1">
+                            {Object.entries(connection.runtime_config.model_selection_errors).map(([tier, message]) => (
+                              <p key={tier}>{String(message)}</p>
+                            ))}
+                          </div>
+                        )}
+                        <ServiceTierSelect connection={connection} value={connection.runtime_config?.service_tier || ""} disabled={busy} onChange={(value) => void handleServiceTier(connection, value)} />
+                        <ProviderBuiltinDefaults connection={connection} onSaved={load} disabled={busy} />
+                        <div className="space-y-1.5">
+                          {(["large", "medium", "small"] as const).map((tier) => (
+                            <label
+                              key={tier}
+                              className="flex items-center gap-3 min-w-0"
+                            >
+                              <span className="w-12 shrink-0 text-xs capitalize text-text-muted">
+                                {tier}
+                              </span>
+                              <input
+                                type="text"
+                                key={`${connection.id}-${tier}-${connection.runtime_config?.[`model_${tier}`] || ""}`}
+                                defaultValue={
+                                  connection.runtime_config?.[`model_${tier}`] ||
+                                  ""
+                                }
+                                placeholder="Provider default"
+                                onBlur={(event) => {
+                                  const next = event.target.value;
+                                  const current =
+                                    connection.runtime_config?.[
+                                      `model_${tier}`
+                                    ] || "";
+                                  if (next.trim() !== String(current).trim())
+                                    void handlePinModel(connection, tier, next);
+                                }}
+                                disabled={busy}
+                                spellCheck={false}
+                                className="min-w-0 w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs text-text focus:outline-none focus:border-accent"
+                              />
+                            </label>
                           ))}
                         </div>
-                      )}
-                      <ServiceTierSelect connection={connection} value={connection.runtime_config?.service_tier || ""} disabled={busy} onChange={(value) => void handleServiceTier(connection, value)} />
-                      <ProviderBuiltinDefaults connection={connection} onSaved={load} disabled={busy} />
-                      <div className="space-y-1.5">
-                        {(["large", "medium", "small"] as const).map((tier) => (
-                          <label
-                            key={tier}
-                            className="flex items-center gap-3 min-w-0"
-                          >
-                            <span className="w-12 shrink-0 text-xs capitalize text-text-muted">
-                              {tier}
-                            </span>
-                            <input
-                              type="text"
-                              key={`${connection.id}-${tier}-${connection.runtime_config?.[`model_${tier}`] || ""}`}
-                              defaultValue={
-                                connection.runtime_config?.[`model_${tier}`] ||
-                                ""
-                              }
-                              placeholder="Provider default"
-                              onBlur={(event) => {
-                                const next = event.target.value;
-                                const current =
-                                  connection.runtime_config?.[
-                                    `model_${tier}`
-                                  ] || "";
-                                if (next.trim() !== String(current).trim())
-                                  void handlePinModel(connection, tier, next);
-                              }}
-                              disabled={busy}
-                              spellCheck={false}
-                              className="min-w-0 w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs text-text focus:outline-none focus:border-accent"
-                            />
-                          </label>
-                        ))}
-                      </div>
-                      <div className="flex flex-wrap items-center gap-4">
-                        <button
-                          onClick={() => void handleTest(connection)}
-                          disabled={busy}
-                          className="text-xs text-text-muted hover:text-accent disabled:opacity-50"
-                        >
-                          {busy ? "Working…" : "Test connection"}
-                        </button>
-                        {isConnectionReauthable(connection.auth_type || "") && (
+                        <div className="flex flex-wrap items-center gap-4">
                           <button
-                            onClick={() => setReauthFor(connection)}
+                            onClick={() => void handleTest(connection)}
                             disabled={busy}
                             className="text-xs text-text-muted hover:text-accent disabled:opacity-50"
                           >
-                            Re-auth
+                            {busy ? "Working…" : "Test connection"}
                           </button>
+                          {isConnectionReauthable(connection.auth_type || "") && (
+                            <button
+                              onClick={() => setReauthFor(connection)}
+                              disabled={busy}
+                              className="text-xs text-text-muted hover:text-accent disabled:opacity-50"
+                            >
+                              Re-auth
+                            </button>
+                          )}
+                          <button
+                            onClick={() => void handleDisconnect(connection)}
+                            disabled={busy}
+                            className="ml-auto text-xs text-text-dim hover:text-red disabled:opacity-50"
+                          >
+                            Disconnect
+                          </button>
+                        </div>
+                        {result && (
+                          <p
+                            className={`text-xs break-words ${result.ok ? "text-green" : "text-red"}`}
+                          >
+                            {result.ok
+                              ? `✓ Connected (${result.latency_ms}ms)`
+                              : result.error || "Connection failed"}
+                          </p>
                         )}
-                        <button
-                          onClick={() => void handleDisconnect(connection)}
-                          disabled={busy}
-                          className="ml-auto text-xs text-text-dim hover:text-red disabled:opacity-50"
-                        >
-                          Disconnect
-                        </button>
                       </div>
-                      {result && (
-                        <p
-                          className={`text-xs break-words ${result.ok ? "text-green" : "text-red"}`}
-                        >
-                          {result.ok
-                            ? `✓ Connected (${result.latency_ms}ms)`
-                            : result.error || "Connection failed"}
-                        </p>
-                      )}
-                    </div>
-                  );
-                  return group.length > 1 ? (
-                    <details
-                      key={connection.id}
-                      open={index === 0}
-                      className="pt-2 first:pt-0"
-                    >
-                      <summary className="cursor-pointer text-xs text-text mb-3">
-                        {connection.name}
-                        {connection.is_primary && (
-                          <span className="ml-2 text-text-muted">
-                            Primary credential
-                          </span>
-                        )}
-                      </summary>
-                      {content}
-                    </details>
-                  ) : (
-                    <div key={connection.id}>
-                      {connection.name !== first.app_name && (
-                        <p className="text-xs text-text-muted mb-3 truncate">
+                    );
+                    return group.length > 1 ? (
+                      <details
+                        key={connection.id}
+                        open={index === 0}
+                        className="pt-2 first:pt-0"
+                      >
+                        <summary className="cursor-pointer text-xs text-text mb-3">
                           {connection.name}
-                        </p>
-                      )}
-                      {content}
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="border-t border-border pt-3">
-                {canSelectDefault ? (
-                  <button
-                    type="button"
-                    aria-label={`Make ${first.app_name || first.provider_key} the default for new agents`}
-                    aria-pressed={!!isDefault}
-                    disabled={
-                      defaults.busy ||
-                      (isDefault &&
-                        defaults.settings?.provider === first.provider_key)
-                    }
-                    onClick={() => void defaults.save(first.provider_key)}
-                    className={`text-xs font-semibold disabled:cursor-default ${isDefault ? "text-accent" : "text-text-muted hover:text-accent"} ${defaults.busy ? "opacity-50" : ""}`}
-                  >
-                    {isDefault
-                      ? "✓ Default for new agents"
-                      : "Make default for new agents"}
-                  </button>
-                ) : (
-                  <span className="text-xs text-text-dim">
-                    {!defaults.settings
-                      ? "Loading default…"
-                      : !activeScope
-                        ? "Project credentials take priority"
-                        : "Unavailable for new agents"}
-                  </span>
-                )}
+                          {connection.is_primary && (
+                            <span className="ml-2 text-text-muted">
+                              Primary credential
+                            </span>
+                          )}
+                        </summary>
+                        {content}
+                      </details>
+                    ) : (
+                      <div key={connection.id}>
+                        {connection.name !== first.app_name && (
+                          <p className="text-xs text-text-muted mb-3 truncate">
+                            {connection.name}
+                          </p>
+                        )}
+                        {content}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="border-t border-border pt-3">
+                  {canSelectDefault ? (
+                    <button
+                      type="button"
+                      aria-label={`Make ${first.app_name || first.provider_key} the default for new agents`}
+                      aria-pressed={!!isDefault}
+                      disabled={
+                        defaults.busy ||
+                        (isDefault &&
+                          defaults.settings?.provider === first.provider_key)
+                      }
+                      onClick={() => void defaults.save(first.provider_key)}
+                      className={`text-xs font-semibold disabled:cursor-default ${isDefault ? "text-accent" : "text-text-muted hover:text-accent"} ${defaults.busy ? "opacity-50" : ""}`}
+                    >
+                      {isDefault
+                        ? "✓ Default for new agents"
+                        : "Make default for new agents"}
+                    </button>
+                  ) : (
+                    <span className="text-xs text-text-dim">
+                      {!defaults.settings
+                        ? "Loading default…"
+                        : !activeScope
+                          ? "Project credentials take priority"
+                          : "Unavailable for new agents"}
+                    </span>
+                  )}
+                </div>
               </div>
             </section>
           );
         })}
-      </div>
+      </div>}
 
       <Modal
         open={showAddProvider}

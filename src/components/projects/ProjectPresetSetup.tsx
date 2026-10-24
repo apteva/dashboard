@@ -1,3 +1,4 @@
+import { PresetCapabilityNotice } from "./PresetCapabilityNotice";
 import { PresetSetupSteps } from "./PresetSetupSteps";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -307,6 +308,7 @@ export function PresetContentsSummary({ preset }: { preset: ProjectPreset }) {
         </ul>
       ) : <p className="mt-4 text-xs leading-relaxed text-text-muted">{preset.description}</p>}
 
+      <div className="mt-3"><PresetCapabilityNotice agents={preset.agents} /></div>
       {preset.interface_level && <p className="mt-3 text-xs text-text-muted">Recommended interface: {{ personal: "Focused", business: "Workspace", developer: "Advanced" }[preset.interface_level]}</p>}
       <PresetLayoutPreview key={preset.id} preset={preset} />
       <details className="mt-4 border-t border-border pt-3">

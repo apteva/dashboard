@@ -152,7 +152,7 @@ export function ServerTab({ section = "public" }: { section?: "public" | "access
   };
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="w-full space-y-6">
       <div>
         <h2 className="text-text text-base font-bold">{{ public: "Domain configuration", access: "Registration & access policy", lifecycle: "Agent startup & restarts", geoip: "Visitor country" }[section]}</h2>
         <p className="text-text-muted text-sm mt-1">Changes here affect the entire server.</p>

@@ -25,6 +25,10 @@ export interface WidgetPreview {
 }
 
 export interface WidgetContext {
+  /** Read-only rendering of an unsaved configuration, distinct from sample previews. */
+  configurationPreview?: boolean;
+  /** Host-selected foreground pane; ordinary canvas widgets are never foreground. */
+  hostForeground?: boolean;
   presentation?: "canvas" | "workspace";
   projectId?: string;
   pageId?: string;

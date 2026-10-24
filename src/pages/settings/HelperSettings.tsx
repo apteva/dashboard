@@ -273,7 +273,7 @@ export function HelperTab() {
 
   if (!loading && helperStatus && !helperStatus.activated) {
     return (
-      <div className="mx-auto max-w-4xl space-y-5">
+      <div className="w-full space-y-5">
         <div>
           <h2 className="text-base font-bold text-text">Helper</h2>
           <p className="mt-1 text-sm text-text-muted">Apteva Helper is enabled by default when global Conversations and an AI provider are available. Deactivating it here keeps it off until you activate it again.</p>
@@ -300,7 +300,7 @@ export function HelperTab() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5">
+    <div className="w-full space-y-5">
       <div>
         <h2 className="text-base font-bold text-text">Helper</h2>
         <p className="mt-1 text-sm text-text-muted">Configure the Apteva Helper used for dashboard assistance.</p>
