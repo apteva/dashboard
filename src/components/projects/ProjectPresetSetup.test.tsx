@@ -123,7 +123,6 @@ describe("ProjectPresetSetup", () => {
     expect(apply?.body).toEqual({
       retry_setup_steps: [],
       preset_id: "business-lead-generation",
-      retry_setup_steps: [],
       description: "Qualify medical clinic leads and prepare outreach for review",
     });
     expect(calls.some((call) => call.url.endsWith("/setup/preview"))).toBe(false);

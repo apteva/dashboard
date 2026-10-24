@@ -74,8 +74,8 @@ test("manual preset setup previews first and applies edited agent configuration"
   await screen.findByText("Your setup is ready");
   expect(projectPresets.apply).toHaveBeenCalledWith("p", { retry_setup_steps: [], preset_id: business.id, description: "Research clinics", agent_overrides: [{ key: "leads", name: "Clinic assistant", directive: "Research leads for Research clinics", mode: "cautious" }], interface_level: undefined });
   expect(finish).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Finish setup" }));
-  await waitFor(() => expect(finish).toHaveBeenCalledWith("/", "business"));
+  fireEvent.click(screen.getByRole("button", { name: "Talk to Lead assistant" }));
+  await waitFor(() => expect(finish).toHaveBeenCalledWith("/conversations?agent=11", "business"));
 });
 
 test("partial failures remain visible and retries reuse the same preset", async () => {
@@ -155,11 +155,11 @@ test("completion failure keeps the created setup available to retry", async () =
   const finish = mock(async (_destination: string) => { throw new Error("Completion interrupted"); });
   mount(finish);
   fireEvent.click(await screen.findByRole("button", { name: "Confirm and create workspace" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Finish setup" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Talk to Lead assistant" }));
   await screen.findByText("Completion interrupted");
   expect(screen.getByText("Your setup is ready")).toBeTruthy();
   expect(projectPresets.apply).toHaveBeenCalledTimes(1);
-  fireEvent.click(screen.getByRole("button", { name: "Finish setup" }));
+  fireEvent.click(screen.getByRole("button", { name: "Talk to Lead assistant" }));
   await waitFor(() => expect(finish).toHaveBeenCalledTimes(2));
 });
 
@@ -184,11 +184,11 @@ test("preset recommendation is editable, persists, and only applies when finishi
   expect((picker as HTMLSelectElement).value).toBe("personal");
   fireEvent.change(picker, {target:{value:"developer"}});
   fireEvent.click(screen.getByRole("button", {name:"Confirm and create workspace"}));
-  await screen.findByRole("button", {name:"Finish setup"});
+  await screen.findByRole("button", {name:"Talk to Lead assistant"});
   expect(saved.interface_level).toBe("developer");
   expect(finish).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", {name:"Finish setup"}));
-  await waitFor(() => expect(finish).toHaveBeenCalledWith("/", "developer"));
+  fireEvent.click(screen.getByRole("button", {name:"Talk to Lead assistant"}));
+  await waitFor(() => expect(finish).toHaveBeenCalledWith("/conversations?agent=11", "developer"));
   expect(projectPresets.apply).toHaveBeenCalledTimes(1);
 });
 
