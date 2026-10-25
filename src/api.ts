@@ -4422,6 +4422,7 @@ export const appSetup = {
 export interface DeploymentResource { app_install_id: number; resource_type: string; resource_id: string }
 export interface DeploymentBackendRef { app_install_id: number; backend_id: string }
 export interface DeploymentPlacement {
+  resource_policy?: AppResourcePolicy;
   type: "local" | "backend";
   backend?: DeploymentBackendRef;
   target?: DeploymentResource;
@@ -4456,4 +4457,18 @@ export const appDeployments = {
   retry: (id: number, op: string) => request<DeploymentOperation>("POST", `/apps/installs/${id}/deployment/operations/${encodeURIComponent(op)}/retry`, {}),
   cancel: (id: number, op: string) => request<{ cancel_requested: boolean }>("POST", `/apps/installs/${id}/deployment/operations/${encodeURIComponent(op)}/cancel`, {}),
   logs: (id: number, cursor = "") => request<{ lines: string[]; cursor?: string }>("GET", `/apps/installs/${id}/deployment/logs?cursor=${encodeURIComponent(cursor)}`),
+};
+
+export interface AppResourcePolicy {
+ process?: {cpu_weight?:number;cpu_quota_percent?:number;memory_high_bytes?:number;memory_max_bytes?:number;io_weight?:number;nice?:number};
+ total_concurrency?:number;
+ workloads?:Record<string,{concurrency:number;queue:number;weight:number}>;
+ network?:Record<string,{receive_bytes?:number;send_bytes?:number;dscp?:number}>;
+}
+export interface AppResourceStatus { revision:number;policy:AppResourcePolicy;resolved:AppResourcePolicy;declaration?:{workloads?:string[];traffic_classes?:string[]};capabilities:Record<string,unknown>;note:string }
+export const appResources = {
+ runtime:(id:number)=>request<{deployment_id:string;generation:number;runtime:unknown}>("GET",`/apps/installs/${id}/deployment/resources/runtime`),
+ apply:(id:number,revision:number,deployment_id:string)=>request<unknown>("POST",`/apps/installs/${id}/deployment/resources/runtime`,{revision,deployment_id}),
+ get:(id:number)=>request<AppResourceStatus>("GET",`/apps/installs/${id}/deployment/resources`),
+ save:(id:number,revision:number,policy:AppResourcePolicy)=>request<AppResourceStatus>("PUT",`/apps/installs/${id}/deployment/resources`,{revision,policy}),
 };

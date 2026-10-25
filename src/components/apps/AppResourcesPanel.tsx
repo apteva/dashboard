@@ -1,0 +1,34 @@
+import { useEffect, useState } from "react";
+import { appResources, type AppResourcePolicy, type AppResourceStatus } from "../../api";
+
+const input = "w-full rounded border border-border bg-bg-input p-2 text-xs";
+export function ResourcePolicyEditor({ value, onChange, workloads = [], trafficClasses = [] }: { value: AppResourcePolicy; onChange: (v: AppResourcePolicy) => void; workloads?: string[]; trafficClasses?: string[] }) {
+  const process = value.process || {};
+  return <div className="space-y-3">
+    <p className="text-xs text-text-muted">Empty fields inherit defaults. CPU weight changes relative share under contention; it does not reserve CPU. Process settings apply on the next deployment.</p>
+    <div className="grid grid-cols-2 gap-3">{([
+      ["cpu_weight", "CPU weight", 1, 10000], ["cpu_quota_percent", "CPU quota (%)", 1, 6400], ["io_weight", "I/O weight", 1, 10000], ["nice", "Nice (backend dependent)", -20, 19],
+      ["memory_high_bytes", "Memory high (bytes)", 1, undefined], ["memory_max_bytes", "Memory maximum (bytes)", 1, undefined],
+    ] as const).map(([key, label, min, max]) => <label key={key} className="text-xs">{label}<input aria-label={label} className={input} type="number" step={1} min={min} max={max} value={process[key] ?? ""} onChange={e => onChange({ ...value, process: { ...process, [key]: e.target.value === "" ? undefined : Number(e.target.value) } })} /></label>)}</div>
+    <label className="block text-xs">Total cooperative concurrency<input aria-label="Total cooperative concurrency" type="number" className={input} min={1} max={1024} value={value.total_concurrency || ""} onChange={e => onChange({ ...value, total_concurrency: Number(e.target.value) || undefined })} /></label>
+    {workloads.map(name => { const policy = value.workloads?.[name]; return <fieldset key={name} className="rounded border border-border p-2"><legend className="text-xs">Workload: {name}</legend><p className="text-xs text-text-muted">Cooperative job admission. Running jobs finish normally.</p><div className="flex gap-2">{(["concurrency", "queue", "weight"] as const).map(key => <label key={key} className="text-xs">{key}<input aria-label={`${name} ${key}`} className={input} type="number" min={key === "queue" ? 0 : 1} max={key === "queue" ? 4096 : key === "weight" ? 1000 : 1024} value={policy?.[key] ?? ""} onChange={e => onChange({ ...value, workloads: { ...value.workloads, [name]: { concurrency: 1, queue: 8, weight: 1, ...policy, [key]: Number(e.target.value) } } })} /></label>)}</div><button type="button" className="text-xs text-accent" onClick={() => { const next = { ...value.workloads }; delete next[name]; onChange({ ...value, workloads: next }); }}>Inherit workload defaults</button></fieldset>; })}
+    {trafficClasses.map(name => <fieldset key={name} className="rounded border border-border p-2"><legend className="text-xs">Traffic: {name}</legend><div className="flex gap-2">{([ ["receive_bytes", "Receive buffer (bytes)", 4194304], ["send_bytes", "Send buffer (bytes)", 1048576], ["dscp", "DSCP (empty = unchanged)", 63] ] as const).map(([key, label, max]) => <label key={key} className="text-xs">{label}<input aria-label={`${name} ${label}`} className={input} type="number" min={0} max={max} value={value.network?.[name]?.[key] ?? ""} onChange={e => onChange({ ...value, network: { ...value.network, [name]: { ...value.network?.[name], [key]: e.target.value === "" ? undefined : Number(e.target.value) } } })} /></label>)}</div></fieldset>)}
+    <p className="text-xs text-text-muted">DSCP is off by default. Marking does not guarantee priority beyond the host. Socket changes apply to new sockets; existing calls keep their settings.</p>
+  </div>;
+}
+export function AppResourcesPanel({ installId }: { installId: number }) {
+  const [status, setStatus] = useState<AppResourceStatus | null>(null), [policy, setPolicy] = useState<AppResourcePolicy>({}), [error, setError] = useState(""), [busy, setBusy] = useState(false);
+  useEffect(() => { let alive = true; setStatus(null); setExecution(null); setError(""); appResources.get(installId).then(r => { if (alive) { setStatus(r); setPolicy(r.policy); } }).catch(e => { if (alive) setError(e.message); }); return () => { alive = false; }; }, [installId]);
+  const [execution, setExecution] = useState<{deployment_id:string;generation:number;runtime:unknown} | null>(null);
+  const inspect = async () => { setError(""); try {setExecution(await appResources.runtime(installId));} catch(e){setError(e instanceof Error ? e.message : "Execution unavailable");} };
+  const apply = async () => {if(!status || !execution || busy)return;setBusy(true);setError("");try{await appResources.apply(installId,status.revision,execution.deployment_id); await inspect();}catch(e){setError(e instanceof Error ? e.message : "Apply failed");}finally{setBusy(false);}};
+  const save = async () => { if (!status || busy) return; setBusy(true); setError(""); try { const next = await appResources.save(installId, status.revision, policy); setStatus(next); setPolicy(next.policy); } catch (e) { setError(e instanceof Error ? e.message : "Could not save resource policy"); } finally { setBusy(false); } };
+  return <details className="rounded border border-border p-3"><summary className="cursor-pointer text-sm font-semibold">Resources & workloads</summary>{error && <p role="alert" className="text-xs text-red">{error}</p>}{status && <div className="mt-3 space-y-3">
+    <p className="text-xs text-text-muted">Saved revision {status.revision}. {status.note}</p>
+    <ResourcePolicyEditor value={policy} onChange={setPolicy} workloads={status.declaration?.workloads} trafficClasses={status.declaration?.traffic_classes} />
+    <div className="flex gap-3"><button type="button" className="text-xs text-accent" disabled={busy} onClick={() => void save()}>{busy ? "Saving…" : "Save for next deployment"}</button><button type="button" className="text-xs text-accent" onClick={() => setPolicy({})}>Reset to inherited defaults</button></div>
+    <button type="button" className="text-xs text-accent" onClick={() => void inspect()}>Inspect active execution</button>
+    {execution && <div className="space-y-2"><p className="text-xs">Execution generation {execution.generation}. Process changes still require a deployment.</p><button type="button" className="text-xs text-accent" disabled={busy || status.revision < 1} onClick={() => void apply()}>Apply saved workloads and network policy without restart</button><pre className="overflow-auto text-xs">{JSON.stringify(execution,null,2)}</pre></div>}
+    <details className="text-xs"><summary>Resolved policy and host capabilities</summary><pre className="overflow-auto">{JSON.stringify({ resolved: status.resolved, capabilities: status.capabilities }, null, 2)}</pre></details>
+  </div>}</details>;
+}

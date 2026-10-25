@@ -1,3 +1,4 @@
+import { AppResourcesPanel } from "./AppResourcesPanel";
 import { useEffect, useRef, useState } from "react";
 import { appDeployments, type DeploymentDetail, type DeploymentPlacement } from "../../api";
 import { useAuth } from "../../hooks/useAuth";
@@ -52,6 +53,7 @@ export function AppDeploymentPanel({ installId, projectId = "" }: { installId: n
       </div>}
       {admin && detail.can_scale && <div className="flex flex-wrap items-center gap-2"><label className="text-xs">Replicas <input aria-label="Replica count" type="number" min={1} max={32} value={replicas} onChange={e=>setReplicas(Number(e.target.value))} className="w-16 rounded border border-border bg-bg-input p-2" /></label><button type="button" disabled={busy || !!activeOp || replicas<1 || replicas>32 || !Number.isInteger(replicas)} className={button} onClick={async()=>{setBusy(true);try{await appDeployments.scale(installId,replicas);await refresh()}catch(e){setError(e instanceof Error?e.message:"Scaling failed")}finally{setBusy(false)}}}>Scale replicas</button></div>}
       {editing && <><DeploymentPlacementEditor installId={installId} projectId={projectId} value={placement} onChange={setPlacement} runtimeKind={active?.manifest.runtime?.kind} publicRoutes={active ? !!active.manifest.runtime?.ingress : undefined} /><p className="text-xs text-text-muted">Placement changes use the existing deployment controller. Moving persistent state requires supported transfer capabilities. Exclusive updates temporarily interrupt service.</p><button type="button" className={button} disabled={busy || !!activeOp || !deploymentSelectionReady(placement)} onClick={() => void action("deploy")}>{busy ? "Checking…" : "Deploy"}</button></>}
+      {admin && <AppResourcesPanel key={installId} installId={installId} />}
       <section aria-label="Deployment activity" className="space-y-2">
         <div className="flex items-center justify-between gap-3"><h4 className="text-sm font-semibold">Deployment activity</h4><span className="text-[10px] text-text-dim">UTC · newest first</span></div>
         <div className="max-h-96 overflow-auto rounded border border-border bg-bg-input font-mono text-[11px] leading-5" tabIndex={0} aria-label="Deployment activity log">
