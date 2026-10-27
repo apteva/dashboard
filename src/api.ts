@@ -4472,3 +4472,11 @@ export const appResources = {
  get:(id:number)=>request<AppResourceStatus>("GET",`/apps/installs/${id}/deployment/resources`),
  save:(id:number,revision:number,policy:AppResourcePolicy)=>request<AppResourceStatus>("PUT",`/apps/installs/${id}/deployment/resources`,{revision,policy}),
 };
+
+export interface AgentResourceStatus {
+ revision:number;policy:AppResourcePolicy;resolved:AppResourcePolicy;apply:"next_restart";state:string;supported:boolean;observed:Record<string,string>;capabilities:unknown;note:string;
+}
+export const agentResources={
+ get:(id:number)=>request<AgentResourceStatus>("GET",`/agents/${id}/resources`),
+ save:(id:number,revision:number,policy:AppResourcePolicy)=>request<AgentResourceStatus>("PUT",`/agents/${id}/resources`,{revision,policy}),
+};

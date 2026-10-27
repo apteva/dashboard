@@ -3,13 +3,9 @@ import { appResources, type AppResourcePolicy, type AppResourceStatus } from "..
 
 const input = "w-full rounded border border-border bg-bg-input p-2 text-xs";
 export function ResourcePolicyEditor({ value, onChange, workloads = [], trafficClasses = [] }: { value: AppResourcePolicy; onChange: (v: AppResourcePolicy) => void; workloads?: string[]; trafficClasses?: string[] }) {
-  const process = value.process || {};
   return <div className="space-y-3">
     <p className="text-xs text-text-muted">Empty fields inherit defaults. CPU weight changes relative share under contention; it does not reserve CPU. Process settings apply on the next deployment.</p>
-    <div className="grid grid-cols-2 gap-3">{([
-      ["cpu_weight", "CPU weight", 1, 10000], ["cpu_quota_percent", "CPU quota (%)", 1, 6400], ["io_weight", "I/O weight", 1, 10000], ["nice", "Nice (backend dependent)", -20, 19],
-      ["memory_high_bytes", "Memory high (bytes)", 1, undefined], ["memory_max_bytes", "Memory maximum (bytes)", 1, undefined],
-    ] as const).map(([key, label, min, max]) => <label key={key} className="text-xs">{label}<input aria-label={label} className={input} type="number" step={1} min={min} max={max} value={process[key] ?? ""} onChange={e => onChange({ ...value, process: { ...process, [key]: e.target.value === "" ? undefined : Number(e.target.value) } })} /></label>)}</div>
+    <ProcessResourceEditor value={value} onChange={onChange} />
     <label className="block text-xs">Total cooperative concurrency<input aria-label="Total cooperative concurrency" type="number" className={input} min={1} max={1024} value={value.total_concurrency || ""} onChange={e => onChange({ ...value, total_concurrency: Number(e.target.value) || undefined })} /></label>
     {workloads.map(name => { const policy = value.workloads?.[name]; return <fieldset key={name} className="rounded border border-border p-2"><legend className="text-xs">Workload: {name}</legend><p className="text-xs text-text-muted">Cooperative job admission. Running jobs finish normally.</p><div className="flex gap-2">{(["concurrency", "queue", "weight"] as const).map(key => <label key={key} className="text-xs">{key}<input aria-label={`${name} ${key}`} className={input} type="number" min={key === "queue" ? 0 : 1} max={key === "queue" ? 4096 : key === "weight" ? 1000 : 1024} value={policy?.[key] ?? ""} onChange={e => onChange({ ...value, workloads: { ...value.workloads, [name]: { concurrency: 1, queue: 8, weight: 1, ...policy, [key]: Number(e.target.value) } } })} /></label>)}</div><button type="button" className="text-xs text-accent" onClick={() => { const next = { ...value.workloads }; delete next[name]; onChange({ ...value, workloads: next }); }}>Inherit workload defaults</button></fieldset>; })}
     {trafficClasses.map(name => <fieldset key={name} className="rounded border border-border p-2"><legend className="text-xs">Traffic: {name}</legend><div className="flex gap-2">{([ ["receive_bytes", "Receive buffer (bytes)", 4194304], ["send_bytes", "Send buffer (bytes)", 1048576], ["dscp", "DSCP (empty = unchanged)", 63] ] as const).map(([key, label, max]) => <label key={key} className="text-xs">{label}<input aria-label={`${name} ${label}`} className={input} type="number" min={0} max={max} value={value.network?.[name]?.[key] ?? ""} onChange={e => onChange({ ...value, network: { ...value.network, [name]: { ...value.network?.[name], [key]: e.target.value === "" ? undefined : Number(e.target.value) } } })} /></label>)}</div></fieldset>)}
@@ -31,4 +27,12 @@ export function AppResourcesPanel({ installId }: { installId: number }) {
     {execution && <div className="space-y-2"><p className="text-xs">Execution generation {execution.generation}. Process changes still require a deployment.</p><button type="button" className="text-xs text-accent" disabled={busy || status.revision < 1} onClick={() => void apply()}>Apply saved workloads and network policy without restart</button><pre className="overflow-auto text-xs">{JSON.stringify(execution,null,2)}</pre></div>}
     <details className="text-xs"><summary>Resolved policy and host capabilities</summary><pre className="overflow-auto">{JSON.stringify({ resolved: status.resolved, capabilities: status.capabilities }, null, 2)}</pre></details>
   </div>}</details>;
+}
+
+export function ProcessResourceEditor({value,onChange,cpuOnly=false,disabled=false}:{value:AppResourcePolicy;onChange:(v:AppResourcePolicy)=>void;cpuOnly?:boolean;disabled?:boolean}) {
+ const process=value.process || {};
+ return (    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{([
+      ["cpu_weight", "CPU weight", 1, 10000], ["cpu_quota_percent", "CPU quota (%)", 1, 6400], ["io_weight", "I/O weight", 1, 10000], ["nice", "Nice (backend dependent)", -20, 19],
+      ["memory_high_bytes", "Memory high (bytes)", 1, undefined], ["memory_max_bytes", "Memory maximum (bytes)", 1, undefined],
+    ] as const).filter(([key]) => !cpuOnly || key === "cpu_weight").map(([key, label, min, max]) => <label key={key} className="text-xs">{label}<input aria-label={label} disabled={disabled} className={input} type="number" step={1} min={min} max={max} value={process[key] ?? ""} onChange={e => onChange({ ...value, process: { ...process, [key]: e.target.value === "" ? undefined : Number(e.target.value) } })} /></label>)}</div>);
 }

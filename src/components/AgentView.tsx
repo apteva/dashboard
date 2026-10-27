@@ -1,3 +1,5 @@
+import { AgentResourcesPanel } from "./AgentResourcesPanel";
+import { useOptionalAuth } from "../hooks/useAuth";
 import { realtimeSelection, type RealtimeProviderConfig } from "../realtime/config";
 import type { RealtimeExecutionConfig } from "../api";
 import { ProviderBuiltinsEditor, agentBuiltins, agentBuiltinPatch, BuiltinGlyph, builtinLabel } from "./ProviderBuiltins";
@@ -2439,6 +2441,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   instance: Agent;
   onSaved: () => void;
 }) {
+  const auth = useOptionalAuth();
   const { shows } = useAudience();
   const [providerList, setProviderList] = useState<RuntimeConnection[]>([]);
   const [serviceTierOverrides, setServiceTierOverrides] = useState<Record<string, string | null>>({});
@@ -2871,6 +2874,8 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
           ) : null}
         </div>
         )}
+
+        {auth?.user && auth.user.role === "admin" && <AgentResourcesPanel key={instance.id} agentId={instance.id} />}
 
         <AgentInstructionsEditor value={directive} onChange={(next) => { directiveEdited.current = true; setDirective(next); }} agentName={instance.name} />
 
