@@ -37,7 +37,7 @@ export function HelperWidget(props: SystemWidgetProps) {
 
         pageContext={preferences.sharePageContext ? { version: 1, page: selected?.type === "agent" ? "agent" : "dashboard", project_id: context.projectId!, ...(selected?.type === "agent" ? { viewed_agent_id: Number(selected.id), viewed_agent_name: selected.label } : {}) } : undefined}
         widgetContext={preferences.sharePageContext ? { ...context, preview: undefined, hostForeground: false } : { scope: context.scope, projectId: context.projectId }} widgetActions={actions}
-        instance={{ id: `page-helper:${context.pageId || "home"}`, component: contribution.key, contribution: contribution, size: "full", settings: { ...helperWelcomeSettings, experience: "personal", display_mode: "single", composer_layout: "compact", show_new_conversation: true, show_page_context: preferences.sharePageContext } }} /></div>}</AppHostSurface>
+        instance={{ id: `page-helper:${context.pageId || "home"}`, component: contribution.key, contribution: contribution, size: "full", settings: { ...helperWelcomeSettings, experience: "personal", display_mode: "single", composer_layout: "compact", show_new_conversation: true, show_page_context: false } }} /></div>}</AppHostSurface>
     </>}
   </section>;
 }
