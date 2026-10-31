@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Ref } from "react";
 import type { ConversationComposerHandle } from "../chat/conversationComposer";
 import { AppIcon } from "@apteva/ui-kit";
-import { auth } from "../../api";
+import { auth, type DashboardWidgetSize } from "../../api";
 import { useOptionalAuth } from "../../hooks/useAuth";
 import { usePanelEvents } from "../../hooks/usePanelEvents";
 import {
@@ -20,7 +20,44 @@ import {
   type WidgetContext,
 } from "./widgetContext";
 
-export type WidgetSize = "half" | "full";
+export type WidgetSize = DashboardWidgetSize;
+
+/** Widget widths in quarters of the canvas, narrowest first. */
+export const WIDGET_SIZES: WidgetSize[] = ["quarter", "half", "three-quarter", "full"];
+
+export const WIDGET_SIZE_LABELS: Record<WidgetSize, string> = {
+  quarter: "1/4",
+  half: "1/2",
+  "three-quarter": "3/4",
+  full: "Full",
+};
+
+export const WIDGET_SIZE_NAMES: Record<WidgetSize, string> = {
+  quarter: "Quarter width",
+  half: "Half width",
+  "three-quarter": "Three-quarter width",
+  full: "Full width",
+};
+
+/** One column on phones, two from md, four from xl. */
+export const WIDGET_CANVAS_GRID = "grid grid-cols-1 items-stretch gap-4 md:grid-cols-2 xl:grid-cols-4";
+
+// Literal class names so Tailwind generates them. Half keeps the old xl
+// footprint (one of two columns); quarters pair up below xl.
+const WIDGET_SPAN_CLASSES: Record<WidgetSize, string> = {
+  quarter: "",
+  half: "md:col-span-2",
+  "three-quarter": "md:col-span-2 xl:col-span-3",
+  full: "md:col-span-2 xl:col-span-4",
+};
+
+export function isWidgetSize(value: unknown): value is WidgetSize {
+  return WIDGET_SIZES.includes(value as WidgetSize);
+}
+
+export function widgetSpanClass(size: WidgetSize): string {
+  return WIDGET_SPAN_CLASSES[size] ?? WIDGET_SPAN_CLASSES.half;
+}
 
 export interface WidgetInstance {
   placement?: "assistant" | "main" | "activity" | "details";
@@ -81,6 +118,21 @@ function normalizeLayout(value: unknown): UILayoutDocument {
   return value as UILayoutDocument;
 }
 
+/** The latest layout from a save another session beat (HTTP 409). */
+function layoutConflict(error: unknown): { document: UILayoutDocument; revision: number } | null {
+  const failure = error as { status?: number; body?: { ui_layout?: unknown; revision?: unknown } } | undefined;
+  if (failure?.status !== 409 || typeof failure.body?.revision !== "number") return null;
+  return { document: normalizeLayout(failure.body.ui_layout), revision: failure.body.revision };
+}
+
+/** Key-order independent JSON, to compare a surface with the server's copy. */
+function canonicalJSON(value: unknown): string {
+  return JSON.stringify(value ?? null, (_key, item) =>
+    item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)))
+      : item);
+}
+
 function withPendingSidebars(document: UILayoutDocument, userId?: number): UILayoutDocument {
   if (!userId) return document;
   let next = document;
@@ -110,7 +162,7 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
   const initialConfirmed = useCached ? cached.confirmed : profileDocument;
   const initialRevision = useCached ? cached.revision : profileRevision;
   const [document, setDocument] = useState<UILayoutDocument>(initial);
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error" | "conflict">("idle");
   const documentRef = useRef(document);
   const confirmedDocumentRef = useRef(initialConfirmed);
   const revisionRef = useRef(initialRevision);
@@ -150,6 +202,14 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
       detail: { document: next, revision },
     }));
   }, [applyDocument]);
+
+  /** Record a saved revision without replacing newer optimistic edits on screen. */
+  const acknowledgeDocument = useCallback((next: UILayoutDocument, revision: number) => {
+    if (revision <= revisionRef.current) return;
+    revisionRef.current = revision;
+    confirmedDocumentRef.current = next;
+    if (userId) latestLayouts.set(userId, { document: documentRef.current, confirmed: next, revision });
+  }, [userId]);
 
   const project = layoutScope === "global"
     ? document.global || {}
@@ -201,12 +261,20 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
 
   const updateSurface = useCallback(
     async (surface: string, widgets: WidgetInstance[], options?: {rejectOnError?:boolean}) => {
-      if (layoutScope === "project" && !projectId) return;
+      if (layoutScope === "project" && !projectId) {
+        setSaveState("error");
+        if (options?.rejectOnError) throw new Error("Choose a project before changing this layout.");
+        return;
+      }
       const stored = serializeWidgetInstances(widgets);
       const current = documentRef.current;
-      const currentProject = layoutScope === "global"
-        ? current.global || {}
-        : current.projects?.[projectId!] || {};
+      const scopeOf = (document: UILayoutDocument) => layoutScope === "global"
+        ? document.global
+        : document.projects?.[projectId!];
+      const currentProject = scopeOf(current) || {};
+      // The surface this edit started from. If another session saved in the
+      // meantime but left this surface alone, the save is retried.
+      const base = canonicalJSON(currentProject.slots?.[surface]);
       const nextProject: ProjectUILayout = {
         ...currentProject,
         slots: { ...(currentProject.slots || {}), [surface]: stored },
@@ -220,18 +288,31 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
       const version = (surfaceSaveVersions.get(queueKey) || 0) + 1;
       surfaceSaveVersions.set(queueKey, version);
       const previous = surfaceSaveQueues.get(queueKey) || Promise.resolve();
-      const request = previous.catch(() => undefined).then(() => {
-        return layoutScope === "global"
-          ? auth.patchGlobalUILayoutSurface(surface, stored)
-          : auth.patchUILayoutSurface(projectId!, surface, stored);
-      });
+      const save = async () => {
+        let expected = revisionRef.current;
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return layoutScope === "global"
+              ? await auth.patchGlobalUILayoutSurface(surface, stored, expected)
+              : await auth.patchUILayoutSurface(projectId!, surface, stored, expected);
+          } catch (error) {
+            const conflict = layoutConflict(error);
+            if (!conflict || attempt >= 2 || canonicalJSON(scopeOf(conflict.document)?.slots?.[surface]) !== base) throw error;
+            expected = conflict.revision;
+            acknowledgeDocument(conflict.document, conflict.revision);
+          }
+        }
+      };
+      const request = previous.catch(() => undefined).then(save);
       surfaceSaveQueues.set(queueKey, request);
       try {
         const response = await request;
+        const confirmed = normalizeLayout(response.ui_layout);
         if (surfaceSaveVersions.get(queueKey) === version) {
-          const confirmed = normalizeLayout(response.ui_layout);
           publishDocument(confirmed, response.revision);
           setSaveState("saved");
+        } else {
+          acknowledgeDocument(confirmed, response.revision);
         }
       } catch (error) {
         if (surfaceSaveVersions.get(queueKey) === version) {
@@ -241,14 +322,17 @@ export function useProjectUILayout(projectId?: string | null, layoutScope: "proj
           const restored={...currentScope,slots:{...currentScope?.slots}};
           if(rollback?.slots && Object.hasOwn(rollback.slots,surface))restored.slots[surface]=rollback.slots[surface];else delete restored.slots[surface];
           publishDocument(layoutScope==="global"?{...latest,global:restored}:{...latest,projects:{...latest.projects,[projectId!]:restored}});
-          setSaveState("error");
+          // Another session changed this surface: show its layout, not ours.
+          const conflict = layoutConflict(error);
+          if (conflict) publishDocument(conflict.document, conflict.revision);
+          setSaveState(conflict ? "conflict" : "error");
         }
         if(options?.rejectOnError)throw error;
       } finally {
         if (surfaceSaveQueues.get(queueKey) === request) surfaceSaveQueues.delete(queueKey);
       }
     },
-    [layoutScope, projectId, publishDocument],
+    [acknowledgeDocument, layoutScope, projectId, publishDocument],
   );
 
   return { document, project, toggleSidebarApp, updateSurface, saveState };
@@ -354,19 +438,18 @@ export function useEligibleContributionKeys(
 }
 
 export function supportedWidgetSizes(spec: UIComponentSpec): WidgetSize[] {
-  const declared = (spec.supported_sizes || []).filter(
-    (size): size is WidgetSize => size === "half" || size === "full",
-  );
-  if (declared.length) return [...new Set(declared)];
+  const declared = new Set((spec.supported_sizes || []).filter(isWidgetSize));
+  // A widget that works at half and full width also works in between.
+  if (declared.has("half") && declared.has("full")) declared.add("three-quarter");
+  if (declared.size) return WIDGET_SIZES.filter((size) => declared.has(size));
   // Legacy components stay fixed at the width their manifest requested.
   return [spec.default_width === 2 ? "full" : "half"];
 }
 
 export function defaultWidgetSize(spec: UIComponentSpec): WidgetSize {
   const sizes = supportedWidgetSizes(spec);
-  return spec.default_size && sizes.includes(spec.default_size)
-    ? spec.default_size
-    : sizes[0];
+  if (spec.default_size && sizes.includes(spec.default_size)) return spec.default_size;
+  return sizes.includes("half") ? "half" : sizes[0];
 }
 
 function normalizedWidgetSize(
@@ -427,8 +510,8 @@ export function storedWidgetInstancesFor(
     const legacy = typeof entry === "string";
     const component = legacy ? entry : entry.component;
     const contribution = byKey.get(component);
-    const fallbackSize: WidgetSize = typeof entry !== "string" && entry.size === "full"
-      ? "full"
+    const fallbackSize: WidgetSize = typeof entry !== "string" && isWidgetSize(entry.size)
+      ? entry.size
       : "half";
     return [{
       id: legacy
@@ -576,7 +659,7 @@ export function ContributionMount({
 }) {
   const { contribution } = instance;
   const events = usePanelEvents(contribution.app.name, projectId, contribution.app.install_id, contribution.spec.refresh_topics || [], dashboardScope);
-  const width = instance.size === "full" ? "xl:col-span-2" : "";
+  const width = widgetSpanClass(instance.size);
   const effectiveContext: WidgetContext = {
     projectId,
     scope: dashboardScope,
@@ -782,13 +865,15 @@ export function ContributionManager({
                                   key={size}
                                   type="button"
                                   onClick={() => patchInstance(instance.id, { size })}
-                                  className={`rounded border px-2.5 py-1 text-[9px] font-bold capitalize ${
+                                  aria-label={WIDGET_SIZE_NAMES[size]}
+                                  title={WIDGET_SIZE_NAMES[size]}
+                                  className={`rounded border px-2.5 py-1 text-[9px] font-bold ${
                                     instance.size === size
                                       ? "border-accent bg-accent/10 text-accent"
                                       : "border-border text-text-muted hover:bg-bg-hover hover:text-text"
                                   }`}
                                 >
-                                  {size}
+                                  {WIDGET_SIZE_LABELS[size]}
                                 </button>
                               ))}
                             </div>
@@ -890,15 +975,19 @@ function newWidgetInstanceID(component: string): string {
   return `${component}:${suffix}`;
 }
 
+const FOOTPRINT_QUARTERS: Record<WidgetSize, number> = { quarter: 1, half: 2, "three-quarter": 3, full: 4 };
+
 function WidgetFootprintPreview({ size }: { size: WidgetSize }) {
+  const filled = FOOTPRINT_QUARTERS[size] ?? 2;
   return (
     <span
-      title={`${size} width`}
-      className="grid h-7 w-12 grid-cols-2 gap-0.5 rounded border border-border bg-bg p-1"
-      aria-label={`${size} width preview`}
+      title={WIDGET_SIZE_NAMES[size]}
+      className="grid h-7 w-12 grid-cols-4 gap-0.5 rounded border border-border bg-bg p-1"
+      aria-label={`${WIDGET_SIZE_NAMES[size]} preview`}
     >
-      <span className={`rounded-sm bg-accent/45 ${size === "full" ? "col-span-2" : ""}`} />
-      {size === "half" && <span className="rounded-sm bg-border" />}
+      {[0, 1, 2, 3].map((quarter) => (
+        <span key={quarter} className={`rounded-sm ${quarter < filled ? "bg-accent/45" : "bg-border"}`} />
+      ))}
     </span>
   );
 }

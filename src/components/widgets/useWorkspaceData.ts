@@ -9,6 +9,8 @@ export interface WorkspaceData {
   attachments: Record<number, AgentAttachments>; loading: boolean; errors: string[];
 }
 const empty = (): WorkspaceData => ({ agents: [], apps: [], connections: [], skills: [], inventory: [], stats: [], statuses: [], attachments: {}, loading: true, errors: [] });
+/** Agent runs emit bursts of telemetry; refresh what they change at most this often. */
+export const LIVE_RELOAD_MS = 10_000;
 
 /** One resource snapshot per canvas. Consumers never create their own polling loops. */
 export function useWorkspaceData(projectId: string | undefined, global: boolean, enabled: boolean, relationships: boolean, projectIds: string[]) {
@@ -21,8 +23,11 @@ export function useWorkspaceData(projectId: string | undefined, global: boolean,
   const invalidate = useRef<() => void>(() => {});
   useEffect(() => {
     if (!enabled || !scope) return;
-    let cancelled = false, pending = false, reloadRequested = false;
+    let cancelled = false, pending = false, loadedFull = false;
+    let reloadRequested: "live" | "full" | undefined;
     let debounce: number | undefined;
+    let liveDebounce: number | undefined;
+    let lastLiveReload = 0;
     let attachmentsDebounce: number | undefined;
     let lastAttachmentRefresh = 0;
     const refreshAttachments = () => {
@@ -44,28 +49,44 @@ export function useWorkspaceData(projectId: string | undefined, global: boolean,
       }));
       return [...rows.values()];
     };
-    const load = async () => {
+    // Live sources are what agent activity changes; the rest refresh on
+    // explicit change events and the 30 s timer.
+    const sources: Array<{ key: keyof WorkspaceData; name: string; live?: boolean; fetch: () => Promise<unknown> }> = [
+      { key: "agents", name: "Agents", live: true, fetch: () => instances.list(projectId) },
+      { key: "apps", name: "Apps", fetch: loadApps },
+      { key: "connections", name: "Integrations", fetch: () => integrations.connections(projectId, { includeAppOwned: true }) },
+      { key: "skills", name: "Skills", fetch: () => skills.list(projectId) },
+      { key: "inventory", name: "Capabilities", fetch: () => mcpServers.list(projectId, { includeAppOwned: true }) },
+      { key: "stats", name: "Usage", live: true, fetch: () => telemetry.projectStats(projectId, "24h") },
+      { key: "statuses", name: "Agent status", live: true, fetch: () => chat.currentStatuses(projectId) },
+    ];
+    const failure = (name: string) => `${name} could not be refreshed.`;
+    const load = async (live = false) => {
       if (cancelled || document.hidden) return;
-      if (pending) { reloadRequested = true; return; }
+      if (pending) { reloadRequested = live && reloadRequested !== "full" ? "live" : "full"; return; }
       pending = true;
-      const results = await Promise.allSettled([
-        instances.list(projectId), loadApps(),
-        integrations.connections(projectId, { includeAppOwned: true }), skills.list(projectId),
-        mcpServers.list(projectId, { includeAppOwned: true }), telemetry.projectStats(projectId, "24h"), chat.currentStatuses(projectId),
-      ] as const);
+      const selected = live && loadedFull ? sources.filter(source => source.live) : sources;
+      const results = await Promise.allSettled(selected.map(source => source.fetch()));
       pending = false;
       if (cancelled) return;
-      const names = ["Agents", "Apps", "Integrations", "Skills", "Capabilities", "Usage", "Agent status"];
+      if (selected === sources) loadedFull = true;
       setState(previous => {
         const old = previous.scope === scope ? previous.data : empty();
-        const value = <T,>(result: PromiseSettledResult<T>, fallback: T): T => result.status === "fulfilled" ? result.value : fallback;
-        return { scope, data: { ...old, loading: false,
-          agents: value(results[0], old.agents), apps: value(results[1], old.apps), connections: value(results[2], old.connections),
-          skills: value(results[3], old.skills), inventory: value(results[4], old.inventory), stats: value(results[5], old.stats), statuses: value(results[6], old.statuses),
-          errors: results.flatMap((result, i) => result.status === "rejected" ? [`${names[i]} could not be refreshed.`] : []),
-        } };
+        const data: WorkspaceData = { ...old, loading: false };
+        const failed = new Set<string>();
+        selected.forEach((source, i) => {
+          const result = results[i];
+          if (result.status === "fulfilled") Object.assign(data, { [source.key]: result.value });
+          else failed.add(source.name);
+        });
+        // A live reload leaves the other sources' last outcome in place.
+        data.errors = sources.flatMap(source => failed.has(source.name) || (!selected.includes(source) && old.errors.includes(failure(source.name))) ? [failure(source.name)] : []);
+        return { scope, data };
       });
-      if (reloadRequested) { reloadRequested = false; schedule(); }
+      const requested = reloadRequested;
+      reloadRequested = undefined;
+      if (requested === "full") schedule();
+      else if (requested === "live") scheduleLive();
     };
     const schedule = (event?: Event) => {
       if (event && ["apteva:agents-changed", "apteva:apps-changed", "apteva:connections-changed", "apteva:skills-changed", "apteva.telemetry.reconnected", "apteva.telemetry.gap", "visibilitychange"].includes(event.type)) refreshAttachments();
@@ -75,13 +96,21 @@ export function useWorkspaceData(projectId: string | undefined, global: boolean,
         void load();
       }, 400);
     };
-    invalidate.current = () => { schedule(); refreshAttachments(); };
+    const scheduleLive = () => {
+      if (liveDebounce !== undefined || debounce !== undefined) return;
+      liveDebounce = window.setTimeout(() => {
+        liveDebounce = undefined;
+        lastLiveReload = Date.now();
+        void load(true);
+      }, Math.max(400, LIVE_RELOAD_MS - (Date.now() - lastLiveReload)));
+    };
+    invalidate.current = () => { scheduleLive(); refreshAttachments(); };
     void load();
     const timer = window.setInterval(() => { void load(); if (!document.hidden) refreshAttachments(); }, 30_000);
     const events = ["apteva:agents-changed", "apteva:apps-changed", "apteva:connections-changed", "apteva:skills-changed", "apteva.statusMessage", "apteva.telemetry.reconnected", "apteva.telemetry.gap"];
     events.forEach(event => window.addEventListener(event, schedule));
     document.addEventListener("visibilitychange", schedule);
-    return () => { cancelled = true; invalidate.current = () => {}; window.clearInterval(timer); window.clearTimeout(debounce); window.clearTimeout(attachmentsDebounce); events.forEach(event => window.removeEventListener(event, schedule)); document.removeEventListener("visibilitychange", schedule); };
+    return () => { cancelled = true; invalidate.current = () => {}; window.clearInterval(timer); window.clearTimeout(debounce); window.clearTimeout(liveDebounce); window.clearTimeout(attachmentsDebounce); events.forEach(event => window.removeEventListener(event, schedule)); document.removeEventListener("visibilitychange", schedule); };
   }, [scope, projectId, global, enabled, revision, projectKey]);
   useTelemetryEvents(enabled ? null : undefined, event => {
     // Helper may create the first agent, so invalidation cannot depend on the

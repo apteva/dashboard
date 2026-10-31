@@ -6,8 +6,14 @@ import type { WidgetSettingsUI } from "./widgetSettings";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
+  isWidgetSize,
   reorderWidgetInstances,
   useProjectUILayout,
+  WIDGET_CANVAS_GRID,
+  WIDGET_SIZE_LABELS,
+  WIDGET_SIZE_NAMES,
+  WIDGET_SIZES,
+  widgetSpanClass,
   type WidgetInstance,
   type WidgetSize,
 } from "./contributions";
@@ -58,7 +64,7 @@ export function WidgetCanvas({
   context,
   workspaceLayout = false,
   onWidgetAction,
-  className = "grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2",
+  className = WIDGET_CANVAS_GRID,
 }: {
   projectId?: string | null;
   layoutScope?: "project" | "global";
@@ -132,10 +138,8 @@ export function WidgetCanvas({
     if (visible.length === 0 && editing && !keepEditingWhenEmpty) onEditingChange(false);
   }, [definitionsReady, editing, keepEditingWhenEmpty, onEditingChange, onVisibleComponentsChange, visibleComponentsKey]);
 
-  const persist = (next: WidgetInstance[], strict = false) => {
-    if (layoutScope === "project" && !projectId) return;
-    return updateSurface(slot, ensureRequiredWidgets(next, definitions), { rejectOnError: strict });
-  };
+  const persist = (next: WidgetInstance[], strict = false) =>
+    updateSurface(slot, ensureRequiredWidgets(next, definitions), { rejectOnError: strict });
   const add = (definition: WidgetDefinition) => {
     if (definition.required && configured.some((item) => item.component === definition.key)) return;
     const instance: WidgetInstance = {
@@ -173,8 +177,8 @@ export function WidgetCanvas({
           <span className="text-[11px] font-bold uppercase tracking-wide text-accent">
             Editing layout
           </span>
-          <span className={`text-[10px] ${saveState === "error" ? "text-red" : "text-text-dim"}`} aria-live="polite">
-            {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Could not save" : "Drag widgets to reorder"}
+          <span className={`text-[10px] ${saveState === "error" || saveState === "conflict" ? "text-red" : "text-text-dim"}`} aria-live="polite">
+            {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Could not save" : saveState === "conflict" ? "Changed in another tab. Showing the latest layout." : "Drag widgets to reorder"}
           </span>
           <button
             type="button"
@@ -208,7 +212,7 @@ export function WidgetCanvas({
           {visible.map((instance, index) => {
             const definition: WidgetDefinition = byKey.get(instance.component) || {
               key: instance.component, label: instance.component.split(":").pop()?.replaceAll("-", " ") || "Widget",
-              supportedSizes: ["half", "full"], defaultSize: instance.size,
+              supportedSizes: WIDGET_SIZES, defaultSize: instance.size,
               render: () => <section className="h-full rounded-lg border border-dashed border-border p-4"><h3 className="text-sm font-semibold">Widget unavailable</h3><p className="mt-2 text-xs leading-relaxed text-text-muted">{instance.component} is saved here. Install or update its app and check its access to this page or agent.</p><a href="/apps" className="mt-3 inline-block text-xs text-accent">Manage apps</a></section>,
             };
             const sizes = definition.supportedSizes;
@@ -223,7 +227,7 @@ export function WidgetCanvas({
                   if (editing && dragging) move(dragging, instance.id);
                   setDragging(null);
                 }}
-                className={`relative min-w-0 ${instance.size === "full" ? "xl:col-span-2" : ""} ${editing ? "flex h-full flex-col rounded-xl border border-dashed border-border p-1.5 transition-colors hover:border-accent/50" : ""} ${dragging === instance.id ? "border-accent opacity-55 ring-2 ring-accent/35" : ""}`}
+                className={`relative min-w-0 ${widgetSpanClass(instance.size)} ${editing ? "flex h-full flex-col rounded-xl border border-dashed border-border p-1.5 transition-colors hover:border-accent/50" : ""} ${dragging === instance.id ? "border-accent opacity-55 ring-2 ring-accent/35" : ""}`}
                 data-widget-id={instance.id}
                 data-widget-editing={editing || undefined}
               >
@@ -257,9 +261,11 @@ export function WidgetCanvas({
                             type="button"
                             onClick={() => patchWidget(instance.id, { size })}
                             aria-pressed={instance.size === size}
+                            aria-label={WIDGET_SIZE_NAMES[size]}
+                            title={WIDGET_SIZE_NAMES[size]}
                             className={`min-h-7 rounded px-2 text-[10px] font-bold ${instance.size === size ? "bg-accent/15 text-accent" : "text-text-dim hover:bg-bg-hover hover:text-text"}`}
                           >
-                            {size === "half" ? "Half" : "Full"}
+                            {WIDGET_SIZE_LABELS[size]}
                           </button>
                         ))}
                       </div>
@@ -361,7 +367,7 @@ function WidgetCanvasLoading({
       {placeholders.map((instance) => (
         <div
           key={instance.id}
-          className={`min-h-40 rounded-lg border border-border bg-bg-card p-4 ${instance.size === "full" ? "xl:col-span-2" : ""}`}
+          className={`min-h-40 rounded-lg border border-border bg-bg-card p-4 ${widgetSpanClass(instance.size)}`}
         >
           <div className="h-3 w-28 rounded bg-bg-hover" />
           <div className="mt-4 h-2 w-full rounded bg-bg-subtle" />
@@ -396,6 +402,14 @@ function ensureRequiredWidgets(instances: WidgetInstance[], definitions: WidgetD
   ];
 }
 
+/** A layout saved in another scope, reused as this surface's default. Widgets
+ * this scope cannot provide are left out rather than shown as unavailable. */
+export function sharedWidgetLayout(stored: unknown, definitions: WidgetDefinition[]): WidgetInstance[] | undefined {
+  if (!Array.isArray(stored)) return undefined;
+  const known = new Set(definitions.map((definition) => definition.key));
+  return normalizeStoredWidgets(stored, definitions).filter((widget) => known.has(widget.component));
+}
+
 export function normalizeStoredWidgets(values: unknown[], definitions: WidgetDefinition[]): WidgetInstance[] {
   const byKey = new Map(definitions.map((item) => [item.key, item]));
   let hasTasks = values.some((value) => typeof value === "string" ? value === "tasks:task-overview" : !!value && typeof value === "object" && "component" in value && value.component === "tasks:task-overview");
@@ -411,9 +425,9 @@ export function normalizeStoredWidgets(values: unknown[], definitions: WidgetDef
     }
     if (typeof component !== "string") return [];
     const definition = byKey.get(component);
-    const supported = definition?.supportedSizes || ["half", "full"];
+    const supported = definition?.supportedSizes || WIDGET_SIZES;
     const requested = raw?.size;
-    const size = requested && supported.includes(requested)
+    const size: WidgetSize = isWidgetSize(requested) && supported.includes(requested)
       ? requested
       : definition?.defaultSize || "half";
     return [{

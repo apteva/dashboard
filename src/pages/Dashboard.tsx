@@ -17,10 +17,11 @@ import {
   defaultWidgetSettings,
   defaultWidgetSize,
   supportedWidgetSizes,
+  useProjectUILayout,
   type WorkspacePage,
 } from "../components/apps/contributions";
 import { WorkspaceCanvas } from "../components/apps/WorkspaceCanvas";
-import { WidgetCanvas, type WidgetDefinition } from "../components/apps/WidgetCanvas";
+import { sharedWidgetLayout, WidgetCanvas, type WidgetDefinition } from "../components/apps/WidgetCanvas";
 import { useInstalledAppsState } from "../components/apps/chatComponents";
 import {
   type WidgetAction,
@@ -41,7 +42,9 @@ export function Dashboard({ page, pageProjectId }: {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { projects, currentProject, loaded: projectsLoaded, setCurrentProject } = useProjects();
-  const allProjects = page ? page.scope === "global" : searchParams.get("scope") === "all";
+  // Without projects, Home can only be the all-projects view; a project-scoped
+  // Home would have nowhere to save its layout.
+  const allProjects = page ? page.scope === "global" : searchParams.get("scope") === "all" || (projectsLoaded && projects.length === 0);
   const requestedProject = projects.find((project) => project.id === (page ? pageProjectId : searchParams.get("project")));
   const selectedProject = allProjects ? undefined : page ? requestedProject : requestedProject || currentProject || undefined;
   const projectId = selectedProject?.id;
@@ -174,6 +177,13 @@ export function Dashboard({ page, pageProjectId }: {
       ) : null,
     })),
   ], [data, activity, system, allProjects, appContributions, handleWidgetAction, installedApps, projectId, projectNames, widgetContext, widgetSlot]);
+  const { document: layoutDocument } = useProjectUILayout(projectId);
+  // A project Home without a layout of its own shows the All projects layout,
+  // and "Reset view" brings that layout back.
+  const sharedHomeLayout = useMemo(
+    () => page || allProjects ? undefined : sharedWidgetLayout(layoutDocument.global?.slots?.[widgetSlot], widgetDefinitions),
+    [allProjects, layoutDocument.global?.slots, page, widgetDefinitions, widgetSlot],
+  );
   const chooseScope = (value: string) => {
     const next = new URLSearchParams(searchParams);
     next.delete("project");
@@ -248,6 +258,7 @@ export function Dashboard({ page, pageProjectId }: {
           layoutScope={allProjects ? "global" : "project"}
           slot={widgetSlot}
           definitions={widgetDefinitions}
+          defaultLayout={sharedHomeLayout}
           editing={editingLayout}
           keepEditingWhenEmpty={!!page}
           onEditingChange={handleEditingChange}

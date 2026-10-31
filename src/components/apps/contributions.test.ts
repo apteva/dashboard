@@ -8,8 +8,10 @@ import {
   preferredSidebarAppNames,
   reorderWidgetInstances,
   serializeWidgetInstances,
+  defaultWidgetSize,
   supportedWidgetSizes,
   widgetInstancesFor,
+  widgetSpanClass,
   type ProjectUILayout,
 } from "./contributions";
 import type { InstalledAppRow } from "./chatComponents";
@@ -104,8 +106,21 @@ describe("generic app contributions", () => {
     expect(widgets[0].component).toBe("work-ledger:overview");
     expect(widgets[0].size).toBe("half");
     expect(widgets[0].settings).toEqual({ show_recent: true });
-    expect(supportedWidgetSizes(found[0].spec)).toEqual(["half", "full"]);
+    expect(supportedWidgetSizes(found[0].spec)).toEqual(["half", "three-quarter", "full"]);
     expect(defaultWidgetSettings(found[0].spec)).toEqual({ show_recent: true });
+  });
+
+  test("offers quarter widths only when declared and keeps half as the default", () => {
+    const spec = { name: "tile", entry: "/ui/Tile.mjs", slots: ["dashboard.home"] };
+    expect(supportedWidgetSizes({ ...spec, supported_sizes: ["full", "quarter", "half"] })).toEqual(["quarter", "half", "three-quarter", "full"]);
+    expect(defaultWidgetSize({ ...spec, supported_sizes: ["quarter", "half", "full"] })).toBe("half");
+    expect(defaultWidgetSize({ ...spec, supported_sizes: ["quarter", "full"], default_size: "full" })).toBe("full");
+    expect(supportedWidgetSizes({ ...spec, supported_sizes: ["quarter", "full"] })).toEqual(["quarter", "full"]);
+    expect(supportedWidgetSizes({ ...spec, supported_sizes: ["wide" as never] })).toEqual(["half"]);
+    expect(supportedWidgetSizes({ ...spec, default_width: 2 })).toEqual(["full"]);
+    expect(widgetSpanClass("quarter")).toBe("");
+    expect(widgetSpanClass("three-quarter")).toBe("md:col-span-2 xl:col-span-3");
+    expect(widgetSpanClass("full")).toBe("md:col-span-2 xl:col-span-4");
   });
 
   test("retains suggested defaults for embedded slots without a layout editor", () => {
