@@ -3200,6 +3200,14 @@ export const telemetry = {
     "GET", `/telemetry/agents-last-active?project_id=${encodeURIComponent(projectId)}`,
   ),
 
+  // Usage report for one project, or every agent the user can see when
+  // projectId is undefined.
+  usage: (projectId: string | undefined, period: UsagePeriod, groupBy: UsageGroupBy) => {
+    const params = new URLSearchParams({ period, group_by: groupBy });
+    if (projectId) params.set("project_id", projectId);
+    return request<UsageReport>("GET", `/telemetry/usage?${params}`);
+  },
+
   // Project-scoped aggregate — ranks every instance in the project by
   // cost/tokens/errors over the period. Empty projectId scopes to every
   // instance the current user owns.
@@ -3261,6 +3269,74 @@ export interface InstanceStats {
 
 // One bucket of the project timeline. cost_by_instance / calls_by_instance
 // are keyed by stringified instance_id (JSON object keys must be strings).
+// /telemetry/usage — one consistent report behind the Usage page. `cost` is
+// billed spend; `included_cost` is list-price value of subscription usage
+// (e.g. OpenAI Codex) that is not billed per token.
+export type UsagePeriod = "24h" | "7d" | "30d";
+export type UsageGroupBy = "agent" | "model" | "provider" | "project";
+
+export interface UsageTotals {
+  cost: number;
+  included_cost: number;
+  calls: number;
+  tokens_in: number;
+  tokens_out: number;
+  tokens_cached: number;
+  errors: number;
+  unpriced_calls: number;
+  active_agents: number;
+}
+
+export interface UsageSeriesPoint {
+  cost: number;
+  included_cost: number;
+  calls: number;
+  tokens: number;
+}
+
+export interface UsageBucket {
+  time: string;
+  cost: number;
+  included_cost: number;
+  calls: number;
+  tokens_in: number;
+  tokens_out: number;
+  errors: number;
+  series: Record<string, UsageSeriesPoint>;
+}
+
+export interface UsageGroup {
+  key: string;
+  label: string;
+  billing: "metered" | "subscription" | "mixed";
+  agent_id?: number;
+  project_id?: string;
+  status?: string;
+  cost: number;
+  included_cost: number;
+  calls: number;
+  tokens_in: number;
+  tokens_out: number;
+  tokens_cached: number;
+  errors: number;
+  unpriced_calls: number;
+}
+
+export interface UsageReport {
+  period: UsagePeriod;
+  group_by: UsageGroupBy;
+  since: string;
+  until: string;
+  bucket_minutes: number;
+  agents: number;
+  totals: UsageTotals;
+  previous: UsageTotals;
+  daily_run_rate: number;
+  run_rate_days: number;
+  timeline: UsageBucket[];
+  groups: UsageGroup[];
+}
+
 export interface ProjectTimelineBucket {
   time: string;
   cost: number;

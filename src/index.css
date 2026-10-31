@@ -71,6 +71,28 @@
   --chat-tool-failed: #c92314;
 }
 
+/* Chart series. One categorical order for every theme, stepped per mode and
+ * validated (CVD + contrast) against all four card surfaces. Slots are
+ * assigned in order and never cycled; a sixth series folds into "Other". */
+:root,
+[data-mode="dark"] {
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-other: #6b6a66;
+}
+
+[data-mode="light"] {
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-other: #a3a19b;
+}
+
 /* ─── Palettes (4 = theme × mode) ─────────────────────────────────
  * Color values are hand-tuned per (theme × mode) combination. Each
  * row of tokens is the same semantic shape so every palette can be
