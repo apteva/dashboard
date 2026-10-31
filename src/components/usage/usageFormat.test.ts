@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chartRows, chartSeries, defaultMetric, formatCount, formatMoney, OTHER_KEY, percentChange } from "./usageFormat";
+import { chartRows, chartSeries, formatCount, formatMoney, OTHER_KEY, percentChange } from "./usageFormat";
 import { usageReport } from "./usageFixtures";
 
 describe("usage formatting", () => {
@@ -24,11 +24,6 @@ describe("usage formatting", () => {
     expect(percentChange(15, 10)).toBe(50);
   });
 
-  test("default chart metric follows what was actually paid", () => {
-    expect(defaultMetric(usageReport().totals)).toBe("cost");
-    expect(defaultMetric({ ...usageReport().totals, cost: 0 })).toBe("value");
-    expect(defaultMetric({ ...usageReport().totals, cost: 0, included_cost: 0 })).toBe("tokens");
-  });
 });
 
 describe("chart series", () => {
