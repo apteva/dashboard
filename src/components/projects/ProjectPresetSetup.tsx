@@ -9,6 +9,7 @@ import {
 } from "../../api";
 import { PresetConnectionGuide } from "./PresetConnectionGuide";
 import { AgentMark } from "../AgentMark";
+import { WIDGET_SIZE_NAMES, type WidgetSize } from "../apps/contributions";
 import { useOptionalAuth } from "../../hooks/useAuth";
 
 const CATEGORIES = [
@@ -262,6 +263,13 @@ export function ProjectPresetSetup({
   );
 }
 
+const PREVIEW_SPAN_CLASSES: Record<WidgetSize, string> = {
+  quarter: "",
+  half: "sm:col-span-2",
+  "three-quarter": "sm:col-span-3",
+  full: "sm:col-span-4",
+};
+
 export function PresetLayoutPreview({ preset, standalone = false }: { preset: ProjectPreset; standalone?: boolean }) {
   const [surface, setSurface] = useState("home");
   const home = [...(preset.layouts?.home || preset.dashboard_layout || visibleDashboardComponents(preset).map((component) => ({ id: component, component, size: "half" as const })))];
@@ -276,10 +284,10 @@ export function PresetLayoutPreview({ preset, standalone = false }: { preset: Pr
         {agents.map((agent) => <option key={agent.key} value={agent.key}>{agent.name} · Overview</option>)}
       </select>
     </div>
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" aria-label="Planned widgets">
-      {widgets.map((widget) => <div key={widget.id} className={`min-w-0 rounded-lg border border-border p-3 ${widget.size === "full" ? "sm:col-span-2" : ""}`}>
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-4" aria-label="Planned widgets">
+      {widgets.map((widget) => <div key={widget.id} className={`min-w-0 rounded-lg border border-border p-3 ${PREVIEW_SPAN_CLASSES[widget.size] ?? PREVIEW_SPAN_CLASSES.half}`}>
         <p className="text-xs font-medium">{dashboardLabel(widget.component)}</p>
-        <p className="mt-1 text-[10px] text-text-dim">{widget.size === "full" ? "Full width" : "Half width"}{surface !== "home" && widget.component === "native:agent-activity" ? " · Always shown" : ""}</p>
+        <p className="mt-1 text-[10px] text-text-dim">{WIDGET_SIZE_NAMES[widget.size] ?? WIDGET_SIZE_NAMES.half}{surface !== "home" && widget.component === "native:agent-activity" ? " · Always shown" : ""}</p>
         {"agent_key" in widget && widget.agent_key && <p className="mt-1 text-[10px] text-text-muted">{preset.agents.find((agent) => agent.key === widget.agent_key)?.name}</p>}
       </div>)}
     </div>

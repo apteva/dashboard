@@ -9,7 +9,7 @@ import { WidgetCanvas, type WidgetDefinition } from "./apps/WidgetCanvas";
 import { useInstalledAppsState } from "./apps/chatComponents";
 import {
   ContributionMount, contributionsFor, defaultWidgetSettings, defaultWidgetSize,
-  fetchEligibleContributionKeys, storedWidgetInstancesFor, supportedWidgetSizes,
+  fetchEligibleContributionKeys, storedWidgetInstancesFor, supportedWidgetSizes, WIDGET_SIZES,
   useProjectUILayout, type WidgetInstance,
 } from "./apps/contributions";
 
@@ -61,12 +61,12 @@ export function AgentOverview({ instance, projectId, audience, toolRegistry, eve
   const eligible = contributions.filter((item) => eligibility.keys.has(item.key));
   const responses = [...events].reverse().filter((event) => event.kind === "thought" && !!responseText(event)).slice(0, 3);
   const definitions: WidgetDefinition[] = [
-    { key: "native:agent-results", label: "Recent responses", description: "Explicit agent responses from recent activity.", supportedSizes: ["half", "full"], defaultSize: "half", kind: "builtin", render: () =>
+    { key: "native:agent-results", label: "Recent responses", description: "Explicit agent responses from recent activity.", supportedSizes: WIDGET_SIZES, defaultSize: "half", kind: "builtin", render: () =>
       <AgentOverviewCard title="Recent responses" subtitle="Open a response to see its context.">
         {responses.length ? <div className="divide-y divide-border/60">{responses.map((event) => <button type="button" key={event.key} onClick={() => setSelectedResponseKey(event.activityId || event.key)} className="block w-full py-3 text-left hover:bg-bg-hover"><p className="line-clamp-3 break-words text-sm leading-relaxed text-text">{responseText(event)}</p></button>)}</div>
           : <p className="text-sm text-text-muted">{loading ? "Loading responses…" : "No recent responses yet. Outputs from your apps can be added as widgets."}</p>}
       </AgentOverviewCard> },
-    { key: "native:agent-activity", label: "Recent activity", description: "Always on the overview. Resize it to leave room for your app widgets.", supportedSizes: ["half", "full"], defaultSize: "half", required: true, kind: "builtin", render: () =>
+    { key: "native:agent-activity", label: "Recent activity", description: "Always on the overview. Resize it to leave room for your app widgets.", supportedSizes: WIDGET_SIZES, defaultSize: "half", required: true, kind: "builtin", render: () =>
       <AgentOverviewCard title="Recent activity"><AgentActivity toolRegistry={toolRegistry} events={events} loading={loading} compact onDetails={onDetails} /><button type="button" className={`${buttonClass} mt-3`} onClick={onActivity}>View activity</button></AgentOverviewCard> },
     ...eligible.map((contribution): WidgetDefinition => ({
       key: contribution.key, label: contribution.spec.label || contribution.spec.name,

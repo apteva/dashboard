@@ -25,6 +25,10 @@ export function setAuthInvalidHandler(fn: (() => void) | null) {
 const inFlightGETs = new Map<string, Promise<unknown>>();
 const API_DEBUG = process.env.NODE_ENV !== "production";
 
+function ifMatchRevision(revision?: number): Record<string, string> | undefined {
+  return typeof revision === "number" ? { "If-Match": `"${revision}"` } : undefined;
+}
+
 function request<T>(
   method: string,
   path: string,
@@ -452,10 +456,13 @@ export const auth = {
       patch,
     ),
 
+  /** With a revision, the save fails with 409 (and the latest layout) if
+   * another session saved first. */
   patchUILayoutSurface: (
     projectId: string,
     surface: string,
     value: unknown[],
+    revision?: number,
   ) =>
     request<{
       value: unknown[];
@@ -465,6 +472,7 @@ export const auth = {
       "PATCH",
       `/ui-layout/projects/${encodeURIComponent(projectId)}/surfaces/${encodeURIComponent(surface)}`,
       { value },
+      ifMatchRevision(revision),
     ),
 
   mutateUIPage: (method: "POST" | "PATCH" | "DELETE", page: {
@@ -472,12 +480,12 @@ export const auth = {
     title?: string; description?: string; pinned?: boolean; layout?: "grid" | "workspace";
   }) => request<{ page: { id: string }; ui_layout: Record<string, unknown>; revision: number }>(method, "/ui-layout/pages", page),
 
-  patchGlobalUILayoutSurface: (surface: string, value: unknown[]) =>
+  patchGlobalUILayoutSurface: (surface: string, value: unknown[], revision?: number) =>
     request<{
       value: unknown[];
       ui_layout: Record<string, unknown>;
       revision: number;
-    }>("PATCH", `/ui-layout/global/surfaces/${encodeURIComponent(surface)}`, { value }),
+    }>("PATCH", `/ui-layout/global/surfaces/${encodeURIComponent(surface)}`, { value }, ifMatchRevision(revision)),
 
   patchSidebarApp: (projectId: string, app: string, pinned: boolean, defaults: string[]) =>
     request<{
@@ -725,13 +733,16 @@ export interface ProjectPresetAgentPreview extends ProjectPresetAgent {
   app_install_ids: number[];
 }
 
+/** Widget width in quarters of the dashboard canvas. */
+export type DashboardWidgetSize = "quarter" | "half" | "three-quarter" | "full";
+
 export interface ProjectPresetWidget {
   agent_key?: string;
   agent_id?: number;
   setup?: PresetConnectionSetup[];
   id: string;
   component: string;
-  size: "half" | "full";
+  size: DashboardWidgetSize;
   settings?: Record<string, unknown>;
 }
 
@@ -3748,8 +3759,8 @@ export interface AppUIComponent {
   dashboard_scopes?: Array<"project" | "global">;
   refresh_topics?: string[];
   default_width?: 1 | 2;
-  supported_sizes?: Array<"half" | "full">;
-  default_size?: "half" | "full";
+  supported_sizes?: DashboardWidgetSize[];
+  default_size?: DashboardWidgetSize;
   props_schema?: Record<string, unknown>;
   settings_schema?: Record<string, unknown>;
   settings_ui?: import("./components/apps/widgetSettings").WidgetSettingsUI;

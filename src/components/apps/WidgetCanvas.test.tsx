@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { WidgetCanvas, type WidgetDefinition } from "./WidgetCanvas";
+import { sharedWidgetLayout, WidgetCanvas, type WidgetDefinition } from "./WidgetCanvas";
 
 import { auth } from "../../api";
 const originalPatch=auth.patchUILayoutSurface;
@@ -11,7 +11,7 @@ afterEach(()=>{cleanup();auth.patchUILayoutSurface=originalPatch});
 const definitions: WidgetDefinition[] = [{
   key: "native:test",
   label: "Test widget",
-  supportedSizes: ["half", "full"],
+  supportedSizes: ["half", "three-quarter", "full"],
   defaultSize: "half",
   render: () => <section data-testid="widget-content">Widget content</section>,
 }];
@@ -98,7 +98,20 @@ describe("WidgetCanvas editing", () => {
     expect(controls).toBeTruthy();
     expect(controls?.className).not.toContain("absolute");
     expect(controls!.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Half" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Half width" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  test("resizes a widget to three quarters of the canvas", async () => {
+    const { container } = await renderConfigured();
+    expect(screen.queryByRole("button", { name: "Quarter width" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Three-quarter width" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Three-quarter width" }).getAttribute("aria-pressed")).toBe("true"));
+    const frame = container.querySelector('[data-widget-id^="native:test:"]');
+    expect(frame?.className).toContain("xl:col-span-3");
+    expect(container.querySelector("[data-widget-canvas]")?.className).toContain("xl:grid-cols-4");
+    const saved = (auth.patchUILayoutSurface as ReturnType<typeof mock>).mock.calls.at(-1)?.[2] as Array<{ size: string }>;
+    expect(saved.at(-1)?.size).toBe("three-quarter");
   });
 
   test("exits edit mode from the persistent editor toolbar", async () => {
@@ -108,5 +121,18 @@ describe("WidgetCanvas editing", () => {
     expect(screen.getByRole("toolbar", { name: "Layout editor" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(onEditingChange).toHaveBeenCalledWith(false);
+  });
+});
+
+describe("sharedWidgetLayout", () => {
+  test("reuses another scope's layout without unavailable widgets", () => {
+    const layout = sharedWidgetLayout([
+      { id: "a", component: "native:test", size: "three-quarter" },
+      { id: "b", component: "other:missing", size: "quarter" },
+      "native:test",
+    ], definitions);
+    expect(layout?.map((widget) => [widget.id, widget.size])).toEqual([["a", "three-quarter"], ["legacy:2:native:test", "half"]]);
+    expect(sharedWidgetLayout(undefined, definitions)).toBeUndefined();
+    expect(sharedWidgetLayout([], definitions)).toEqual([]);
   });
 });

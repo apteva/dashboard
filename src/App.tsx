@@ -68,9 +68,11 @@ function OnboardingGate({ children }: { children: React.ReactNode }) {
 function InterfaceHome() {
   const { audience } = useAudience();
   const { currentProject } = useProjects();
-  const { project } = useProjectUILayout(currentProject?.id);
+  const { document, project } = useProjectUILayout(currentProject?.id);
   const [params] = useSearchParams();
-  const hasHome = Object.prototype.hasOwnProperty.call(project.slots || {}, "dashboard.home");
+  // A project without its own Home inherits the All projects layout.
+  const hasHome = [project.slots, document.global?.slots].some((slots) =>
+    Object.prototype.hasOwnProperty.call(slots || {}, "dashboard.home"));
   const conversationRequested = params.has("agent") || params.has("chat") || params.has("new");
   return audience === "personal" && (!hasHome || conversationRequested) ? <Personal /> : <Dashboard />;
 }

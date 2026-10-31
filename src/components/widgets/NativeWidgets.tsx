@@ -12,6 +12,7 @@ import { HomeAgentOperations, HomeUsageSummary } from "../dashboard/HomePanels";
 import { Link } from "react-router-dom";
 import type { InstanceStats, CurrentStatusMessageRow } from "../../api";
 import type { WidgetDefinition } from "../apps/WidgetCanvas";
+import { WIDGET_SIZES } from "../apps/contributions";
 import type { WidgetActionBridge, WidgetContext, WidgetRenderContext } from "../apps/widgetContext";
 
 export interface NativeWidgetContext extends WorkspaceData {
@@ -52,14 +53,14 @@ const rowsSchema = {
 export function nativeWidgetDefinitions(context: NativeWidgetContext): WidgetDefinition[] {
   const appRows = context.apps;
   const definitions: WidgetDefinition[] = [
-    { key: "native:helper", label: "Apteva Helper", description: "Build through the existing Conversations chat widget.", supportedSizes: ["half", "full"], defaultSize: "half", kind: "builtin", render: (_instance, renderContext) => <HelperWidget {...context} renderContext={renderContext} /> },
-    { key: "native:system-map", label: "Agents & capabilities", description: "Compact agent cards with live status and attached apps and integrations.", supportedSizes: ["half", "full"], defaultSize: "full", kind: "builtin", render: (_instance, renderContext) => <SystemMapWidget {...context} renderContext={renderContext} /> },
-    { key: "native:result-preview", label: "Result / preview", description: "Inspect selected activity and app outputs.", supportedSizes: ["half", "full"], defaultSize: "half", kind: "builtin", render: (_instance, renderContext) => <ResultPreviewWidget {...context} renderContext={renderContext} /> },
+    { key: "native:helper", label: "Apteva Helper", description: "Build through the existing Conversations chat widget.", supportedSizes: WIDGET_SIZES, defaultSize: "half", kind: "builtin", render: (_instance, renderContext) => <HelperWidget {...context} renderContext={renderContext} /> },
+    { key: "native:system-map", label: "Agents & capabilities", description: "Compact agent cards with live status and attached apps and integrations.", supportedSizes: WIDGET_SIZES, defaultSize: "full", kind: "builtin", render: (_instance, renderContext) => <SystemMapWidget {...context} renderContext={renderContext} /> },
+    { key: "native:result-preview", label: "Result / preview", description: "Inspect selected activity and app outputs.", supportedSizes: WIDGET_SIZES, defaultSize: "half", kind: "builtin", render: (_instance, renderContext) => <ResultPreviewWidget {...context} renderContext={renderContext} /> },
     {
       key: "native:workspace-summary",
       label: "Workspace overview",
       description: "A compact view of the resources and state in this workspace.",
-      supportedSizes: ["half", "full"],
+      supportedSizes: WIDGET_SIZES,
       defaultSize: "full",
       kind: "builtin",
       render: (_instance, renderContext) => (
@@ -73,7 +74,7 @@ export function nativeWidgetDefinitions(context: NativeWidgetContext): WidgetDef
       key: "native:quick-actions",
       label: "Quick actions",
       description: "Start common workspace actions without leaving the page.",
-      supportedSizes: ["half", "full"],
+      supportedSizes: WIDGET_SIZES,
       defaultSize: "half",
       kind: "builtin",
       render: (_instance, renderContext) => (
@@ -87,7 +88,7 @@ export function nativeWidgetDefinitions(context: NativeWidgetContext): WidgetDef
       key: "native:context-inspector",
       label: "Inspector",
       description: "Inspect and act on the item selected in another widget.",
-      supportedSizes: ["half", "full"],
+      supportedSizes: WIDGET_SIZES,
       defaultSize: "half",
       kind: "builtin",
       render: (_instance, renderContext) => (
@@ -101,7 +102,7 @@ export function nativeWidgetDefinitions(context: NativeWidgetContext): WidgetDef
       key: "native:readiness",
       label: "Needs attention",
       description: "See what is available and what needs attention.",
-      supportedSizes: ["half", "full"],
+      supportedSizes: WIDGET_SIZES,
       defaultSize: "half",
       kind: "builtin",
       render: (_instance, renderContext) => (
@@ -115,7 +116,7 @@ export function nativeWidgetDefinitions(context: NativeWidgetContext): WidgetDef
       key: "native:agents",
       label: "Agents",
       description: "Your agents and their current state.",
-      supportedSizes: ["half", "full"],
+      supportedSizes: WIDGET_SIZES,
       defaultSize: "half",
       defaultSettings: { max_rows: 6 },
       settingsSchema: rowsSchema,
@@ -126,7 +127,7 @@ export function nativeWidgetDefinitions(context: NativeWidgetContext): WidgetDef
       key: "native:apps",
       label: "Apps",
       description: "Installed apps available in this workspace.",
-      supportedSizes: ["half", "full"],
+      supportedSizes: WIDGET_SIZES,
       defaultSize: "half",
       defaultSettings: { max_rows: 6 },
       settingsSchema: rowsSchema,
@@ -137,7 +138,7 @@ export function nativeWidgetDefinitions(context: NativeWidgetContext): WidgetDef
       key: "native:integrations",
       label: "Integrations",
       description: "Connected services and the tools they provide.",
-      supportedSizes: ["half", "full"],
+      supportedSizes: WIDGET_SIZES,
       defaultSize: "half",
       defaultSettings: { max_rows: 6 },
       settingsSchema: rowsSchema,
@@ -148,7 +149,7 @@ export function nativeWidgetDefinitions(context: NativeWidgetContext): WidgetDef
       key: "native:skills",
       label: "Skills",
       description: "Reusable instructions available to your agents.",
-      supportedSizes: ["half", "full"],
+      supportedSizes: WIDGET_SIZES,
       defaultSize: "half",
       defaultSettings: { max_rows: 6 },
       settingsSchema: rowsSchema,
@@ -159,14 +160,14 @@ export function nativeWidgetDefinitions(context: NativeWidgetContext): WidgetDef
       key: "native:agent-activity",
       label: "Agent activity",
       description: "Current work, progress, blockers, and next steps across your agents.",
-      supportedSizes: ["half", "full"],
+      supportedSizes: WIDGET_SIZES,
       defaultSize: "full",
       kind: "builtin",
       render: (instance) => (
         <HomeAgentOperations
           agents={context.agents}
           statuses={context.statuses}
-          compact={instance.size === "half"}
+          compact={instance.size === "quarter" || instance.size === "half"}
           showProjects={context.allProjects}
           projectNames={context.projectNames}
         />
@@ -185,7 +186,7 @@ export function nativeWidgetDefinitions(context: NativeWidgetContext): WidgetDef
       key: "native:activity",
       label: "Live activity",
       description: "Significant agent actions and tool events.",
-      supportedSizes: ["half", "full"],
+      supportedSizes: WIDGET_SIZES,
       defaultSize: "full",
       kind: "builtin",
       render: (_instance, renderContext) => <WorkspaceActivityWidget {...context} renderContext={renderContext} />,

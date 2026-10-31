@@ -31,7 +31,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { AppIdentityProvider } from "@apteva/ui-kit";
-import { chat, type ChatComponent, type ChatMessageRow } from "../../api";
+import { chat, type ChatComponent, type ChatMessageRow, type DashboardWidgetSize } from "../../api";
 import {
   ApprovalReviewModal,
   parseApprovalReview,
@@ -55,8 +55,8 @@ export interface UIComponentSpec {
   default_width?: 1 | 2;
   /** Suggested agent-page presets; presentation only, never authorization. */
   recommended_views?: Array<"personal" | "business" | "developer">;
-  supported_sizes?: Array<"half" | "full">;
-  default_size?: "half" | "full";
+  supported_sizes?: DashboardWidgetSize[];
+  default_size?: DashboardWidgetSize;
   props_schema?: Record<string, unknown>;
   settings_schema?: Record<string, unknown>;
   settings_ui?: import("./widgetSettings").WidgetSettingsUI;
