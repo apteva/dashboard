@@ -135,9 +135,6 @@ function AgentActivityHeader({
           {showProjects ? "Current work across your projects" : "Current work and next steps"}
         </p>
       </div>
-      <Link to="/monitor" className="shrink-0 pt-0.5 text-[11px] text-text-muted hover:text-text">
-        View monitor →
-      </Link>
     </div>
   );
 }
@@ -157,8 +154,6 @@ export function HomeAgentSchedule({
         title="Upcoming agent runs"
         subtitle="The next autonomous action reported by each agent"
         count={schedules.length}
-        to="/monitor"
-        linkLabel="View schedules"
       />
       {visible.length === 0 ? (
         <EmptyState title="No upcoming runs reported" detail="Recurring agents will appear here after they report their next scheduled action." />
@@ -222,14 +217,10 @@ function PanelHeader({
   title,
   subtitle,
   count,
-  to,
-  linkLabel = "View operations",
 }: {
   title: string;
   subtitle: string;
   count: number;
-  to: string;
-  linkLabel?: string;
 }) {
   return (
     <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
@@ -244,9 +235,6 @@ function PanelHeader({
         </div>
         <p className="mt-0.5 text-[11px] text-text-dim">{subtitle}</p>
       </div>
-      <Link to={to} className="shrink-0 pt-0.5 text-[11px] text-text-muted hover:text-text">
-        {linkLabel} →
-      </Link>
     </div>
   );
 }

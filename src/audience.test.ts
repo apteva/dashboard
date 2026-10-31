@@ -83,7 +83,7 @@ describe("audience never unmounts a route", () => {
   test("gated nav entries carry a section key rather than being deleted", () => {
     const layout = source("./components/Layout.tsx");
     expect(layout).toContain('section: "nav.dashboard"');
-    expect(layout).toContain('section: "nav.monitor"');
+    expect(layout).toContain('section: "nav.agents"');
     expect(layout).toContain('section: "nav.skills"');
     expect(layout).toContain('shows("nav.appPages")');
   });

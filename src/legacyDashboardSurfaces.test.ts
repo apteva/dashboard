@@ -20,15 +20,11 @@ describe("legacy dashboard surfaces stay hidden", () => {
 
   test("native inbox, status, and agent-chat mounts remain absent", () => {
     const dashboard = source("./pages/Dashboard.tsx");
-    const monitor = source("./pages/Monitor.tsx");
     const agents = source("./pages/Agents.tsx");
     const agentView = source("./components/AgentView.tsx");
 
     expect(dashboard).not.toContain("native:inbox");
     expect(dashboard).not.toContain("AptevaInbox");
-    expect(monitor).not.toContain("AptevaInbox");
-    expect(monitor).not.toContain("MonitorStatuses");
-    expect(monitor).not.toContain("useCurrentStatuses");
     expect(agents).not.toContain("openAgentConversation");
     expect(agents).not.toContain("onChat");
     expect(agentView).not.toContain("AgentConversationPanel");

@@ -47,7 +47,6 @@ export const AUDIENCE_SECTIONS = {
   "nav.dashboard": "business",
   "nav.agents": "business",
   "nav.appPages": "business",
-  "nav.monitor": "business",
   "nav.integrations": "business",
   "nav.apps": "business",
   "nav.usage": "business",

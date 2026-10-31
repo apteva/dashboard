@@ -110,7 +110,7 @@ if (typeof window !== "undefined" && !window.__aptevaTelemetryBus) {
     if (!projectId) return;
     teardown();
     const scope = projectId;
-    // The Monitor wallboard can temporarily request the caller's entire
+    // The global Home workspace can temporarily request the caller's entire
     // fleet. "*" is an internal sentinel: omitting project_id is the
     // server's authenticated all-project mode. Every other value remains
     // a regular project id, so normal pages keep their narrow stream.

@@ -27,7 +27,6 @@ const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default:
 const Personal = lazy(() => import("./pages/Personal").then((m) => ({ default: m.Personal })));
 const WorkspaceSetup = lazy(() => import("./pages/WorkspaceSetup").then((m) => ({ default: m.WorkspaceSetup })));
 const WorkspacePage = lazy(() => import("./pages/WorkspacePage").then((m) => ({ default: m.WorkspacePage })));
-const Monitor = lazy(() => import("./pages/Monitor").then((m) => ({ default: m.Monitor })));
 const Agents = lazy(() => import("./pages/Agents").then((m) => ({ default: m.Agents })));
 const Agent = lazy(() => import("./pages/Agent").then((m) => ({ default: m.Agent })));
 const AgentNew = lazy(() => import("./pages/AgentNew").then((m) => ({ default: m.AgentNew })));
@@ -114,8 +113,8 @@ export default function App() {
             <Route path="/pages" element={<Navigate to="/settings?tab=pages" replace />} />
             <Route path="/pages/:pageId" element={<WorkspacePage />} />
             <Route path="/agents" element={<Agents />} />
-            <Route path="/activity" element={<Navigate to="/monitor?view=activity" replace />} />
-            <Route path="/monitor" element={<Monitor />} />
+            <Route path="/activity" element={<Navigate to="/" replace />} />
+            <Route path="/monitor" element={<Navigate to="/" replace />} />
             <Route path="/agents/new" element={<AgentNew />} />
             {/* Keep stale bookmarks safe while the legacy chat UI is hidden. */}
             <Route path="/chat" element={<Navigate to="/" replace />} />

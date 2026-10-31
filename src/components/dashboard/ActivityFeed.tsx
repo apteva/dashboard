@@ -93,9 +93,6 @@ export function ActivityFeed({
           </div>
           <p className="mt-0.5 text-[11px] text-text-dim">Significant agent and tool events</p>
         </div>
-        <Link to="/monitor?view=activity" className="shrink-0 pt-0.5 text-[11px] text-text-muted hover:text-text">
-          View operations →
-        </Link>
       </div>
 
       {loading && visible.length === 0 ? (
