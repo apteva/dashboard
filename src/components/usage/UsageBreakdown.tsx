@@ -37,7 +37,7 @@ function SpendCell({ group }: { group: UsageGroup }) {
     return (
       <span className="flex flex-col items-end leading-tight">
         <span className="text-text-muted">Included</span>
-        <span className="text-[11px] text-text-dim">{formatMoney(group.included_cost)} list</span>
+        {group.included_cost > 0 && <span className="text-[11px] text-text-dim">{formatMoney(group.included_cost)} list</span>}
       </span>
     );
   }

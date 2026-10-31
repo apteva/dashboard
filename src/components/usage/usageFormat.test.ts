@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chartRows, chartSeries, formatCount, formatMoney, OTHER_KEY, percentChange } from "./usageFormat";
+import { chartRows, chartSeries, formatCount, formatMoney, formatRangeLabel, OTHER_KEY, percentChange, presetRange, previousLabel, rangeDays } from "./usageFormat";
 import { usageReport } from "./usageFixtures";
 
 describe("usage formatting", () => {
@@ -24,6 +24,24 @@ describe("usage formatting", () => {
     expect(percentChange(15, 10)).toBe(50);
   });
 
+});
+
+describe("date ranges", () => {
+  const today = new Date(2026, 9, 31, 15, 0);
+
+  test("presets end today and count today as a day", () => {
+    expect(presetRange("today", today)).toEqual({ from: "2026-10-31", to: "2026-10-31" });
+    expect(presetRange("7d", today)).toEqual({ from: "2026-10-25", to: "2026-10-31" });
+    expect(presetRange("30d", today)).toEqual({ from: "2026-10-02", to: "2026-10-31" });
+    expect(rangeDays("2026-10-25", "2026-10-31")).toBe(7);
+  });
+
+  test("ranges and their comparison windows read naturally", () => {
+    expect(formatRangeLabel("2026-10-31", "2026-10-31", today)).toBe("Today");
+    expect(previousLabel("2026-10-31", "2026-10-31", today)).toBe("yesterday");
+    expect(previousLabel("2026-10-25", "2026-10-31", today)).toBe("previous 7 days");
+    expect(formatRangeLabel("2025-12-20", "2026-01-05", today)).toContain("2025");
+  });
 });
 
 describe("chart series", () => {

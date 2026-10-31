@@ -36,7 +36,7 @@ export function UsageChart({
   const rows = chartRows(report, metric, series);
   const money = metric === "cost" || metric === "value";
   const empty = series.length === 0;
-  const label = (time: string) => formatBucketLabel(time, report.bucket_minutes);
+  const label = (time: string) => formatBucketLabel(time, report.bucket);
 
   return (
     <section className="rounded-lg border border-border bg-bg-card" aria-label={`${METRIC_LABELS[metric]} over time`}>
@@ -105,7 +105,7 @@ export function UsageChart({
                   const total = payload.reduce((sum, p) => sum + Number(p.value || 0), 0);
                   return (
                     <div className="min-w-[11rem] rounded-md border border-border bg-bg-card px-3 py-2 text-xs shadow-[var(--shadow-popover)]">
-                      <p className="mb-1.5 text-text-dim">{label(String(time))}</p>
+                      <p className="mb-1.5 text-text-dim">{formatBucketLabel(String(time), report.bucket, true)}</p>
                       {items.map((p) => (
                         <div key={String(p.dataKey)} className="flex items-center gap-2 py-0.5">
                           <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: String(p.color) }} />

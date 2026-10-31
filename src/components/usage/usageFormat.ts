@@ -1,4 +1,4 @@
-import type { UsageBucket, UsageGroup, UsagePeriod, UsageReport, UsageTotals } from "../../api";
+import type { UsageBucket, UsageBucketSize, UsageGroup, UsageReport, UsageTotals } from "../../api";
 
 // Money reads at the precision a person would say it: whole cents, with
 // sub-cent amounts shown as "<$0.01" instead of four decimals of noise.
@@ -46,25 +46,74 @@ export function percentChange(current: number, previous: number): number | null 
   return ((current - previous) / previous) * 100;
 }
 
-export const PERIOD_LABELS: Record<UsagePeriod, string> = {
-  "24h": "Last 24 hours",
-  "7d": "Last 7 days",
-  "30d": "Last 30 days",
+export type UsagePreset = "today" | "7d" | "30d" | "90d" | "custom";
+
+export const PRESET_LABELS: Record<UsagePreset, string> = {
+  today: "Today",
+  "7d": "7 days",
+  "30d": "30 days",
+  "90d": "90 days",
+  custom: "Custom",
 };
 
-export const PREVIOUS_LABELS: Record<UsagePeriod, string> = {
-  "24h": "previous 24h",
-  "7d": "previous 7 days",
-  "30d": "previous 30 days",
-};
+const PRESET_DAYS: Record<Exclude<UsagePreset, "custom">, number> = { today: 1, "7d": 7, "30d": 30, "90d": 90 };
 
-export function formatBucketLabel(iso: string, bucketMinutes: number): string {
+// The server accepts at most 366 days.
+export const MAX_RANGE_DAYS = 366;
+
+// YYYY-MM-DD for a date on the viewer's own calendar.
+export function localDate(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function parseLocalDate(value: string): Date {
+  const [y, m, d] = value.split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+
+export function isLocalDate(value: string | null): value is string {
+  return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(parseLocalDate(value).getTime()));
+}
+
+// Inclusive day count of a from/to range.
+export function rangeDays(from: string, to: string): number {
+  return Math.round((parseLocalDate(to).getTime() - parseLocalDate(from).getTime()) / 86_400_000) + 1;
+}
+
+// A preset always ends today, so "7 days" is today and the six before it.
+export function presetRange(preset: Exclude<UsagePreset, "custom">, today = new Date()): { from: string; to: string } {
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (PRESET_DAYS[preset] - 1));
+  return { from: localDate(start), to: localDate(today) };
+}
+
+function shortDate(date: Date, withYear: boolean): string {
+  return date.toLocaleDateString(undefined, withYear ? { month: "short", day: "numeric", year: "numeric" } : { month: "short", day: "numeric" });
+}
+
+export function formatRangeLabel(from: string, to: string, today = new Date()): string {
+  const todayStr = localDate(today);
+  if (from === to) return from === todayStr ? "Today" : shortDate(parseLocalDate(from), parseLocalDate(from).getFullYear() !== today.getFullYear());
+  const start = parseLocalDate(from), end = parseLocalDate(to);
+  const withYear = start.getFullYear() !== end.getFullYear() || end.getFullYear() !== today.getFullYear();
+  return `${shortDate(start, withYear)} – ${shortDate(end, withYear)}`;
+}
+
+// What the previous window is called in "vs …" deltas.
+export function previousLabel(from: string, to: string, today = new Date()): string {
+  const days = rangeDays(from, to);
+  if (days === 1) return from === localDate(today) ? "yesterday" : "the day before";
+  return `previous ${days} days`;
+}
+
+export function formatBucketLabel(iso: string, bucket: UsageBucketSize, long = false): string {
   const date = new Date(iso);
-  if (bucketMinutes >= 1440) return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  if (bucketMinutes >= 360) {
-    return `${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${date.toLocaleTimeString(undefined, { hour: "numeric" })}`;
+  if (bucket === "hour") {
+    const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return long ? `${date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}, ${time}` : time;
   }
-  return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (bucket === "week") return `${long ? "Week of " : ""}${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+  return date.toLocaleDateString(undefined, long ? { weekday: "short", month: "short", day: "numeric" } : { month: "short", day: "numeric" });
 }
 
 export function cacheShare(totals: Pick<UsageTotals, "tokens_in" | "tokens_cached">): number {
