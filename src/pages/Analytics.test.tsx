@@ -25,6 +25,8 @@ describe("Usage page", () => {
     expect(screen.getByText("$45.00")).toBeTruthy(); // 1.5/day × 30
     expect(screen.getByText("Included")).toBeTruthy();
     expect(screen.getByText("Writer")).toBeTruthy();
+    // The chart opens on tokens, which every call has, even when spend is $0.
+    expect(screen.getByRole("heading", { name: "Tokens over time" })).toBeTruthy();
   });
 
   test("switching the breakdown requests that grouping", async () => {

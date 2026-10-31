@@ -11,7 +11,6 @@ import {
   PREVIOUS_LABELS,
   cacheShare,
   chartSeries,
-  defaultMetric,
   errorRate,
   formatCount,
   formatMoney,
@@ -125,8 +124,10 @@ export function Analytics() {
   const current = report && report.group_by === groupBy && report.period === period ? report : null;
   const totals = current?.totals;
   const hasIncluded = Boolean(totals && totals.included_cost > 0);
-  const metrics: UsageMetric[] = hasIncluded ? ["cost", "value", "tokens", "calls"] : ["cost", "tokens", "calls"];
-  const metric = metricChoice && metrics.includes(metricChoice) ? metricChoice : totals ? defaultMetric(totals) : "cost";
+  // Tokens by default: every call has them, while spend is often $0 for
+  // subscription models or models without a list price.
+  const metrics: UsageMetric[] = hasIncluded ? ["tokens", "calls", "cost", "value"] : ["tokens", "calls", "cost"];
+  const metric = metricChoice && metrics.includes(metricChoice) ? metricChoice : "tokens";
   const series = useMemo(() => (current ? chartSeries(current, metric) : []), [current, metric]);
 
   const selected = current && groupBy === "agent" ? current.groups.find((g) => g.key === selectedKey) : undefined;

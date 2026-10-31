@@ -138,8 +138,3 @@ export function groupTrend(report: UsageReport, key: string, metric: UsageMetric
 
 // Pick the chart metric a reader cares about: billed spend when there is
 // any, subscription value when all usage is covered, else tokens.
-export function defaultMetric(totals: UsageTotals): UsageMetric {
-  if (totals.cost > 0) return "cost";
-  if (totals.included_cost > 0) return "value";
-  return "tokens";
-}
