@@ -164,7 +164,7 @@ export function AgentUsagePanel({
                       const row = payload[0].payload as { time: string; value: number };
                       return (
                         <div className="rounded-md border border-border bg-bg-card px-2.5 py-1.5 text-xs shadow-[var(--shadow-popover)]">
-                          <p className="text-text-dim">{formatBucketLabel(row.time, report.bucket_minutes)}</p>
+                          <p className="text-text-dim">{formatBucketLabel(row.time, report.bucket, true)}</p>
                           <p className="tabular-nums text-text">{money ? formatMoney(row.value) : formatCount(row.value)}</p>
                         </div>
                       );

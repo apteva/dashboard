@@ -3201,10 +3201,11 @@ export const telemetry = {
   ),
 
   // Usage report for one project, or every agent the user can see when
-  // projectId is undefined.
-  usage: (projectId: string | undefined, period: UsagePeriod, groupBy: UsageGroupBy) => {
-    const params = new URLSearchParams({ period, group_by: groupBy });
-    if (projectId) params.set("project_id", projectId);
+  // projectId is undefined. from/to are inclusive local dates (YYYY-MM-DD)
+  // in tz; the server picks hour, day or week buckets from the span.
+  usage: (query: UsageQuery) => {
+    const params = new URLSearchParams({ from: query.from, to: query.to, tz: query.tz, group_by: query.groupBy });
+    if (query.projectId) params.set("project_id", query.projectId);
     return request<UsageReport>("GET", `/telemetry/usage?${params}`);
   },
 
@@ -3272,8 +3273,16 @@ export interface InstanceStats {
 // /telemetry/usage — one consistent report behind the Usage page. `cost` is
 // billed spend; `included_cost` is list-price value of subscription usage
 // (e.g. OpenAI Codex) that is not billed per token.
-export type UsagePeriod = "24h" | "7d" | "30d";
 export type UsageGroupBy = "agent" | "model" | "provider" | "project";
+export type UsageBucketSize = "hour" | "day" | "week";
+
+export interface UsageQuery {
+  projectId?: string;
+  from: string;
+  to: string;
+  tz: string;
+  groupBy: UsageGroupBy;
+}
 
 export interface UsageTotals {
   cost: number;
@@ -3323,10 +3332,12 @@ export interface UsageGroup {
 }
 
 export interface UsageReport {
-  period: UsagePeriod;
+  period: string;
   group_by: UsageGroupBy;
   since: string;
   until: string;
+  timezone: string;
+  bucket: UsageBucketSize;
   bucket_minutes: number;
   agents: number;
   totals: UsageTotals;

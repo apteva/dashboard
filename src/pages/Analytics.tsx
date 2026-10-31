@@ -1,45 +1,87 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { telemetry, type UsageGroup, type UsageGroupBy, type UsagePeriod, type UsageReport } from "../api";
+import { telemetry, type UsageGroup, type UsageGroupBy, type UsageReport } from "../api";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { AgentUsagePanel } from "../components/usage/AgentUsagePanel";
 import { UsageBreakdown } from "../components/usage/UsageBreakdown";
 import { UsageChart } from "../components/usage/UsageChart";
 import {
-  PERIOD_LABELS,
-  PREVIOUS_LABELS,
+  MAX_RANGE_DAYS,
+  PRESET_LABELS,
   cacheShare,
   chartSeries,
   errorRate,
   formatCount,
   formatMoney,
   formatPercent,
+  formatRangeLabel,
+  isLocalDate,
+  localDate,
   percentChange,
+  presetRange,
+  previousLabel,
+  rangeDays,
   type UsageMetric,
+  type UsagePreset,
 } from "../components/usage/usageFormat";
 
-// Usage: what the agents cost and consumed over a period, for the current
-// project or every project. All numbers come from one /telemetry/usage
-// report so totals, the chart and the breakdown always agree.
+// Usage: what the agents cost and consumed over a date range, for every
+// project or one of them. All numbers come from one /telemetry/usage report
+// so totals, the chart and the breakdown always agree. The server picks
+// hourly, daily or weekly bars from the length of the range.
 
-const PERIODS: UsagePeriod[] = ["24h", "7d", "30d"];
+const PRESETS: UsagePreset[] = ["today", "7d", "30d", "90d", "custom"];
+const TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const REFRESH_MS = 60_000;
 
 function pick<T extends string>(value: string | null, allowed: readonly T[], fallback: T): T {
   return allowed.includes(value as T) ? (value as T) : fallback;
 }
 
-function Delta({ current, previous, period }: { current: number; previous: number; period: UsagePeriod }) {
+function Delta({ current, previous, against }: { current: number; previous: number; against: string }) {
   const change = percentChange(current, previous);
-  if (current === 0 && previous === 0) return <span className="text-text-dim">No activity in {PREVIOUS_LABELS[period]} either</span>;
-  if (change === null) return <span className="text-text-dim">New vs {PREVIOUS_LABELS[period]}</span>;
+  if (current === 0 && previous === 0) return <span className="text-text-dim">None {against === "yesterday" ? "yesterday" : `in the ${against}`} either</span>;
+  if (change === null) return <span className="text-text-dim">New vs {against}</span>;
   const rounded = Math.round(change);
-  if (rounded === 0) return <span className="text-text-dim">Flat vs {PREVIOUS_LABELS[period]}</span>;
+  if (rounded === 0) return <span className="text-text-dim">Flat vs {against}</span>;
   return (
     <span className="text-text-dim">
-      <span className="text-text-muted">{rounded > 0 ? "▲" : "▼"} {Math.abs(rounded) > 999 ? ">999" : Math.abs(rounded)}%</span> vs {PREVIOUS_LABELS[period]}
+      <span className="text-text-muted">{rounded > 0 ? "▲" : "▼"} {Math.abs(rounded) > 999 ? ">999" : Math.abs(rounded)}%</span> vs {against}
     </span>
+  );
+}
+
+function shiftDate(value: string, days: number): string {
+  const [y, m, d] = value.split("-").map(Number);
+  return localDate(new Date(y, m - 1, d + days));
+}
+
+// From/to date inputs for a custom range. Keeps from <= to <= today and the
+// span within what the server accepts.
+function DateRangeInputs({ from, to, today, onChange }: {
+  from: string;
+  to: string;
+  today: string;
+  onChange: (from: string, to: string) => void;
+}) {
+  const input = "h-8 rounded-md border border-border bg-bg-input px-2 text-xs text-text focus:border-accent focus:outline-none";
+  const set = (nextFrom: string, nextTo: string, moved: "from" | "to") => {
+    if (!isLocalDate(nextFrom) || !isLocalDate(nextTo)) return;
+    if (nextTo > today) nextTo = today;
+    if (nextFrom > nextTo) [nextFrom, nextTo] = moved === "from" ? [nextFrom, nextFrom] : [nextTo, nextTo];
+    if (rangeDays(nextFrom, nextTo) > MAX_RANGE_DAYS) {
+      if (moved === "from") nextTo = shiftDate(nextFrom, MAX_RANGE_DAYS - 1);
+      else nextFrom = shiftDate(nextTo, -(MAX_RANGE_DAYS - 1));
+    }
+    onChange(nextFrom, nextTo);
+  };
+  return (
+    <div className="flex items-center gap-1.5 text-xs text-text-dim">
+      <input type="date" aria-label="From" className={input} value={from} max={today} onChange={(e) => set(e.target.value, to, "from")} />
+      <span aria-hidden="true">–</span>
+      <input type="date" aria-label="To" className={input} value={to} max={today} onChange={(e) => set(from, e.target.value, "to")} />
+    </div>
   );
 }
 
@@ -83,16 +125,21 @@ function Segmented<T extends string>({ value, options, labels, onChange, label }
 
 export function Analytics() {
   usePageTitle("Usage");
-  const { currentProject } = useProjects();
+  const { projects } = useProjects();
   const [params, setParams] = useSearchParams();
 
-  const allProjects = params.get("scope") === "all";
-  const period = pick(params.get("period"), PERIODS, "7d");
-  const groupings: UsageGroupBy[] = allProjects ? ["agent", "model", "provider", "project"] : ["agent", "model", "provider"];
+  const today = localDate(new Date());
+  const projectId = projects.find((p) => p.id === params.get("project"))?.id;
+  const groupings: UsageGroupBy[] = projectId ? ["agent", "model", "provider"] : ["agent", "model", "provider", "project"];
   const groupBy = pick(params.get("group"), groupings, "agent");
-  const projectId = allProjects ? undefined : currentProject?.id;
+  const preset = pick(params.get("range"), PRESETS, "7d");
+  const custom = preset === "custom" && isLocalDate(params.get("from")) && isLocalDate(params.get("to"))
+    ? { from: params.get("from")!, to: params.get("to")! }
+    : null;
+  const { from, to } = custom || presetRange(preset === "custom" ? "7d" : preset);
+  const queryKey = `${projectId || ""}|${from}|${to}|${groupBy}`;
 
-  const [report, setReport] = useState<UsageReport | null>(null);
+  const [report, setReport] = useState<{ key: string; data: UsageReport } | null>(null);
   const [error, setError] = useState("");
   const [metricChoice, setMetricChoice] = useState<UsageMetric | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -106,22 +153,20 @@ export function Analytics() {
     setParams(next, { replace: true });
   }, [params, setParams]);
 
-  const waitingForProject = !allProjects && !currentProject;
   useEffect(() => {
-    if (waitingForProject) return;
     let cancelled = false;
     const load = () => {
-      telemetry.usage(projectId, period, groupBy)
-        .then((next) => { if (!cancelled) { setReport(next); setError(""); } })
+      telemetry.usage({ projectId, from, to, tz: TIMEZONE, groupBy })
+        .then((next) => { if (!cancelled) { setReport({ key: queryKey, data: next }); setError(""); } })
         .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : "Could not load usage"); });
     };
     load();
     const timer = window.setInterval(load, REFRESH_MS);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [projectId, period, groupBy, waitingForProject]);
+  }, [projectId, from, to, groupBy, queryKey]);
 
-  // A report for another grouping is stale for the current controls.
-  const current = report && report.group_by === groupBy && report.period === period ? report : null;
+  // A report for other controls is stale.
+  const current = report && report.key === queryKey ? report.data : null;
   const totals = current?.totals;
   const hasIncluded = Boolean(totals && totals.included_cost > 0);
   // Tokens by default: every call has them, while spend is often $0 for
@@ -132,7 +177,8 @@ export function Analytics() {
 
   const selected = current && groupBy === "agent" ? current.groups.find((g) => g.key === selectedKey) : undefined;
   const selectGroup = (group: UsageGroup) => setSelectedKey(group.key);
-  const scopeName = allProjects ? "All projects" : currentProject?.name || "Current project";
+  const scopeName = projects.find((p) => p.id === projectId)?.name || "All projects";
+  const against = previousLabel(from, to);
   const monthly = current ? current.daily_run_rate * 30 : 0;
 
   return (
@@ -140,23 +186,33 @@ export function Analytics() {
       <header className="flex flex-col gap-3 border-b border-border px-4 py-3 sm:px-6 sm:py-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <h1 className="text-lg font-bold text-text">Usage</h1>
-          <p className="mt-0.5 text-xs text-text-dim">{scopeName} · {PERIOD_LABELS[period]}</p>
+          <p className="mt-0.5 text-xs text-text-dim">
+            {scopeName} · {formatRangeLabel(from, to)}
+            {current && ` · ${current.bucket === "hour" ? "hourly" : current.bucket === "week" ? "weekly" : "daily"}`}
+          </p>
         </div>
-        <div className="flex max-w-full flex-wrap gap-2">
+        <div className="flex max-w-full flex-wrap items-center gap-2">
+          <select
+            aria-label="Project"
+            value={projectId || ""}
+            onChange={(e) => update({ project: e.target.value || null, group: e.target.value && groupBy === "project" ? null : params.get("group") })}
+            className="h-8 max-w-[14rem] rounded-md border border-border bg-bg-card px-2 text-xs text-text focus:border-accent focus:outline-none"
+          >
+            <option value="">All projects</option>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
           <Segmented
-            label="Scope"
-            value={allProjects ? "all" : "project"}
-            options={["project", "all"] as const}
-            labels={{ project: "This project", all: "All projects" }}
-            onChange={(value) => update({ scope: value === "all" ? "all" : null, group: value === "project" && groupBy === "project" ? null : params.get("group") })}
+            label="Date range"
+            value={preset}
+            options={PRESETS}
+            labels={PRESET_LABELS}
+            onChange={(value) => update(value === "custom"
+              ? { range: "custom", from, to }
+              : { range: value === "7d" ? null : value, from: null, to: null })}
           />
-          <Segmented
-            label="Period"
-            value={period}
-            options={PERIODS}
-            labels={{ "24h": "24h", "7d": "7 days", "30d": "30 days" }}
-            onChange={(value) => update({ period: value === "7d" ? null : value })}
-          />
+          {preset === "custom" && (
+            <DateRangeInputs from={from} to={to} today={today} onChange={(nextFrom, nextTo) => update({ range: "custom", from: nextFrom, to: nextTo })} />
+          )}
         </div>
       </header>
 
@@ -174,14 +230,15 @@ export function Analytics() {
                 value={formatMoney(totals.cost)}
                 note={hasIncluded
                   ? `+${formatMoney(totals.included_cost)} covered by subscriptions`
-                  : totals.unpriced_calls > 0 ? `${formatCount(totals.unpriced_calls)} calls not priced` : "Billed per token"}
-                delta={<Delta current={totals.cost} previous={current.previous.cost} period={period} />}
+                  : totals.unpriced_calls > 0 ? `${formatCount(totals.unpriced_calls)} calls not priced`
+                  : totals.cost === 0 && totals.calls > 0 ? "Covered by subscriptions" : "Billed per token"}
+                delta={<Delta current={totals.cost} previous={current.previous.cost} against={against} />}
               />
               <Tile
                 label="Tokens"
                 value={formatCount(totals.tokens_in + totals.tokens_out)}
                 note={`${formatPercent(cacheShare(totals))} of input from cache`}
-                delta={<Delta current={totals.tokens_in + totals.tokens_out} previous={current.previous.tokens_in + current.previous.tokens_out} period={period} />}
+                delta={<Delta current={totals.tokens_in + totals.tokens_out} previous={current.previous.tokens_in + current.previous.tokens_out} against={against} />}
               />
               <Tile
                 label="Calls"
@@ -189,7 +246,7 @@ export function Analytics() {
                 note={totals.errors > 0
                   ? <span className="text-red">{formatCount(totals.errors)} errors · {formatPercent(errorRate(totals.errors, totals.calls))}</span>
                   : `${totals.active_agents} of ${current.agents} agents active`}
-                delta={<Delta current={totals.calls} previous={current.previous.calls} period={period} />}
+                delta={<Delta current={totals.calls} previous={current.previous.calls} against={against} />}
               />
               <Tile
                 label="Monthly estimate"
