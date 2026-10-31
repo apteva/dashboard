@@ -111,7 +111,7 @@ describe("AptevaInbox approvals", () => {
       <MemoryRouter><AptevaInbox allProjects limit={5} variant="home" /></MemoryRouter>,
     );
 
-    await waitFor(() => expect(screen.getByText("View all 8 →")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("3 more items across all projects")).toBeTruthy());
     expect(requestedLimits).toEqual([100, 100, 100]);
     const visibleTitles = Array.from(container.querySelectorAll("article"))
       .map((row) => row.textContent || "");
@@ -120,20 +120,6 @@ describe("AptevaInbox approvals", () => {
     expect(visibleTitles[1]).toContain("Publishing is blocked");
     expect(visibleTitles[2]).toContain("Report 106");
     expect(screen.queryByText("Report 101")).toBeNull();
-    expect(screen.getByText("3 more items across all projects →")).toBeTruthy();
-  });
-
-  test("opens Monitor with the same explicit project scope", async () => {
-    chat.approvalMessages = (async () => []) as typeof chat.approvalMessages;
-    chat.reportMessages = (async () => []) as typeof chat.reportMessages;
-    chat.alertMessages = (async () => []) as typeof chat.alertMessages;
-
-    render(
-      <MemoryRouter><AptevaInbox projectId="project with space" variant="home" /></MemoryRouter>,
-    );
-    await waitFor(() => expect(screen.getByText("You're all caught up")).toBeTruthy());
-    expect(screen.getByRole("link", { name: "View operations →" }).getAttribute("href"))
-      .toBe("/monitor?project=project%20with%20space");
   });
 
   test("stretches with neighboring Home widgets instead of capping its height", async () => {

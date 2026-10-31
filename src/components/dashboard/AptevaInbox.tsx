@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import {
   chat,
   type AlertMessageRow,
@@ -37,7 +36,7 @@ export function AptevaInbox({
   allProjects?: boolean;
   projectId?: string;
   limit?: number;
-  variant?: "default" | "home" | "monitor";
+  variant?: "default" | "home";
   onCountChange?: (count: number) => void;
 }) {
   const { currentProject } = useProjects();
@@ -140,9 +139,6 @@ export function AptevaInbox({
   }, [alerts, approvals, reports, scopeIsCurrent]);
 
   const items = useMemo(() => allItems.slice(0, limit), [allItems, limit]);
-  const monitorHref = !allProjects && effectiveProjectId
-    ? `/monitor?project=${encodeURIComponent(effectiveProjectId)}`
-    : "/monitor?scope=all";
 
   useEffect(() => {
     onCountChange?.(allItems.length);
@@ -165,11 +161,6 @@ export function AptevaInbox({
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {variant === "home" && (
-            <Link to={monitorHref} className="text-[11px] text-text-muted hover:text-text">
-              {allItems.length > items.length ? `View all ${allItems.length}` : "View operations"} →
-            </Link>
-          )}
           <button
             type="button"
             onClick={load}
@@ -181,7 +172,7 @@ export function AptevaInbox({
         </div>
       </div>
 
-      <div className={`min-h-0 flex-1 p-3 space-y-3 overflow-auto ${variant === "monitor" ? "max-h-[680px]" : ""}`}>
+      <div className={`min-h-0 flex-1 p-3 space-y-3 overflow-auto`}>
         {error && (
           <div className="rounded border border-red/30 bg-red/10 px-3 py-2 text-[11px] text-red">
             {error}
@@ -206,12 +197,9 @@ export function AptevaInbox({
           />
         ))}
         {variant === "home" && allItems.length > items.length && (
-          <Link
-            to={monitorHref}
-            className="flex min-h-9 items-center justify-center rounded-md border border-dashed border-border px-3 text-[11px] text-text-muted transition-colors hover:border-accent hover:text-text"
-          >
-            {allItems.length - items.length} more item{allItems.length - items.length === 1 ? "" : "s"} {allProjects ? "across all projects" : "in this project"} →
-          </Link>
+          <p className="flex min-h-9 items-center justify-center rounded-md border border-dashed border-border px-3 text-[11px] text-text-muted">
+            {allItems.length - items.length} more item{allItems.length - items.length === 1 ? "" : "s"} {allProjects ? "across all projects" : "in this project"}
+          </p>
         )}
       </div>
     </section>

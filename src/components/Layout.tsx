@@ -37,12 +37,11 @@ import {
 // section underneath" threshold — picked empirically.
 const SIDEBAR_APPS_VISIBLE = 5;
 
-type PlatformNavIcon = "dashboard" | "pages" | "agents" | "monitor" | "integrations" | "apps" | "skills" | "usage" | "settings";
+type PlatformNavIcon = "dashboard" | "pages" | "agents" | "integrations" | "apps" | "skills" | "usage" | "settings";
 
 const platformNavIcons: Record<string, PlatformNavIcon> = {
   "/": "dashboard",
   "/agents": "agents",
-  "/monitor": "monitor",
   "/integrations": "integrations",
   "/apps": "apps",
   "/skills": "skills",
@@ -184,7 +183,6 @@ export function Layout() {
   useEffect(() => {
     if (!user) return;
     if (typeof window === "undefined") return;
-    if (location.pathname === "/monitor") return; // Monitor owns its fleet scope.
     const params = new URLSearchParams(location.search);
     const workspace = location.pathname === "/" || location.pathname.startsWith("/pages/") || (location.pathname === "/settings" && params.get("tab") === "pages");
     const requested = params.get("project");
@@ -282,7 +280,6 @@ export function Layout() {
   const primaryNav = [
     { to: "/", label: t("nav.dashboard"), section: "nav.dashboard" },
     { to: "/agents", label: t("nav.agents"), section: "nav.agents" },
-    { to: "/monitor", label: t("nav.monitor"), section: "nav.monitor" },
   ].filter((item) => !item.section || shows(item.section as AudienceSection));
   const manageNav = [
     { to: "/integrations", label: t("nav.integrations"), section: "nav.integrations" },
@@ -964,7 +961,6 @@ function SidebarPlatformIcon({ name, compact = false }: { name: PlatformNavIcon;
     dashboard: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
     pages: <><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" /></>,
     agents: <><circle cx="9" cy="8" r="3" /><path d="M3 20v-2a6 6 0 0 1 12 0v2" /><path d="M17 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 5v1" /></>,
-    monitor: <><path d="M3 12h4l3-7 4 14 3-7h4" /></>,
     integrations: <><path d="M8 3v5m8-5v5M6 8h12v4a6 6 0 0 1-12 0zM12 18v3" /></>,
     apps: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M17.5 14v7m-3.5-3.5h7" /></>,
     skills: <><path d="M12 3 4 7v5c0 5 3.5 8 8 9 4.5-1 8-4 8-9V7z" /><path d="m9 12 2 2 4-4" /></>,

@@ -1,6 +1,5 @@
 import { useWorkspaceSystem } from "../components/widgets/useWorkspaceSystem";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useWorkspaceData } from "../components/widgets/useWorkspaceData";
 import { useWorkspaceActivity } from "../components/widgets/useWorkspaceActivity";
@@ -195,16 +194,9 @@ export function Dashboard({ page, pageProjectId }: {
                 </span>
               </div>
               {errorCount > 0 && (
-                <Link
-                  to={
-                    projectId
-                      ? `/monitor?project=${encodeURIComponent(projectId)}`
-                      : "/monitor"
-                  }
-                  className="rounded border border-red/30 bg-red/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red hover:bg-red/15"
-                >
+                <span className="rounded border border-red/30 bg-red/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red">
                   {errorCount} error{errorCount === 1 ? "" : "s"}
-                </Link>
+                </span>
               )}
             </div>
             <p className="mt-1 text-xs text-text-dim">
