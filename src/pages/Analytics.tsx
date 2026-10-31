@@ -19,7 +19,6 @@ import {
   percentChange,
   type UsageMetric,
 } from "../components/usage/usageFormat";
-import { usageInsights, type UsageInsight } from "../components/usage/usageInsights";
 
 // Usage: what the agents cost and consumed over a period, for the current
 // project or every project. All numbers come from one /telemetry/usage
@@ -83,29 +82,6 @@ function Segmented<T extends string>({ value, options, labels, onChange, label }
   );
 }
 
-function InsightStrip({ insights, onSelect }: { insights: UsageInsight[]; onSelect: (key: string) => void }) {
-  if (insights.length === 0) return null;
-  const tone = { error: "border-l-red", warn: "border-l-yellow", info: "border-l-border-strong" };
-  return (
-    <section aria-label="Worth a look" className="grid gap-2 md:grid-cols-3">
-      {insights.map((insight) => {
-        const body = (
-          <>
-            <p className="text-xs font-semibold text-text">{insight.title}</p>
-            <p className="mt-0.5 text-[11px] text-text-dim">{insight.detail}</p>
-          </>
-        );
-        const className = `rounded-md border border-border border-l-2 ${tone[insight.tone]} bg-bg-card px-3 py-2 text-left`;
-        return insight.groupKey ? (
-          <button key={insight.id} type="button" className={`${className} hover:bg-bg-hover`} onClick={() => onSelect(insight.groupKey!)}>{body}</button>
-        ) : (
-          <div key={insight.id} className={className}>{body}</div>
-        );
-      })}
-    </section>
-  );
-}
-
 export function Analytics() {
   usePageTitle("Usage");
   const { currentProject } = useProjects();
@@ -151,7 +127,6 @@ export function Analytics() {
   const hasIncluded = Boolean(totals && totals.included_cost > 0);
   const metrics: UsageMetric[] = hasIncluded ? ["cost", "value", "tokens", "calls"] : ["cost", "tokens", "calls"];
   const metric = metricChoice && metrics.includes(metricChoice) ? metricChoice : totals ? defaultMetric(totals) : "cost";
-  const insights = useMemo(() => (current ? usageInsights(current) : []), [current]);
   const series = useMemo(() => (current ? chartSeries(current, metric) : []), [current, metric]);
 
   const selected = current && groupBy === "agent" ? current.groups.find((g) => g.key === selectedKey) : undefined;
@@ -223,8 +198,6 @@ export function Analytics() {
                   : "No billed spend in the last 7 days"}
               />
             </div>
-
-            <InsightStrip insights={insights} onSelect={(key) => groupBy === "agent" && setSelectedKey(key)} />
 
             <UsageChart report={current} metric={metric} metrics={metrics} onMetricChange={setMetricChoice} />
 
