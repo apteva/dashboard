@@ -46,6 +46,7 @@ import { UnconsciousPanel } from "./UnconsciousPanel";
 import { InjectPanel } from "./InjectPanel";
 import { ThreadDetailModal, formatContextResetResult } from "./ThreadDetailModal";
 import { AppPanels } from "./AppPanels";
+import { AgentProjectGrants } from "./AgentProjectGrants";
 import { Modal } from "./Modal";
 import { SkillsPanel } from "./SkillsPanel";
 import { AgentInstructionsEditor } from "./AgentInstructionsEditor";
@@ -1245,6 +1246,7 @@ function AgentCapabilitiesView({
                 })}
               </div>
             )}
+            <AgentProjectGrants instance={instance} attached={attached} inventory={inventory} label={displayMCPName} />
           </div>
         ) : section === "skills" ? (
           <SkillsPanel instanceId={instance.id} />

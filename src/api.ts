@@ -1384,6 +1384,39 @@ export const instances = {
     ),
 };
 
+// A project grant lets one agent run an attached app (or the Apteva Server
+// tools, target "apteva-server") in other projects. Without one the agent
+// stays in its own project. Empty tools means every tool of that app.
+export interface AgentProjectGrant {
+  agent_id: number;
+  target: string;
+  all_projects: boolean;
+  project_ids: string[];
+  tools: string[];
+  created_by: number;
+  updated_at: string;
+}
+
+export interface AgentProjectGrants {
+  grants: AgentProjectGrant[];
+  home_project_id: string;
+  // Other projects the signed-in user can edit, and so may name in a grant.
+  projects: { id: string; name: string }[];
+  // What a grant can apply to ("apteva-server" and the agent's globally
+  // installed apps), each with the ids in projects it can reach. A project
+  // with its own install of the app is left out.
+  targets: Record<string, string[]>;
+  // Set when a running agent could not reload the changed app right away.
+  warning?: string;
+}
+
+export const projectGrants = {
+  get: (agentId: number) => request<AgentProjectGrants>("GET", `/agents/${agentId}/project-grants`),
+  // No projects and all_projects=false removes the grant.
+  set: (agentId: number, grant: { target: string; all_projects: boolean; project_ids: string[]; tools: string[] }) =>
+    request<AgentProjectGrants>("PUT", `/agents/${agentId}/project-grants`, grant),
+};
+
 export function boundAppInstallIDsPayload(ids?: number[]): { bound_app_install_ids?: number[] } {
   return ids === undefined ? {} : { bound_app_install_ids: ids };
 }
@@ -2288,6 +2321,8 @@ export interface MCPTool {
   name: string;
   description: string;
   inputSchema?: Record<string, any>;
+  // Standard MCP behaviour hints, such as readOnlyHint.
+  annotations?: Record<string, unknown>;
 }
 
 // Shape returned by GET /mcp-servers/:id/tools: the full catalog of tools
