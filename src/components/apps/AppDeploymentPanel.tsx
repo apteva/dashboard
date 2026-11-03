@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { appDeployments, type DeploymentDetail, type DeploymentPlacement } from "../../api";
 import { useAuth } from "../../hooks/useAuth";
 import { DeploymentPlacementEditor, deploymentSelectionReady } from "./DeploymentPlacementEditor";
+import { deploymentAdmissionLabel } from "./DeploymentBadge";
 
 export const deploymentPhaseLabel: Record<string, string> = { preparing:"Preparing package and target", building_package:"Building app package", delivering_package:"Uploading app package", inspecting_target:"Checking target", draining:"Waiting for active work to finish", stopping_previous:"Stopping previous execution", transferring_state:"Transferring app data", starting_candidate:"Starting replacement", committing:"Publishing deployment", retiring_previous:"Stopping previous execution", rolling_back:"Restoring previous execution", queued: "Queued", prepare: "Checking target and preparing package", package: "Preparing package", delivery: "Uploading package", prepared: "Package ready", starting: "Starting app", readiness: "Checking readiness", activate: "Activating app", commit: "Publishing deployment", retire: "Stopping previous execution", complete: "Complete", rollback: "Restoring previous execution", drain: "Waiting for active work to finish" };
 const button = "min-h-10 rounded border border-border px-3 py-2 text-xs hover:border-accent disabled:opacity-50";
@@ -33,7 +34,7 @@ export function AppDeploymentPanel({ installId, projectId = "" }: { installId: n
   };
   const operationAction = async (op: string, retry: boolean) => { if (pending.current) return; pending.current = true; setBusy(true); try { if (retry) await appDeployments.retry(installId, op); else await appDeployments.cancel(installId, op); await refresh(); } catch (e) { setError(e instanceof Error ? e.message : "Operation failed"); } finally { pending.current = false; setBusy(false); } };
   const activeOp = detail?.operations.find(o => o.status === "running" || o.status === "queued");
-  const active = detail?.deployments.find(d => d.id === detail.active_deployment_id), summary = detail?.summary;
+  const active = detail?.deployments.find(d => d.id === detail.active_deployment_id), summary = detail?.summary, admission = deploymentAdmissionLabel(summary);
   return <section aria-label="App deployment" className="space-y-4">
     {error && <p role="alert" className="text-sm text-red">{error}</p>}
     {!detail && <p className="text-sm text-text-muted">Loading deployment…</p>}
@@ -41,6 +42,7 @@ export function AppDeploymentPanel({ installId, projectId = "" }: { installId: n
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
         <dt className="text-text-muted">Runs on</dt><dd>{summary?.type === "backend" ? `${summary.backend_name || summary.backend?.backend_id} · ${summary.target_name || summary.target.resource_id}` : "This Server"}</dd>
         <dt className="text-text-muted">Status</dt><dd>{summary?.state || "Unknown"}{summary?.message && <p className="mt-1 text-xs text-text-muted">{summary.message}</p>}</dd>
+        {admission && <><dt className="text-text-muted">Admission</dt><dd>{admission}</dd></>}
         {active && <><dt className="text-text-muted">Release</dt><dd>{active.manifest.version} · generation {active.generation}</dd></>}
         {summary?.checked_at && <><dt className="text-text-muted">Last checked</dt><dd>{new Date(summary.checked_at).toLocaleString()}</dd></>}
         {summary?.public_url && <><dt className="text-text-muted">Public URL</dt><dd><a className="break-all text-accent underline" href={summary.public_url} target="_blank" rel="noreferrer">{summary.public_url}</a></dd></>}

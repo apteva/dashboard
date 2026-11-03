@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { AuthProvider } from "../../hooks/useAuth";
 import { appDeployments, auth, type AppRow, type DeploymentPlacement } from "../../api";
-import { DeploymentBadge, deploymentLabel, deploymentMatches } from "./DeploymentBadge";
+import { DeploymentBadge, deploymentAdmissionLabel, deploymentLabel, deploymentMatches, deploymentStatusText } from "./DeploymentBadge";
 import { DeploymentPlacementEditor, deploymentSelectionReady } from "./DeploymentPlacementEditor";
 import { AppDeploymentPanel } from "./AppDeploymentPanel";
 
@@ -22,6 +22,26 @@ test("badges identify remote backend and target, filter, and open its deployment
  window.addEventListener("apteva:open-deployment",handler);
  try {const view=render(<DeploymentBadge app={remote}/>);fireEvent.click(view.getByRole("button"));expect(opened).toBe(10);expect(view.getByRole("button").textContent).toContain("unavailable");}
  finally {window.removeEventListener("apteva:open-deployment",handler);}
+});
+test("admission is shown apart from process health",async()=>{
+ const base=remote.deployment!;
+ expect(deploymentStatusText({...base,state:"healthy",admission_state:"active"})).toBe("healthy");
+ expect(deploymentStatusText({...base,state:"running",admission_state:"unknown"})).toBe("running · admission unknown");
+ expect(deploymentStatusText({...base,state:"degraded",admission_state:"standby"})).toBe("degraded · admission standby");
+ expect(deploymentAdmissionLabel({...base,state:"healthy",admission_state:"active"})).toBe("Accepting new work");
+ expect(deploymentAdmissionLabel({...base,state:"running",admission_state:"unknown"})).toBe("Not reported by the app");
+ expect(deploymentAdmissionLabel({...base,state:"unknown",admission_state:"active"})).toBe("Unknown");
+ expect(deploymentAdmissionLabel({...base,state:"degraded",admission_state:"fenced"})).toBe("Not accepting new work (fenced)");
+ expect(deploymentAdmissionLabel({...base,state:"deploying",admission_state:"active"})).toBe("");
+ const view=render(<DeploymentBadge app={{...remote,deployment:{...base,state:"running",admission_state:"unknown"}}}/>);
+ expect(view.getByRole("button").textContent).toContain("running · admission unknown");
+ expect(view.getByRole("button").className).not.toContain("text-yellow");
+ view.rerender(<DeploymentBadge app={{...remote,deployment:{...base,state:"unknown",admission_state:"active"}}}/>);
+ expect(view.getByRole("button").className).toContain("text-yellow");
+ cleanup();
+ admin();replace(appDeployments,"get",async()=>({placement:{type:"backend"},active_deployment_id:"",pending_deployment_id:"",summary:{...base,state:"running",admission_state:"unknown"},deployments:[],operations:[]}));
+ const panel=render(<AuthProvider><AppDeploymentPanel installId={10}/></AuthProvider>);
+ await waitFor(()=>expect(panel.getByText("Not reported by the app")).toBeTruthy());
 });
 test("generic placement chooses advertised resources and disables unavailable targets",async()=>{
  admin();replace(appDeployments,"backends",async()=>({backends:[{app_install_id:4,id:"worker",display_name:"Compute",endpoint:"/private",capabilities:{target_listing:true,runtime_kinds:["source"],managed_ingress:true}}]}));
