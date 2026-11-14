@@ -364,7 +364,7 @@ export function contributionsFor(
     if (app.status && app.status !== "running" && !app.serving) continue;
     for (const spec of app.ui_components || []) {
       if (!spec.slots || !componentAllowedInSlot(spec, slot, scope)) continue;
-      out.push({ app, spec, key: contributionKey(app.name, spec.name) });
+      out.push({ app, spec, key: contributionKey(app.mcp_name || app.name, spec.name) });
     }
   }
   return out;
@@ -677,7 +677,7 @@ export function ContributionMount({
     >
       <ChatComponentMount
         comp={{
-          app: contribution.app.name,
+          app: contribution.app.mcp_name || contribution.app.name,
           name: contribution.spec.name,
           props: {
             agentId: agentId ?? instance.agent_id,
