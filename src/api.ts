@@ -3489,12 +3489,17 @@ export const apps = {
       ...(opts.manifestYaml ? { manifest_yaml: opts.manifestYaml } : {}),
       ...(opts.repo ? { repo: opts.repo } : {}),
       ...(opts.ref ? { ref: opts.ref } : {}),
+      installation_key: opts.installationKey || "default",
+      installation_name: opts.installationName,
       project_id: opts.projectId || "",
       config: opts.config || {},
       upgrade_policy: opts.upgradePolicy || "manual",
       ...(opts.bindings ? { bindings: opts.bindings } : {}),
       ...(opts.placement ? { placement: opts.placement } : {}),
     }, opts.idempotencyKey ? {"Idempotency-Key":opts.idempotencyKey} : undefined),
+
+  configureInstallation: (installId: number, options: { installation_name?: string; is_default?: true }) =>
+    request<{ installation_key: string; installation_name: string; is_default: boolean }>("PATCH", `/apps/installs/${installId}/installation`, options),
 
   uninstall: (installId: number) =>
     request<{ status: string }>("DELETE", `/apps/installs/${installId}`),
@@ -3715,6 +3720,10 @@ export interface MarketplaceEntry {
 }
 
 export interface AppRow {
+  mcp_name?: string;
+  installation_key?: string;
+  installation_name?: string;
+  is_default?: boolean;
   agent_setup?: AgentSetupRecommendation;
   deployment?: DeploymentSummary;
   install_id: number;
@@ -3930,6 +3939,8 @@ export interface AppConfigFieldDiscovery {
 }
 
 export interface AppInstallOptions {
+  installationKey?: string;
+  installationName?: string;
   placement?: DeploymentPlacement;
   idempotencyKey?: string;
   manifestUrl?: string;

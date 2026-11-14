@@ -33,6 +33,14 @@ export function loadedAppMatchesRoute(
   return projectId !== undefined && !!routeName && loaded.projectId === projectId && loaded.routeName === routeName;
 }
 
+export function selectProjectAppInstallation(rows: AppRow[], name: string, projectId: string, installId?: string | null): AppRow | undefined {
+  const visible = rows.filter(row => row.name === name && (!row.project_id || row.project_id === projectId));
+  if (installId) return visible.find(row => String(row.install_id) === installId);
+  const projectInstalls = visible.filter(row => row.project_id === projectId);
+  const scope = projectInstalls.length ? projectInstalls : visible.filter(row => !row.project_id);
+  return scope.find(row => row.is_default !== false);
+}
+
 export function AppProjectPage() {
   const { name } = useParams<{ name: string }>();
   const { projects, currentProject, setCurrentProject } = useProjects();
@@ -75,9 +83,7 @@ export function AppProjectPage() {
         if (cancelled) return;
         // Prefer the install owned by this project when the same app also
         // has a global install visible to it.
-        const found = linkedInstallID
-          ? rows.find(r => r.name === name && String(r.install_id) === linkedInstallID && (!r.project_id || r.project_id === projectId))
-          : rows.find((r) => r.name === name && r.project_id === projectId) || rows.find((r) => r.name === name && !r.project_id);
+        const found = selectProjectAppInstallation(rows, name, projectId, linkedInstallID);
         if (!found) {
           setError(`App "${name}" is not installed in this project.`);
           setLoaded(null);
