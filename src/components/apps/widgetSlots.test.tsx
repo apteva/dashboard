@@ -19,6 +19,23 @@ const apps: InstalledAppRow[] = [
 afterEach(cleanup);
 
 describe("custom page widget discovery and mounting", () => {
+  test("keeps optional candidate installations distinct from the default widget", () => {
+    const defaultApp = apps.find(app => app.name === "telephony")!;
+    const candidate = { ...defaultApp, install_id: 148, mcp_name: "telephony_install_148", version: "candidate" };
+    const installed = [defaultApp, candidate];
+    const contributions = contributionsFor(installed, pageSlot);
+    expect(contributions.map(item => item.key)).toEqual(["telephony:audio-health", "telephony_install_148:audio-health"]);
+    for (const contribution of contributions) {
+      const html = renderToStaticMarkup(<ContributionMount
+        instance={{ id: contribution.key, component: contribution.key, size: "half", contribution }}
+        apps={installed} slot={pageSlot} projectId="project-1"
+      />);
+      expect(html).toContain(`data-app-contribution="${contribution.key}"`);
+      expect(html).not.toContain("component unavailable");
+      expect(html).not.toContain("not allowed in slot");
+    }
+  });
+
   test.each(apps)("mounts $name dashboard widgets through the custom page contribution host", (app) => {
     const contributions = contributionsFor([app], pageSlot);
     expect(contributions).toHaveLength(1);
