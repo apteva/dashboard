@@ -7,7 +7,7 @@ import { appDeployments, apps, appSetup, type AppPreflight, type AppSetupFeature
 import { RolePicker, InlineConnectIntegration, ConfigFieldInput, bindingIDs, addBindingSelection, type RoleIntent } from "./SetupFields";
 
 type Frame = { key: number; label?: string; installId?: number; manifestURL?: string; preflight?: AppPreflight; projectId: string; feature?: string; parentRole?: string; onCreated?: (id: number) => void };
-type Props = { onExitGuard?: (guard: () => boolean) => void; installId?: number; preflight?: AppPreflight; manifestURL?: string; projectId?: string; onInstalled?: () => void; onDone?: () => void };
+type Props = { installationKey?: string; installationName?: string; onExitGuard?: (guard: () => boolean) => void; installId?: number; preflight?: AppPreflight; manifestURL?: string; projectId?: string; onInstalled?: () => void; onDone?: () => void };
 const button = "min-h-11 rounded-lg border border-border px-3 py-2 text-sm hover:border-accent disabled:opacity-50";
 async function jsonRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const res = await fetch(path, {method, credentials:"same-origin", headers:body ? {"Content-Type":"application/json"} : undefined, body:body ? JSON.stringify(body) : undefined});
@@ -58,14 +58,14 @@ export function GuidedAppSetup(props: Props) {
     {frames.length>1 && <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3 text-xs text-text-muted"><button className="min-h-11 text-sm text-accent" onClick={back}>← Back to parent setup</button><span>{frames.map(f=>f.label || f.preflight?.manifest.display_name || "App setup").join(" → ")}</span></div>}
     {error && <p role="alert" className="text-sm text-error">{error}</p>}
     {frames.map(frame=><div key={frame.key} hidden={frame.key!==current.key}>
-      <SetupStep onLabel={label=>setFrames(old=>old.map(f=>f.key===frame.key && f.label!==label?{...f,label}:f))} reportState={state=>leaveStates.current.set(frame.key,state)} frame={frame} active={frame.key===current.key} revision={revision} onOpen={push}
+      <SetupStep installationKey={frame.key===0 ? props.installationKey : undefined} installationName={frame.key===0 ? props.installationName : undefined} onLabel={label=>setFrames(old=>old.map(f=>f.key===frame.key && f.label!==label?{...f,label}:f))} reportState={state=>leaveStates.current.set(frame.key,state)} frame={frame} active={frame.key===current.key} revision={revision} onOpen={push}
         onCreated={id=>{setFrames(old=>old.map(f=>f.key===frame.key?{...f,installId:id}:f));frame.onCreated?.(id);props.onInstalled?.()}}
         onDone={()=>{if(frames.length>1){leaveStates.current.delete(current.key);setFrames(old=>old.slice(0,-1));setRevision(r=>r+1)}else props.onDone?.()}} />
     </div>)}
   </div>;
 }
 
-function SetupStep({frame,active,revision,onOpen,onCreated,onDone,reportState,onLabel}:{onLabel:(label:string)=>void;reportState:(state:{busy:boolean;dirty:boolean})=>void;frame:Frame;active:boolean;revision:number;onOpen:(f:Omit<Frame,"key">)=>Promise<void>;onCreated:(id:number)=>void;onDone:()=>void}) {
+function SetupStep({frame,active,revision,onOpen,onCreated,onDone,reportState,onLabel,installationKey,installationName}:{installationKey?:string;installationName?:string;onLabel:(label:string)=>void;reportState:(state:{busy:boolean;dirty:boolean})=>void;frame:Frame;active:boolean;revision:number;onOpen:(f:Omit<Frame,"key">)=>Promise<void>;onCreated:(id:number)=>void;onDone:()=>void}) {
   const [pf,setPF]=useState<AppPreflight|null>(frame.preflight || null);
   const [installId,setInstallId]=useState(frame.installId);
   const [scope,setScope]=useState(frame.projectId);
@@ -162,7 +162,7 @@ function SetupStep({frame,active,revision,onOpen,onCreated,onDone,reportState,on
           const check = await appDeployments.preflight({manifest_url:frame.manifestURL,project_id:scope,placement});
           if (!check.compatible) throw new Error(check.checks.filter(c=>c.status==="blocked").map(c=>`${c.name}: ${c.message}`).join("; "));
         }
-        const result=await apps.install({manifestUrl:frame.manifestURL,projectId:scope,config,bindings,placement:placement.type==="backend"?placement:undefined,idempotencyKey:installKey.current});
+        const result=await apps.install({installationKey,installationName,manifestUrl:frame.manifestURL,projectId:scope,config,bindings,placement:placement.type==="backend"?placement:undefined,idempotencyKey:installKey.current});
         id=result.install_id;setInstallId(id);loaded.current=true;
         setOriginalBindings({...bindings});setOriginalConfig({...config});setSavedSelected(null);
         onCreated(id);

@@ -31,9 +31,10 @@ export function agentAppRecommendations(
   for (const slug of candidates) {
     if (selectedSlugs.has(slug)) continue;
     const installs = visible.filter((app) => app.name === slug);
-    const app =
-      installs.find((app) => !!projectId && app.project_id === projectId) ||
-      installs[0];
+    const projectInstalls = installs.filter(app => !!projectId && app.project_id === projectId);
+    const scope = projectInstalls.length ? projectInstalls : installs;
+    const app = scope.find(app => app.is_default !== false);
+    if (installs.length && !app) continue;
     const entry = catalog.find((entry) => entry.name === slug);
     const metadata = app ? app.agent_setup : entry?.agent_setup;
     const fromTemplate = templateSlugs.includes(slug);

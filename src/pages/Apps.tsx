@@ -185,7 +185,7 @@ export function Apps() {
   const [registryURL, setRegistryURL] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [installModal, setInstallModal] = useState<{ manifestUrl?: string } | null>(null);
+  const [installModal, setInstallModal] = useState<{ manifestUrl?: string; installationKey?: string } | null>(null);
   const [updateAllOpen, setUpdateAllOpen] = useState(false);
   const [updateAllStage, setUpdateAllStage] = useState<"confirm" | "queueing" | "permissions" | "done">("confirm");
   const [updateAllTargets, setUpdateAllTargets] = useState<AppRow[]>([]);
@@ -557,6 +557,7 @@ export function Apps() {
                     key={r.install_id}
                     app={r}
                     onChange={refreshInstalled}
+                    onAddInstallation={() => setInstallModal({ manifestUrl: marketplace.find(entry => entry.name === r.name)?.manifest_url, installationKey: installedRows.some(row => row.name === r.name && row.project_id === r.project_id && row.installation_key === "candidate") ? `candidate-${Date.now().toString(36)}` : "candidate" })}
                     onOpenDetails={() => {setDetailInitialTab("overview");setDetailInstall(r)}}
                   />
                 ))}
@@ -591,6 +592,7 @@ export function Apps() {
       <InstallModal
         open={installModal !== null}
         initialManifestUrl={installModal?.manifestUrl}
+        initialInstallationKey={installModal?.installationKey}
         onClose={() => setInstallModal(null)}
         projectId={currentProject?.id}
         onInstalled={() => {
@@ -739,6 +741,8 @@ function installedAppSearchScore(app: AppRow, query: string, terms: string[]): n
     app.error_message,
     app.source,
     app.version,
+    app.installation_name || "",
+    app.installation_key || "",
     app.available_version,
     app.project_id ? "project" : "global",
     ...(app.permissions || []),
@@ -1322,11 +1326,12 @@ function UpdateAllAppsModal({
 // Lifecycle actions live in the menu; status changes use the same control
 // as app cards and the detail panel.
 function AppListRow({
-  app, onChange, onOpenDetails,
+  app, onChange, onOpenDetails, onAddInstallation,
 }: {
   app: AppRow;
   onChange: () => void;
   onOpenDetails: () => void;
+  onAddInstallation: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [permissionPrompt, setPermissionPrompt] = useState<UpgradePermissionPrompt | null>(null);
@@ -1428,6 +1433,8 @@ function AppListRow({
           <span className="text-text text-sm font-medium truncate">
             {app.display_name}
           </span>
+          <span className="truncate text-xs text-text-muted">{app.installation_name || "Default"}</span>
+          {app.is_default && <Pill className="bg-accent/15 text-accent">routing default</Pill>}
           {app.status === "disabled" && <span className="shrink-0 text-[10px] text-text-dim">Disabled</span>}
           <span className="text-text-dim text-[11px] shrink-0">
             v{app.version}
@@ -1469,8 +1476,24 @@ function AppListRow({
         {actionMenuOpen && (
           <div className="absolute right-0 top-9 z-20 min-w-36 rounded-md border border-border bg-bg-card p-1 shadow-xl">
             {showOpen && (
-              <Link to={`/apps/${app.name}/page`} onClick={() => setActionMenuOpen(false)} className="block rounded px-3 py-2 text-xs text-text hover:bg-bg-hover">Open</Link>
+              <Link to={`/apps/${app.name}/page?install_id=${app.install_id}`} onClick={() => setActionMenuOpen(false)} className="block rounded px-3 py-2 text-xs text-text hover:bg-bg-hover">Open</Link>
             )}
+            <button disabled={busy} type="button" onClick={async () => {
+              const name = prompt("Installation name", app.installation_name || "Default");
+              if (!name || name === app.installation_name) return;
+              setBusy(true);
+              try {await apps.configureInstallation(app.install_id,{installation_name:name});onChange();setActionMenuOpen(false);}
+              catch (e: any) {alert(e.message || "Could not rename installation");}
+              finally {setBusy(false);}
+            }} className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-bg-hover">Rename installation</button>
+            {app.source !== "builtin" && <button disabled={busy} type="button" onClick={() => { setActionMenuOpen(false); onAddInstallation(); }} className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-bg-hover">Add installation</button>}
+            {!app.is_default && app.status === "running" && <button disabled={busy} type="button" onClick={async () => {
+              if (!confirm(`Make ${app.installation_name || app.name} the default for calls by app name? Existing agent and app bindings stay pinned to their selected installations.`)) return;
+              setBusy(true);
+              try { await apps.configureInstallation(app.install_id, {is_default:true}); onChange(); setActionMenuOpen(false); }
+              catch (e: any) { alert(e.message || "Could not change the default"); }
+              finally { setBusy(false); }
+            }} className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-bg-hover">Make routing default</button>}
             {updateAvailable && <button disabled={busy} type="button" onClick={() => { setActionMenuOpen(false); void upgrade(); }} className="block w-full rounded px-3 py-2 text-left text-xs text-yellow hover:bg-bg-hover">Update</button>}
             <AppStatusAction app={app} disabled={busy} onBusyChange={setBusy} onChanged={() => { setActionMenuOpen(false); onChange(); }} className="block min-h-10 w-full rounded px-3 py-2 text-left text-xs text-text-muted hover:bg-bg-hover" />
             {app.source !== "builtin" && <button disabled={busy} type="button" onClick={() => { setActionMenuOpen(false); if (confirm(`Uninstall ${app.display_name || app.name}?`)) void remove(); }} className="block w-full rounded px-3 py-2 text-left text-xs text-red hover:bg-bg-hover">Uninstall</button>}
@@ -1732,15 +1755,20 @@ function InstallModal({
   projectId,
   onInstalled,
   initialManifestUrl,
+  initialInstallationKey,
 }: {
   open: boolean;
   onClose: () => void;
   projectId?: string;
   onInstalled: () => void;
   initialManifestUrl?: string;
+  initialInstallationKey?: string;
 }) {
   const setupExitGuard = useRef<() => boolean>(() => true);
   const closeInstall = () => { if (setupExitGuard.current()) onClose(); };
+  const [installationKey, setInstallationKey] = useState("default");
+  const [installationName, setInstallationName] = useState("");
+  useEffect(() => { if (open) {setInstallationKey(initialInstallationKey || "default");setInstallationName(initialInstallationKey ? "Candidate" : "");} }, [open,initialInstallationKey]);
   const [manifestUrl, setManifestUrl] = useState("");
   const installRequestKey=useRef(crypto.randomUUID());
   const [deploymentPlacement,setDeploymentPlacement]=useState<DeploymentPlacement>({type:"local"});
@@ -1805,6 +1833,8 @@ function InstallModal({
     }
     if (!open) {
       setDeploymentPlacement({type:"local"}); installRequestKey.current=crypto.randomUUID();
+      setInstallationKey("default");
+      setInstallationName("");
       // Reset when closed so the next open is clean.
       setManifestUrl("");
       setPreview(null);
@@ -1962,6 +1992,8 @@ function InstallModal({
       // Now install the parent with all bindings resolved.
       setInstallStep(`Installing ${preview.manifest.display_name || preview.manifest.name}…`);
       await apps.install({
+        installationKey,
+        installationName,
         manifestUrl,
         projectId: scope === "global" ? "" : projectId,
         config,
@@ -1991,6 +2023,16 @@ function InstallModal({
         >
           ×
         </button>
+      </div>
+
+      <div className="grid shrink-0 gap-3 border-b border-border px-4 py-3 sm:grid-cols-2">
+        <label className="text-xs text-text-muted">Installation key
+          <input aria-label="Installation key" value={installationKey} onChange={e => setInstallationKey(e.target.value)} pattern="[a-z][a-z0-9-]{0,39}" maxLength={40} className="mt-1 block w-full rounded border border-border bg-bg-input px-2 py-2 text-text" />
+        </label>
+        <label className="text-xs text-text-muted">Installation name
+          <input aria-label="Installation name" value={installationName} onChange={e => setInstallationName(e.target.value)} placeholder="Stable or Candidate" maxLength={100} className="mt-1 block w-full rounded border border-border bg-bg-input px-2 py-2 text-text" />
+        </label>
+        <p className="text-xs text-text-dim sm:col-span-2">Use a different key for each installation. Select a release using its manifest URL. Each installation starts with fresh data.</p>
       </div>
 
       {!preview ? (
@@ -2025,7 +2067,7 @@ function InstallModal({
       ) : preview.manifest.setup && !preflight ? (
         <div className="p-5 space-y-3"><p role={error ? "alert" : "status"}>{error || "Loading app setup…"}</p>{error && <button className="min-h-11 text-accent" onClick={() => void refetchPreflight()}>Retry setup</button>}</div>
       ) : preview.manifest.setup && preflight ? (
-        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"><GuidedAppSetup onExitGuard={guard => { setupExitGuard.current = guard; }} key={manifestUrl} preflight={preflight} manifestURL={manifestUrl} projectId={scope === "global" ? "" : projectId} onDone={() => { reset(); onInstalled(); }} /></div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"><GuidedAppSetup installationKey={installationKey} installationName={installationName} onExitGuard={guard => { setupExitGuard.current = guard; }} key={manifestUrl} preflight={preflight} manifestURL={manifestUrl} projectId={scope === "global" ? "" : projectId} onDone={() => { reset(); onInstalled(); }} /></div>
       ) : (
         <><DeploymentPlacementEditor value={deploymentPlacement} onChange={setDeploymentPlacement} projectId={scope==="global"?"":projectId} manifestUrl={manifestUrl} runtimeKind={preview.manifest.runtime?.kind} publicRoutes={!!preview.manifest.runtime?.ingress} />
         <PreviewAndConfigure

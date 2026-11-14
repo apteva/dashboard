@@ -147,9 +147,12 @@ export function defaultAgentAppInstallIDs(rows: AppRow[]): Set<number> {
 }
 
 function preferredRunningApp(rows: AppRow[], slug: string, selected: Set<number>): AppRow | undefined {
-  const candidates = rows.filter((app) => app.name === slug && app.status === "running");
-  return candidates.find((app) => selected.has(app.install_id))
-    || candidates.find((app) => !!app.project_id) || candidates[0];
+  const candidates = rows.filter(app => app.name === slug);
+  const explicit = candidates.find(app => app.status === "running" && selected.has(app.install_id));
+  if (explicit) return explicit;
+  const projectInstalls = candidates.filter(app => !!app.project_id);
+  const scope = projectInstalls.length ? projectInstalls : candidates;
+  return scope.find(app => app.status === "running" && app.is_default !== false);
 }
 
 export function effectiveAgentAppInstallIDs(
@@ -371,7 +374,8 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
     for (const slug of slugs) {
       const candidates = currentApps.filter((app) => app.name === slug);
       const row = preferredRunningApp(currentApps, slug, state.boundAppInstallIDs)
-        || candidates.find((app) => app.status === "pending") || candidates[0];
+        || candidates.find((app) => app.is_default !== false);
+      if (!row && candidates.length) throw new Error(`${slug}: select an installation in Setup or choose a ready default in Apps.`);
       if (row) {
         if (row.status === "error" || row.status === "disabled") {
           throw new Error(`${slug}: ${row.error_message || "required app is not running"}. Fix it in Apps, then try again.`);
@@ -1256,13 +1260,13 @@ export function SetupStep({
                   <AppIcon
                     src={app.icon}
                     iconStyle={app.icon_style}
-                    name={app.display_name || app.name}
+                    name={`${app.display_name || app.name}${app.installation_name ? ` · ${app.installation_name} · v${app.version}` : ""}`}
                     size="md"
                     className="text-accent"
                   />
                   <div className="min-w-0 flex-1">
                     <h4 className="text-sm font-semibold text-text">
-                      {app.display_name || app.name}
+                      {app.display_name || app.name}{app.installation_name ? ` · ${app.installation_name} · v${app.version}` : ""}
                     </h4>
                     <p className="mt-1 text-[11px] text-text-muted">
                       {app.project_id ? "Project app" : "Global app"} ·{" "}
@@ -1621,9 +1625,9 @@ export function SetupStep({
                 <PickerOption
                   key={app.install_id}
                   selected={selectedIDs.has(app.install_id)}
-                  disabled={templateRequiredSlugs.has(app.name)}
+                  disabled={templateRequiredSlugs.has(app.name) && selectedIDs.has(app.install_id) && selectedApps.filter(other => other.name === app.name).length === 1}
                   onToggle={() => toggleApp(app.install_id)}
-                  name={app.display_name || app.name}
+                  name={`${app.display_name || app.name}${app.installation_name ? ` · ${app.installation_name} · v${app.version}` : ""}`}
                   description={`${app.project_id ? "Project" : "Global"} · v${app.version}${app.agent_setup?.reason ? ` · ${app.agent_setup.reason}` : app.description ? ` · ${app.description}` : ""}`}
                   badge={
                     requiredSlugs.has(app.name)
@@ -1636,7 +1640,7 @@ export function SetupStep({
                     <AppIcon
                       src={app.icon}
                       iconStyle={app.icon_style}
-                      name={app.display_name || app.name}
+                      name={`${app.display_name || app.name}${app.installation_name ? ` · ${app.installation_name} · v${app.version}` : ""}`}
                       size="md"
                       className="text-accent"
                     />

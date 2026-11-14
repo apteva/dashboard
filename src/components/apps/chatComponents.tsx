@@ -73,6 +73,8 @@ export interface UIComponentSpec {
 // load their bundles from /api/integrations/<slug>/ instead of
 // /api/apps/<slug>/.
 export interface InstalledAppRow {
+  mcp_name?: string;
+  is_default?: boolean;
   install_id: number;
   name: string;
   display_name?: string;
@@ -240,7 +242,7 @@ export function ChatComponentMount({
   if (comp.app === "channel-chat" && comp.name === "alert-card") {
     return <AlertCard props={comp.props ?? {}} />;
   }
-  const app = apps.find((a) => a.name === comp.app);
+  const app = apps.find(a => (a.mcp_name || a.name) === comp.app);
   if (!app) {
     return <ComponentMissing reason={`app "${comp.app}" not installed`} />;
   }
@@ -629,6 +631,8 @@ function normalizeInstalledApps(rows: unknown): InstalledAppRow[] {
             : [],
         }
       : undefined,
+    mcp_name: typeof r.mcp_name === "string" ? r.mcp_name : undefined,
+    is_default: r.is_default,
     ui_components: Array.isArray(r.ui_components) ? r.ui_components : [],
   }));
 }

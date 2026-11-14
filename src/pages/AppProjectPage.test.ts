@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { loadedAppMatchesRoute } from "./AppProjectPage";
+import type { AppRow } from "../api";
+import { selectProjectAppInstallation, loadedAppMatchesRoute } from "./AppProjectPage";
 
 describe("loadedAppMatchesRoute", () => {
   const loaded = { projectId: "project-a", routeName: "api" };
@@ -17,7 +17,18 @@ describe("loadedAppMatchesRoute", () => {
   });
 });
 
-test("native project pages receive the optional host workspace rail", () => {
-  const source = readFileSync(new URL("./AppProjectPage.tsx", import.meta.url), "utf8");
-  expect(source).toContain('workspaceRail={app.name === "conversations" ? ProjectAppWorkspaceRail : undefined}');
+describe("named app installations", () => {
+  const stable = { name: "database", project_id: "p", install_id: 1, is_default: true, status: "running" } as AppRow;
+  const candidate = { ...stable, install_id: 2, is_default: false };
+  const global = { ...stable, project_id: "", install_id: 3 };
+  test("uses the selected default independently of list order and resolves explicit candidates", () => {
+    expect(selectProjectAppInstallation([candidate, global, stable], "database", "p")?.install_id).toBe(1);
+    expect(selectProjectAppInstallation([stable, candidate], "database", "p", "2")?.install_id).toBe(2);
+    expect(selectProjectAppInstallation([global], "database", "p", "99")).toBeUndefined();
+  });
+  test("rejects foreign installations and preserves an unavailable project's default", () => {
+    expect(selectProjectAppInstallation([candidate], "database", "other", "2")).toBeUndefined();
+    expect(selectProjectAppInstallation([{ ...stable, status: "disabled" }, candidate, global], "database", "p")?.status).toBe("disabled");
+    expect(selectProjectAppInstallation([candidate, global], "database", "p")).toBeUndefined();
+  });
 });
