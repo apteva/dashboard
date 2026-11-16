@@ -27,6 +27,7 @@ const MCP = lazy(() => import("./settings/MCPSettings").then(m => ({ default: m.
 const Events = lazy(() => import("./settings/EventSettings").then(m => ({ default: m.SubscriptionsTab })));
 const Keys = lazy(() => import("./settings/KeySettings").then(m => ({ default: m.APIKeysTab })));
 const Users = lazy(() => import("./settings/UserSettings").then(m => ({ default: m.UsersTab })));
+const SecurityCenter = lazy(() => import("./settings/SecuritySettings").then(m => ({ default: m.SecurityCenter })));
 const Server = lazy(() => import("./settings/ServerSettings").then(m => ({ default: m.ServerTab })));
 const Maintenance = lazy(() => import("./settings/MaintenanceSettings").then(m => ({ default: m.DataTab })));
 const PublicAddress = lazy(() => import("./settings/AdditionalSettings").then(m => ({ default: m.PublicAddressPage })));
@@ -51,6 +52,7 @@ function Screen({ id }: { id: string }) {
     case "integrations": return <Connections />;
     case "api-keys": return <Keys />;
     case "users": return <Users />;
+    case "security-center": return <SecurityCenter />;
     case "server": return <PublicAddress />;
     case "updates": return <Updates />;
     case "access-policy": return <Server section="access" />;
