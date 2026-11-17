@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, useParams, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useParams, useSearchParams, useLocation } from "react-router-dom";
 import { lazy, Suspense, type ReactNode } from "react";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
 import { ReauthPrompt } from "./components/auth/ReauthPrompt";
@@ -41,11 +41,15 @@ const AppProjectPage = lazy(() => import("./pages/AppProjectPage").then((m) => (
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { authenticated } = useAuth();
+  const location = useLocation();
   if (authenticated === null) {
     return null;
   }
   if (!authenticated) {
-    return <Navigate to="/login" replace />;
+    // Keep a device pairing code across sign-in so approval resumes after it.
+    const query = new URLSearchParams(location.search);
+    const code = location.pathname === "/settings" && query.get("tab") === "devices" ? query.get("code") : null;
+    return <Navigate to={code ? "/login?device_code=" + encodeURIComponent(code) : "/login"} replace />;
   }
   return <>{children}</>;
 }

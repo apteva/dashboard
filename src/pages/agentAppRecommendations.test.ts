@@ -67,3 +67,10 @@ test("apps without metadata gain no recommendation by their name, and visible in
     ),
   ).toEqual([]);
 });
+
+test("recommendations select the routing default instead of an earlier candidate", () => {
+  const stable = { ...app("database", "p", 1, { recommended: true }), is_default: true };
+  const candidate = { ...stable, install_id: 2, is_default: false };
+  expect(agentAppRecommendations([candidate, stable], [], [], new Set(), "p")[0]?.installed?.install_id).toBe(1);
+  expect(agentAppRecommendations([candidate], [], ["database"], new Set(), "p")).toHaveLength(0);
+});
