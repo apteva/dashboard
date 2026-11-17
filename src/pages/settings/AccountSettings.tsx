@@ -8,6 +8,8 @@ import { useAuth } from "../../hooks/useAuth";
 
 import { MFASetup } from "../../components/auth/MFASetup";
 
+import { OwnSessions } from "../../components/auth/OwnSessions";
+
 export function AccountTab({ security = false }: { security?: boolean }) {
   // Pull the authenticated profile straight from the auth hook —
   // /auth/me returns {user_id, email, created_at} on every page load
@@ -156,6 +158,8 @@ export function AccountTab({ security = false }: { security?: boolean }) {
           </button>
         )}
       </div>
+
+      <OwnSessions />
 
       </>}
       <div className="border border-border rounded-lg p-5 bg-bg-card">

@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { lazy, Suspense, type ReactNode } from "react";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
+import { ReauthPrompt } from "./components/auth/ReauthPrompt";
 
 // LegacyInstanceRedirect bounces /instances/:id to /agents/:id so any
 // pre-rename bookmark, deep-link, or cached tab keeps resolving. The
@@ -141,6 +142,7 @@ export default function App() {
           </Route>
             </Routes>
           </Suspense>
+          <ReauthPrompt />
           </AudienceProvider>
         </AuthProvider>
       </ThemeProvider>

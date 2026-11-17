@@ -22,6 +22,54 @@ export function setAuthInvalidHandler(fn: (() => void) | null) {
   onAuthInvalid = fn;
 }
 
+// Step-up re-authentication. Privileged server operations (revealing
+// stored credentials, changing roles, containment, SSH policy) answer
+// 403 {error:"reauthentication_required"} when this session has not
+// confirmed its password recently. A mounted ReauthPrompt registers a
+// handler that asks for the password (and MFA code), then the original
+// request is retried once. Concurrent refusals share one prompt.
+export interface ReauthChallenge {
+  method: string;
+  path: string;
+  windowMinutes?: number;
+}
+let reauthHandler: ((challenge: ReauthChallenge) => Promise<boolean>) | null = null;
+let pendingReauth: Promise<boolean> | null = null;
+export function setReauthHandler(fn: ((challenge: ReauthChallenge) => Promise<boolean>) | null) {
+  reauthHandler = fn;
+}
+export function isReauthRequired(err: unknown): boolean {
+  const e = err as { status?: number; body?: { error?: unknown } } | null;
+  return !!e && e.status === 403 && e.body?.error === "reauthentication_required";
+}
+function confirmIdentity(challenge: ReauthChallenge): Promise<boolean> {
+  if (!reauthHandler) return Promise.resolve(false);
+  if (!pendingReauth) {
+    pendingReauth = reauthHandler(challenge)
+      .catch(() => false)
+      .finally(() => { pendingReauth = null; });
+  }
+  return pendingReauth;
+}
+async function withReauth<T>(run: () => Promise<T>, method: string, path: string): Promise<T> {
+  try {
+    return await run();
+  } catch (err: any) {
+    if (!isReauthRequired(err)) throw err;
+    const confirmed = await confirmIdentity({ method, path, windowMinutes: err.body?.window_minutes });
+    if (!confirmed) {
+      const cancelled: any = new Error("Confirm your password to continue.");
+      cancelled.status = err.status;
+      cancelled.body = err.body;
+      cancelled.reauthCancelled = true;
+      throw cancelled;
+    }
+    return run();
+  }
+}
+// Machine-readable error codes the server pairs with a human message.
+const CODED_ERRORS_WITH_MESSAGE = new Set(["reauthentication_required", "interactive_session_required"]);
+
 const inFlightGETs = new Map<string, Promise<unknown>>();
 const API_DEBUG = process.env.NODE_ENV !== "production";
 
@@ -86,6 +134,12 @@ function request<T>(
           parsed = obj;
           if (obj && typeof obj === "object") {
             if (
+              CODED_ERRORS_WITH_MESSAGE.has(obj.error) &&
+              typeof obj.message === "string" &&
+              obj.message.trim() !== ""
+            ) {
+              msg = obj.message;
+            } else if (
               obj.health_check &&
               typeof obj.detail === "string" &&
               obj.detail.trim() !== ""
@@ -129,7 +183,7 @@ function request<T>(
     const key = `${url}|${headerKey}`;
     const existing = inFlightGETs.get(key);
     if (existing) return existing as Promise<T>;
-    const pending = execute();
+    const pending = withReauth(execute, method, path);
     inFlightGETs.set(key, pending);
     const cleanup = () => {
       if (inFlightGETs.get(key) === pending) inFlightGETs.delete(key);
@@ -137,7 +191,7 @@ function request<T>(
     void pending.then(cleanup, cleanup);
     return pending;
   }
-  return execute();
+  return withReauth(execute, method, path);
 }
 
 // Server-wide settings (admin-editable, lives in server_settings table).
@@ -410,6 +464,15 @@ export const auth = {
       "/auth/mfa/recovery-codes",
       { current_password: currentPassword, code },
     ),
+
+  // Step-up confirmation for privileged operations (see withReauth).
+  reauth: (password: string, code?: string) =>
+    request<{ status: string; valid_for_minutes: number }>("POST", "/auth/reauth", { password, code: code || "" }),
+
+  // The caller's own signed-in sessions (no tokens; `ref` identifies one).
+  sessions: () => request<OwnSession[]>("GET", "/auth/sessions"),
+  revokeSession: (ref: string) =>
+    request<{ status: string }>("DELETE", `/auth/sessions/${encodeURIComponent(ref)}`),
 
   logout: () =>
     request<any>("POST", "/auth/logout").then(() => {
@@ -1078,6 +1141,8 @@ export interface AdminUser {
   email: string;
   role: PlatformRole;
   created_at: string;
+  // Set when an administrator disabled the account (security containment).
+  disabled_at?: string;
 }
 
 export const projectMembers = {
@@ -1130,6 +1195,239 @@ export const adminUsers = {
   list: () => request<AdminUser[]>("GET", "/admin/users"),
   setRole: (userID: number, role: PlatformRole) =>
     request<{ status: string }>("PATCH", `/admin/users/${userID}`, { role }),
+};
+
+// ─── Security (admin) ────────────────────────────────────────────────────
+// Server-side audit trail, alerts, containment and host SSH monitoring.
+// Credentials only ever appear as references (session:…, api_key:<id>).
+
+export interface SessionRecord {
+  ref: string;
+  user_id: number;
+  created_at: string;
+  created_ip?: string;
+  created_user_agent?: string;
+  last_seen_at?: string;
+  last_seen_ip?: string;
+  expires_at: string;
+  auth_state: string;
+  revoked_at?: string;
+  revoked_by?: number;
+  revoke_reason?: string;
+  active: boolean;
+}
+export interface OwnSession extends SessionRecord {
+  current: boolean;
+}
+export interface APIKeyRecord {
+  id: number;
+  user_id: number;
+  name: string;
+  key_prefix: string;
+  kind: string;
+  access: string;
+  project_id?: string;
+  issuer_app?: string;
+  created_at: string;
+  created_ip?: string;
+  expires_at?: string;
+  last_used?: string;
+  last_used_ip?: string;
+  revoked_at?: string;
+  active?: boolean;
+}
+export type SecuritySeverity = "info" | "notice" | "warning" | "critical";
+export interface SecurityEvent {
+  seq: number;
+  event_id: string;
+  occurred_at: string;
+  recorded_at?: string;
+  category: string;
+  action: string;
+  result: string;
+  severity: SecuritySeverity;
+  principal_type?: string;
+  principal_id?: string;
+  credential_id?: string;
+  source_ip?: string;
+  user_agent?: string;
+  origin_app?: string;
+  install_id?: number;
+  project_id?: string;
+  target_type?: string;
+  target_id?: string;
+  correlation_id?: string;
+  machine_id?: string;
+  details?: Record<string, unknown>;
+}
+export interface SecurityAlert {
+  id: number;
+  event_id: string;
+  rule: string;
+  severity: SecuritySeverity;
+  message: string;
+  machine_id?: string;
+  created_at: string;
+  acknowledged_at?: string;
+  acknowledged_by?: number;
+  delivered_at?: string;
+  delivery_error?: string;
+}
+export interface SecurityAuditHealth {
+  available: boolean;
+  queue_depth?: number;
+  queue_capacity?: number;
+  dropped_total?: number;
+  last_write_at?: string;
+  last_error?: string;
+  retention_days?: number;
+  disk_free_bytes?: number;
+  disk_low?: boolean;
+  forward_enabled?: boolean;
+  forward_last_ok_at?: string;
+  forward_last_error?: string;
+  forward_lag_events?: number;
+  degraded: boolean;
+  degraded_reasons?: string[];
+}
+export interface SecurityChainStatus {
+  ok: boolean;
+  checked: number;
+  broken_at_seq?: number;
+  reason?: string;
+  first_seq?: number;
+  last_seq?: number;
+  checked_at?: string;
+}
+export interface SecurityHostStatus {
+  available: boolean;
+  healthy?: boolean;
+  reason?: string;
+  problems?: string[];
+  health?: {
+    role?: string;
+    machine_id?: string;
+    hostname?: string;
+    source?: string;
+    heartbeat?: string;
+    stale?: boolean;
+    last_event_at?: string;
+    event_count?: number;
+    gap_count?: number;
+    webhook_configured?: boolean;
+  };
+  ingest?: { last_run_at?: string; last_ok_at?: string; last_error?: string; ingested?: number };
+}
+export interface SecurityListener { name: string; address: string; loopback?: boolean; public?: boolean }
+export interface SecurityInventory {
+  server: {
+    version: string;
+    listeners?: SecurityListener[];
+    hosted: boolean;
+    registration_mode?: string;
+    child_env_mode: string;
+    app_isolation: string;
+    admins: number;
+    admins_with_mfa: number;
+    disabled_users: number;
+    active_api_keys: number;
+    active_sessions: number;
+    privileged_reauth_minutes: number;
+  };
+  fleet_tenants?: FleetTenantCoverage[];
+  fleet_error?: string;
+  findings: string[];
+}
+export interface SecurityOverview {
+  audit: SecurityAuditHealth;
+  open_alerts: number;
+  open_by_severity?: Partial<Record<SecuritySeverity, number>>;
+  denied_24h: number;
+  login_events_24h: number;
+  host: SecurityHostStatus;
+  inventory: SecurityInventory;
+  evidence_coverage: { source: string; proves: string; does_not_prove: string }[];
+}
+export interface FleetTenantCoverage {
+  tenant_id: string;
+  slug?: string;
+  base_url?: string;
+  version?: string;
+  status: string;
+  detail?: string;
+}
+export interface ContainmentReport {
+  generated_at: string;
+  user_id?: number;
+  sessions: SessionRecord[];
+  api_keys: APIKeyRecord[];
+  app_installs: { install_id: number; app: string; project_id?: string; has_token: boolean }[];
+  fleet_tenants: FleetTenantCoverage[];
+  fleet_error?: string;
+  coverage_gaps: string[];
+}
+export interface ContainmentTarget { scope: string; target: string; status: string; detail?: string }
+export interface ContainmentResult {
+  complete: boolean;
+  counts: Record<string, number>;
+  results: ContainmentTarget[];
+}
+export interface ContainmentRequest {
+  user_id: number;
+  sessions: boolean;
+  api_keys: boolean;
+  disable_user?: boolean;
+  keep_key_ids?: number[];
+  include_fleet?: boolean;
+  reason: string;
+}
+export interface SSHPolicy {
+  approved_sources: string[];
+  approved_fingerprints: string[];
+  root_login_allowed: boolean;
+  root_approved_sources: string[];
+  failure_burst_threshold: number;
+  failure_burst_window_seconds: number;
+  alert_webhook_url?: string;
+  alert_webhook_secret?: string;
+  alert_webhook_secret_set?: boolean;
+}
+export interface SecurityEventFilter {
+  category?: string;
+  action?: string;
+  result?: string;
+  principal_id?: string;
+  source_ip?: string;
+  since?: string;
+  before_seq?: number;
+  limit?: number;
+}
+
+function securityQuery(filter: Record<string, string | number | undefined>): string {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(filter)) {
+    if (v !== undefined && v !== "" && v !== 0) qs.set(k, String(v));
+  }
+  const s = qs.toString();
+  return s ? `?${s}` : "";
+}
+
+export const security = {
+  overview: () => request<SecurityOverview>("GET", "/security/overview"),
+  events: (filter: SecurityEventFilter = {}) =>
+    request<SecurityEvent[]>("GET", `/security/events${securityQuery({ ...filter })}`),
+  alerts: (openOnly = true) => request<SecurityAlert[]>("GET", `/security/alerts${openOnly ? "?open=1" : ""}`),
+  acknowledgeAlert: (id: number) => request<{ status: string }>("POST", `/security/alerts/${id}/ack`),
+  verifyChain: () => request<SecurityChainStatus>("GET", "/security/chain"),
+  containment: (userID: number) => request<ContainmentReport>("GET", `/security/containment?user_id=${userID}`),
+  revoke: (req: ContainmentRequest) => request<ContainmentResult>("POST", "/security/containment/revoke", req),
+  disableUser: (userID: number, reason: string) =>
+    request<{ status: string }>("POST", `/security/users/${userID}/disable`, { reason }),
+  enableUser: (userID: number) => request<{ status: string }>("POST", `/security/users/${userID}/enable`, {}),
+  host: () => request<SecurityHostStatus>("GET", "/security/host"),
+  hostPolicy: () => request<SSHPolicy>("GET", "/security/host/policy"),
+  setHostPolicy: (policy: SSHPolicy) => request<SSHPolicy>("PUT", "/security/host/policy", policy),
+  syncHost: () => request<{ ingested: number }>("POST", "/security/host/sync"),
 };
 
 // Agents
