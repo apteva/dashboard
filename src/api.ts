@@ -4922,3 +4922,48 @@ export const agentResources={
  get:(id:number)=>request<AgentResourceStatus>("GET",`/agents/${id}/resources`),
  save:(id:number,revision:number,policy:AppResourcePolicy)=>request<AgentResourceStatus>("PUT",`/agents/${id}/resources`,{revision,policy}),
 };
+
+// Account-level Node sessions inherit the user's normal API permissions.
+export interface AccountDevice {
+  id: string;
+  name: string;
+  version: string;
+  hardware: { id: string; kind: string; description?: string }[];
+  tools: { name: string; description: string; confirm?: string }[] | null;
+  events: { capability: string; kind: string; description?: string }[] | null;
+  project_id: string;
+  agent_id: string;
+  created_at: number;
+  last_seen: number;
+  revoked_at: number;
+  connected: boolean;
+  current: boolean;
+}
+export interface DevicePairingRequest {
+  name: string;
+  version: string;
+  hardware: { id: string; kind: string; description?: string }[];
+  expires_at: number;
+  status: string;
+}
+export interface DeviceToolGrant { agent_id: number; project_id: string; tools: string[] }
+export interface DeviceEventBinding { id: string; device_id: string; agent_id: number; project_id: string; capability: string; kind: string; thread_id: string; instruction: string; enabled: boolean; cooldown_seconds: number; max_age_seconds: number }
+export interface DeviceEventDelivery { event_id: string; binding_id: string; status: string; attempts: number; error: string; execution_id: string }
+export const devices = {
+  grants: (id: string) => request<{ grants: DeviceToolGrant[] }>("GET", `/devices/${encodeURIComponent(id)}/grants`),
+  grant: (id: string, agent: number, tools: string[]) => request<DeviceToolGrant>("PUT", `/devices/${encodeURIComponent(id)}/grants/${agent}`, {tools}),
+  revokeGrant: (id: string, agent: number) => request<{ revoked: boolean; detached?: boolean }>("DELETE", `/devices/${encodeURIComponent(id)}/grants/${agent}`),
+  bindings: (id: string) => request<{ bindings: DeviceEventBinding[] }>("GET", `/devices/${encodeURIComponent(id)}/event-bindings`),
+  subscribe: (id: string, binding: Omit<DeviceEventBinding, "id" | "device_id" | "project_id">) => request<DeviceEventBinding>("POST", `/devices/${encodeURIComponent(id)}/event-bindings`, binding),
+  toggleBinding: (id: string, binding: string, enabled: boolean) => request<DeviceEventBinding>("PATCH", `/devices/${encodeURIComponent(id)}/event-bindings/${encodeURIComponent(binding)}`, {enabled}),
+  removeBinding: (id: string, binding: string) => request<{ deleted: boolean }>("DELETE", `/devices/${encodeURIComponent(id)}/event-bindings/${encodeURIComponent(binding)}`),
+  deliveries: (id: string) => request<{ deliveries: DeviceEventDelivery[] }>("GET", `/devices/${encodeURIComponent(id)}/event-deliveries`),
+  list: () => request<{ devices: AccountDevice[] }>("GET", "/devices"),
+  pairing: (code: string) => request<DevicePairingRequest>("GET", "/devices/pair/request?code=" + encodeURIComponent(code)),
+  approve: (code: string, project_id = "", agent_id = "") =>
+    request<{ status: string; device_id: string }>("POST", "/devices/pair/approve", { code, project_id, agent_id }),
+  deny: (code: string) => request<{ status: string }>("POST", "/devices/pair/deny", { code }),
+  update: (id: string, data: { name?: string; project_id?: string; agent_id?: string }) =>
+    request<AccountDevice>("PATCH", "/devices/" + encodeURIComponent(id), data),
+  revoke: (id: string) => request<{ revoked: boolean }>("DELETE", "/devices/" + encodeURIComponent(id)),
+};
