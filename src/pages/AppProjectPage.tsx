@@ -15,6 +15,7 @@ import { usePageTitle } from "../hooks/usePageTitle";
 import { useAssistantPageDetails } from "../components/chat/pageContext";
 import { resolvePanelComponent } from "../components/apps/nativePanels";
 
+import { AppHostFrame } from "../components/apps/hostUI";
 import { LiveAppPanel } from "../components/apps/LiveAppPanel";
 
 interface LoadedApp {
@@ -28,7 +29,15 @@ export function loadedAppMatchesRoute(
   projectId?: string,
   routeName?: string,
 ): boolean {
-  return !!projectId && !!routeName && loaded.projectId === projectId && loaded.routeName === routeName;
+  return projectId !== undefined && !!routeName && loaded.projectId === projectId && loaded.routeName === routeName;
+}
+
+export function selectProjectAppInstallation(rows: AppRow[], name: string, projectId: string, installId?: string | null): AppRow | undefined {
+  const visible = rows.filter(row => row.name === name && (!row.project_id || row.project_id === projectId));
+  if (installId) return visible.find(row => String(row.install_id) === installId);
+  const projectInstalls = visible.filter(row => row.project_id === projectId);
+  const scope = projectInstalls.length ? projectInstalls : visible.filter(row => !row.project_id);
+  return scope.find(row => row.is_default !== false);
 }
 
 export function AppProjectPage() {
@@ -36,6 +45,8 @@ export function AppProjectPage() {
   const { projects, currentProject, setCurrentProject } = useProjects();
   const [search, setSearch] = useSearchParams();
   const linkedProjectID = search.get("project_id");
+  const linkedInstallID = search.get("install_id");
+  const routeProjectID = linkedProjectID === "" ? "" : currentProject?.id;
   const linkedProject = projects.find(project => project.id === linkedProjectID);
   const linkError = linkedProjectID && currentProject && !linkedProject ? "The linked project is unavailable." : "";
   useEffect(() => {
@@ -48,13 +59,13 @@ export function AppProjectPage() {
   const [loaded, setLoaded] = useState<LoadedApp | null>(null);
   const [error, setError] = useState("");
   const app = loaded?.app ?? null;
-  const contextApp = loaded && loadedAppMatchesRoute(loaded, currentProject?.id, name) ? app : null;
+  const contextApp = loaded && loadedAppMatchesRoute(loaded, routeProjectID, name) ? app : null;
   useAssistantPageDetails(currentProject?.id || "", { app: contextApp?.name, installation_id: contextApp?.install_id, panel: contextApp?.ui_panels?.find(panel => panel.slot === "project.page")?.label });
   usePageTitle(["App", app?.display_name || app?.name || name || "loading"]);
 
   useEffect(() => {
-    const projectId = currentProject?.id;
-    if (!name || !projectId || linkedProjectID) {
+    const projectId = routeProjectID;
+    if (!name || projectId === undefined || linkedProjectID) {
       setLoaded(null);
       return;
     }
@@ -71,9 +82,7 @@ export function AppProjectPage() {
         if (cancelled) return;
         // Prefer the install owned by this project when the same app also
         // has a global install visible to it.
-        const found =
-          rows.find((r) => r.name === name && r.project_id === projectId) ||
-          rows.find((r) => r.name === name && !r.project_id);
+        const found = selectProjectAppInstallation(rows, name, projectId, linkedInstallID);
         if (!found) {
           setError(`App "${name}" is not installed in this project.`);
           setLoaded(null);
@@ -96,7 +105,7 @@ export function AppProjectPage() {
     return () => {
       cancelled = true;
     };
-  }, [name, currentProject?.id, linkedProjectID]);
+  }, [name, routeProjectID, linkedProjectID, linkedInstallID]);
 
   if (error || linkError) {
     return (
@@ -113,7 +122,7 @@ export function AppProjectPage() {
   // Effects run after render. During a project or route switch, refuse to
   // render data produced by the previous request even if the row omits its
   // project_id (for example, a global install or stale cached response).
-  if (!loadedAppMatchesRoute(loaded, currentProject?.id, name)) {
+  if (!loadedAppMatchesRoute(loaded, routeProjectID, name) || (linkedInstallID && String(app.install_id) !== linkedInstallID)) {
     return <div className="p-6 text-text-dim text-sm">Loading…</div>;
   }
   const panelProjectId = loaded.projectId;
@@ -148,6 +157,7 @@ export function AppProjectPage() {
       <div className="h-full">
         <LiveAppPanel
           component={Native}
+          hostSurface={{hostUI:panel.host_ui, foreground:true, surface:panel.slot+":"+panel.entry}}
           appName={app.name}
           installId={app.install_id}
           projectId={panelProjectId}
@@ -158,20 +168,16 @@ export function AppProjectPage() {
 
   // Iframe fallback for apps with no native registration. install_id
   // + project_id flow as URL params so the panel can scope reads.
-  const params = new URLSearchParams({
-    install_id: String(app.install_id),
-    project_id: panelProjectId,
-  });
+  const params = new URLSearchParams(search);
+  params.set("install_id", String(app.install_id));
+  params.set("project_id", panelProjectId);
   const src = `/api/apps/${app.name}${panel.entry}?${params.toString()}`;
 
   return (
     <div className="h-full">
-      <iframe
-        src={src}
-        title={`${app.display_name || app.name} — ${panel.label}`}
-        className="w-full h-full border-0"
-        sandbox="allow-scripts allow-same-origin"
-      />
+      <AppHostFrame src={src} title={`${app.display_name || app.name} — ${panel.label}`}
+        projectId={panelProjectId} installId={app.install_id} surface={panel.slot+":"+panel.entry}
+        foreground hostUI={panel.host_ui} />
     </div>
   );
 }

@@ -1,4 +1,12 @@
+import { AgentResourcesPanel } from "./AgentResourcesPanel";
+import { useOptionalAuth } from "../hooks/useAuth";
+import { realtimeSelection, type RealtimeProviderConfig } from "../realtime/config";
+import type { RealtimeExecutionConfig } from "../api";
+import { ProviderBuiltinsEditor, agentBuiltins, agentBuiltinPatch, BuiltinGlyph, builtinLabel } from "./ProviderBuiltins";
+import type { AgentBuiltinOverrides } from "../api";
+import { ServiceTierSelect, agentServiceTiers, serviceTierPatch } from "./ServiceTierSelect";
 import { AppIcon } from "@apteva/ui-kit";
+import { AgentIconPicker, AgentMark, suggestedAgentIcon } from "./AgentMark";
 import { PickerOption } from "./PickerOption";
 import { ProactivityControl } from "./ProactivityControl";
 import { defaultProactivity } from "../agentBehavior";
@@ -26,8 +34,6 @@ import {
 } from "../api";
 import { useTelemetryConnectionState, useTelemetryEvents } from "../hooks/useTelemetryBus";
 import { sleepClassName, sleepLabel, sleepProgress, sleepTitle } from "../utils/sleepStatus";
-import { runtimeToolLabel } from "../utils/runtimeToolLabel";
-import { threadTokenUsage } from "../utils/threadTokenUsage";
 import { useAssistantPageDetails } from "./chat/pageContext";
 import { useProjects } from "../hooks/useProjects";
 import { resolveEffectiveAgentProvider } from "../utils/providerSelection";
@@ -35,527 +41,28 @@ import { splitToolTelemetryPaintFrame } from "../utils/toolTelemetryPaint";
 
 export type EventListener = (event: TelemetryEvent) => void;
 export type SubscribeFn = (listener: EventListener) => () => void;
-import { ActivityPanel } from "./ActivityPanel";
 import { MemoryPanel } from "./MemoryPanel";
 import { UnconsciousPanel } from "./UnconsciousPanel";
 import { InjectPanel } from "./InjectPanel";
 import { ThreadDetailModal, formatContextResetResult } from "./ThreadDetailModal";
 import { AppPanels } from "./AppPanels";
 import { Modal } from "./Modal";
-import { LiveStatsBar } from "./LiveStatsBar";
 import { SkillsPanel } from "./SkillsPanel";
-import { structureDirectiveDraft } from "../utils/directiveMarkdown";
-import { useAudience } from "../hooks/useAudience";
-import { AppContributionArea, ContributionManager } from "./apps/contributions";
-import {
-  appendRuntimeThoughtText,
-  cleanReasoningDisplay,
-  type RuntimeThoughtText,
-} from "../utils/runtimeThought";
+import { AgentInstructionsEditor } from "./AgentInstructionsEditor";
+import { useAudience, audienceShows, type AudienceSection } from "../hooks/useAudience";
+import { AgentOverview } from "./AgentOverview";
+import { AgentActivity } from "./AgentActivity";
+import { AgentDiagnostics } from "./AgentDiagnostics";
+import { AgentSummaryBar, useAgentUsage } from "./AgentSummaryBar";
+import { AgentCapabilityIcons } from "./AgentCapabilityIcons";
+import { buildToolVisualRegistry } from "./chat/toolVisuals";
+import type { Audience } from "../hooks/useAudience";
 
-type RuntimeView = "stream" | "activity" | "memory" | "skills" | "apps" | "capabilities";
+type RuntimeView = "overview" | "stream" | "activity" | "memory" | "skills" | "apps" | "capabilities";
 
-interface RuntimeEventItem {
-  key: string;
-  kind: "thought" | "tool" | "thread" | "channel" | "error" | "event";
-  label: string;
-  detail?: string;
-  reasoningDetail?: string;
-  responseDetail?: string;
-  toolName?: string;
-  toolArgs?: string;
-  toolResult?: string;
-  threadId?: string;
-  status?: "running" | "success" | "error" | "info";
-  durationMs?: number;
-  time: string;
-  raw: TelemetryEvent;
-}
-
-const MAX_RUNTIME_EVENTS = 250;
-const HISTORICAL_RUNTIME_EVENT_LIMIT = 300;
-const RUNTIME_THOUGHT_MERGE_WINDOW_MS = 5 * 60 * 1000;
-
-function compactText(value: unknown, fallback = ""): string {
-  if (value == null) return fallback;
-  const s = String(value).replace(/\s+/g, " ").trim();
-  return s || fallback;
-}
-
-function durationLabel(ms?: number): string {
-  if (ms == null || !Number.isFinite(ms)) return "";
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
-}
-
-function runtimeToolCallID(ev: TelemetryEvent): string {
-  return compactText(ev.data?.id || ev.data?.call_id || ev.data?.tool_call_id);
-}
-
-function toolEventKey(ev: TelemetryEvent, name: string): string {
-  const id = runtimeToolCallID(ev);
-  return `tool:${ev.thread_id || "main"}:${id || `${name}:${ev.id || ev.time}`}`;
-}
-
-// Keep the retained window chronological too: sorting only at render time
-// would still let late history evict newer activity at the size limit.
-function orderedRuntimeEvents(events: RuntimeEventItem[]): RuntimeEventItem[] {
-  return [...events].sort((a, b) =>
-    telemetryTimeMs(a.raw) - telemetryTimeMs(b.raw) || a.key.localeCompare(b.key),
-  ).slice(-MAX_RUNTIME_EVENTS);
-}
-
-function thoughtEventKey(ev: TelemetryEvent): string {
-  const data = ev.data || {};
-  const iteration = data.iteration != null ? String(data.iteration) : "";
-  if (ev.type === "llm.done" || ev.type === "llm.error") {
-    return `thought:${ev.thread_id || "main"}:${ev.id || ev.time || iteration}`;
-  }
-  return `thought:${ev.thread_id || "main"}:${iteration || ev.id || ev.time}`;
-}
-
-function toolArgsValue(data: Record<string, any>): unknown {
-  if ("args" in data) return data.args;
-  if ("arguments" in data) return data.arguments;
-  if ("input" in data) return data.input;
-  if ("params" in data) return data.params;
-  return undefined;
-}
-
-function toolResultValue(data: Record<string, any>): unknown {
-  if ("result" in data) return data.result;
-  if ("output" in data) return data.output;
-  if ("error" in data) return data.error;
-  if ("message" in data) return data.message;
-  return undefined;
-}
-
-function parseJSONIfPossible(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  const trimmed = value.trim();
-  if (!trimmed || !["{", "["].includes(trimmed[0])) return value;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return value;
-  }
-}
-
-function sanitizeToolPayload(value: unknown, depth = 0): unknown {
-  const parsed = parseJSONIfPossible(value);
-  if (parsed == null) return parsed;
-  if (typeof parsed === "string") {
-    if (parsed.length > 400) return `${parsed.slice(0, 400)}… (${parsed.length.toLocaleString()} chars)`;
-    return parsed;
-  }
-  if (typeof parsed !== "object") return parsed;
-  if (depth > 5) return "[nested object]";
-  if (Array.isArray(parsed)) {
-    const items = parsed.slice(0, 20).map((item) => sanitizeToolPayload(item, depth + 1));
-    return parsed.length > 20 ? [...items, `… ${parsed.length - 20} more items`] : items;
-  }
-
-  const obj = parsed as Record<string, unknown>;
-  if (obj._binary === true) return "[binary payload]";
-  const out: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(obj)) {
-    const lower = key.toLowerCase();
-    if (
-      lower.includes("base64") ||
-      lower.includes("screenshot") ||
-      lower.includes("image") ||
-      lower.includes("audio") ||
-      lower.includes("blob")
-    ) {
-      if (typeof val === "string") {
-        out[key] = `[${val.length.toLocaleString()} chars omitted]`;
-      } else if (val && typeof val === "object") {
-        out[key] = sanitizeToolPayload(val, depth + 1);
-      } else {
-        out[key] = val;
-      }
-      continue;
-    }
-    out[key] = sanitizeToolPayload(val, depth + 1);
-  }
-  return out;
-}
-
-function formatToolPayload(value: unknown, max = 5000): string {
-  if (value === undefined) return "";
-  let text: string;
-  const sanitized = sanitizeToolPayload(value);
-  if (typeof sanitized === "string") {
-    text = sanitized;
-  } else {
-    try {
-      text = JSON.stringify(sanitized, null, 2);
-    } catch {
-      text = String(sanitized);
-    }
-  }
-  if (text.length > max) return `${text.slice(0, max)}\n… (${text.length.toLocaleString()} chars total)`;
-  return text;
-}
-
-function normalizeRuntimeEvent(ev: TelemetryEvent): RuntimeEventItem | null {
-  const data = ev.data || {};
-  const threadId = ev.thread_id || "main";
-  const base = {
-    threadId,
-    time: ev.time,
-    raw: ev,
-  };
-
-  if (ev.type === "llm.tool_chunk") {
-    const name = compactText(data.tool || data.name);
-    if (!name) return null;
-    if (["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"].includes(name)) return null;
-    return {
-      ...base,
-      key: toolEventKey(ev, name),
-      kind: "tool",
-      label: `Preparing ${name}`,
-      detail: name,
-      toolName: name,
-      toolArgs: String(data.chunk || ""),
-      status: "running",
-    };
-  }
-
-  if (ev.type === "tool.call") {
-    const name = compactText(data.name);
-    if (!name) return null;
-    if (["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"].includes(name)) return null;
-    const reason = compactText(data.reason);
-    const args = formatToolPayload(toolArgsValue(data));
-    return {
-      ...base,
-      key: toolEventKey(ev, name),
-      kind: "tool",
-      label: runtimeToolLabel(name, reason, `Running ${name}`),
-      detail: name,
-      toolName: name,
-      toolArgs: args,
-      status: "running",
-    };
-  }
-
-  if (ev.type === "tool.result") {
-    const name = compactText(data.name || data.tool);
-    if (!name) return null;
-    if (["pace", "done", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"].includes(name)) return null;
-    const failed = !!data.is_error;
-    return {
-      ...base,
-      key: toolEventKey(ev, name),
-      kind: "tool",
-      label: compactText(data.reason, name),
-      detail: failed ? compactText(data.error || data.message, "Tool failed") : name,
-      toolName: name,
-      toolResult: formatToolPayload(toolResultValue(data)),
-      status: failed ? "error" : "success",
-      durationMs: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
-    };
-  }
-
-  if (ev.type === "llm.start") {
-    return {
-      ...base,
-      key: thoughtEventKey(ev),
-      kind: "thought",
-      label: "Thinking",
-      detail: compactText(data.model),
-      status: "running",
-    };
-  }
-
-  if (ev.type === "llm.thinking") {
-    const text = String(data.text || data.chunk || "");
-    if (!text.trim()) return null;
-    return {
-      ...base,
-      key: thoughtEventKey(ev),
-      kind: "thought",
-      label: "Reasoning",
-      detail: text,
-      reasoningDetail: text,
-      status: "running",
-    };
-  }
-
-  if (ev.type === "llm.chunk") {
-    const text = String(data.text || data.chunk || "");
-    if (!text.trim()) return null;
-    return {
-      ...base,
-      key: thoughtEventKey(ev),
-      kind: "thought",
-      label: "Response",
-      detail: text,
-      responseDetail: text,
-      status: "running",
-    };
-  }
-
-  if (ev.type === "llm.done") {
-    const message = compactText(data.message || data.model);
-    return {
-      ...base,
-      key: thoughtEventKey(ev),
-      kind: "thought",
-      label: "Completed reasoning step",
-      detail: message,
-      responseDetail: message,
-      status: "success",
-      durationMs: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
-    };
-  }
-
-  if (ev.type === "llm.error") {
-    return {
-      ...base,
-      key: thoughtEventKey(ev),
-      kind: "error",
-      label: "LLM error",
-      detail: compactText(data.error || data.message),
-      status: "error",
-    };
-  }
-
-  if (ev.type.startsWith("execution.")) {
-    return null;
-  }
-
-  if (ev.type === "realtime.session_started") {
-    return {
-      ...base,
-      key: ev.id || `realtime-start:${threadId}:${ev.time}`,
-      kind: "thread",
-      label: "Live voice connected",
-      detail: [data.voice, data.model].filter(Boolean).join(" · "),
-      status: "running",
-    };
-  }
-
-  if (ev.type === "realtime.user" || ev.type === "realtime.assistant") {
-    return {
-      ...base,
-      key: ev.id || `${ev.type}:${threadId}:${ev.time}`,
-      kind: ev.type === "realtime.user" ? "channel" : "thought",
-      label: ev.type === "realtime.user" ? "Operator said" : "Agent said",
-      detail: compactText(data.text),
-      responseDetail: ev.type === "realtime.assistant" ? compactText(data.text) : undefined,
-      status: "info",
-    };
-  }
-
-  if (ev.type === "realtime.bridge_connected" || ev.type === "realtime.bridge_disconnected") {
-    return {
-      ...base,
-      key: ev.id || `${ev.type}:${threadId}:${ev.time}`,
-      kind: "thread",
-      label: ev.type === "realtime.bridge_connected" ? "Voice audio connected" : "Voice audio disconnected",
-      status: ev.type === "realtime.bridge_connected" ? "success" : "info",
-    };
-  }
-
-  if (ev.type === "thread.spawn") {
-    return {
-      ...base,
-      key: ev.id || `thread-spawn:${threadId}:${ev.time}`,
-      kind: "thread",
-      label: `Spawned ${compactText(data.name || threadId, threadId)}`,
-      detail: compactText(data.directive),
-      status: "info",
-    };
-  }
-
-  if (ev.type === "thread.done") {
-    return {
-      ...base,
-      key: ev.id || `thread-done:${threadId}:${ev.time}`,
-      kind: "thread",
-      label: `Finished ${threadId}`,
-      status: "success",
-    };
-  }
-
-  if (ev.type === "event.received") {
-    const msg = compactText(data.message);
-    if (!msg) return null;
-    const internal = ["admin", "system", "inject"].some((c) => msg.startsWith(`[${c}]`));
-    if (internal) return null;
-    return {
-      ...base,
-      key: ev.id || `event:${threadId}:${ev.time}:${msg.slice(0, 24)}`,
-      kind: "channel",
-      label: msg,
-      detail: compactText(data.source),
-      status: "info",
-    };
-  }
-
-  if (ev.type === "thread.message") {
-    return {
-      ...base,
-      key: ev.id || `thread-message:${threadId}:${ev.time}`,
-      kind: "thread",
-      label: compactText(data.message, "Thread message"),
-      detail: compactText(data.from && data.to ? `${data.from} -> ${data.to}` : ""),
-      status: "info",
-    };
-  }
-
-  if (ev.type.includes("error")) {
-    return {
-      ...base,
-      key: ev.id || `error:${threadId}:${ev.time}`,
-      kind: "error",
-      label: compactText(data.error || data.message || ev.type, ev.type),
-      status: "error",
-    };
-  }
-
-  return null;
-}
-
-export function mergeRuntimeEvent(prev: RuntimeEventItem[], ev: TelemetryEvent): RuntimeEventItem[] {
-  // History and live recovery can overlap. Once a call has finished, replayed
-  // starts/chunks must not create a second row or reopen its completed state.
-  if (["llm.start", "llm.thinking", "llm.chunk"].includes(ev.type) && hasCompletedRuntimeThought(prev, ev)) {
-    return prev;
-  }
-  const item = normalizeRuntimeEvent(ev);
-  if (!item) return prev;
-  let idx = prev.findIndex((r) => r.key === item.key);
-  if (idx < 0 && item.kind === "tool" && item.toolName) {
-    idx = findRecentRuntimeTool(prev, item);
-  }
-  if (idx < 0 && (ev.type === "llm.done" || ev.type === "llm.error")) {
-    idx = findRecentRuntimeThought(prev, item);
-  }
-  if (idx >= 0) {
-    const next = [...prev];
-    const prevItem = next[idx];
-    if (item.kind === "tool" && prevItem.status !== "running" && item.status === "running") {
-      // Historical starts may add the reason/arguments, but cannot reopen a
-      // finished call, replace its result timestamp, or replay streamed args.
-      if (ev.type === "tool.call") {
-        next[idx] = { ...prevItem, toolArgs: item.toolArgs || prevItem.toolArgs,
-          label: item.label || prevItem.label };
-      }
-      return orderedRuntimeEvents(next);
-    }
-    const args =
-      ev.type === "llm.tool_chunk" && item.toolArgs
-        ? `${prevItem.toolArgs || ""}${item.toolArgs}`
-        : item.toolArgs || prevItem.toolArgs;
-    let thoughtText: RuntimeThoughtText = {
-      reasoning: prevItem.reasoningDetail || item.reasoningDetail,
-      response: ev.type === "llm.done" ? item.responseDetail || prevItem.responseDetail : prevItem.responseDetail || item.responseDetail,
-    };
-    if (ev.type === "llm.thinking" && item.reasoningDetail) {
-      thoughtText = appendRuntimeThoughtText(
-        { reasoning: prevItem.reasoningDetail, response: prevItem.responseDetail },
-        "reasoning",
-        item.reasoningDetail,
-      );
-    }
-    if (ev.type === "llm.chunk" && item.responseDetail) {
-      thoughtText = appendRuntimeThoughtText(
-        { reasoning: prevItem.reasoningDetail, response: prevItem.responseDetail },
-        "response",
-        item.responseDetail,
-      );
-    }
-    const detail = ev.type === "llm.error" ? item.detail : thoughtText.response || thoughtText.reasoning || item.detail || prevItem.detail;
-    next[idx] = {
-      ...prevItem,
-      ...item,
-      label:
-        item.kind === "tool" && item.status !== "running" && item.label === item.detail
-          ? prevItem.label
-          : item.label || prevItem.label,
-      detail,
-      reasoningDetail: thoughtText.reasoning,
-      responseDetail: thoughtText.response,
-      toolArgs: args,
-      toolResult: item.toolResult || prevItem.toolResult,
-    };
-    return orderedRuntimeEvents(next);
-  }
-  return orderedRuntimeEvents([...prev, item]);
-}
-
-function runtimeEventIteration(ev?: TelemetryEvent): string {
-  const value = ev?.data?.iteration;
-  return value == null ? "" : String(value);
-}
-
-function runtimeThoughtMergeWindow(ev: TelemetryEvent): number {
-  // Long provider calls still belong to their original start event.
-  const duration = Number(ev.data?.duration_ms) || 0;
-  return Math.max(RUNTIME_THOUGHT_MERGE_WINDOW_MS, duration + 5_000);
-}
-
-function hasCompletedRuntimeThought(prev: RuntimeEventItem[], ev: TelemetryEvent): boolean {
-  const iteration = runtimeEventIteration(ev);
-  const startedMs = telemetryTimeMs(ev);
-  if (!iteration || !startedMs) return false;
-  return prev.some((candidate) => {
-    if (candidate.raw.type !== "llm.done" && candidate.raw.type !== "llm.error") return false;
-    if (candidate.threadId !== (ev.thread_id || "main")) return false;
-    if (runtimeEventIteration(candidate.raw) !== iteration) return false;
-    const finishedMs = telemetryTimeMs(candidate.raw);
-    return finishedMs >= startedMs && finishedMs - startedMs <= runtimeThoughtMergeWindow(candidate.raw);
-  });
-}
-
-function findRecentRuntimeThought(prev: RuntimeEventItem[], item: RuntimeEventItem): number {
-  const itemIteration = runtimeEventIteration(item.raw);
-  if (!itemIteration) return -1;
-  const itemMs = telemetryTimeMs(item.raw);
-  for (let i = prev.length - 1; i >= 0; i--) {
-    const candidate = prev[i];
-    if (candidate.kind !== "thought") continue;
-    if (candidate.threadId !== item.threadId) continue;
-    if (candidate.status !== "running") continue;
-    if (runtimeEventIteration(candidate.raw) !== itemIteration) continue;
-    const candidateMs = telemetryTimeMs(candidate.raw);
-    if (itemMs && candidateMs && (candidateMs > itemMs || itemMs - candidateMs > runtimeThoughtMergeWindow(item.raw))) continue;
-    return i;
-  }
-  return -1;
-}
-
-function findRecentRuntimeTool(prev: RuntimeEventItem[], item: RuntimeEventItem): number {
-  const itemID = runtimeToolCallID(item.raw);
-  const itemMs = telemetryTimeMs(item.raw);
-  for (let i = prev.length - 1; i >= 0; i--) {
-    const candidate = prev[i];
-    if (candidate.kind !== "tool") continue;
-    if (candidate.threadId !== item.threadId) continue;
-    if (candidate.toolName !== item.toolName && candidate.detail !== item.toolName) continue;
-    const candidateID = runtimeToolCallID(candidate.raw);
-    // Explicit call identities must never be replaced by a same-name match.
-    if (itemID && candidateID && itemID !== candidateID) continue;
-    const candidateMs = telemetryTimeMs(candidate.raw);
-    if (!itemMs || !candidateMs || Math.abs(itemMs - candidateMs) > RUNTIME_THOUGHT_MERGE_WINDOW_MS) continue;
-    if (candidate.status !== "running") {
-      // A late start can enrich an existing result, not a later new call.
-      if (item.status !== "running" || itemMs > candidateMs) continue;
-    } else if (item.status !== "running" && candidateMs > itemMs) {
-      continue;
-    }
-    return i;
-  }
-  return -1;
-}
-
-function telemetryTimeMs(ev: TelemetryEvent): number {
-  const ms = Date.parse(ev.time || "");
-  return Number.isFinite(ms) ? ms : 0;
-}
+export { mergeRuntimeEvent } from "../utils/runtimeActivity";
+export type { RuntimeEventItem } from "../utils/runtimeActivity";
+import { mergeRuntimeEvent, telemetryTimeMs, HISTORICAL_RUNTIME_EVENT_LIMIT, type RuntimeEventItem } from "../utils/runtimeActivity";
 
 function restoreCheckpointMs(ev: TelemetryEvent): number {
   if (ev.type !== "execution.restored") return 0;
@@ -609,6 +116,7 @@ export function AgentView({
   const pendingRuntimeEventsRef = useRef<TelemetryEvent[]>([]);
   const runtimeFrameRef = useRef<number | null>(null);
   const lastStoredTelemetryMsRef = useRef(0);
+  const liveActivitySinceRef = useRef(Date.now());
   const handleEventRef = useRef<(event: TelemetryEvent) => void>(() => {});
   const subscribe: SubscribeFn = useCallback((cb) => {
     listenersRef.current.add(cb);
@@ -631,7 +139,7 @@ export function AgentView({
   const [resetBusy, setResetBusy] = useState(false);
   const [resetFeedback, setResetFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [showConfig, setShowConfig] = useState(false);
-  const [view, setView] = useState<RuntimeView>("stream");
+  const [view, setView] = useState<RuntimeView>("overview");
 
   // Track threads, tools, and active LLM calls for the runtime summary.
   const [graphThreads, setGraphThreads] = useState<Thread[]>(initialThreads);
@@ -653,6 +161,7 @@ export function AgentView({
   // /instances/:id → /instances/:other, and stale threads from the previous
   // instance would otherwise leak into the runtime summary.
   useEffect(() => {
+    setView("overview");
     setGraphThreads(initialThreads);
     setGraphActiveTools({});
     setGraphThinking({});
@@ -667,6 +176,7 @@ export function AgentView({
     seenLiveOrderRef.current = [];
     pendingRuntimeEventsRef.current = [];
     lastStoredTelemetryMsRef.current = 0;
+    liveActivitySinceRef.current = Date.now();
     if (runtimeFrameRef.current !== null) {
       window.cancelAnimationFrame(runtimeFrameRef.current);
       runtimeFrameRef.current = null;
@@ -793,6 +303,14 @@ export function AgentView({
         if (old) seenLiveRef.current.delete(old);
       }
     }
+    // Initial catch-up and SSE reconnects can replay old work. Keep it in
+    // the activity feed without treating it as the agent's current state.
+    const eventMs = telemetryTimeMs(event);
+    if (eventMs > 0 && eventMs < liveActivitySinceRef.current) {
+      queueRuntimeEvent(event);
+      lastStoredTelemetryMsRef.current = Math.max(lastStoredTelemetryMsRef.current, eventMs);
+      return;
+    }
     const restoreMs = restoreCheckpointMs(event);
     if (restoreMs > 0) {
       flushRuntimeEvents();
@@ -889,7 +407,8 @@ export function AgentView({
       });
     }
 
-    // Track active tools — keep visible for 3s after completion
+    // Track only unfinished tools. Completed work remains in the activity
+    // feed, but must not keep the agent header in the Working state.
     // Skip noisy inline tools (send, pace, done, evolve, remember) and channels from display
     const hiddenTools = new Set(["send", "pace", "done", "evolve", "remember", "channels_respond", "channels_send", "channels_status", "channels_publish", "channels_set_status"]);
     const toolName = String(data.name || "");
@@ -901,16 +420,12 @@ export function AgentView({
     if (event.type === "tool.result" && showTool) {
       const threadId = event.thread_id;
       const toolName = data.name;
-      setTimeout(() => {
-        setGraphActiveTools((prev) => {
-          if (prev[threadId] === toolName) {
-            const n = { ...prev };
-            delete n[threadId];
-            return n;
-          }
-          return prev;
-        });
-      }, 3000);
+      setGraphActiveTools((prev) => {
+        if (prev[threadId] !== toolName) return prev;
+        const next = { ...prev };
+        delete next[threadId];
+        return next;
+      });
     }
 
     if (event.type === "llm.done" && data.message) {
@@ -1009,9 +524,7 @@ export function AgentView({
   }, [instance.id, instance.status]);
 
   const advancedContent =
-    view === "activity" ? (
-      <ActivityPanel instance={instance} subscribe={subscribe} onReload={onReload} onThreadOpen={setSelectedThreadId} />
-    ) : view === "memory" ? (
+    view === "memory" ? (
       <div className="h-full min-h-0 flex flex-col">
           <UnconsciousPanel instanceId={instance.id} compact onAgentReload={onReload} />
           {instance.status === "running" ? (
@@ -1187,6 +700,7 @@ export function AgentView({
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
           <AgentRuntimePanel
+            key={instance.id}
             instance={instance}
             threads={graphThreads}
             activeTools={graphActiveTools}
@@ -1201,6 +715,7 @@ export function AgentView({
             onStop={async () => { await instances.stop(instance.id); onReload(); }}
             onStart={async () => { await instances.start(instance.id); onReload(); }}
             onConfig={() => setShowConfig(true)}
+            onAppearanceSaved={onReload}
             onReset={() => setShowResetConfirm(true)}
             onDelete={() => setShowDeleteConfirm(true)}
             advancedContent={advancedContent}
@@ -1240,6 +755,7 @@ export function AgentRuntimePanel({
   onStop,
   onStart,
   onConfig,
+  onAppearanceSaved,
   onReset,
   onDelete,
   advancedContent,
@@ -1258,16 +774,44 @@ export function AgentRuntimePanel({
   onStop: () => void | Promise<void>;
   onStart: () => void | Promise<void>;
   onConfig: () => void;
+  onAppearanceSaved: () => void;
   onReset: () => void;
   onDelete: () => void;
   advancedContent: ReactNode;
 }) {
+  // The Settings interface preference is the only audience selector.
+  const { audience: selectedAudience } = useAudience();
+  const { currentProject: contextProject } = useProjects();
+  const [connections, setConnections] = useState<ConnectionInfo[]>([]);
   const [mcpServers, setMCPServers] = useState<MCPServerConfig[]>([]);
   const [installedApps, setInstalledApps] = useState<AppRow[]>([]);
   const [mcpInventory, setMCPInventory] = useState<MCPServer[]>([]);
+  const toolRegistry = useMemo(() => buildToolVisualRegistry(installedApps, connections, mcpInventory), [installedApps, connections, mcpInventory]);
   const [showCapabilitiesManage, setShowCapabilitiesManage] = useState(false);
-  const [selectedRuntimeThread, setSelectedRuntimeThread] = useState("main");
-  const { currentProject: contextProject } = useProjects();
+  const [showAppearance, setShowAppearance] = useState(false);
+  const [appearanceIcon, setAppearanceIcon] = useState(instance.icon || "robot");
+  const [appearanceSaving, setAppearanceSaving] = useState(false);
+  const [appearanceError, setAppearanceError] = useState("");
+  const openAppearance = () => {
+    setAppearanceIcon(suggestedAgentIcon(instance.icon));
+    setAppearanceError("");
+    setShowAppearance(true);
+  };
+  const saveAppearance = async () => {
+    setAppearanceSaving(true);
+    setAppearanceError("");
+    try {
+      await instances.updateIdentity(instance.id, { icon: appearanceIcon, icon_color: "accent" });
+      onAppearanceSaved();
+      window.dispatchEvent(new Event("apteva:agents-changed"));
+      setShowAppearance(false);
+    } catch (err) {
+      setAppearanceError(err instanceof Error ? err.message : "Could not save agent icon");
+    } finally {
+      setAppearanceSaving(false);
+    }
+  };
+  const [selectedRuntimeThread, setSelectedRuntimeThread] = useState("");
   useAssistantPageDetails(instance.project_id || contextProject?.id || "", { viewed_agent_id: instance.id, viewed_agent_name: instance.name, thread_id: selectedRuntimeThread, tab: view });
   const [executionControl, setExecutionControl] = useState<ExecutionControlStatus>({
     mode: "auto",
@@ -1278,10 +822,23 @@ export function AgentRuntimePanel({
   const [liveStatus, setLiveStatus] = useState<Status | null>(null);
   const [executionBusy, setExecutionBusy] = useState<"run" | "pause" | "step" | "back" | null>(null);
   const [showDeveloperControls, setShowDeveloperControls] = useState(false);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [lifecycleError, setLifecycleError] = useState("");
+  const performLifecycleAction = async (action: () => void | Promise<void>) => {
+    setLifecycleBusy(true);
+    setLifecycleError("");
+    try {
+      await action();
+      const next = await core.status(instance.id).catch(() => null);
+      if (next) { setLiveStatus(next); if (next.execution_control) setExecutionControl(next.execution_control); }
+    } catch (error) {
+      setLifecycleError(error instanceof Error ? error.message : "Could not update this agent.");
+    } finally { setLifecycleBusy(false); }
+  };
   const telemetryConnection = useTelemetryConnectionState();
 
   useEffect(() => {
-    setSelectedRuntimeThread("main");
+    setSelectedRuntimeThread("");
     setLiveStatus(null);
   }, [instance.id]);
 
@@ -1308,12 +865,14 @@ export function AgentRuntimePanel({
           }
         })
         .catch(() => {});
+      integrations.connections(instance.project_id, { includeAppOwned: true })
+        .then((rows) => { if (!cancelled) setConnections(rows); }).catch(() => {});
       appsAPI.list(instance.project_id)
         .then((rows) => {
           if (!cancelled) setInstalledApps(rows || []);
         })
         .catch(() => {});
-      mcpServersAPI.list(instance.project_id)
+      mcpServersAPI.list(instance.project_id, { includeAppOwned: true })
         .then((rows) => {
           if (!cancelled) setMCPInventory(rows || []);
         })
@@ -1380,17 +939,42 @@ export function AgentRuntimePanel({
   };
 
   const primaryViews: Array<{ id: RuntimeView; label: string }> = [
-    { id: "stream", label: "Live" },
-    { id: "memory", label: "Memory" },
-    { id: "capabilities", label: `Capabilities${mcpServers.length > 0 ? ` ${mcpServers.length}` : ""}` },
+    { id: "overview", label: "Overview" },
+    { id: "stream", label: "Activity" },
+    { id: "memory", label: "Knowledge" },
+    { id: "capabilities", label: "Capabilities" },
+    ...(installedApps.some((app) => app.status === "running" && app.ui_panels?.some((panel) => panel.slot === "instance.tab")) ? [{ id: "apps" as const, label: "App panels" }] : []),
+    ...(selectedAudience === "developer" || view === "activity" ? [{ id: "activity" as const, label: "Diagnostics" }] : []),
   ];
-  const executionControlsVisible =
-    showDeveloperControls || (
-      instance.status === "running" && (executionControl.mode !== "auto" || !!executionControl.waiting)
-    );
+  const diagnostics = view === "activity";
+  const usage = useAgentUsage(instance.id, subscribe);
+  const working = instance.status === "running" && (Object.values(activeTools).some(Boolean) || Object.values(thinking).some(Boolean));
+  const isPaused = instance.status === "paused" || !!liveStatus?.paused || executionControl.mode === "paused";
+  const statusLabel = instance.status === "stopped" ? "Stopped" : isPaused ? "Paused"
+    : instance.status !== "running" ? instance.status
+    : executionControl.waiting ? "Needs attention"
+    : telemetryConnection !== "open" ? "Reconnecting" : working ? "Working" : "Ready";
+  const togglePause = async () => {
+    if (!isPaused || liveStatus?.paused) await onPause();
+    if (isPaused && executionControl.mode === "paused") await sendExecutionControl("run");
+  };
+  const executionControlsVisible = diagnostics && (showDeveloperControls || executionControl.mode !== "auto" || !!executionControl.waiting);
+  const openDiagnostics = () => onViewChange("activity");
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg">
+      <Modal open={showAppearance} ariaLabel="Change agent icon" onClose={() => { if (!appearanceSaving) setShowAppearance(false); }} width="max-w-xl">
+        <div className="page-safe-bottom max-h-[90dvh] overflow-y-auto p-4 sm:p-6">
+          <h2 className="text-base font-bold text-text">Agent icon</h2>
+          <p className="mt-1 text-xs text-text-muted">Choose a visual for {instance.name}. This does not change how the agent works.</p>
+          <div className="mt-5"><AgentIconPicker icon={appearanceIcon} onIconChange={setAppearanceIcon} /></div>
+          {appearanceError && <p role="alert" className="mt-4 text-xs text-red">{appearanceError}</p>}
+          <div className="mt-5 flex justify-end gap-2">
+            <button type="button" disabled={appearanceSaving} onClick={() => setShowAppearance(false)} className="rounded-lg border border-border px-4 py-2 text-sm text-text-muted">Cancel</button>
+            <button type="button" disabled={appearanceSaving} onClick={() => void saveAppearance()} className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:opacity-50">{appearanceSaving ? "Saving…" : "Save icon"}</button>
+          </div>
+        </div>
+      </Modal>
       <Modal
         open={showCapabilitiesManage}
         ariaLabel="Apps and MCP servers"
@@ -1415,6 +999,7 @@ export function AgentRuntimePanel({
           </div>
           <CapabilitiesManager
             instanceId={instance.id}
+            requiredPlatform={instance.kind === "platform_helper"}
             projectId={instance.project_id || undefined}
             attached={mcpServers}
             apps={installedApps}
@@ -1425,169 +1010,74 @@ export function AgentRuntimePanel({
           />
         </div>
       </Modal>
-      <div className="shrink-0 border-b border-border/70 bg-bg-card/20">
-        <div className="px-3 py-3 sm:px-4">
-          <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <span className={`h-2 w-2 shrink-0 rounded-full ${instance.status === "running" ? "bg-green" : instance.status === "paused" ? "bg-yellow" : "bg-red"}`} />
-                <h1 className="truncate text-sm font-bold text-text">{instance.name}</h1>
-                <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
-                  instance.status === "running"
-                    ? "bg-green/10 text-green"
-                    : instance.status === "paused"
-                      ? "bg-yellow/10 text-yellow"
-                      : "bg-red/10 text-red"
-                }`}>{instance.status}</span>
-                {instance.status !== "stopped" && (
-                  <SleepPill sleep={liveStatus || statusFallbackForInstance(instance.status)} />
-                )}
-              </div>
-              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-text-muted">
-                <span>{instance.mode}</span>
-                <span aria-hidden="true">·</span>
-                <span>#{instance.id}</span>
-                {instance.status === "running" && telemetryConnection !== "open" && (
-                  <span className="text-yellow" aria-live="polite">
-                    live {telemetryConnection === "connecting" ? "connecting" : "reconnecting"}
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <button type="button" onClick={() => setShowCapabilitiesManage(true)}
-                aria-label={`Capabilities: ${mcpServers.length} attached. Manage apps and MCP servers`}
-                title="Manage apps and MCP servers"
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-accent/50 px-2.5 text-xs text-text-muted hover:border-accent hover:bg-accent/5 transition-colors">
-                <span className="font-semibold">Capabilities</span>
-                <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-accent">{mcpServers.length}</span>
-                {mcpServers.length > 0 ? (
-                  <span className="hidden items-center gap-1.5 md:inline-flex">
-                    {mcpServers.slice(0, 2).map((capability) => (
-                      <span key={capability.name} className="max-w-24 truncate text-[11px]">{capabilityDisplayName(capability.name)}</span>
-                    ))}
-                    {mcpServers.length > 2 && <span className="text-[10px] text-text-dim">+{mcpServers.length - 2}</span>}
-                  </span>
-                ) : (
-                  <span className="hidden text-[11px] text-accent sm:inline">Add apps &amp; MCPs</span>
-                )}
-                <span aria-hidden="true" className="text-accent">›</span>
-              </button>
-              {instance.status === "running" ? (
-                <button onClick={onStop} className="h-9 rounded-md border border-red/40 px-3 text-xs font-semibold text-red hover:bg-red/10">Stop</button>
-              ) : (
-                <button onClick={onStart} className="h-9 rounded-md border border-accent bg-accent/10 px-3 text-xs font-semibold text-accent hover:bg-accent hover:text-bg">Start</button>
-              )}
-              <AgentRuntimeActionsMenu
-                instance={instance}
-                developerControlsVisible={executionControlsVisible}
-                onPause={onPause}
-                onConfig={onConfig}
-                onCapabilities={() => setShowCapabilitiesManage(true)}
-                onDiagnostics={() => onViewChange("activity")}
-                onToggleDeveloperControls={() => setShowDeveloperControls((visible) => !visible)}
-                onReset={onReset}
-                onDelete={onDelete}
-              />
-            </div>
-          </div>
-        </div>
-        {instance.status === "running" && (
-          <LiveStatsBar instanceId={instance.id} subscribe={subscribe} sleep={liveStatus} />
+      <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2 sm:gap-3 sm:px-4">
+        <button type="button" onClick={openAppearance} className="shrink-0 rounded-lg focus-visible:outline-2 focus-visible:outline-accent" aria-label={`Change icon for ${instance.name}`}>
+          <AgentMark icon={instance.icon} color={instance.icon_color} size="sm" />
+        </button>
+        <h1 title={instance.name} className="min-w-0 flex-1 truncate text-sm font-bold text-text">{instance.name}</h1>
+        <span className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted" role="status" title={statusLabel}>
+          <span className={`h-2 w-2 rounded-full ${statusLabel === "Working" ? "bg-accent motion-safe:animate-pulse" : statusLabel === "Ready" ? "bg-green" : statusLabel === "Needs attention" ? "bg-yellow" : "bg-text-dim"}`} />
+          <span className="sr-only md:not-sr-only">{statusLabel}</span>
+        </span>
+        <button type="button" onClick={() => setShowCapabilitiesManage(true)}
+          className="group flex min-h-10 shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-border bg-bg-card px-2 text-left transition-colors hover:border-accent hover:bg-accent/10 active:bg-accent/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          aria-label="Manage capabilities" aria-haspopup="dialog" aria-expanded={showCapabilitiesManage}
+          title="Manage apps, integrations and MCP servers">
+          <AgentCapabilityIcons builtins={instance.builtins} attached={mcpServers} skills={[]} catalog={{ apps: installedApps, connections, inventory: mcpInventory }} compact />
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0 text-text-muted transition-colors group-hover:text-accent group-focus-visible:text-accent">
+            <path d="m16 3 5 5M4 20l4-1 13-13a2.1 2.1 0 0 0-3-3L5 16l-1 4Z" />
+          </svg>
+        </button>
+        {instance.status === "running" ? (
+          <button type="button" disabled={lifecycleBusy} onClick={() => void performLifecycleAction(togglePause)} className="hidden h-9 shrink-0 rounded-md border border-border px-3 text-xs text-text-muted hover:text-text disabled:opacity-50 sm:inline-flex sm:items-center">{lifecycleBusy ? "Updating…" : isPaused ? "Resume" : "Pause"}</button>
+        ) : (
+          <button type="button" disabled={lifecycleBusy} onClick={() => void performLifecycleAction(onStart)} className="h-9 shrink-0 rounded-md border border-border px-2 text-xs text-accent hover:border-accent disabled:opacity-50 sm:px-3">{lifecycleBusy ? "Starting…" : instance.status === "paused" ? "Resume" : "Start"}</button>
         )}
-        <AppContributionArea
-          slot="dashboard.agent_detail"
-          projectId={instance.project_id || undefined}
-          agentId={instance.id}
-          className="min-w-0 space-y-2 border-t border-border/70 px-3 py-3 sm:px-4"
-        />
-        <AppPanels
-          slot="instance.status"
-          instanceId={instance.id}
-          projectId={instance.project_id || undefined}
-          className="space-y-1.5 border-t border-border/70 px-3 py-3 sm:px-4"
-        />
-        {executionControlsVisible && (
-          <div className="border-t border-border/70 px-3 py-2 sm:px-4">
-            <ExecutionControlStrip
-              status={executionControl}
-              disabled={instance.status !== "running" || executionBusy !== null}
-              busy={executionBusy}
-              onRun={() => sendExecutionControl("run")}
-              onPause={() => sendExecutionControl("pause")}
-              onStep={() => sendExecutionControl("step")}
-              onBack={restorePreviousStep}
-              onThreadOpen={onThreadOpen}
+        <AgentRuntimeActionsMenu paused={isPaused} presentationAudience={selectedAudience} instance={instance} developerControlsVisible={executionControlsVisible}
+          onPause={() => performLifecycleAction(togglePause)} onStop={() => performLifecycleAction(onStop)} onConfig={onConfig} onAppearance={openAppearance}
+          onCapabilities={() => setShowCapabilitiesManage(true)} onDiagnostics={openDiagnostics}
+          onToggleDeveloperControls={() => { openDiagnostics(); setShowDeveloperControls((visible) => !visible); }}
+          onReset={onReset} onDelete={onDelete} />
+      </header>
+      <AgentSummaryBar instance={instance} usage={usage} />
+      {lifecycleError && <div role="alert" className="shrink-0 border-b border-red/30 px-4 py-3 text-xs text-red">{lifecycleError}</div>}
+      {executionControl.waiting && !isPaused && !diagnostics && <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-yellow/30 bg-yellow/5 px-4 py-3 text-xs text-text">
+        <span className="flex-1">This agent is waiting for an execution decision.</span><button type="button" onClick={openDiagnostics} className="min-h-9 rounded-lg border border-yellow/40 px-3 text-yellow">Review</button>
+      </div>}
+      <nav className="flex shrink-0 gap-1 overflow-x-auto border-b border-border px-3 py-2 sm:px-5" aria-label="Agent workspace">
+        {primaryViews.map((item) => <button type="button" key={item.id} onClick={() => onViewChange(item.id)} aria-current={view === item.id ? "page" : undefined}
+          className={`min-h-10 shrink-0 rounded-lg px-3 text-xs font-medium ${view === item.id ? "bg-accent/10 text-accent" : "text-text-muted hover:bg-bg-hover hover:text-text"}`}>{item.label}</button>)}
+      </nav>
+      {diagnostics && <>
+        {executionControlsVisible && <div className="shrink-0 border-b border-border px-4 py-2"><ExecutionControlStrip status={executionControl} disabled={instance.status !== "running" || executionBusy !== null} busy={executionBusy} onRun={() => sendExecutionControl("run")} onPause={() => sendExecutionControl("pause")} onStep={() => sendExecutionControl("step")} onBack={restorePreviousStep} onThreadOpen={onThreadOpen} /></div>}
+      </>}
+
+      <div className="min-h-0 flex-1">
+        {view === "overview" ? <div className="h-full overflow-y-auto">
+          <AgentOverview key={`${instance.id}:${selectedAudience}`} instance={instance} projectId={instance.project_id || contextProject?.id}
+            audience={selectedAudience} toolRegistry={toolRegistry} events={events} loading={runtimeLoading}
+            attachmentKey={mcpServers.map((server) => `${server.name}:${server.url}`).join("|")}
+            onDetails={onThreadOpen} onActivity={() => onViewChange("stream")} onCapabilities={() => setShowCapabilitiesManage(true)}
             />
-          </div>
-        )}
+        </div> : view === "stream" ? <div className="h-full overflow-y-auto p-3 sm:p-4"><div className="w-full"><AgentActivity toolRegistry={toolRegistry} events={events} threads={threads} loading={runtimeLoading} onDetails={onThreadOpen} /></div></div>
+        : view === "activity" ? <AgentDiagnostics key={instance.id} instance={instance} status={liveStatus} execution={executionControl} connection={telemetryConnection} threads={threads} activeTools={activeTools} thinking={thinking} selectedThreadId={selectedRuntimeThread} onThreadSelect={selectRuntimeThread} onThreadOpen={onThreadOpen} onConfig={onConfig} /> : view === "capabilities" ? <AgentCapabilitiesView onConfigure={onConfig} instance={instance} attached={mcpServers} inventory={mcpInventory} onManage={() => setShowCapabilitiesManage(true)} />
+        : advancedContent}
       </div>
+      {diagnostics && instance.status === "running" && <details className="shrink-0 border-t border-border"><summary className="cursor-pointer px-3 py-2 text-[11px] text-text-muted hover:text-accent">Inject a developer event</summary><InjectPanel instanceId={instance.id} threads={threads} /></details>}
 
-      <RuntimeContextStrip
-        instanceId={instance.id}
-        threads={threads}
-        activeTools={activeTools}
-        thinking={thinking}
-        selectedThreadId={selectedRuntimeThread}
-        onThreadSelect={selectRuntimeThread}
-        onThreadOpen={onThreadOpen}
-      />
-
-      <div className="shrink-0 flex flex-wrap items-center gap-2 border-b border-border/70 px-3 py-2 sm:px-4">
-        <div className="flex min-w-0 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Agent workspace">
-          {primaryViews.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => onViewChange(item.id)}
-              role="tab"
-              aria-selected={view === item.id}
-              className={`rounded-md px-3 py-1.5 text-xs whitespace-nowrap transition-colors ${
-                view === item.id ? "bg-accent/15 text-accent" : "text-text-muted hover:bg-bg-hover hover:text-text"
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-        <div className="ml-auto shrink-0">
-          <ContributionManager
-            slot="dashboard.agent_detail"
-            projectId={instance.project_id || undefined}
-            agentId={instance.id}
-            label="Customize widgets"
-          />
-        </div>
-        {view === "activity" && (
-          <button type="button" onClick={() => onViewChange("stream")} className="ml-auto rounded bg-yellow/10 px-2 py-1 text-[10px] text-yellow">
-            Diagnostics ×
-          </button>
-        )}
-      </div>
-
-      <div className="flex-1 min-h-0">
-        {view === "stream" ? (
-          <RuntimeStream events={events} selectedThreadId={selectedRuntimeThread} loading={runtimeLoading} />
-        ) : view === "capabilities" ? (
-          <AgentCapabilitiesView
-            instance={instance}
-            attached={mcpServers}
-            inventory={mcpInventory}
-            onManage={() => setShowCapabilitiesManage(true)}
-          />
-        ) : advancedContent}
-      </div>
-      {instance.status === "running" && (
-        <InjectPanel instanceId={instance.id} threads={threads} />
-      )}
     </section>
   );
 }
 
 function AgentRuntimeActionsMenu({
   instance,
+  presentationAudience,
+  paused,
   developerControlsVisible,
   onPause,
+  onStop,
   onConfig,
+  onAppearance,
   onCapabilities,
   onDiagnostics,
   onToggleDeveloperControls,
@@ -1595,16 +1085,20 @@ function AgentRuntimeActionsMenu({
   onDelete,
 }: {
   instance: Agent;
+  presentationAudience: Audience;
+  paused: boolean;
   developerControlsVisible: boolean;
   onPause: () => void | Promise<void>;
+  onStop: () => void | Promise<void>;
   onConfig: () => void;
+  onAppearance: () => void;
   onCapabilities: () => void;
   onDiagnostics: () => void;
   onToggleDeveloperControls: () => void;
   onReset: () => void;
   onDelete: () => void;
 }) {
-  const { shows } = useAudience();
+  const shows = (section: AudienceSection) => audienceShows(presentationAudience, section);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -1647,10 +1141,11 @@ function AgentRuntimeActionsMenu({
       </button>
       {open && (
         <div role="menu" className="absolute right-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-lg border border-border bg-bg-card py-1 shadow-2xl shadow-black/60">
-          <button type="button" role="menuitem" onClick={() => choose(onConfig)} className={itemClass}>Configuration</button>
+          <button type="button" role="menuitem" onClick={() => choose(onConfig)} className={itemClass}>Settings</button>
+          <button type="button" role="menuitem" onClick={() => choose(onAppearance)} className={itemClass}>Change icon</button>
           <button type="button" role="menuitem" onClick={() => choose(onCapabilities)} className={itemClass}>Add apps &amp; MCPs</button>
           {instance.status === "running" && (
-            <button type="button" role="menuitem" onClick={() => choose(onPause)} className={itemClass}>Pause agent</button>
+            <button type="button" role="menuitem" onClick={() => choose(onPause)} className={itemClass}>{paused ? "Resume agent" : "Pause agent"}</button>
           )}
           {(shows("agent.diagnostics") || shows("agent.stepControls")) && (
             <div className="my-1 border-t border-border" />
@@ -1664,6 +1159,7 @@ function AgentRuntimeActionsMenu({
             </button>
           )}
           <div className="my-1 border-t border-border" />
+          {instance.status !== "stopped" && <button type="button" role="menuitem" onClick={() => choose(onStop)} className={`${itemClass} text-red`}>Stop agent</button>}
           {shows("agent.resetContext") && (
             <button type="button" role="menuitem" onClick={() => choose(onReset)} className={`${itemClass} text-yellow`}>Reset context</button>
           )}
@@ -1674,92 +1170,8 @@ function AgentRuntimeActionsMenu({
   );
 }
 
-function RuntimeContextStrip({
-  instanceId,
-  threads,
-  activeTools,
-  thinking,
-  selectedThreadId,
-  onThreadSelect,
-  onThreadOpen,
-}: {
-  instanceId: number;
-  threads: Thread[];
-  activeTools: Record<string, string>;
-  thinking: Record<string, boolean>;
-  selectedThreadId: string;
-  onThreadSelect: (id: string) => void;
-  onThreadOpen: (id: string) => void;
-}) {
-  const mainThread: Thread = { id: "main", directive: "", tools: [], iteration: 0, rate: "", model: "", age: "" };
-  const rows = threads.some((thread) => thread.id === "main") ? threads : [mainThread, ...threads];
-  const selected = rows.find((thread) => thread.id === selectedThreadId) || rows[0] || mainThread;
-  const tool = activeTools[selected.id];
-  const isThinking = !!thinking[selected.id];
-  const state = tool
-    ? `Using ${tool}`
-    : selected.realtime
-      ? "Live voice"
-      : isThinking
-        ? "Thinking"
-        : selected.sleep_state
-          ? sleepLabel(selected, { compact: true })
-        : selected.rate || "Waiting";
-  const [usage, setUsage] = useState<ReturnType<typeof threadTokenUsage> | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    let pending = false;
-    setUsage(null);
-    const load = async () => {
-      if (pending) return;
-      pending = true;
-      try {
-        const events = await telemetry.query(instanceId, "llm.done", 300, selected.id);
-        if (!cancelled) setUsage(threadTokenUsage(events));
-      } catch {
-        if (!cancelled) setUsage(null);
-      } finally { pending = false; }
-    };
-    void load();
-    const timer = window.setInterval(load, 10000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [instanceId, selected.id]);
-
-  return (
-    <div className="shrink-0 flex min-w-0 flex-wrap items-center gap-2 border-b border-border/70 bg-bg-card/30 px-3 py-2 sm:px-4">
-      <span className="text-[9px] font-bold uppercase tracking-wide text-text-dim">Thread</span>
-      {rows.length > 1 ? (
-        <select
-          value={selected.id}
-          onChange={(event) => onThreadSelect(event.target.value)}
-          className="h-8 max-w-48 rounded-md border border-border bg-bg-input px-2 text-xs text-text focus:border-accent focus:outline-none"
-          aria-label="Runtime thread"
-        >
-          {rows.map((thread) => <option key={thread.id} value={thread.id}>{thread.name || thread.id}</option>)}
-        </select>
-      ) : (
-        <span className="text-xs font-medium text-text">{selected.name || selected.id}</span>
-      )}
-      {selected.realtime && (
-        <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-accent">
-          Voice{selected.voice ? ` · ${selected.voice}` : ""}
-        </span>
-      )}
-      <span className={`h-1.5 w-1.5 rounded-full ${tool ? "bg-accent animate-pulse" : isThinking ? "bg-yellow animate-pulse" : "bg-text-dim"}`} />
-      <span className="max-w-52 truncate text-[11px] text-text-muted">{state}</span>
-      {usage && <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-dim tabular-nums" title="Selected thread · latest 300 completed LLM calls. Arrows indicate input and output tokens; cached tokens are included in input. A dash means cache usage was not reported.">
-        <span className="whitespace-nowrap">{formatCompactNumber(usage.in)} ↑</span>
-        <span className="whitespace-nowrap">{formatCompactNumber(usage.out)} ↓</span>
-        <span className="whitespace-nowrap">cached {usage.cacheReported ? formatCompactNumber(usage.cache) : "—"}</span>
-        {usage.cacheWrite > 0 && <span className="whitespace-nowrap">cache write {formatCompactNumber(usage.cacheWrite)}</span>}
-      </span>}
-      <button type="button" onClick={() => onThreadOpen(selected.id)} className="rounded px-1.5 py-1 text-[10px] text-text-dim hover:bg-bg-hover hover:text-text">Details</button>
-
-    </div>
-  );
-}
-
 function AgentCapabilitiesView({
+  onConfigure,
   instance,
   attached,
   inventory,
@@ -1769,6 +1181,7 @@ function AgentCapabilitiesView({
   attached: MCPServerConfig[];
   inventory: MCPServer[];
   onManage: () => void;
+  onConfigure: () => void;
 }) {
   const [section, setSection] = useState<"connections" | "skills" | "apps">("connections");
 
@@ -1784,12 +1197,12 @@ function AgentCapabilitiesView({
             key={id}
             type="button"
             onClick={() => setSection(id)}
-            className={`rounded-md px-2.5 py-1.5 text-[11px] ${section === id ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
+            className={`cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded-md px-2.5 py-1.5 text-[11px] ${section === id ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
           >
             {label}
           </button>
         ))}
-        <button type="button" onClick={onManage} className="ml-auto rounded-md border border-accent/50 px-2.5 py-1.5 text-[11px] text-accent hover:bg-accent/10">
+        <button type="button" onClick={onManage} className="ml-auto cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded-md border border-accent/50 px-2.5 py-1.5 text-[11px] text-accent hover:bg-accent/10">
           Add apps &amp; MCPs
         </button>
       </div>
@@ -1797,14 +1210,18 @@ function AgentCapabilitiesView({
       <div className="min-h-0 flex-1">
         {section === "connections" ? (
           <div className="h-full overflow-y-auto p-4 sm:p-5">
+            <section className="mb-5 space-y-2">
+              <div className="flex items-center justify-between gap-2"><h2 className="text-sm font-semibold text-text">Model capabilities</h2><button type="button" onClick={onConfigure} className="cursor-pointer text-xs text-accent hover:underline">Configure</button></div>
+              {instance.builtins?.length ? <div className="flex flex-wrap gap-2">{instance.builtins.map((item) => <button key={`${item.provider}:${item.name}`} type="button" onClick={onConfigure} className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-3 py-2 text-left hover:border-accent"><span className="text-accent"><BuiltinGlyph name={item.name} /></span><span><span className="block text-xs text-text">{builtinLabel(item.name)}</span><span className="block text-[10px] text-text-muted">{item.provider}</span></span></button>)}</div> : <p className="text-xs text-text-dim">No built-in model capabilities enabled.</p>}
+            </section>
             <div className="mb-4">
               <h2 className="text-sm font-semibold text-text">Attached capabilities</h2>
               <p className="mt-1 text-xs text-text-muted">Apps and MCP servers available to this agent. Use Add apps & MCPs to attach or remove them.</p>
             </div>
             {attached.length === 0 ? (
-              <button type="button" onClick={onManage} className="flex w-full items-center justify-between rounded-lg border border-dashed border-border px-4 py-5 text-left hover:border-accent/60 hover:bg-bg-card">
+              <button type="button" onClick={onManage} className="flex w-full cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent items-center justify-between rounded-lg border border-dashed border-border px-4 py-5 text-left hover:border-accent/60 hover:bg-bg-card">
                 <span>
-                  <span className="block text-sm text-text">No capabilities attached</span>
+                  <span className="block text-sm text-text">No apps or MCP servers attached</span>
                   <span className="mt-1 block text-xs text-text-muted">Select an app or MCP server for this agent.</span>
                 </span>
                 <span className="text-xs font-semibold text-accent">Add capability</span>
@@ -1816,12 +1233,13 @@ function AgentCapabilitiesView({
                     mcpCapabilityAliases(candidate).some((alias) => capabilityKey(alias) === capabilityKey(capability.name)),
                   );
                   return (
-                    <button key={capability.name} type="button" onClick={onManage} className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-bg-card/50 p-3 text-left hover:border-accent/50 hover:bg-bg-hover">
-                      <span className={`h-2 w-2 shrink-0 rounded-full ${capability.connected === false ? "bg-red" : "bg-green"}`} />
+                    <button key={capability.name} type="button" onClick={onManage} aria-haspopup="dialog" title="Manage attached capabilities" className="group flex min-w-0 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent items-center gap-3 rounded-lg border border-border bg-bg-card/50 p-3 text-left hover:border-accent hover:bg-accent/5 active:bg-accent/10">
+                      {capability.name === "apteva-server" ? <AppIcon src="/apteva-server.svg" iconStyle="monochrome" name="Apteva Server" size="md" className="rounded-lg border border-border text-accent" /> : <span className={`h-2 w-2 shrink-0 rounded-full ${capability.connected === false ? "bg-red" : "bg-green"}`} />}
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-xs font-medium text-text">{row ? displayMCPName(row) : capabilityDisplayName(capability.name)}</span>
-                        <span className="mt-0.5 block truncate text-[10px] text-text-muted">{row ? `${row.tool_count || 0} tools · ${sourceLabel(row)}` : capability.transport || "MCP server"}</span>
+                        <span className="mt-0.5 block truncate text-[10px] text-text-muted">{capability.name === "apteva-server" ? (instance.kind === "platform_helper" ? "Built in · Required for Helper" : "Built in · Management tools") : row ? `${row.tool_count || 0} tools · ${sourceLabel(row)}` : capability.transport || "MCP server"}</span>
                       </span>
+                      <span aria-hidden="true" className="shrink-0 text-xs font-medium text-text-muted transition-colors group-hover:text-accent group-focus-visible:text-accent">Manage →</span>
                     </button>
                   );
                 })}
@@ -2130,6 +1548,7 @@ function truncateUI(value: string, max: number): string {
 
 export function CapabilitiesManager({
   instanceId,
+  requiredPlatform = false,
   projectId,
   attached,
   apps,
@@ -2139,6 +1558,7 @@ export function CapabilitiesManager({
   onDone,
 }: {
   instanceId: number;
+  requiredPlatform?: boolean;
   projectId?: string;
   attached: MCPServerConfig[];
   apps: AppRow[];
@@ -2157,8 +1577,11 @@ export function CapabilitiesManager({
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<"attached" | "apps" | "integrations" | "custom">("attached");
-  const showAttachedOnly = category === "attached";
+  const [category, setCategory] = useState<"all" | "apps" | "integrations" | "custom">("all");
+  const capabilityListRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (capabilityListRef.current) capabilityListRef.current.scrollTop = 0;
+  }, [category, query]);
 
   const loadInventory = useCallback(() => {
     setLoading(true);
@@ -2173,10 +1596,6 @@ export function CapabilitiesManager({
     loadInventory();
   }, [loadInventory]);
 
-  const attachedNames = useMemo(
-    () => new Set(attached.map((server) => server.name)),
-    [attached],
-  );
   const attachedKeys = useMemo(() => attachedCapabilityKeys(attached), [attached]);
 
   const refreshAttached = async () => {
@@ -2233,37 +1652,111 @@ export function CapabilitiesManager({
       .filter((id): id is number => typeof id === "number"),
   );
   const integrationRows = inventoryProp
-    .filter((row) => row.source !== "app" && row.source !== "custom" && row.source !== "managed")
+    .filter((row) => row.source !== "app" && row.source !== "custom" && row.source !== "managed" && row.source !== "device")
     .sort((a, b) => compareMCPRowsByAttachment(a, b, attachedKeys));
   const customRows = inventoryProp
-    .filter((row) => row.source === "custom" || row.source === "managed")
+    .filter((row) => row.source === "custom" || row.source === "managed" || row.source === "device")
     .sort((a, b) => compareMCPRowsByAttachment(a, b, attachedKeys));
   const orphanAppRows = inventoryProp
     .filter((row) => row.source === "app" && !matchedAppInventoryIDs.has(row.id))
     .sort((a, b) => displayMCPName(a).localeCompare(displayMCPName(b)));
+  type CapabilityOption = {
+    key: string;
+    category: "apps" | "integrations" | "custom";
+    title: string;
+    detail: string;
+    meta: string;
+    icon?: ReactNode;
+    enabled: boolean;
+    disabled?: boolean;
+    busy?: boolean;
+    search: Array<string | undefined>;
+    onToggle: () => void;
+  };
+  const options: CapabilityOption[] = [
+    ...appRows.map((app): CapabilityOption => {
+      const row = findAppInventoryRow(app, appInventoryByKey);
+      const name = row ? mcpName(row) : app.name;
+      const enabled = row ? inventoryRowIsAttached(attached, row)
+        : attached.some((server) => mcpURLInstallID(server.url) === String(app.install_id));
+      return {
+        key: `app:${app.install_id}`, category: "apps",
+        title: app.display_name || app.name,
+        detail: app.description || "Tools and skills for your agent",
+        meta: `App · ${app.project_id ? "Project" : "Global"} · ${app.surfaces?.mcp_tool_count || 0} tools`,
+        icon: <AppIcon src={app.icon} iconStyle={app.icon_style} name={app.display_name || app.name} size="md" className="text-accent" />,
+        enabled, disabled: !row, busy: busyKey === `mcp:${name}`,
+        search: [app.display_name, app.name, app.description, row?.name, row?.description],
+        onToggle: () => row && (enabled ? detachInventory(row, name) : attachInventory(row)),
+      };
+    }),
+    ...orphanAppRows.map((row): CapabilityOption => {
+      const name = mcpName(row);
+      const enabled = inventoryRowIsAttached(attached, row);
+      return {
+        key: `app-orphan:${row.id}`, category: "apps", title: displayMCPName(row),
+        detail: row.name, meta: `App · ${scopeLabel(row)} · ${row.tool_count || 0} tools`,
+        enabled, disabled: !configFromInventory(row), busy: busyKey === `mcp:${name}`,
+        search: [row.name, row.description],
+        onToggle: () => enabled ? detachInventory(row, name) : attachInventory(row),
+      };
+    }),
+    ...integrationRows.map((row): CapabilityOption => {
+      const connection = connections.find((item) => item.id === row.connection_id);
+      const name = mcpName(row);
+      const enabled = inventoryRowIsAttached(attached, row);
+      const required = requiredPlatform && row.source === "builtin";
+      return {
+        key: `integration:${row.id}`, category: "integrations",
+        title: connection?.app_name || displayMCPName(row),
+        detail: row.source === "builtin" ? "Manage agents, apps, and connections within this agent’s scope" : connection?.name || row.name,
+        icon: <AppIcon src={row.source === "builtin" ? "/apteva-server.svg" : connection?.logo} iconStyle={row.source === "builtin" ? "monochrome" : undefined} name={connection?.app_name || displayMCPName(row)} size="md" framed={row.source === "builtin"} className={row.source === "builtin" ? "rounded-lg border border-border text-accent" : "rounded-md bg-white text-gray-800"} />,
+        meta: row.source === "builtin" ? (required ? "Built in · Required for Helper" : "Built in · Management tools") : `Integration · ${scopeLabel(row)} · ${row.tool_count || 0} tools`,
+        enabled: enabled || required, disabled: !configFromInventory(row) || required,
+        busy: busyKey === `mcp:${name}`,
+        search: [row.name, row.description, name, connection?.app_name, connection?.name],
+        onToggle: () => enabled ? detachInventory(row, name) : attachInventory(row),
+      };
+    }),
+    ...customRows.map((row): CapabilityOption => {
+      const name = mcpName(row);
+      const enabled = inventoryRowIsAttached(attached, row);
+      return {
+        key: `custom:${row.id}`, category: "custom", title: displayMCPName(row),
+        detail: row.source === "device" ? "Node hardware" : row.name, meta: `${row.source === "device" ? "Node" : "MCP server"} · ${row.tool_count || 0} tools · ${row.transport || "stdio"}`,
+        enabled, disabled: !configFromInventory(row) || (row.source === "device" && row.status === "revoked" && !enabled), busy: busyKey === `mcp:${name}`,
+        search: [row.name, row.description, name],
+        onToggle: () => enabled ? detachInventory(row, name) : attachInventory(row),
+      };
+    }),
+  ];
+  // Directly configured or unavailable attachments must still be visible.
+  for (const server of attached) {
+    if (inventoryProp.some((row) => inventoryRowIsAttached([server], row)) ||
+      appRows.some((app) => mcpURLInstallID(server.url) === String(app.install_id))) continue;
+    options.push({
+      key: `attached:${server.name}`, category: "custom",
+      title: capabilityDisplayName(server.name), detail: "Attached directly; not available in the capability catalog.",
+      meta: "MCP server · Not in catalog", enabled: true, disabled: true,
+      search: [server.name], onToggle: () => {},
+    });
+  }
   const normalizedQuery = query.trim().toLowerCase();
-  const matchesQuery = (...values: Array<string | undefined>) =>
-    !normalizedQuery || values.some((value) => String(value || "").toLowerCase().includes(normalizedQuery));
-  const visibleAppRows = appRows.filter((app) => {
-    const row = findAppInventoryRow(app, appInventoryByKey);
-    const enabled = capabilityIsAttached(attachedKeys, appCapabilityAliases(app, row));
-    return (!showAttachedOnly || enabled) && matchesQuery(app.display_name, app.name, app.description, row?.name, row?.description);
-  });
-  const visibleOrphanAppRows = orphanAppRows.filter((row) =>
-    (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description),
+  const visibleOptions = options
+    .filter((option) => (category === "all" || option.category === category) &&
+      (!normalizedQuery || option.search.some((value) => String(value || "").toLowerCase().includes(normalizedQuery))))
+    .sort((a, b) => a.title.localeCompare(b.title) || a.key.localeCompare(b.key));
+  const attachedOptions = visibleOptions.filter((option) => option.enabled);
+  const availableOptions = visibleOptions.filter((option) => !option.enabled);
+  const totalAttached = options.filter((option) => option.enabled).length;
+  const renderOption = ({ key, ...option }: CapabilityOption) => (
+    <CapabilityToggleRow key={key} {...option} />
   );
-  const visibleIntegrationRows = integrationRows.filter((row) =>
-    (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description, mcpName(row), connections.find((c) => c.id === row.connection_id)?.app_name, connections.find((c) => c.id === row.connection_id)?.name),
-  );
-  const visibleCustomRows = customRows.filter((row) =>
-    (!showAttachedOnly || mcpRowIsAttached(attachedKeys, row)) && matchesQuery(row.name, row.description, mcpName(row)),
-  );
-  const visibleCount = visibleAppRows.length + visibleOrphanAppRows.length + visibleIntegrationRows.length + visibleCustomRows.length;
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
-      <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-border bg-bg-card px-4 py-3">
-        <div className="relative min-w-[14rem] flex-1">
+      <div className="shrink-0 space-y-2 border-b border-border bg-bg-card px-3 py-3 sm:px-4">
+        <div className="relative min-w-0">
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dim">
             <circle cx="11" cy="11" r="7" />
             <path d="m20 20-4-4" />
@@ -2272,151 +1765,65 @@ export function CapabilitiesManager({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             aria-label="Search capabilities"
-            placeholder="Search apps and MCP servers…"
+            placeholder="Search capabilities…"
             className="h-10 w-full rounded-lg border border-border bg-bg-input pl-9 pr-3 text-sm text-text placeholder:text-text-dim focus:border-accent focus:outline-none"
           />
         </div>
-        <div className="flex w-full flex-wrap items-center gap-1" aria-label="Capability categories">
+        <div className="grid grid-cols-4 gap-1" aria-label="Capability categories">
           {([
-            ["attached", "Attached", attached.length],
-            ["apps", "Apps", appRows.length + orphanAppRows.length],
-            ["integrations", "Integrations", integrationRows.length],
-            ["custom", "MCP servers", customRows.length],
+            ["all", "All", options.length],
+            ["apps", "Apps", options.filter((option) => option.category === "apps").length],
+            ["integrations", "Integrations", options.filter((option) => option.category === "integrations").length],
+            ["custom", "MCP servers", options.filter((option) => option.category === "custom").length],
           ] as const).map(([id, label, count]) => (
             <button key={id} type="button" aria-pressed={category === id}
               onClick={() => setCategory(id)}
-              className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${category === id ? "bg-accent/10 text-accent" : "text-text-muted hover:bg-bg-hover"}`}>
-              {label} <span className="ml-1 text-[10px] opacity-70">{count}</span>
+              className={`flex min-w-0 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-2 text-[11px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:flex-row sm:gap-1.5 sm:text-xs ${category === id ? "bg-accent/10 text-accent" : "text-text-muted hover:bg-bg-hover"}`}>
+              <span>{label}</span><span className="text-[10px] opacity-70">{count}</span>
             </button>
           ))}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto space-y-5 p-3" style={{ maxHeight: "min(55vh, 520px)" }}>
-      {error && <div role="alert" className="rounded-lg border border-red/40 bg-red/10 p-3 text-xs text-red">{error}</div>}
-      {!loading && (category === "attached" ? visibleCount === 0 : category === "apps" ? visibleAppRows.length + visibleOrphanAppRows.length === 0 : category === "integrations" ? visibleIntegrationRows.length === 0 : visibleCustomRows.length === 0) && (
-        <div className="px-4 py-10 text-center">
-          <p className="text-sm text-text-muted">{normalizedQuery ? "No capabilities match your search." : category === "attached" ? "No capabilities attached yet." : "Nothing available in this category yet."}</p>
-          {category === "attached" && !normalizedQuery && <button type="button" onClick={() => setCategory("apps")} className="mt-4 rounded-lg border border-border px-3 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent">+ Add apps</button>}
-        </div>
-      )}
-      {((category === "apps" || category === "attached") && (visibleAppRows.length > 0 || visibleOrphanAppRows.length > 0)) && <CapabilitySection
-        title="Apps"
-        hint="Tools and skills for your agent"
-      >
-        {visibleAppRows.map((app) => {
-          const row = findAppInventoryRow(app, appInventoryByKey);
-          const aliases = appCapabilityAliases(app, row);
-          const name = row ? mcpName(row) : app.name;
-          const enabled = capabilityIsAttached(attachedKeys, aliases);
-          return (
-            <CapabilityToggleRow
-              key={`app:${app.install_id}`}
-              title={app.display_name || app.name}
-              detail={`${app.project_id ? "Project app" : "Global app"} · v${app.version} · ${app.description || "Tools for your agent"}`}
-              icon={<AppIcon src={app.icon} iconStyle={app.icon_style} name={app.display_name || app.name} size="md" className="text-accent" />}
-              meta={`${app.surfaces?.mcp_tool_count || 0} tools`}
-              enabled={enabled}
-              disabled={!row}
-              busy={busyKey === `mcp:${name}`}
-              onToggle={() => row && (enabled ? detachInventory(row, name) : attachInventory(row, aliases))}
-            />
-          );
-        })}
-        {visibleOrphanAppRows.map((row) => {
-          const name = mcpName(row);
-          const enabled = attachedNames.has(name);
-          return (
-            <CapabilityToggleRow
-              key={`app-orphan:${row.id}`}
-              title={displayMCPName(row)}
-              detail={row.name}
-              meta={`${row.tool_count || 0} tools`}
-              enabled={enabled}
-              busy={busyKey === `mcp:${name}`}
-              onToggle={() => enabled ? detachInventory(row, name) : attachInventory(row)}
-            />
-          );
-        })}
-      </CapabilitySection>}
-
-      {((category === "integrations" || category === "attached") && visibleIntegrationRows.length > 0) && <CapabilitySection
-        title="Integrations"
-        hint="Connected accounts your agent can use"
-      >
-        {visibleIntegrationRows.map((row) => {
-          const connection = connections.find((c) => c.id === row.connection_id);
-          const name = mcpName(row);
-          const aliases = mcpCapabilityAliases(row);
-          const enabled = capabilityIsAttached(attachedKeys, aliases);
-          return (
-            <CapabilityToggleRow
-              key={`integration:${row.id}`}
-              title={connection?.app_name || displayMCPName(row)}
-              detail={connection?.name || row.name}
-              icon={<AppIcon src={connection?.logo} name={connection?.app_name || displayMCPName(row)} size="md" framed={false} className="rounded-md bg-white text-gray-800" />}
-              meta={`${row.tool_count || 0} tools · ${scopeLabel(row)}`}
-              enabled={enabled}
-              disabled={!configFromInventory(row)}
-              busy={busyKey === `mcp:${name}`}
-              onToggle={() => enabled ? detachInventory(row, name) : attachInventory(row, aliases)}
-            />
-          );
-        })}
-      </CapabilitySection>}
-
-      {((category === "custom" || category === "attached") && visibleCustomRows.length > 0) && <CapabilitySection
-        title="MCP servers"
-        hint="Custom tools and services"
-      >
-        {visibleCustomRows.map((row) => {
-          const name = mcpName(row);
-          const aliases = mcpCapabilityAliases(row);
-          const enabled = capabilityIsAttached(attachedKeys, aliases);
-          return (
-            <CapabilityToggleRow
-              key={`custom:${row.id}`}
-              title={displayMCPName(row)}
-              detail={row.name}
-              meta={`${row.tool_count || 0} tools · ${row.transport || "stdio"}`}
-              enabled={enabled}
-              disabled={!configFromInventory(row)}
-              busy={busyKey === `mcp:${name}`}
-              onToggle={() => enabled ? detachInventory(row, name) : attachInventory(row, aliases)}
-            />
-          );
-        })}
-      </CapabilitySection>}
-
-      {loading && (
-        <div className="text-center text-xs text-text-muted py-2">Loading capabilities…</div>
-      )}
+      <div ref={capabilityListRef} className="min-h-0 flex-1 overflow-y-auto space-y-4 p-3" style={{ maxHeight: "min(55dvh, 520px)" }}>
+        {error && <div role="alert" className="rounded-lg border border-red/40 bg-red/10 p-3 text-xs text-red">{error}</div>}
+        {attachedOptions.length > 0 && (
+          <CapabilitySection title="Attached" count={attachedOptions.length} hint="This agent can use these capabilities">
+            {attachedOptions.map(renderOption)}
+          </CapabilitySection>
+        )}
+        {availableOptions.length > 0 && (
+          <CapabilitySection title="Available to add" count={availableOptions.length} hint="Select a capability to attach it">
+            {availableOptions.map(renderOption)}
+          </CapabilitySection>
+        )}
+        {!loading && visibleOptions.length === 0 && (
+          <div className="px-4 py-10 text-center">
+            <p className="text-sm text-text-muted">{normalizedQuery ? "No capabilities match your search." : "Nothing available in this category yet."}</p>
+          </div>
+        )}
+        {loading && <div className="py-2 text-center text-xs text-text-muted">Loading capabilities…</div>}
       </div>
-      <div className="shrink-0 flex items-center justify-between gap-3 border-t border-border px-5 py-3">
-        <span className="text-[11px] text-text-dim">{attached.length} attached · Changes apply immediately</span>
-        {onDone && <button type="button" onClick={onDone} className="rounded-lg border border-border px-4 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent">Done</button>}
+      <div className="shrink-0 flex items-center justify-between gap-3 border-t border-border px-4 py-3 sm:px-5">
+        <span className="text-[11px] text-text-dim">{totalAttached} attached · Changes apply immediately</span>
+        {onDone && <button type="button" onClick={onDone} className="cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded-lg border border-border px-4 py-2 text-xs font-semibold text-text hover:border-accent hover:text-accent">Done</button>}
       </div>
     </div>
   );
 }
 
-function CapabilitySection({
-  title,
-  hint,
-  children,
-}: {
+function CapabilitySection({ title, count, hint, children }: {
   title: string;
+  count: number;
   hint: string;
   children: ReactNode;
 }) {
   return (
-    <section>
-      <div className="mb-2 flex items-baseline justify-between gap-3 min-w-0">
-        <h3 className="text-[10px] uppercase tracking-wide text-text-muted font-bold shrink-0">{title}</h3>
-        <span className="hidden sm:block text-[10px] text-text-dim truncate min-w-0">{hint}</span>
+    <section aria-label={title}>
+      <div className="mb-2 flex min-w-0 items-center justify-between gap-3 px-1">
+        <h3 className="shrink-0 text-xs font-semibold text-text-muted">{title} <span className="ml-1 text-[10px] text-text-dim">{count}</span></h3>
+        <span className="hidden min-w-0 truncate text-[10px] text-text-dim sm:block">{hint}</span>
       </div>
-      <div className="space-y-1">
-        {children}
-      </div>
+      <div className="space-y-1">{children}</div>
     </section>
   );
 }
@@ -2434,8 +1841,8 @@ function CapabilityToggleRow({ title, detail, meta, icon, enabled, disabled, bus
   return <PickerOption
     name={title}
     description={truncateUI(detail, 180)}
-    badge={busy ? "Updating…" : disabled ? "Unavailable" : meta}
-    icon={icon || <AppIcon name={title} size="md" className="text-accent" />}
+    badge={busy ? "Updating…" : disabled && !enabled ? "Unavailable" : meta}
+    icon={<span className="flex h-10 w-10 shrink-0 items-center justify-center">{icon || <AppIcon name={title} size="md" className="text-accent" />}</span>}
     selected={enabled}
     disabled={disabled || busy}
     onToggle={onToggle}
@@ -2532,7 +1939,7 @@ function appInstallAliases(installID?: number | string | null): string[] {
 
 function mcpCapabilityAliases(row: MCPServer): string[] {
   const url = row.proxy_config?.url || row.url || "";
-  const installID = mcpURLInstallID(url);
+  const installID = row.source === "app" ? inventoryAppInstallID(row) : mcpURLInstallID(url);
   return uniqueCapabilityAliases([
     row.name,
     mcpName(row),
@@ -2579,6 +1986,22 @@ function mcpRowIsAttached(attachedKeys: Set<string>, row: MCPServer): boolean {
   return capabilityIsAttached(attachedKeys, mcpCapabilityAliases(row));
 }
 
+function inventoryAppInstallID(row: MCPServer): string {
+  return mcpURLInstallID(row.proxy_config?.url || row.url) || row.upstream_id?.match(/^app:(\d+)$/)?.[1] || "";
+}
+
+function inventoryRowIsAttached(servers: MCPServerConfig[], row: MCPServer): boolean {
+  const installID = row.source === "app" ? inventoryAppInstallID(row) : "";
+  const aliases = new Set(mcpCapabilityAliases(row).map(capabilityKey));
+  return servers.some((server) => {
+    const attachedInstallID = mcpURLInstallID(server.url);
+    // Two installations can share a slug and display name. Their stable IDs
+    // take precedence so attaching one never selects the other installation.
+    if (installID && attachedInstallID) return installID === attachedInstallID;
+    return attachedMCPAliases(server).some((alias) => aliases.has(capabilityKey(alias)));
+  });
+}
+
 function compareMCPRowsByAttachment(a: MCPServer, b: MCPServer, attachedKeys: Set<string>): number {
   const aAttached = mcpRowIsAttached(attachedKeys, a);
   const bAttached = mcpRowIsAttached(attachedKeys, b);
@@ -2595,9 +2018,11 @@ function removeAttachedByAliases(servers: MCPServerConfig[], aliases: string[]):
 }
 
 function findAppInventoryRow(app: AppRow, inventoryByKey: Map<string, MCPServer>): MCPServer | undefined {
-  for (const alias of appCapabilityAliases(app)) {
+  for (const alias of [...appInstallAliases(app.install_id), ...appCapabilityAliases(app)]) {
     const row = inventoryByKey.get(capabilityKey(alias));
-    if (row) return row;
+    if (!row) continue;
+    const installID = inventoryAppInstallID(row);
+    if (!installID || installID === String(app.install_id)) return row;
   }
   return undefined;
 }
@@ -2876,7 +2301,7 @@ function CapabilityShelf({
     });
   const custom = inventory
     .filter((row) => row.source !== "app")
-    .filter((row) => !["channels", "apteva-channels", "apteva-server"].includes(mcpName(row)))
+    .filter((row) => !["channels", "apteva-channels"].includes(mcpName(row)))
     .sort((a, b) => compareMCPRowsByAttachment(a, b, attachedKeys))
     .slice(0, 4);
 
@@ -3008,245 +2433,6 @@ function CapabilityRow({
   );
 }
 
-function RuntimeStream({
-  events,
-  selectedThreadId,
-  loading,
-}: {
-  events: RuntimeEventItem[];
-  selectedThreadId: string;
-  loading: boolean;
-}) {
-  type RuntimeFilter = "work" | "all" | RuntimeEventItem["kind"];
-  const [filter, setFilter] = useState<RuntimeFilter>("all");
-  const { shows } = useAudience();
-  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
-  const [query, setQuery] = useState("");
-  const visible = events
-    .filter((e) => (e.threadId || "main") === selectedThreadId)
-    .filter((e) => {
-      if (filter === "all") return true;
-      if (filter === "work") {
-        return e.kind === "tool" || e.kind === "error" || e.kind === "thread" || (e.kind === "thought" && e.status === "running");
-      }
-      return e.kind === filter;
-    })
-    .filter((e) => {
-      const q = query.trim().toLowerCase();
-      if (!q) return true;
-      return `${e.kind} ${e.label} ${e.detail || ""} ${e.threadId || ""}`.toLowerCase().includes(q);
-    })
-    .slice()
-    .reverse();
-
-  const primaryFilters: Array<{ id: RuntimeFilter; label: string }> = [
-    { id: "all", label: "All" },
-    { id: "work", label: "Work" },
-    { id: "tool", label: "Tools" },
-    { id: "error", label: "Errors" },
-  ];
-  const advancedFilters: Array<{ id: RuntimeFilter; label: string }> = [
-    { id: "thought", label: "Thoughts" },
-    { id: "thread", label: "Threads" },
-  ];
-
-  return (
-    <div className="h-full min-h-0 flex flex-col">
-      <div className="shrink-0 flex flex-wrap items-center gap-2 border-b border-border/70 px-3 py-2">
-        <div className="flex items-center gap-1 overflow-x-auto">
-          {primaryFilters.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setFilter(item.id)}
-              className={`px-2 py-1 rounded text-[11px] capitalize whitespace-nowrap ${
-                filter === item.id ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-          {/* "More" reveals the Technical filter row — raw event kinds
-              that only mean something if you know the runtime. */}
-          {shows("agent.technical") && (
-            <button
-              type="button"
-              onClick={() => setShowAdvancedFilters((visible) => !visible)}
-              className={`rounded px-2 py-1 text-[11px] whitespace-nowrap ${showAdvancedFilters ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
-            >
-              More {showAdvancedFilters ? "−" : "+"}
-            </button>
-          )}
-        </div>
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search stream"
-          className="ml-auto w-32 sm:w-44 bg-bg-input border border-border rounded px-2 py-1 text-[11px] text-text focus:outline-none focus:border-accent"
-        />
-        {showAdvancedFilters && (
-          <div className="flex w-full items-center gap-1 border-t border-border-subtle pt-2">
-            <span className="mr-1 text-[9px] font-bold uppercase tracking-wide text-text-dim">Technical</span>
-            {advancedFilters.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setFilter(item.id)}
-                className={`rounded px-2 py-1 text-[10px] ${filter === item.id ? "bg-bg-hover text-text" : "text-text-muted hover:text-text"}`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
-        {visible.length === 0 ? (
-          <div className="h-full flex items-center justify-center text-text-dim text-sm">
-            {loading ? "Loading runtime events..." : filter === "work" ? "No recent operational activity." : `No matching runtime events for ${selectedThreadId}.`}
-          </div>
-        ) : (
-          <div className="space-y-1.5">
-            {visible.map((e) => (
-              <RuntimeRow key={e.key} event={e} />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function runtimeVisual(event: RuntimeEventItem): {
-  icon: string;
-  iconClass: string;
-  labelClass: string;
-  hoverBorder: string;
-} {
-  if (event.status === "error") {
-    return {
-      icon: "!",
-      iconClass: "text-red bg-red/10",
-      labelClass: "text-red",
-      hoverBorder: "hover:border-red/40",
-    };
-  }
-
-  if (event.kind === "tool") {
-    if (event.status === "running") {
-      return {
-        icon: "⟳",
-        iconClass: "text-yellow bg-yellow/10 animate-spin",
-        labelClass: "text-yellow",
-        hoverBorder: "hover:border-yellow/40",
-      };
-    }
-    return {
-      icon: event.status === "success" ? "✓" : "◇",
-      iconClass: event.status === "success" ? "text-green bg-green/10" : "text-yellow bg-yellow/10",
-      labelClass: "text-yellow",
-      hoverBorder: "hover:border-yellow/40",
-    };
-  }
-
-  if (event.kind === "thought") {
-    return {
-      icon: event.status === "running" ? "◐" : "◆",
-      iconClass: event.status === "running" ? "text-accent bg-accent/10 animate-pulse" : "text-accent bg-accent/10",
-      labelClass: "text-accent",
-      hoverBorder: "hover:border-accent/40",
-    };
-  }
-
-  if (event.kind === "thread") {
-    return {
-      icon: event.status === "success" ? "✓" : "↳",
-      iconClass: "text-blue bg-blue/10",
-      labelClass: "text-blue",
-      hoverBorder: "hover:border-blue/40",
-    };
-  }
-
-  if (event.kind === "channel") {
-    return {
-      icon: "→",
-      iconClass: "text-green bg-green/10",
-      labelClass: "text-green",
-      hoverBorder: "hover:border-green/40",
-    };
-  }
-
-  return {
-    icon: "•",
-    iconClass: "text-text-muted bg-bg-hover",
-    labelClass: "text-text-muted",
-    hoverBorder: "hover:border-border",
-  };
-}
-
-function RuntimeRow({ event }: { event: RuntimeEventItem }) {
-  const visual = runtimeVisual(event);
-  const reasoning = cleanReasoningDisplay(event.reasoningDetail || "");
-  const response = event.responseDetail || "";
-  const summaryDetail = response || reasoning || (
-    event.kind === "tool" && event.detail === event.toolName ? "" : event.detail || ""
-  );
-
-  return (
-    <details className={`group rounded border border-transparent hover:bg-bg-card/40 ${visual.hoverBorder}`}>
-      <summary className="list-none cursor-pointer px-2 py-2 flex items-start gap-2 min-w-0">
-        <span className={`mt-0.5 w-5 h-5 rounded flex items-center justify-center text-[11px] shrink-0 ${visual.iconClass}`}>
-          {visual.icon}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className={`text-[10px] uppercase tracking-wide shrink-0 ${visual.labelClass}`}>
-              {event.kind === "channel" ? "event" : event.kind}
-            </span>
-            <span className="text-xs text-text truncate">{event.label}</span>
-          </div>
-          {summaryDetail && (
-            <div className="text-[11px] text-text-dim truncate mt-0.5">{summaryDetail}</div>
-          )}
-        </div>
-        {event.durationMs != null && (
-          <span className="text-[10px] text-text-dim tabular-nums shrink-0">{durationLabel(event.durationMs)}</span>
-        )}
-        <span className="text-[10px] text-text-dim tabular-nums shrink-0">
-          {new Date(event.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-        </span>
-      </summary>
-      <div className="px-8 pb-2">
-        <div className="space-y-2">
-          {event.kind === "tool" && event.toolArgs && (
-            <RuntimePayloadBlock title="Arguments" text={event.toolArgs} />
-          )}
-          {event.kind === "tool" && event.toolResult && (
-            <RuntimePayloadBlock title="Result" text={event.toolResult} />
-          )}
-          {event.kind === "thought" && reasoning && (
-            <RuntimePayloadBlock title="Reasoning" text={reasoning} dim />
-          )}
-          {event.kind === "thought" && response && (
-            <RuntimePayloadBlock title="Response" text={response} />
-          )}
-          <RuntimePayloadBlock title="Raw event" text={formatToolPayload(event.raw)} dim />
-        </div>
-      </div>
-    </details>
-  );
-}
-
-function RuntimePayloadBlock({ title, text, dim }: { title: string; text: string; dim?: boolean }) {
-  return (
-    <div>
-      <div className="mb-1 text-[9px] uppercase tracking-wide text-text-dim">{title}</div>
-      <pre className={`text-[10px] ${dim ? "text-text-muted" : "text-text"} bg-bg-input border border-border rounded p-2 overflow-auto max-h-56`}>
-        {text}
-      </pre>
-    </div>
-  );
-}
-
 // --- Config Modal ---
 
 function ConfigModal({ open, onClose, instance, onSaved }: {
@@ -3255,8 +2441,13 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   instance: Agent;
   onSaved: () => void;
 }) {
+  const auth = useOptionalAuth();
   const { shows } = useAudience();
   const [providerList, setProviderList] = useState<RuntimeConnection[]>([]);
+  const [serviceTierOverrides, setServiceTierOverrides] = useState<Record<string, string | null>>({});
+  const [builtinOverrides, setBuiltinOverrides] = useState<AgentBuiltinOverrides>({});
+  const [builtinsValid, setBuiltinsValid] = useState(true);
+  const [savedBuiltinConfig, setSavedBuiltinConfig] = useState(instance.config);
   const [availableModels, setAvailableModels] = useState<Record<number, ModelInfo[]>>({});
   const [loadingModels, setLoadingModels] = useState<number | null>(null);
   const [defaultProvider, setDefaultProvider] = useState("");
@@ -3264,11 +2455,16 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   const [modelMedium, setModelMedium] = useState("");
   const [modelSmall, setModelSmall] = useState("");
   const [directive, setDirective] = useState("");
+  const directiveEdited = useRef(false);
   const [mode, setMode] = useState("");
   const [proactivity, setProactivity] = useState(defaultProactivity);
   const [realtimeEnabled, setRealtimeEnabled] = useState(false);
   const [realtimeAvailable, setRealtimeAvailable] = useState(false);
   const [realtimeVoice, setRealtimeVoice] = useState("marin");
+  const [realtimeProvider, setRealtimeProvider] = useState("");
+  const [realtimeModel, setRealtimeModel] = useState("");
+  const [realtimeProviders, setRealtimeProviders] = useState<RealtimeProviderConfig[]>([]);
+  const [realtimeExecution, setRealtimeExecution] = useState<RealtimeExecutionConfig>({ mode: "thread" });
   const [realtimeVoiceMCP, setRealtimeVoiceMCP] = useState<string[]>([]);
   const [realtimeCapabilityOptions, setRealtimeCapabilityOptions] = useState<MCPServerConfig[]>([]);
   const [saving, setSaving] = useState(false);
@@ -3276,44 +2472,65 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
 
   useEffect(() => {
     if (!open) return;
+    let active = true;
+    directiveEdited.current = false;
+    // Model catalogs can change while the dashboard stays open (for example
+    // when a provider exposes a newly released model). Do not retain the
+    // previous modal session's list when reopening the editor.
+    setAvailableModels({});
     setDirective(instance.directive || "");
     setMode(instance.mode || "autonomous");
     setProactivity(instance.proactivity ?? defaultProactivity);
     setError("");
 
     setDefaultProvider("");
+    setServiceTierOverrides(agentServiceTiers(instance.config));
+    setBuiltinOverrides(agentBuiltins(instance.config));
+    setSavedBuiltinConfig(instance.config);
+    setBuiltinsValid(true);
 
     core.config(instance.id).then((config) => {
-      setDirective(config.directive);
+      if (!active) return;
+      if (config.builtin_overrides) { const saved = JSON.stringify({ builtin_overrides: config.builtin_overrides }); setSavedBuiltinConfig(saved); setBuiltinOverrides(agentBuiltins(saved)); }
+      if (!directiveEdited.current) setDirective(config.directive);
       setMode(config.mode);
       setProactivity(config.proactivity ?? instance.proactivity ?? defaultProactivity);
       setDefaultProvider(resolveEffectiveAgentProvider(instance.config || "{}", config.providers));
-      const realtimeProvider = (config.providers || []).find((provider) =>
-        provider.name === "openai-realtime" || provider.name.includes("realtime"),
-      );
+      const selection = realtimeSelection(config);
+      const voiceProviders = selection.providers;
+      const selectedVoiceProvider = selection.provider;
       const capabilityOptions = (config.mcp_servers || []).filter((server) =>
         server.name !== "channels" &&
         server.name !== "apteva-channels" &&
         server.name !== "apteva-server",
       );
       const availableNames = new Set(capabilityOptions.map((server) => server.name));
-      setRealtimeAvailable(!!realtimeProvider);
-      setRealtimeEnabled(config.realtime_enabled ?? !!realtimeProvider);
-      setRealtimeVoice(config.realtime_voice || realtimeProvider?.realtime_voice || "marin");
+      setRealtimeProviders(voiceProviders);
+      setRealtimeProvider(selectedVoiceProvider?.name || "");
+      setRealtimeModel(selection.model);
+      setRealtimeExecution(selection.execution || { mode: "thread" });
+      setRealtimeAvailable(!!selectedVoiceProvider);
+      setRealtimeEnabled(config.realtime_enabled ?? !!selectedVoiceProvider);
+      setRealtimeVoice(selection.voice);
       setRealtimeCapabilityOptions(capabilityOptions);
       setRealtimeVoiceMCP((config.realtime_voice_mcp || []).filter((name) => availableNames.has(name)));
     }).catch(() => {
+      if (!active) return;
       setDefaultProvider(resolveEffectiveAgentProvider(instance.config || "{}"));
       setRealtimeAvailable(false);
       setRealtimeEnabled(false);
+      setRealtimeProviders([]);
+      setRealtimeProvider("");
+      setRealtimeModel("");
       setRealtimeCapabilityOptions([]);
       setRealtimeVoiceMCP([]);
     });
 
     integrations
       .runtimeConnections(instance.project_id)
-      .then((list) => setProviderList((list || []).filter((c) => c.role === "llm")))
+      .then((list) => { if (active) setProviderList((list || []).filter((c, index, rows) => c.role === "llm" && rows.findIndex((row) => row.provider_key === c.provider_key) === index)); })
       .catch(() => {});
+    return () => { active = false; };
   }, [open, instance.id]);
 
   // When provider selection changes, load its current model settings
@@ -3354,8 +2571,22 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   };
 
   const models = selectedDetail ? availableModels[selectedDetail.id] : undefined;
+  const selectedRealtimeConfig = realtimeProviders.find((provider) => provider.name === realtimeProvider);
+  const realtimeCatalog = providerList.find((connection) => connection.realtime?.provider_key === realtimeProvider)?.realtime;
+  const realtimeModelOptions = realtimeCatalog?.models || Array.from(new Set([
+    selectedRealtimeConfig?.models?.large,
+    selectedRealtimeConfig?.models?.medium,
+    selectedRealtimeConfig?.models?.small,
+  ].filter((model): model is string => !!model))).map((model) => ({ id: model, name: model, available: true }));
+  const selectedRealtimeModel = realtimeCatalog?.models.find((model) => model.id === realtimeModel);
+  const realtimeVoices = selectedRealtimeModel?.voices || realtimeCatalog?.voices || (realtimeProvider === "openai-realtime"
+    ? ["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"]
+    : [selectedRealtimeConfig?.realtime_voice || realtimeVoice]);
+  const selectedRealtimeVoice = realtimeVoices.includes(realtimeVoice) ? realtimeVoice : selectedRealtimeModel?.default_voice || realtimeVoices[0];
 
+  const executionCapabilities = selectedRealtimeConfig?.capabilities?.[realtimeModel];
   const handleSave = async () => {
+    if (!builtinsValid) { setError("Complete the model capability options before saving."); return; }
     setSaving(true); setError("");
     try {
       // Save model selections through the narrow server route. OAuth-backed
@@ -3376,16 +2607,25 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         }
       }
 
-      const provs = defaultProvider
+      const provs: Array<{ name: string; default: boolean; realtime_execution?: RealtimeExecutionConfig }> = defaultProvider
         ? providerList.map((c) => ({ name: c.provider_key, default: c.provider_key === defaultProvider }))
-        : undefined;
+        : [];
+      if (realtimeAvailable && realtimeProvider && (executionCapabilities?.core_execution || selectedRealtimeConfig?.realtime_execution)) {
+        const existing = provs.find((provider) => provider.name === realtimeProvider);
+        if (existing) existing.realtime_execution = realtimeExecution;
+        else provs.push({ name: realtimeProvider, default: false, realtime_execution: realtimeExecution });
+      }
       const result = await instances.updateConfig(instance.id, {
-        directive: directive || undefined,
+        directive,
         mode: mode || undefined,
         proactivity,
         providers: provs,
+        serviceTierOverrides: serviceTierPatch(instance.config, serviceTierOverrides),
+        builtinOverrides: agentBuiltinPatch(savedBuiltinConfig, builtinOverrides),
         realtimeEnabled,
-        realtimeVoice,
+        realtimeProvider: realtimeAvailable ? realtimeProvider : undefined,
+        realtimeModel: realtimeAvailable ? realtimeModel : undefined,
+        realtimeVoice: selectedRealtimeVoice,
         realtimeVoiceMCP,
       });
       onSaved();
@@ -3460,6 +2700,9 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
           </div>
         )}
 
+        {shows("agent.provider") && <ServiceTierSelect connection={selectedDetail} inherit value={serviceTierOverrides[defaultProvider]} disabled={saving} onChange={(value) => setServiceTierOverrides((current) => ({ ...current, [defaultProvider]: value }))} />}
+        {shows("agent.provider") && <ProviderBuiltinsEditor key={defaultProvider} connection={selectedDetail} inherit value={builtinOverrides[defaultProvider] || {}} disabled={saving} onValidityChange={setBuiltinsValid} onChange={(value) => setBuiltinOverrides((current) => ({ ...current, [defaultProvider]: value }))} />}
+
         {/* Models */}
         {shows("agent.provider") && selectedDetail && (
           <div className="border border-border rounded-lg p-3 space-y-2">
@@ -3531,21 +2774,76 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
             </button>
           </div>
           {!realtimeAvailable ? (
-            <p className="mt-3 text-[11px] text-text-muted">Connect an OpenAI provider with realtime support to enable voice.</p>
+            <p className="mt-3 text-[11px] text-text-muted">Connect a provider with realtime voice support to enable voice.</p>
           ) : realtimeEnabled ? (
             <div className="mt-4 space-y-4 border-t border-border/70 pt-4">
+              {realtimeProviders.length > 1 && (
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-text-dim">Voice provider</label>
+                  <select
+                    value={realtimeProvider}
+                    onChange={(event) => {
+                      const name = event.target.value;
+                      const provider = realtimeProviders.find((candidate) => candidate.name === name);
+                      setRealtimeProvider(name);
+                      setRealtimeModel(provider?.models?.large || "");
+                      setRealtimeVoice(provider?.realtime_voice || "");
+                      setRealtimeExecution(provider?.realtime_execution || { mode: "thread" });
+                    }}
+                    className="w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-xs text-text focus:border-accent focus:outline-none"
+                  >
+                    {realtimeProviders.map((provider) => (
+                      <option key={provider.name} value={provider.name}>{provider.integration.replace(/^./, (letter) => letter.toUpperCase())}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {realtimeModelOptions.length > 0 && (
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-text-dim">Live model</label>
+                  <select
+                    value={realtimeModel}
+                    onChange={(event) => { setRealtimeModel(event.target.value); setRealtimeVoice(""); setRealtimeExecution({ mode: "thread" }); }}
+                    className="w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-xs text-text focus:border-accent focus:outline-none"
+                  >
+                    {realtimeModelOptions.map((model) => (
+                      <option key={model.id} value={model.id} disabled={!model.available}>
+                        {model.name}{model.available ? "" : " · unavailable"}
+                      </option>
+                    ))}
+                  </select>
+                  {realtimeCatalog?.models.some((model) => !model.available) && (
+                    <p className="mt-1 text-[11px] text-text-muted">Some live models are currently unavailable in the integration catalog.</p>
+                  )}
+                </div>
+              )}
               <div>
                 <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-text-dim">Voice</label>
                 <select
-                  value={realtimeVoice}
+                  value={selectedRealtimeVoice}
                   onChange={(event) => setRealtimeVoice(event.target.value)}
                   className="w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-xs text-text focus:border-accent focus:outline-none"
                 >
-                  {["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"].map((voice) => (
+                  {realtimeVoices.map((voice) => (
                     <option key={voice} value={voice}>{voice[0].toUpperCase() + voice.slice(1)}</option>
                   ))}
                 </select>
               </div>
+              {!executionCapabilities && selectedRealtimeConfig?.capabilities && <p className="text-[11px] text-text-muted">Save this model selection to load its supported execution options from Core.</p>}
+              {executionCapabilities?.core_execution && (
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-text-muted">Advanced voice execution</summary>
+                  <p className="mt-2 text-[11px] text-text-muted">Core manages tools and permissions in both modes. The backend model is separate from the voice model.</p>
+                  <label className="mt-3 block text-[10px] text-text-dim">Backend inference</label>
+                  <select aria-label="Backend inference" value={realtimeExecution.mode || "thread"}
+                    onChange={(event) => setRealtimeExecution(event.target.value === "provider" ? { mode: "provider", provider: selectedRealtimeConfig?.integration, model: "large" } : { mode: "thread" })}
+                    className="mt-1 w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-xs text-text">
+                    <option value="thread">Agent model</option>
+                    {executionCapabilities.provider_execution && <option value="provider">Voice-provider delegation</option>}
+                  </select>
+                  {realtimeExecution.mode === "provider" && <p className="mt-2 text-[11px] text-text-muted">Uses this voice provider’s configured large text model.</p>}
+                </details>
+              )}
               <div>
                 <div className="text-[10px] font-bold uppercase tracking-wide text-text-dim">Voice capabilities</div>
                 <p className="mt-1 text-[11px] text-text-muted">Optional MCP servers available during calls. Main keeps its complete capability set.</p>
@@ -3577,29 +2875,9 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         </div>
         )}
 
-        {/* Directive */}
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-text-muted text-xs font-bold uppercase tracking-wide block">Directive</label>
-            <button
-              type="button"
-              onClick={() => setDirective((cur) => structureDirectiveDraft(cur, instance.name))}
-              className="text-accent text-xs hover:underline"
-            >
-              Structure
-            </button>
-          </div>
-          <textarea
-            value={directive}
-            onChange={(e) => setDirective(e.target.value)}
-            rows={7}
-            className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent resize-none font-mono"
-            placeholder={"# Role\nYou are...\n\n# Goals\n- ..."}
-          />
-          <p className="text-text-dim text-xs mt-1">
-            Stable markdown sections help later edits target one part of the directive.
-          </p>
-        </div>
+        {auth?.user && auth.user.role === "admin" && <AgentResourcesPanel key={instance.id} agentId={instance.id} />}
+
+        <AgentInstructionsEditor value={directive} onChange={(next) => { directiveEdited.current = true; setDirective(next); }} agentName={instance.name} />
 
         {error && <p className="text-red text-xs">{error}</p>}
 
@@ -3608,7 +2886,7 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
             className="px-4 py-2 border border-border rounded-lg text-sm text-text-muted hover:text-text transition-colors">
             Cancel
           </button>
-          <button onClick={handleSave} disabled={saving}
+          <button onClick={handleSave} disabled={saving || !builtinsValid}
             className="px-4 py-2 bg-accent text-bg rounded-lg text-sm font-bold hover:bg-accent-hover transition-colors disabled:opacity-50">
             {saving ? "Saving..." : "Save"}
           </button>

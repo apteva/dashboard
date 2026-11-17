@@ -8,6 +8,8 @@ const legacyOAuthTokenFields = new Set([
   "refreshtoken",
   "expires_in",
   "expiresin",
+  "expires_at",
+  "expiresat",
   "token_type",
   "tokentype",
   "scope",

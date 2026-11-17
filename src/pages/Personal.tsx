@@ -4,6 +4,7 @@ import {
   agentTemplates,
   apps,
   instances,
+  platformHelper,
   type Agent,
   type AgentTemplate,
   type AppRow,
@@ -15,7 +16,7 @@ import {
   type Contribution,
   type ResolvedWidgetInstance,
 } from "../components/apps/contributions";
-import { AgentMark } from "../components/AgentMark";
+import { AgentMark, suggestedAgentIcon } from "../components/AgentMark";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { useProjects } from "../hooks/useProjects";
 import { useAudience } from "../hooks/useAudience";
@@ -37,6 +38,16 @@ export function selectPersonalConversationsContribution(
     matches.find((item) => !(item.app as AppRow).project_id) ||
     null
   );
+}
+
+/**
+ * Personal Conversations is the regular agent workspace. The platform
+ * Helper has its own floating assistant surface, so it should not appear in
+ * this panel's agent selector even though its agent remains available to the
+ * dashboard Helper widget.
+ */
+export function personalConversationAgents(agents: Agent[], helperId?: number): Agent[] {
+  return agents.filter((agent) => agent.kind !== "platform_helper" && agent.id !== helperId);
 }
 
 export function Personal() {
@@ -77,11 +88,12 @@ export function Personal() {
       return;
     }
     try {
-      const [agentRows, installed] = await Promise.all([
+      const [agentRows, installed, helper] = await Promise.all([
         instances.list(projectId),
         apps.list(projectId),
+        platformHelper.get().catch(() => null),
       ]);
-      setAgents(agentRows || []);
+      setAgents(personalConversationAgents(agentRows || [], helper?.id));
       setAppRows(installed || []);
     } finally {
       setLoadedProjectId(projectId);
@@ -194,6 +206,7 @@ export function Personal() {
         projectId,
         true,
         {
+          icon: suggestedAgentIcon(template?.icon),
           includeChannels: false,
           unconscious: template?.unconscious ?? true,
           boundAppInstallIDs,
@@ -233,7 +246,7 @@ export function Personal() {
             <span className="hidden text-sm font-semibold md:inline">New agent</span>
           ) : selectedAgent ? (
             <>
-              <span className="hidden md:inline-flex"><AgentMark size="sm" /></span>
+              <span className="hidden md:inline-flex"><AgentMark icon={selectedAgent.icon} color={selectedAgent.icon_color} size="sm" /></span>
               <span className="hidden min-w-0 flex-1 truncate text-sm font-semibold md:block">{selectedAgent.name}</span>
               <Link to={`/agents/${selectedAgent.id}`} className="rounded-lg border border-border px-2.5 py-1.5 text-xs text-text-muted hover:bg-bg-hover hover:text-text">Manage</Link>
             </>
@@ -248,7 +261,7 @@ export function Personal() {
           ) : createOpen ? (
             <form onSubmit={createAgent} className="flex h-full min-h-0 flex-col overflow-y-auto">
               <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-6 py-10 text-center">
-                <AgentMark size="lg" />
+                <AgentMark icon={suggestedAgentIcon(templates.find((item) => item.id === templateId)?.icon)} size="lg" />
                 <h1 className="mt-5 text-2xl font-semibold tracking-tight">{creationTitle}</h1>
                 <p className="mt-2 max-w-md text-sm leading-6 text-text-muted">Give it a name. You can teach it what to do in your first conversation.</p>
                 <label className="mt-7 w-full max-w-md text-left">
@@ -289,7 +302,7 @@ export function Personal() {
                           className={`rounded-xl border p-4 text-left transition-colors ${templateId === template.id ? "border-accent bg-accent/5" : "border-border bg-bg-card hover:border-accent/40 hover:bg-bg-hover"}`}
                         >
                           <span className="flex items-center gap-3">
-                            <AgentMark size="sm" />
+                            <AgentMark icon={suggestedAgentIcon(template.icon)} size="sm" />
                             <span className="truncate text-sm font-semibold">{template.name}</span>
                           </span>
                           <span className="mt-3 block line-clamp-2 text-xs leading-5 text-text-muted">{template.description}</span>

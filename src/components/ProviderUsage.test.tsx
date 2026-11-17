@@ -62,4 +62,15 @@ describe("ProviderUsageSummary", () => {
     );
     expect(html).toBe("");
   });
+
+  test("labels supported accounts without measurable limits accurately", () => {
+    const html = renderToStaticMarkup(
+      <ProviderUsageSummary
+        usage={{ supported: true, provider_id: 146, kind: "subscription_quota", limits: [] }}
+        onRefresh={() => {}}
+        onOpenDetails={() => {}}
+      />,
+    );
+    expect(html).toContain("No metered quota reported");
+  });
 });

@@ -64,12 +64,16 @@ function setup() {
 }
 const card = (name: string) =>
   screen.getByRole("region", { name: `${name} global provider` });
-const choice = (name: string) =>
-  within(card(name)).getByRole("button", {
-    name: `Make ${name} the default for new agents`,
-  });
+const expand = (name: string) => {
+  const row = within(card(name)).getByRole("button", { name: `${name} global provider details` });
+  if (row.getAttribute("aria-expanded") === "false") fireEvent.click(row);
+};
+const choice = (name: string) => {
+  expand(name);
+  return within(card(name)).getByRole("button", { name: `Make ${name} the default for new agents` });
+};
 
-test("changes the default directly on connected cards and restores automatic selection", async () => {
+test("changes the default in connected provider details and restores automatic selection", async () => {
   setup();
   render(<ProvidersTab />);
   await waitFor(() =>
@@ -130,7 +134,7 @@ test("catalog is only in Add provider modal, search leads to credential form", a
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-test("card model controls and credential tests still call the original APIs", async () => {
+test("compact rows expand to model controls and credential tests using the original APIs", async () => {
   setup();
   integrations.updateRuntimeConfig = mock(async () => ({}));
   integrations.testConnection = mock(async () => ({
@@ -139,6 +143,9 @@ test("card model controls and credential tests still call the original APIs", as
   }));
   render(<ProvidersTab />);
   await waitFor(() => expect(card("OpenAI")).toBeTruthy());
+  expect(within(card("OpenAI")).queryByRole("textbox", { name: "large" })).toBeNull();
+  expect(within(card("OpenAI")).getByText("Default")).toBeTruthy();
+  expand("OpenAI");
   const input = within(card("OpenAI")).getByRole("textbox", { name: "large" });
   fireEvent.change(input, { target: { value: "new-large" } });
   fireEvent.blur(input);
@@ -163,4 +170,6 @@ test("card model controls and credential tests still call the original APIs", as
     expect(within(card("OpenAI")).getByText("✓ Connected (20ms)")).toBeTruthy(),
   );
   expect(integrations.testConnection).toHaveBeenCalledWith(1);
+  fireEvent.click(within(card("OpenAI")).getByRole("button", { name: "OpenAI global provider details" }));
+  expect(within(card("OpenAI")).queryByRole("textbox", { name: "large" })).toBeNull();
 });

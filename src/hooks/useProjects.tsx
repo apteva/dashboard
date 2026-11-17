@@ -4,6 +4,7 @@ import { projects as projectsAPI, type Project } from "../api";
 interface ProjectContextValue {
   projects: Project[];
   currentProject: Project | null;
+  loaded: boolean;
   setCurrentProject: (p: Project | null) => void;
   reload: () => void;
 }
@@ -11,6 +12,7 @@ interface ProjectContextValue {
 const ProjectContext = createContext<ProjectContextValue>({
   projects: [],
   currentProject: null,
+  loaded: false,
   setCurrentProject: () => {},
   reload: () => {},
 });
@@ -67,6 +69,7 @@ export function resolveProjectIDForTab(
 export function ProjectProvider({ children }: { children: ReactNode }) {
   const [projectList, setProjectList] = useState<Project[]>([]);
   const [current, setCurrent] = useState<Project | null>(null);
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(() => {
     projectsAPI.list().then((list) => {
@@ -78,7 +81,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         window.localStorage,
       );
       setCurrent(nextList.find((project) => project.id === selectedID) || null);
-    }).catch(() => {});
+      setLoaded(true);
+    }).catch(() => { setLoaded(true); });
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -102,7 +106,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <ProjectContext.Provider value={{ projects: projectList, currentProject: current, setCurrentProject, reload: load }}>
+    <ProjectContext.Provider value={{ projects: projectList, currentProject: current, loaded, setCurrentProject, reload: load }}>
       {children}
     </ProjectContext.Provider>
   );

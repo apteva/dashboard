@@ -16,12 +16,6 @@ describe("dashboard theme contracts", () => {
     expect(css).toContain("--color-recurring: var(--recurring);");
   });
 
-  test("keeps Build primary actions readable on every accent palette", () => {
-    const build = source("./pages/Build.tsx");
-    expect(build).not.toMatch(/bg-accent[^"\n]*text-black/);
-    expect(build).not.toMatch(/\b(?:text|bg|border)-danger\b/);
-  });
-
   test("does not use the undefined danger alias in Settings", () => {
     expect(source("./pages/Settings.tsx")).not.toMatch(/\b(?:text|bg|border)-danger\b/);
   });

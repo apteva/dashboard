@@ -30,6 +30,10 @@ export function Login() {
   const { login, verifyMFA, register, authenticated, refresh } = useAuth();
   const acceptingInvite = useRef(false);
   const navigate = useNavigate();
+  const [postLoginPath] = useState(() => {
+    const code = new URLSearchParams(window.location.search).get("device_code");
+    return code ? "/settings?tab=devices&code=" + encodeURIComponent(code) : "/";
+  });
 
   // ?invite=<token> handling. When present:
   //   - we fetch the invite preview and show a banner above the form
@@ -73,9 +77,9 @@ export function Login() {
   useEffect(() => {
     if (authenticated === true && !inviteToken) {
       console.log("[login] already authenticated on mount → navigate /");
-      navigate("/", { replace: true });
+      navigate(postLoginPath, { replace: true });
     }
-  }, [authenticated, navigate, inviteToken]);
+  }, [authenticated, navigate, inviteToken, postLoginPath]);
 
   // If we land on /login already authenticated AND we have an invite
   // token, immediately accept it and bounce to the dashboard. This
@@ -128,7 +132,7 @@ export function Login() {
       await register(email, password, setupToken.trim());
       registered = true;
       await login(email, password);
-      navigate("/");
+      navigate(postLoginPath);
     } catch (err: any) {
       if (registered) {
         setMode("login");
@@ -164,7 +168,7 @@ export function Login() {
       // The authenticated invite effect accepts and refreshes before navigation.
       if (inviteToken) return;
       console.log("[login] login() resolved, calling navigate('/')");
-      navigate("/");
+      navigate(postLoginPath);
       console.log("[login] navigate('/') called, new url=", window.location.pathname);
     } catch (err: any) {
       console.log("[login] handleSubmit error:", err?.message || err);
@@ -181,7 +185,7 @@ export function Login() {
     try {
       await verifyMFA(mfaCode);
       if (inviteToken) return;
-      navigate("/");
+      navigate(postLoginPath);
     } catch (err: any) {
       setError(err?.message === "unauthorized" ? "That authentication code is invalid or expired." : err?.message || "Verification failed");
     } finally {

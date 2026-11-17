@@ -68,7 +68,7 @@ describe("ProjectPresetSetup", () => {
     expect(screen.getAllByText(/1 widget/).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Research and qualify prospects").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByText(/Included setup/));
-    expect(screen.getByText("Recent activity")).toBeTruthy();
+    expect(screen.getAllByText("Recent activity").length).toBeGreaterThan(0);
 
     fireEvent.click(personal);
     expect(screen.getByRole("button", { name: /Personal assistant/ })).toBeTruthy();
@@ -122,6 +122,7 @@ describe("ProjectPresetSetup", () => {
     const apply = calls.find((call) => call.url.endsWith("/setup/apply"));
     expect(apply?.body).toEqual({
       preset_id: "business-lead-generation",
+      retry_setup_steps: [],
       description: "Qualify medical clinic leads and prepare outreach for review",
     });
     expect(calls.some((call) => call.url.endsWith("/setup/preview"))).toBe(false);

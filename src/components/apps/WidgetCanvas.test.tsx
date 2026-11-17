@@ -1,8 +1,12 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { WidgetCanvas, type WidgetDefinition } from "./WidgetCanvas";
 
-afterEach(cleanup);
+import { auth } from "../../api";
+const originalPatch=auth.patchUILayoutSurface;
+let revision=0;
+beforeEach(()=>{auth.patchUILayoutSurface=mock(async(project,surface,value)=>({value,revision:++revision,ui_layout:{projects:{[project]:{slots:{[surface]:value}}}}}));});
+afterEach(()=>{cleanup();auth.patchUILayoutSurface=originalPatch});
 
 const definitions: WidgetDefinition[] = [{
   key: "native:test",
@@ -24,7 +28,7 @@ describe("WidgetCanvas editing", () => {
         galleryRequest={1}
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "Add" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add Test widget" }));
     await screen.findByTestId("widget-content");
     view.rerender(
       <WidgetCanvas
@@ -55,9 +59,28 @@ describe("WidgetCanvas editing", () => {
 
     expect(container.querySelector("[data-widget-canvas]")).toBeNull();
     expect(screen.queryByText("Add your first widget")).toBeNull();
-    expect(await screen.findByText("Built-in")).toBeTruthy();
+    expect(await screen.findByRole("button", {name:/Apteva.*Built-in widgets/})).toBeTruthy();
     expect(screen.getByText("Test widget")).toBeTruthy();
     await waitFor(() => expect(onVisibleComponentsChange).toHaveBeenCalledWith([]));
+  });
+
+  test("keeps a static grid placeholder while app widget definitions load", () => {
+    const onVisibleComponentsChange = mock(() => undefined);
+    const { container } = render(
+      <WidgetCanvas
+        projectId="default"
+        slot="dashboard.home"
+        definitions={definitions}
+        definitionsReady={false}
+        editing={false}
+        onEditingChange={() => undefined}
+        onVisibleComponentsChange={onVisibleComponentsChange}
+      />,
+    );
+
+    expect(screen.getByLabelText("Loading dashboard widgets")).toBeTruthy();
+    expect(container.querySelectorAll("[data-widget-canvas] > div")).toHaveLength(2);
+    expect(onVisibleComponentsChange).not.toHaveBeenCalled();
   });
 
   test("keeps editor controls in normal document flow and limits dragging to the handle", async () => {

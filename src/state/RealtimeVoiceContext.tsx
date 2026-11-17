@@ -1,3 +1,4 @@
+import { upsertTranscript, emptyVoiceActivity, reduceVoiceActivity, type TranscriptLine, type VoiceActivity } from "../realtime/events";
 import {
   createContext,
   useCallback,
@@ -14,14 +15,9 @@ import { RealtimeAudioClient, realtimeAudioURL, type RealtimeAudioState } from "
 
 export type VoiceSessionState = "connecting" | "listening" | "speaking" | "reconnecting" | "ending" | "error";
 
-export interface VoiceTranscriptLine {
-  id: string;
-  role: "user" | "agent";
-  text: string;
-  time: string;
-}
+export type VoiceTranscriptLine = TranscriptLine;
 
-export interface VoiceSession {
+export interface VoiceSession extends VoiceActivity {
   agentId: number;
   agentName: string;
   threadId: string;
@@ -66,7 +62,6 @@ export function RealtimeVoiceProvider({ children }: { children: ReactNode }) {
   const clientRef = useRef<RealtimeAudioClient | null>(null);
   const closingRef = useRef(false);
   const reconnectingRef = useRef(false);
-  const seenTranscriptRef = useRef(new Set<string>());
 
   useEffect(() => { sessionRef.current = session; }, [session]);
 
@@ -106,10 +101,9 @@ export function RealtimeVoiceProvider({ children }: { children: ReactNode }) {
     if (!availability.enabled || !availability.available) {
       throw new Error("Realtime voice is not available for this agent.");
     }
-    if (sessionRef.current) throw new Error("End the current voice session before starting another one.");
+    if (sessionRef.current || closingRef.current) throw new Error("Wait for the current voice session to finish before starting another one.");
     closingRef.current = false;
     reconnectingRef.current = false;
-    seenTranscriptRef.current.clear();
     const threadId = newThreadID();
     const client = new RealtimeAudioClient({
       onState: (state: RealtimeAudioState) => {
@@ -133,6 +127,7 @@ export function RealtimeVoiceProvider({ children }: { children: ReactNode }) {
       state: "connecting",
       muted: false,
       transcripts: [],
+      ...emptyVoiceActivity(),
     };
     setSession(initial);
     sessionRef.current = initial;
@@ -143,6 +138,8 @@ export function RealtimeVoiceProvider({ children }: { children: ReactNode }) {
       const response = await core.spawnRealtimeThread(agentId, threadId, {
         voice: availability.voice,
         provider: availability.provider,
+        model: availability.modelTier || "large",
+        realtime_execution: availability.execution,
         mcp: availability.mcp,
       });
       if (!response.audio_token) throw new Error("Core did not return an audio token.");
@@ -156,6 +153,7 @@ export function RealtimeVoiceProvider({ children }: { children: ReactNode }) {
       sessionRef.current = null;
       // The thread may have been created before the WebSocket failed.
       void core.killThread(agentId, threadId).catch(() => {});
+      closingRef.current = false;
       throw error;
     }
   }, [patchSession, reconnect]);
@@ -192,32 +190,19 @@ export function RealtimeVoiceProvider({ children }: { children: ReactNode }) {
   }, [patchSession]);
 
   useTelemetryEvents(session?.agentId, (event: TelemetryEvent) => {
-    const current = sessionRef.current;
-    if (!current || event.thread_id !== current.threadId) return;
-    if (event.type === "realtime.user" || event.type === "realtime.assistant") {
-      const text = String(event.data?.text || "").trim();
-      if (!text) return;
-      const key = `${event.type}|${event.time || ""}|${text}`;
-      if (seenTranscriptRef.current.has(key)) return;
-      seenTranscriptRef.current.add(key);
-      const line: VoiceTranscriptLine = {
-        id: event.id || key,
-        role: event.type === "realtime.user" ? "user" : "agent",
-        text,
-        time: event.time || new Date().toISOString(),
+    const apply = (value: VoiceSession | null): VoiceSession | null => {
+      if (!value || event.instance_id !== value.agentId || event.thread_id !== value.threadId && !value.executionThreads.includes(event.thread_id)) return value;
+      const activity = reduceVoiceActivity(value, value.threadId, event);
+      const parent = event.thread_id === value.threadId;
+      const transcripts = parent ? upsertTranscript(value.transcripts, event) : value.transcripts;
+      const failed = parent && event.type === "realtime.error";
+      if (activity === value && transcripts === value.transcripts && !failed) return value;
+      return { ...value, ...activity, transcripts,
+        activeToolReason: Object.values(activity.activeTools).join(" · ") || undefined,
+        ...(failed ? { state: "error" as const, error: String(event.data?.error || "Realtime provider error") } : {}),
       };
-      setSession((value) => value && value.threadId === current.threadId
-        ? { ...value, transcripts: [...value.transcripts, line].slice(-100) }
-        : value);
-      return;
-    }
-    if (event.type === "tool.call") {
-      patchSession({ activeToolReason: String(event.data?.reason || "Using a capability…") });
-    } else if (event.type === "tool.result") {
-      patchSession({ activeToolReason: undefined });
-    } else if (event.type === "realtime.error") {
-      patchSession({ state: "error", error: String(event.data?.error || "Realtime provider error") });
-    }
+    };
+    setSession(apply);
   });
 
   useEffect(() => () => {
@@ -268,6 +253,11 @@ export function RealtimeVoiceDock() {
         </button>
         <button type="button" onClick={() => void end()} className="h-8 rounded-md border border-red/60 px-2 text-[10px] text-red hover:bg-red/10">End</button>
       </div>
+      {expanded && Object.values(session.usage).some((value) => value > 0) && (
+        <div className="border-t border-border/70 px-3 py-2 text-[10px] text-text-muted">
+          <VoiceUsage usage={session.usage} />
+        </div>
+      )}
       {(recent.length > 0 || session.error) && (
         <div className="max-h-56 space-y-2 overflow-y-auto border-t border-border/70 px-3 py-2.5">
           {recent.map((line) => (
@@ -280,6 +270,13 @@ export function RealtimeVoiceDock() {
       )}
     </aside>
   );
+}
+
+function VoiceUsage({ usage }: Pick<VoiceActivity, "usage">) {
+  return <div className="text-[10px] text-text-muted">
+    <p>{usage.voiceSeconds > 0 ? `Voice · ${usage.voiceSeconds.toFixed(1)}s · $${usage.voiceCost.toFixed(4)}` : `Voice · $${usage.voiceCost.toFixed(4)} recorded; duration unavailable`}</p>
+    <p>Backend · {usage.backendTokens.toLocaleString()} tokens · ${usage.backendCost.toFixed(4)}</p>
+  </div>;
 }
 
 export function MicrophoneIcon({ muted = false }: { muted?: boolean }) {

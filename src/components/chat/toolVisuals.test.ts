@@ -53,7 +53,10 @@ describe("tool visual registry", () => {
     const remove = resolveToolVisual("apteva-server_apps_uninstall", registry);
     expect(list.key).toBe("mcp:apteva-server");
     expect(remove.key).toBe(list.key);
-    expect(remove.label).toBe("Apteva");
+    expect(remove.label).toBe("Apteva Server");
+    expect(remove.iconUrl).toBe("/apteva-mark-mask.png");
+    expect(remove.iconStyle).toBe("monochrome");
+    expect(remove.brand).toBe(true);
   });
 
   test("uses an installed app's identity for its namespaced tools", () => {

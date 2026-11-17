@@ -24,7 +24,7 @@ export function PickerOption({
       aria-checked={selected}
       disabled={disabled}
       onClick={onToggle}
-      className={`flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors disabled:cursor-default ${selected ? "border-accent/50 bg-accent/5" : "border-transparent hover:bg-bg-hover"}`}
+      className={`flex w-full cursor-pointer items-center gap-3 rounded-lg border p-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent enabled:hover:border-accent/60 enabled:active:bg-accent/15 disabled:cursor-not-allowed ${selected ? "border-accent/50 bg-accent/5 enabled:hover:bg-accent/10" : "border-transparent enabled:hover:bg-bg-hover"}`}
     >
       {icon}
       <span className="min-w-0 flex-1">

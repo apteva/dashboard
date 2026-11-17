@@ -48,11 +48,11 @@
 }
 [data-theme="clean"] {
   --font-base: "Inter", "system-ui", -apple-system, sans-serif;
-  --radius-sm: 4px;
+  --radius-sm: 5px;
   --radius-md: 8px;
-  --radius-lg: 12px;
-  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.06);
-  --shadow-popover: 0 4px 6px rgb(0 0 0 / 0.05), 0 10px 20px rgb(0 0 0 / 0.10);
+  --radius-lg: 10px;
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.05), 0 3px 8px rgb(15 23 42 / 0.04);
+  --shadow-popover: 0 4px 8px rgb(15 23 42 / 0.08), 0 12px 28px rgb(15 23 42 / 0.12);
 }
 
 /* Always-mono token, for code / inline IDs / log lines. Never themed. */
@@ -109,6 +109,7 @@
   --error: #ef4444;
   --info: #3b82f6;
   --recurring: #a78bfa;
+  --activity-thought: #a78bfa;
 }
 
 [data-theme="terminal"][data-mode="light"] {
@@ -132,52 +133,55 @@
   --error: #b91c1c;
   --info: #1d4ed8;
   --recurring: #6d28d9;
+  --activity-thought: #6d28d9;
 }
 
 [data-theme="clean"][data-mode="dark"] {
-  --bg: #0f1419;              /* slightly cooler than terminal-dark */
-  --bg-card: #1a2128;
-  --bg-subtle: #151b22;
-  --bg-hover: #232b34;
-  --bg-input: #131920;
+  --bg: #11161c;
+  --bg-card: #1a222b;
+  --bg-subtle: #151c24;
+  --bg-hover: #232d38;
+  --bg-input: #141c24;
   --bg-overlay: rgb(0 0 0 / 0.6);
-  --text: #e6e8eb;
-  --text-muted: #a3aab3;
-  --text-dim: #7d848e;
-  --border: #2a3340;
-  --border-subtle: #1f2630;
-  --border-strong: #3d4759;
-  --accent: #6e8aff;          /* cooler blue-violet */
-  --accent-hover: #8aa1ff;
-  --accent-muted: #4255a5;
+  --text: #e8edf2;
+  --text-muted: #a7b0ba;
+  --text-dim: #7c8793;
+  --border: #2b3642;
+  --border-subtle: #222c36;
+  --border-strong: #43505e;
+  --accent: #4f9cf7;
+  --accent-hover: #75b4ff;
+  --accent-muted: #28578d;
   --success: #4ade80;
   --warn: #fbbf24;
   --error: #f87171;
   --info: #60a5fa;
-  --recurring: #c084fc;
+  --recurring: #7c9ccf;
+  --activity-thought: #b39ae8;
 }
 
 [data-theme="clean"][data-mode="light"] {
-  --bg: #ffffff;
-  --bg-card: #f7f8fa;
-  --bg-subtle: #fafbfc;
-  --bg-hover: #eef0f4;
+  --bg: #f7f9fb;
+  --bg-card: #ffffff;
+  --bg-subtle: #f1f4f7;
+  --bg-hover: #e9eef3;
   --bg-input: #ffffff;
   --bg-overlay: rgb(0 0 0 / 0.4);
-  --text: #15171a;
-  --text-muted: #4b5563;
-  --text-dim: #6b7280;
-  --border: #e5e7eb;
-  --border-subtle: #f1f3f5;
-  --border-strong: #cbd1d8;
-  --accent: #4f5fdb;          /* same family as clean-dark's accent, deeper */
-  --accent-hover: #4150c4;
-  --accent-muted: #c1c8f0;
+  --text: #17202a;
+  --text-muted: #526170;
+  --text-dim: #6f7d8c;
+  --border: #dbe2e9;
+  --border-subtle: #edf1f5;
+  --border-strong: #b7c2cd;
+  --accent: #1f67b1;
+  --accent-hover: #17548e;
+  --accent-muted: #b9d5ef;
   --success: #047857;
   --warn: #b45309;
   --error: #b91c1c;
   --info: #1d4ed8;
-  --recurring: #7c3aed;
+  --recurring: #4d77a8;
+  --activity-thought: #7550ad;
 }
 
 /* ─── Tailwind theme tokens ───────────────────────────────────────
@@ -212,6 +216,7 @@
   --color-error: var(--error);
   --color-info: var(--info);
   --color-recurring: var(--recurring);
+  --color-activity-thought: var(--activity-thought);
 
   /* Back-compat aliases — the codebase has ~40 sites using the old
    * names (text-red, bg-green, text-yellow, text-blue). They map onto
@@ -290,8 +295,10 @@ body.apteva-shell-active #root {
   padding-bottom: var(--safe-area-bottom);
 }
 .app-topbar-safe {
-  min-height: calc(3rem + var(--safe-area-top));
+  min-height: calc(3.5rem + var(--safe-area-top));
   padding-top: var(--safe-area-top);
+  padding-left: calc(0.75rem + var(--safe-area-left));
+  padding-right: calc(0.75rem + var(--safe-area-right));
 }
 .modal-safe-frame {
   padding-top: max(0.75rem, var(--safe-area-top));
@@ -318,6 +325,10 @@ body.apteva-shell-active #root {
 .floating-chat-launcher-safe {
   right: max(1.25rem, calc(var(--safe-area-right) + 0.75rem));
   bottom: max(1.25rem, calc(var(--safe-area-bottom) + 0.75rem));
+}
+/* Reserve the fixed launcher's width plus a gap beside wizard actions. */
+body:has(.floating-chat-launcher-safe) .chat-launcher-action-footer {
+  padding-right: max(5rem, calc(var(--safe-area-right) + 4.5rem));
 }
 .chat-component-frame {
   min-width: 0;
@@ -784,3 +795,17 @@ select {
   padding: 0.25rem 0.5rem;
 }
 .chat-md th { background: var(--bg-card); font-weight: 600; }
+
+/* Simple agent glyphs use the same surface and accent tokens as app icons. */
+.agent-mark {
+  color: var(--accent);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+}
+
+/* Focused pages size the existing widgets to their assigned pane. */
+.workspace-widget > section { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.workspace-widget > section > header { flex-shrink: 0; }
+.workspace-widget > section > div:last-child { min-height: 0; max-height: none; overflow: auto; }
+.workspace-widget > section > div:last-child:not(.workspace-chat) { flex: 1; }
+.workspace-widget > section > .system-map-body { overflow: hidden; }

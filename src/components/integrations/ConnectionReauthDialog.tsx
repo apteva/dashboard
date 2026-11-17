@@ -24,11 +24,19 @@ export function DeviceCodeAuthPanel({
   const [status, setStatus] = useState("pending");
   const [pollTick, setPollTick] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState("");
+  const codeInput = useRef<HTMLInputElement>(null);
+  const copiedTimer = useRef<number | null>(null);
 
   useEffect(() => {
     setStatus("pending");
     setCopied(false);
+    setCopyError("");
   }, [auth.session_id]);
+
+  useEffect(() => () => {
+    if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,12 +63,34 @@ export function DeviceCodeAuthPanel({
   }, [auth.session_id, auth.interval_seconds, pollTick, onConnected, onError]);
 
   const copyCode = async () => {
+    // Keep the code selected so it can still be copied manually if the
+    // Clipboard API is unavailable (for example on a non-secure origin).
+    codeInput.current?.focus();
+    codeInput.current?.select();
+    setCopied(false);
+    setCopyError("");
+    let success = false;
     try {
-      await navigator.clipboard.writeText(auth.user_code);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(auth.user_code);
+        success = true;
+      }
     } catch {
-      onError("Could not copy the code. Select it and copy it manually.");
+      // The browser may deny clipboard access even when the API is present.
+    }
+    if (!success) {
+      try {
+        success = document.execCommand("copy");
+      } catch {
+        // The selected code remains available for manual copying.
+      }
+    }
+    if (success) {
+      setCopied(true);
+      if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current);
+      copiedTimer.current = window.setTimeout(() => setCopied(false), 1500);
+    } else {
+      setCopyError("Copy was blocked. The code is selected; press ⌘C or Ctrl+C to copy it.");
     }
   };
 
@@ -78,9 +108,16 @@ export function DeviceCodeAuthPanel({
         <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-text-muted">
           Enter this code when prompted
         </div>
-        <div className="select-all font-mono text-2xl font-bold tracking-[0.12em] text-text">
-          {auth.user_code}
-        </div>
+        <input
+          ref={codeInput}
+          aria-label="Sign-in code"
+          readOnly
+          spellCheck={false}
+          value={auth.user_code}
+          onFocus={(event) => event.currentTarget.select()}
+          onClick={(event) => event.currentTarget.select()}
+          className="w-full cursor-text bg-transparent text-center font-mono text-2xl font-bold tracking-[0.12em] text-text focus-visible:outline-2 focus-visible:outline-accent"
+        />
       </div>
 
       <div className="flex flex-col-reverse gap-2 sm:flex-row">
@@ -104,6 +141,8 @@ export function DeviceCodeAuthPanel({
           </svg>
         </a>
       </div>
+
+      {copyError && <p role="alert" className="text-center text-xs text-red">{copyError}</p>}
 
       <p className="text-center text-[11px] leading-relaxed text-text-muted">
         Approve access in the new window, then return here. This dialog will finish automatically.

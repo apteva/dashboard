@@ -23,6 +23,7 @@ export interface ToolVisual {
   label: string;
   iconUrl?: string;
   iconStyle?: "image" | "monochrome";
+  brand?: boolean;
   glyph: ToolGlyph;
 }
 
@@ -101,7 +102,7 @@ function connectionSources(connections: ConnectionInfo[]): ToolVisualSource[] {
 }
 
 function mcpSources(servers: MCPServer[]): ToolVisualSource[] {
-  return servers.map((server) => {
+  return servers.filter((server) => server.name !== "apteva-server").map((server) => {
     const slug = normalizeToolToken(server.name);
     return {
       key: `mcp:${server.id || slug}`,
@@ -118,7 +119,10 @@ function mcpSources(servers: MCPServer[]): ToolVisualSource[] {
 // explicit source identity so every apteva-server_* call shares one icon.
 const platformSource: ToolVisualSource = {
   key: "mcp:apteva-server",
-  label: "Apteva",
+  label: "Apteva Server",
+  iconUrl: "/apteva-server.svg",
+  iconStyle: "monochrome",
+  brand: true,
   glyph: "tool",
   aliases: ["apteva_server"],
   exactTools: [],

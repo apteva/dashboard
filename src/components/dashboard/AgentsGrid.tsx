@@ -11,6 +11,7 @@ import { Link } from "react-router-dom";
 import { instances, type Agent } from "../../api";
 import { useProjects } from "../../hooks/useProjects";
 import { notifications } from "../../state/notifications";
+import { AgentMark } from "../AgentMark";
 
 const REFRESH_MS = 5000;
 
@@ -113,7 +114,7 @@ function AgentTile({ instance, unread }: { instance: Agent; unread: number }) {
           {instance.mode}
         </span>
       </div>
-      <div className="text-sm text-text font-medium truncate">{instance.name}</div>
+      <div className="flex min-w-0 items-center gap-2"><AgentMark icon={instance.icon} color={instance.icon_color} size="sm" /><div className="min-w-0 truncate text-sm font-medium text-text">{instance.name}</div></div>
       <div className="text-[11px] text-text-muted mt-0.5">#{instance.id}</div>
       {unread > 0 && (
         <div className="absolute top-1.5 right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-accent text-bg text-[10px] font-bold flex items-center justify-center">

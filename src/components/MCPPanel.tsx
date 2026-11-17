@@ -1,3 +1,4 @@
+import { AppIcon } from "@apteva/ui-kit";
 import { useState, useEffect } from "react";
 import { core, mcpServers, type MCPServer, type MCPServerConfig } from "../api";
 import { Modal } from "./Modal";
@@ -9,11 +10,10 @@ import { useProjects } from "../hooks/useProjects";
 // preload; there's no per-attachment mode/access decision in the
 // new model.
 //
-// Server-managed channel/platform entries are filtered out here. This
-// picker is only for app, integration, and custom MCP servers the
-// operator deliberately attaches as tools.
+// Channel entries remain server-managed. Built-in management capabilities
+// share the same inventory and attachment API as apps and integrations.
 
-const HIDDEN_SYSTEM_MCP_NAMES = new Set(["apteva-server", "channels", "apteva-channels"]);
+const HIDDEN_SYSTEM_MCP_NAMES = new Set(["channels", "apteva-channels"]);
 
 interface Props {
   instanceId: number;
@@ -183,6 +183,7 @@ export function MCPPanel({ instanceId, running }: Props) {
                         The slug itself is shown as a mono pill next to
                         it so users can see exactly what the agent will
                         refer to the server as. */}
+                    {s.source === "builtin" && <AppIcon src="/apteva-server.svg" iconStyle="monochrome" name="Apteva Server" size="md" className="border border-border text-accent" />}
                     <span className="text-text text-sm font-bold">
                       {s.description || s.name}
                     </span>

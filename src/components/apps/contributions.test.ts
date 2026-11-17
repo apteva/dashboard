@@ -73,6 +73,17 @@ describe("generic app contributions", () => {
     ]);
   });
 
+  test("keeps widgets mounted while a serving app upgrade is pending", () => {
+    const upgrading = [{
+      ...installed[0],
+      status: "pending",
+      serving: true,
+    }];
+    expect(contributionsFor(upgrading, "dashboard.home").map((item) => item.key)).toEqual([
+      contributionKey("work-ledger", "overview"),
+    ]);
+  });
+
   test("keeps user-managed Home widgets opt-in even when an app suggests them", () => {
     const found = contributionsFor(installed, "dashboard.home");
     expect(enabledContributionKeys(found, "dashboard.home", {})).toEqual([]);

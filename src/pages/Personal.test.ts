@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import type { AppRow } from "../api";
-import { selectPersonalConversationsContribution } from "./Personal";
+import type { Agent, AppRow } from "../api";
+import { personalConversationAgents, selectPersonalConversationsContribution } from "./Personal";
 
 function conversationsApp(over: Partial<AppRow> = {}): AppRow {
   return {
@@ -42,6 +42,16 @@ function conversationsApp(over: Partial<AppRow> = {}): AppRow {
 }
 
 describe("Personal Conversations workspace", () => {
+  test("keeps the platform Helper out of the panel selector", () => {
+    const agents = [
+      { id: 7, name: "Builder", kind: "agent" },
+      { id: 99, name: "Apteva Helper", kind: "platform_helper" },
+      { id: 100, name: "Helper alias", kind: "agent" },
+    ] as Agent[];
+    expect(personalConversationAgents(agents, 99).map((agent) => agent.id)).toEqual([7, 100]);
+    expect(personalConversationAgents(agents).map((agent) => agent.id)).toEqual([7, 100]);
+  });
+
   test("prefers the project-scoped Conversations contribution", () => {
     const global = conversationsApp();
     const project = conversationsApp({ install_id: 11, project_id: "project-a" });
@@ -67,15 +77,16 @@ describe("Personal Conversations workspace", () => {
     expect(source).not.toContain("chat.createConversation");
   });
 
-  test("uses one theme-aware Apteva mark instead of social-style avatars", () => {
+  test("uses the shared theme-aware agent icon collection", () => {
     const personal = readFileSync(new URL("./Personal.tsx", import.meta.url), "utf8");
-    const mark = readFileSync(new URL("../components/AgentMark.tsx", import.meta.url), "utf8");
-    expect(personal).toContain('import { AgentMark } from "../components/AgentMark"');
+    const wrapper = readFileSync(new URL("../components/AgentMark.tsx", import.meta.url), "utf8");
+    expect(wrapper).toContain('from "@apteva/ui-kit"');
+    const mark = readFileSync(new URL("../../../ui-kit/src/AgentMark.tsx", import.meta.url), "utf8");
+    expect(personal).toContain('import { AgentMark, suggestedAgentIcon } from "../components/AgentMark"');
     expect(mark).toContain("function AgentMark");
     expect(mark).toContain('stroke="currentColor"');
-    expect(mark).toContain("border-accent/25 bg-accent/10 text-accent");
-    expect(mark).not.toContain("agentColor");
-    expect(mark).not.toContain("backgroundColor");
+    expect(mark).toContain('id: "robot"');
+    expect(mark).toContain("AGENT_ICON_COLORS");
   });
 
   test("keeps navigation out of the Personal page", () => {

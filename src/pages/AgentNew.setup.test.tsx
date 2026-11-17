@@ -42,6 +42,7 @@ const app = (id: number, name: string, display: string): AppRow =>
     name,
     display_name: display,
     description: `${display} tools`,
+    agent_setup: { recommended: name === "tasks", reason: name === "tasks" ? "Track work." : undefined },
     icon: "/icon.svg",
     icon_style: "monochrome",
     status: "running",
@@ -113,7 +114,7 @@ function Fixture({
   );
 }
 
-test("shows selections and essentials, keeps the full app inventory inside a searchable picker", async () => {
+test("shows selections and manifest recommendations, keeps the full app inventory inside a searchable picker", async () => {
   render(<Fixture />);
   expect(screen.getByRole("heading", { name: "Conversations" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Storage" })).toBeTruthy();

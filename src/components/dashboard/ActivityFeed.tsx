@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { telemetry, type Agent, type TelemetryEvent } from "../../api";
-import { useProjects } from "../../hooks/useProjects";
 import { useTelemetryEvents } from "../../hooks/useTelemetryBus";
 
 const MAX_ROWS = 80;
@@ -28,11 +27,13 @@ interface Row {
 
 export function ActivityFeed({
   agents,
+  projectId,
+  allProjects = false,
 }: {
   agents: Agent[];
+  projectId?: string;
+  allProjects?: boolean;
 }) {
-  const { currentProject } = useProjects();
-  const projectId = currentProject?.id;
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const nameById = useMemo(
@@ -45,15 +46,20 @@ export function ActivityFeed({
   useEffect(() => {
     let cancelled = false;
     setRows([]);
-    if (!projectId || agents.length === 0) {
+    if (!projectId && !allProjects || agents.length === 0) {
       setLoading(false);
       return () => { cancelled = true; };
     }
 
     setLoading(true);
-    telemetry.projectActivity(projectId, MAX_ROWS).catch(() => [] as TelemetryEvent[]).then((history) => {
+    const projectIds = allProjects
+      ? [...new Set(agents.map((agent) => agent.project_id).filter((id): id is string => Boolean(id)))]
+      : projectId ? [projectId] : [];
+    Promise.all(projectIds.map((id) => telemetry.projectActivity(id, MAX_ROWS).catch(() => [] as TelemetryEvent[]))).then((histories) => {
       if (cancelled) return;
-      const initial = history
+      const agentIDSet = new Set(agents.map((agent) => agent.id));
+      const initial = histories.flat()
+        .filter((event) => agentIDSet.has(event.instance_id))
         .map(toSignificantRow)
         .filter((row): row is Row => row !== null);
       setRows((previous) => mergeRows(previous, initial));
@@ -62,9 +68,10 @@ export function ActivityFeed({
     });
 
     return () => { cancelled = true; };
-  }, [agentIDs, projectId]);
+  }, [agentIDs, allProjects, projectId]);
 
   useTelemetryEvents(projectId ? null : undefined, (event: TelemetryEvent) => {
+    if (!agents.some((agent) => agent.id === event.instance_id)) return;
     const row = toSignificantRow(event);
     if (!row) return;
     setRows((previous) => mergeRows(previous, [row]));

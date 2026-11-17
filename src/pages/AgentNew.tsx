@@ -1,9 +1,13 @@
+import { agentAppRecommendations } from "./agentAppRecommendations";
+import { ProviderBuiltinsEditor } from "../components/ProviderBuiltins";
+import type { RuntimeConnection, AgentBuiltinOverrides } from "../api";
 import { PickerOption } from "../components/PickerOption";
 import { ProactivityControl } from "../components/ProactivityControl";
 import { defaultProactivity, proactivityLabel } from "../agentBehavior";
 import { behaviorDescriptions, behaviorExplanation } from "../agentBehavior";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AppIcon } from "@apteva/ui-kit";
+import { AgentIconPicker, AgentMark, AGENT_ICONS, suggestedAgentIcon } from "../components/AgentMark";
 import { useNavigate } from "react-router-dom";
 import {
   agentTemplates,
@@ -24,7 +28,7 @@ import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { Modal } from "../components/Modal";
 import { ConnectIntegrationModal } from "../components/integrations/ConnectIntegrationModal";
-import { structureDirectiveDraft } from "../utils/directiveMarkdown";
+import { AgentInstructionsEditor } from "../components/AgentInstructionsEditor";
 
 // AgentNew — guided "build your first agent" wizard. Four steps:
 //
@@ -84,12 +88,13 @@ interface AppAccessDraft {
 export interface WizardState {
   templateID: string | null;
   name: string;
+  icon: string;
   directive: string;
   mode: Mode;
   proactivity: number;
   unconscious: boolean;
   includeChannels: boolean;
-  recommendedApps: string[]; // surface-only, no install in this flow
+  optionalAppSlugs?: string[]; // Explicit setup choices, installed through the usual app flow
   highlights: string[];
   // Explicit selections; project app defaults seed once, template connections
   // seed once per template, and subsequent edits belong to the operator.
@@ -101,6 +106,7 @@ export interface WizardState {
 export const INITIAL: WizardState = {
   templateID: null,
   name: "",
+  icon: "robot",
   directive: "",
   mode: "learn",
   proactivity: defaultProactivity,
@@ -112,9 +118,21 @@ export const INITIAL: WizardState = {
   boundAppInstallIDs: new Set<number>(),
   boundConnectionIDs: new Set<number>(),
   appAccess: {},
-  recommendedApps: [],
+  optionalAppSlugs: [],
   highlights: [],
 };
+
+// Opted-in recommendations use the same install, review and attachment path
+// as template apps. Merely showing a recommendation never selects it.
+export function wizardAppRequirements(template: AgentTemplate | null | undefined, state: WizardState): Requirement[] {
+  const requirements = template?.requirements || [];
+  return [
+    ...requirements.map((requirement) => requirement.kind === "app" && state.optionalAppSlugs?.includes(requirement.slug || "")
+      ? { ...requirement, required: true } : requirement),
+    ...(state.optionalAppSlugs || []).filter((slug) => !requirements.some((requirement) => requirement.kind === "app" && requirement.slug === slug))
+      .map((slug): Requirement => ({ kind: "app", slug, required: true, reason: "Added during setup." })),
+  ];
+}
 
 function defaultAppAccessDraft(): AppAccessDraft {
   return { mode: "full", folders: "/", read: true, write: false, delete: false };
@@ -128,6 +146,15 @@ export function defaultAgentAppInstallIDs(rows: AppRow[]): Set<number> {
   );
 }
 
+function preferredRunningApp(rows: AppRow[], slug: string, selected: Set<number>): AppRow | undefined {
+  const candidates = rows.filter(app => app.name === slug);
+  const explicit = candidates.find(app => app.status === "running" && selected.has(app.install_id));
+  if (explicit) return explicit;
+  const projectInstalls = candidates.filter(app => !!app.project_id);
+  const scope = projectInstalls.length ? projectInstalls : candidates;
+  return scope.find(app => app.status === "running" && app.is_default !== false);
+}
+
 export function effectiveAgentAppInstallIDs(
   selected: Iterable<number>,
   installedApps: AppRow[],
@@ -135,10 +162,9 @@ export function effectiveAgentAppInstallIDs(
 ): number[] {
   const effective = new Set(selected);
   const required = new Set(requiredSlugs);
-  for (const app of installedApps) {
-    if (app.status === "running" && required.has(app.name)) {
-      effective.add(app.install_id);
-    }
+  for (const slug of required) {
+    const app = preferredRunningApp(installedApps, slug, effective);
+    if (app) effective.add(app.install_id);
   }
   return Array.from(effective);
 }
@@ -215,8 +241,18 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
   const [state, setState] = useState<WizardState>(INITIAL);
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [hasProvider, setHasProvider] = useState<boolean | null>(null);
+  const [runtimeProviders, setRuntimeProviders] = useState<RuntimeConnection[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const [providerDefault, setProviderDefault] = useState("");
+  const [builtinOverrides, setBuiltinOverrides] = useState<AgentBuiltinOverrides>({});
+  const [builtinsValid, setBuiltinsValid] = useState(true);
+  const effectiveProvider = selectedProvider || providerDefault || runtimeProviders[0]?.provider_key || "";
+  const builtinConnection = runtimeProviders.find((c) => c.provider_key === effectiveProvider);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [nameValidationAttempted, setNameValidationAttempted] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const nameError = nameValidationAttempted && !state.name.trim() ? "Enter an agent name to continue." : null;
 
   // Installed apps + marketplace are fetched on mount so the Create
   // step can auto-install required apps from the chosen template's
@@ -239,12 +275,14 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
     let cancelled = false;
     setInstalledAppsLoaded(false);
     setConnectionsLoaded(false);
+    setSelectedProvider(""); setBuiltinOverrides({}); setRuntimeProviders([]); setProviderDefault("");
+    integrations.newAgentProvider(currentProject?.id).then((settings) => { if (!cancelled) setProviderDefault(settings.effective_provider || ""); }).catch(() => {});
     seededConnectionsTemplate.current = null;
     connectionInventoryProject.current = null;
     agentTemplates.list().then(setTemplates).catch(() => setTemplates([]));
     integrations
       .runtimeConnections(currentProject?.id)
-      .then((list) => setHasProvider(list.some((c) => c.role === "llm")))
+      .then((list) => { if (cancelled) return; const seen = new Set<string>(); const providers = list.filter((c) => c.role === "llm" && !c.provider_key.endsWith("-realtime") && !seen.has(c.provider_key) && !!seen.add(c.provider_key)); setRuntimeProviders(providers); setHasProvider(providers.length > 0); })
       .catch(() => setHasProvider(false));
     appsAPI
       .list(currentProject?.id)
@@ -269,8 +307,8 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
       });
     appsAPI
       .marketplace(currentProject?.id)
-      .then((res) => setMarketplace(res.apps))
-      .catch(() => setMarketplace([]));
+      .then((res) => { if (!cancelled) setMarketplace(res.apps); })
+      .catch(() => { if (!cancelled) setMarketplace([]); });
     integrationsAPI
       .connections(currentProject?.id)
       .then((list) => { if (!cancelled) { connectionInventoryProject.current = currentProject?.id || ""; setConnections(list); setConnectionsLoaded(true); } })
@@ -323,11 +361,11 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
   // skipped. Returns when every required app has reached `running`
   // (or throws on first install error). Parallel POSTs are safe —
   // apps_loader serializes the build step server-side via semaphore.
-  const installRequiredApps = async (tpl: AgentTemplate): Promise<AppRow[]> => {
+  const installRequiredApps = async (requirements: Requirement[]): Promise<AppRow[]> => {
     // Re-read status at submission: an existing row may still be queued or
     // have failed since the wizard loaded. Presence alone is not readiness.
     const currentApps = await appsAPI.list(currentProject?.id);
-    const slugs = [...new Set(tpl.requirements
+    const slugs = [...new Set(requirements
       .filter((r) => r.kind === "app" && r.required && r.slug)
       .map((r) => r.slug!))];
     if (slugs.length === 0) return currentApps;
@@ -335,8 +373,9 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
     const installIDs: Record<string, number> = {};
     for (const slug of slugs) {
       const candidates = currentApps.filter((app) => app.name === slug);
-      const row = candidates.find((app) => app.status === "running")
-        || candidates.find((app) => app.status === "pending") || candidates[0];
+      const row = preferredRunningApp(currentApps, slug, state.boundAppInstallIDs)
+        || candidates.find((app) => app.is_default !== false);
+      if (!row && candidates.length) throw new Error(`${slug}: select an installation in Setup or choose a ready default in Apps.`);
       if (row) {
         if (row.status === "error" || row.status === "disabled") {
           throw new Error(`${slug}: ${row.error_message || "required app is not running"}. Fix it in Apps, then try again.`);
@@ -389,13 +428,15 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
     switch (step.id) {
       case "template":
         if (!state.templateID) {
-          setError("Pick a template or choose Empty to start blank.");
+          setError("Pick a template or choose Start from scratch.");
           return false;
         }
         return true;
       case "details":
         if (!state.name.trim()) {
-          setError("Give your agent a name.");
+          setNameValidationAttempted(true);
+          nameInputRef.current?.focus({ preventScroll: true });
+          nameInputRef.current?.scrollIntoView({ block: "center", behavior: "auto" });
           return false;
         }
         // Directive empty is fine — server fills "Idle. Waiting…".
@@ -414,21 +455,26 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
   };
 
   const applyTemplate = (t: AgentTemplate) => {
-    setState((s) => ({
-      ...s,
-      templateID: t.id,
-      // Suggest the template's name but let the user override.
-      name: s.name || (t.id === "empty" ? "" : t.name),
-      directive: structureDirectiveDraft(t.directive, s.name || (t.id === "empty" ? "" : t.name)),
-      mode: t.mode as Mode,
-      unconscious: t.unconscious,
-      recommendedApps: t.recommended_apps || [],
-      highlights: t.highlights || [],
-    }));
+    setState((s) => {
+      const previous = templates.find((template) => template.id === s.templateID);
+      const name = !s.name || s.name === previous?.name ? (t.id === "empty" ? "" : t.name) : s.name;
+      return {
+        ...s,
+        templateID: t.id,
+        name,
+        icon: suggestedAgentIcon(t.icon),
+        directive: t.directive || "",
+        mode: t.mode as Mode,
+        unconscious: t.unconscious,
+        optionalAppSlugs: [],
+        highlights: t.highlights || [],
+      };
+    });
   };
 
   const create = async () => {
     if (!validateStep()) return;
+    if (!builtinsValid) { setError("Complete the model capability options in Details before creating the agent."); setStepIdx(1); return; }
     setCreating(true);
     setError(null);
     setInstallProgress({});
@@ -438,10 +484,11 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
       // user choice. Optional (required=false) apps and integrations
       // are deferred to the agent detail page so the wizard stays
       // short and predictable.
-      const tpl = templates.find((t) => t.id === state.templateID);
-      const appsAtCreate = tpl ? await installRequiredApps(tpl) : installedApps;
+      const selectedTemplate = templates.find((t) => t.id === state.templateID);
+      const requirements = wizardAppRequirements(selectedTemplate, state);
+      const appsAtCreate = await installRequiredApps(requirements);
       const requiredAppSlugs = new Set(
-        (tpl?.requirements || [])
+        requirements
           .filter((r) => r.kind === "app" && r.required && r.slug)
           .map((r) => r.slug!),
       );
@@ -460,6 +507,9 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
         currentProject?.id,
         startNow,
         {
+          defaultProvider: selectedProvider || undefined,
+          builtinOverrides,
+          icon: state.icon,
           proactivity: state.proactivity,
           includeChannels: state.includeChannels,
           unconscious: state.unconscious,
@@ -504,7 +554,18 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
             />
           )}
           {step.id === "details" && (
-            <DetailsStep state={state} setState={setState} />
+            <>
+            <DetailsStep state={state} setState={setState} nameError={nameError} nameInputRef={nameInputRef} />
+            {!!runtimeProviders.length && <div className="mt-4 space-y-3">
+              <label className="block text-xs font-semibold text-text-muted">AI provider
+                <select value={selectedProvider} onChange={(e) => setSelectedProvider(e.target.value)} className="mt-1 block w-full rounded-lg border border-border bg-bg-input px-3 py-2 text-sm text-text">
+                  <option value="">Workspace default{builtinConnection && !selectedProvider ? ` (${builtinConnection.app_name})` : ""}</option>
+                  {runtimeProviders.map((c) => <option key={c.id} value={c.provider_key}>{c.app_name}</option>)}
+                </select>
+              </label>
+              <ProviderBuiltinsEditor key={effectiveProvider} connection={builtinConnection} inherit value={builtinOverrides[effectiveProvider] || {}} onValidityChange={setBuiltinsValid} onChange={(value) => setBuiltinOverrides((old) => ({ ...old, [effectiveProvider]: value }))} />
+            </div>}
+            </>
           )}
           {step.id === "setup" && (
             <SetupStep
@@ -543,11 +604,13 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
 
         </div>
       </div>
-      <div className="page-safe-bottom z-20 flex shrink-0 items-center justify-between gap-3 border-t border-border bg-bg-card px-4 py-3 sm:px-6">
+      <div className="chat-launcher-action-footer page-safe-bottom z-20 shrink-0 border-t border-border bg-bg-card px-4 py-3 sm:px-6">
+        {step.id === "details" && nameError && <p className="mb-2 text-xs font-medium text-error">{nameError}</p>}
+        <div className="flex items-center justify-between gap-3">
         <button
           onClick={back}
           disabled={stepIdx === 0 || creating}
-          className="touch-target rounded-lg px-3 text-text-muted text-sm hover:bg-bg-hover hover:text-text transition-colors disabled:opacity-30"
+          className="touch-target shrink-0 rounded-lg px-3 text-text-muted text-sm hover:bg-bg-hover hover:text-text transition-colors disabled:opacity-30"
         >
           ← Back
         </button>
@@ -559,7 +622,7 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
         <button
           onClick={advance}
           disabled={creating || (step.id === "template" && !state.templateID)}
-          className="touch-target min-w-[132px] px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50 sm:px-5"
+          className="touch-target min-w-0 max-w-full break-words px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50 sm:px-5"
         >
           {creating
             ? Object.keys(installProgress).length > 0
@@ -571,6 +634,7 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
                 : "Create agent →"
               : `Continue to ${STEPS[stepIdx + 1]?.label.toLowerCase()} →`}
         </button>
+        </div>
       </div>
     </div>
   );
@@ -622,9 +686,16 @@ interface TemplateStepProps {
 
 export function TemplateStep({ templates, selectedID, onSelect, onSkipWizard }: TemplateStepProps) {
   const [query, setQuery] = useState("");
+  const [category, setCategory] = useState("");
   const selected = templates.find((template) => template.id === selectedID);
-  const filtered = templates.filter((template) =>
-    [template.name, template.description, ...(template.resolved_logos || []).map((logo) => logo.label)]
+  const scratch = templates.find((template) => template.id === "empty");
+  const roles = templates.filter((template) => template.id !== "empty");
+  const categoryOf = (template: AgentTemplate) => template.category || (template.source === "app" ? "apps" : "custom");
+  const categoryLabels: Record<string, string> = { personal: "Personal", work: "Work", business: "Business", development: "Development", apps: "From apps", custom: "Custom" };
+  const categories = Object.keys(categoryLabels).filter((key) => roles.some((template) => categoryOf(template) === key));
+  const filtered = roles.filter((template) =>
+    (!category || categoryOf(template) === category) &&
+    [template.name, template.description, template.preset_name, categoryLabels[categoryOf(template)], ...(template.recommended_apps || []), ...(template.resolved_logos || []).map((logo) => logo.label)]
       .join(" ").toLowerCase().includes(query.trim().toLowerCase()),
   );
 
@@ -633,7 +704,7 @@ export function TemplateStep({ templates, selectedID, onSelect, onSkipWizard }: 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-text text-lg font-bold">What should your agent do?</h2>
-          <p className="text-text-muted text-sm mt-1">Choose a template or start from scratch. You can customize everything next.</p>
+          <p className="text-text-muted text-sm mt-1">Choose a role from our workspace presets, or define your own. Customize everything next.</p>
         </div>
         <input
           type="search"
@@ -645,14 +716,32 @@ export function TemplateStep({ templates, selectedID, onSelect, onSkipWizard }: 
         />
       </div>
 
+      {scratch && (
+        <button type="button" onClick={() => onSelect(scratch)} aria-pressed={selectedID === "empty"}
+          className={`group flex w-full cursor-pointer items-center gap-4 rounded-lg border border-dashed p-4 text-left transition-colors focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 ${selectedID === "empty" ? "border-accent bg-accent/5" : "border-border-strong hover:border-accent hover:bg-bg-hover"}`}>
+          <span aria-hidden="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border text-2xl font-light text-accent">+</span>
+          <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-text">Start from scratch</span><span className="mt-1 block text-xs leading-relaxed text-text-muted">Your own role, instructions, and tools. No preset required.</span></span>
+          <span aria-hidden="true" className="text-accent">{selectedID === "empty" ? "✓" : "→"}</span>
+        </button>
+      )}
+
+      <div className="flex flex-wrap gap-2" role="group" aria-label="Template categories">
+        {["", ...categories].map((key) => (
+          <button key={key} type="button" aria-pressed={category === key} onClick={() => setCategory(key)}
+            className={`min-h-9 cursor-pointer rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent ${category === key ? "border-accent bg-accent/10 text-accent" : "border-border text-text-muted hover:bg-bg-hover hover:text-text"}`}>
+            {key ? categoryLabels[key] : "All roles"}<span className="ml-2 opacity-60">{key ? roles.filter((template) => categoryOf(template) === key).length : roles.length}</span>
+          </button>
+        ))}
+      </div>
+
       <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
         <div>
           {templates.length === 0 ? (
             <p className="text-text-muted text-sm">Loading templates…</p>
           ) : filtered.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border p-8 text-center">
-              <p className="text-sm text-text-muted">No templates match “{query}”. Try an app name or a different task.</p>
-              <button onClick={() => setQuery("")} className="mt-3 text-sm text-accent hover:underline">Clear search</button>
+              <p className="text-sm text-text-muted">No templates match{query.trim() ? ` “${query}”` : " this category"}. Try another category or search.</p>
+              <button onClick={() => { setQuery(""); setCategory(""); }} className="mt-3 text-sm text-accent hover:underline">Clear search</button>
             </div>
           ) : (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,250px),1fr))] gap-3">
@@ -662,20 +751,21 @@ export function TemplateStep({ templates, selectedID, onSelect, onSkipWizard }: 
                   type="button"
                   onClick={() => onSelect(t)}
                   aria-pressed={selectedID === t.id}
-                  className={`flex h-full flex-col gap-3 text-left border rounded-lg p-4 transition-colors focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 ${
+                  className={`flex h-full cursor-pointer flex-col gap-3 text-left border rounded-lg p-4 transition-colors focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 ${
                     selectedID === t.id
                       ? "border-accent bg-accent/5"
                       : "border-border bg-bg-card hover:border-text-dim hover:bg-bg-hover"
                   }`}
                 >
-                  <div className="flex w-full items-start gap-2.5">
-                    <TemplateIcon name={t.icon} className="mt-0.5 text-accent shrink-0" />
-                    <span className="flex-1 text-sm font-semibold text-text">{t.name}</span>
+                  <div className="grid w-full grid-cols-[2rem_minmax(0,1fr)_1.25rem] items-center gap-x-2.5 gap-y-1">
+                    <AgentMark icon={t.icon} size="sm" />
+                    <span className="min-w-0 break-words text-sm font-semibold text-text">{t.name}</span>
                     <span aria-hidden="true" className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-xs ${selectedID === t.id ? "border-accent bg-accent text-bg" : "border-border"}`}>
                       {selectedID === t.id ? "✓" : ""}
                     </span>
+                    {t.preset_name && <span className="col-start-2 min-w-0 text-[11px] font-normal text-text-dim">{t.preset_name}</span>}
                   </div>
-                  <p className="text-text-muted text-xs leading-relaxed">{t.description}</p>
+                  <p className="line-clamp-3 text-text-muted text-xs leading-relaxed">{t.description}</p>
                   {selectedID === t.id && !!t.highlights?.length && (
                     <ul className="space-y-2 border-t border-border pt-3 xl:hidden">
                       {t.highlights.map((highlight) => (
@@ -700,9 +790,10 @@ export function TemplateStep({ templates, selectedID, onSelect, onSkipWizard }: 
         <aside className="hidden rounded-lg border border-border bg-bg-card p-5 xl:sticky xl:top-0 xl:block" aria-label="Template preview">
           {selected ? (
             <>
-              <div className="text-xs font-semibold text-accent">Selected template</div>
+              <div className="text-xs font-semibold text-accent">{selected.id === "empty" ? "Your own agent" : selected.preset_name ? `From ${selected.preset_name}` : "Selected template"}</div>
               <h3 className="mt-2 text-lg font-bold text-text">{selected.name}</h3>
               <p className="mt-2 text-sm leading-relaxed text-text-muted">{selected.description}</p>
+              {selected.preset_name && <p className="mt-3 text-xs leading-relaxed text-text-dim">Creates this agent only. You can add other roles from the preset later.</p>}
               {!!selected.highlights?.length && (
                 <>
                   <h4 className="mt-5 text-xs font-semibold text-text">What it can help with</h4>
@@ -753,6 +844,8 @@ export function TemplateStep({ templates, selectedID, onSelect, onSkipWizard }: 
 }
 
 interface DetailsStepProps {
+  nameError: string | null;
+  nameInputRef: React.RefObject<HTMLInputElement | null>;
   state: WizardState;
   setState: React.Dispatch<React.SetStateAction<WizardState>>;
 }
@@ -762,7 +855,7 @@ interface DetailsStepProps {
 // background memory. Was two steps (Details + Behavior) until the
 // Behavior step thinned out enough that combining was cleaner than
 // keeping a tab with two controls.
-function DetailsStep({ state, setState }: DetailsStepProps) {
+function DetailsStep({ state, setState, nameError, nameInputRef }: DetailsStepProps) {
   const modes: { id: Mode; label: string; description: string }[] = [
     {
       id: "learn",
@@ -794,56 +887,34 @@ function DetailsStep({ state, setState }: DetailsStepProps) {
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
       <section className="min-w-0 space-y-5 rounded-lg border border-border bg-bg-card p-5">
       <div>
-        <label htmlFor="agent-name" className="block text-text-muted text-xs mb-1.5">Name</label>
+        <label htmlFor="agent-name" className="block text-text-muted text-xs mb-1.5">Name <span className="ml-1 text-text-dim">(required)</span></label>
         <input
           id="agent-name"
+          ref={nameInputRef}
+          required
+          aria-invalid={!!nameError}
+          aria-describedby={nameError ? "agent-name-error" : undefined}
           type="text"
           value={state.name}
           onChange={(e) =>
             setState((s) => ({ ...s, name: (e.target as HTMLInputElement).value }))
           }
-          className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+          className={`w-full bg-bg-input border rounded-lg px-3 py-2 text-sm text-text focus:outline-none ${nameError ? "border-error ring-1 ring-error focus:border-error" : "border-border focus:border-accent"}`}
           placeholder="Support ticket triage"
           autoComplete="off"
         />
+        {nameError && <p id="agent-name-error" role="alert" className="mt-2 text-xs font-medium text-error">{nameError}</p>}
       </div>
 
-      <div>
-        <div className="flex items-center justify-between mb-1.5">
-          <label htmlFor="agent-directive" className="block text-text-muted text-xs">Instructions</label>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() =>
-                setState((s) => ({
-                  ...s,
-                  directive: structureDirectiveDraft(s.directive, s.name),
-                }))
-              }
-              className="text-accent text-xs hover:underline"
-            >
-              Structure
-            </button>
-          </div>
-        </div>
-        <textarea
-          id="agent-directive"
-          value={state.directive}
-          onChange={(e) =>
-            setState((s) => ({
-              ...s,
-              directive: (e.target as HTMLTextAreaElement).value,
-            }))
-          }
-          rows={16}
-          className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text font-mono leading-relaxed focus:outline-none focus:border-accent resize-y"
-          placeholder={"# Role\nYou are...\n\n# Goals\n- ..."}
-          spellCheck={false}
-        />
-        <p className="text-text-muted text-xs mt-1.5">
-          Describe its role, goals, and any rules it should follow. Use headings to organize longer instructions.
-        </p>
-      </div>
+      <AgentIconPicker icon={state.icon}
+        onIconChange={(icon) => setState((current) => ({ ...current, icon }))} />
+
+      <AgentInstructionsEditor
+        key={state.templateID || "scratch"}
+        value={state.directive}
+        agentName={state.name}
+        onChange={(directive) => setState((current) => ({ ...current, directive }))}
+      />
 
       </section>
       <div className="min-w-0 space-y-5">
@@ -919,12 +990,6 @@ interface SetupStepProps {
   projectId?: string;
 }
 
-const ESSENTIAL_APPS: Record<string, string> = {
-  conversations: "Give your agent a place to talk with you.",
-  tasks: "Let your agent track and complete tasks.",
-  storage: "Keep files and results in one place.",
-};
-
 export function SetupStep({
   allowAppManagement = true,
   template,
@@ -954,7 +1019,7 @@ export function SetupStep({
   >({});
   const requestedPermissions = useRef(new Set<number>());
 
-  const requirements = template?.requirements || [];
+  const requirements = wizardAppRequirements(template, state);
   const requiredApps = requirements.filter(
     (r) => r.kind === "app" && r.required && r.slug,
   );
@@ -962,6 +1027,7 @@ export function SetupStep({
     (r) => r.kind === "integration",
   );
   const requiredSlugs = new Set(requiredApps.map((r) => r.slug!));
+  const templateRequiredSlugs = new Set((template?.requirements || []).filter(r => r.kind === "app" && r.required && r.slug).map(r => r.slug!));
   const effectiveIDs = effectiveAgentAppInstallIDs(
     state.boundAppInstallIDs,
     installedApps,
@@ -990,23 +1056,18 @@ export function SetupStep({
       app.status === "pending" ||
       selectedIDs.has(app.install_id),
   );
-  const essentials = Object.keys(ESSENTIAL_APPS).flatMap((name) => {
-    if (selectedApps.some((app) => app.name === name)) return [];
-    const candidates = availableApps.filter(
-      (app) => app.name === name && app.status === "running",
-    );
-    const best =
-      candidates.find((app) => !!projectId && app.project_id === projectId) ||
-      candidates[0];
-    return best ? [best] : [];
-  });
+  const templateRecommended = template?.recommended_apps || [];
+  const selectedSlugs = new Set([...selectedApps.map(app => app.name), ...requiredSlugs]);
+  const recommendationPool = agentAppRecommendations(installedApps, marketplace, templateRecommended, new Set(), projectId);
+  const recommendations = recommendationPool.filter(item => !selectedSlugs.has(item.slug));
+  const isRecommended = (app: AppRow) => !!app.agent_setup?.recommended || templateRecommended.includes(app.name);
   const matches = (...values: (string | undefined)[]) =>
     values.join(" ").toLowerCase().includes(query.trim().toLowerCase());
   const filteredApps = availableApps
-    .filter((app) => matches(app.display_name, app.name, app.description))
+    .filter((app) => matches(app.display_name, app.name, app.description, app.agent_setup?.reason))
     .sort(
       (a, b) =>
-        Number(!!ESSENTIAL_APPS[b.name]) - Number(!!ESSENTIAL_APPS[a.name]) ||
+        Number(isRecommended(b)) - Number(isRecommended(a)) ||
         a.display_name.localeCompare(b.display_name),
     );
   const filteredConnections = connections.filter(
@@ -1077,23 +1138,28 @@ export function SetupStep({
   const toggleApp = (id: number) => {
     if (
       installedApps.some(
-        (app) => app.install_id === id && requiredSlugs.has(app.name),
+        (app) => app.install_id === id && templateRequiredSlugs.has(app.name),
       )
     )
       return;
     setState((current) => {
       const next = new Set(current.boundAppInstallIDs);
       const appAccess = { ...current.appAccess };
-      if (next.has(id)) {
+      if (selectedIDs.has(id)) {
         next.delete(id);
         delete appAccess[id];
       } else {
         next.add(id);
         appAccess[id] = appAccess[id] || defaultAppAccessDraft();
       }
-      return { ...current, boundAppInstallIDs: next, appAccess };
+      return { ...current, boundAppInstallIDs: next, appAccess, optionalAppSlugs: (current.optionalAppSlugs || []).filter(slug => slug !== installedApps.find(app => app.install_id === id)?.name) };
     });
   };
+  const toggleQueuedApp = (slug: string) => setState(current => ({
+    ...current, optionalAppSlugs: current.optionalAppSlugs?.includes(slug)
+      ? current.optionalAppSlugs.filter(value => value !== slug)
+      : [...(current.optionalAppSlugs || []), slug],
+  }));
   const updateAppAccess = (id: number, patch: Partial<AppAccessDraft>) =>
     setState((current) => ({
       ...current,
@@ -1180,7 +1246,7 @@ export function SetupStep({
         </div>
         <div className={gridClass}>
           {selectedApps.map((app) => {
-            const required = requiredSlugs.has(app.name);
+            const required = (template?.requirements || []).some(r => r.kind === "app" && r.slug === app.name && r.required);
             const permissionCatalog = permissionCatalogs[app.install_id];
             const scoped =
               !!permissionCatalog?.permissions?.length &&
@@ -1194,13 +1260,13 @@ export function SetupStep({
                   <AppIcon
                     src={app.icon}
                     iconStyle={app.icon_style}
-                    name={app.display_name || app.name}
+                    name={`${app.display_name || app.name}${app.installation_name ? ` · ${app.installation_name} · v${app.version}` : ""}`}
                     size="md"
                     className="text-accent"
                   />
                   <div className="min-w-0 flex-1">
                     <h4 className="text-sm font-semibold text-text">
-                      {app.display_name || app.name}
+                      {app.display_name || app.name}{app.installation_name ? ` · ${app.installation_name} · v${app.version}` : ""}
                     </h4>
                     <p className="mt-1 text-[11px] text-text-muted">
                       {app.project_id ? "Project app" : "Global app"} ·{" "}
@@ -1219,14 +1285,14 @@ export function SetupStep({
                   )}
                 </div>
                 <p className="mt-3 line-clamp-2 text-xs leading-relaxed text-text-muted">
-                  {ESSENTIAL_APPS[app.name] || app.description}
+                  {app.agent_setup?.reason || app.description}
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {required && (
-                    <span className={badgeClass}>Required by template</span>
+                  {requiredSlugs.has(app.name) && (
+                    <span className={badgeClass}>{state.optionalAppSlugs?.includes(app.name) ? "Added during setup" : "Required by template"}</span>
                   )}
-                  {ESSENTIAL_APPS[app.name] && (
-                    <span className={badgeClass}>Essential</span>
+                  {isRecommended(app) && (
+                    <span className={badgeClass}>Recommended</span>
                   )}
                   {app.default_for_new_agents && !required && (
                     <span className="text-[10px] text-text-muted">
@@ -1294,6 +1360,7 @@ export function SetupStep({
                       requirement.slug}
                   </h4>
                 </div>
+                {state.optionalAppSlugs?.includes(requirement.slug || "") && !templateRequiredSlugs.has(requirement.slug || "") && <button type="button" aria-label={`Remove ${entry?.display_name || requirement.slug}`} onClick={() => toggleQueuedApp(requirement.slug!)} className="mt-2 text-xs text-text-muted hover:text-red">Remove</button>}
                 <p className="mt-3 text-xs leading-relaxed text-text-muted">
                   {requirement.reason ||
                     "This app is required by the selected template."}
@@ -1326,45 +1393,19 @@ export function SetupStep({
             No apps selected yet. Add the tools this agent should use.
           </p>
         )}
-        {essentials.length > 0 && (
-          <div className="rounded-lg border border-border p-4">
-            <h4 className="text-xs font-semibold text-text">
-              Useful essentials{" "}
-              <span className="ml-2 font-normal text-text-muted">
-                Already installed
-              </span>
-            </h4>
-            <div className="mt-3 flex flex-wrap gap-3">
-              {essentials.map((app) => (
-                <button
-                  type="button"
-                  key={app.install_id}
-                  onClick={() => toggleApp(app.install_id)}
-                  className="flex items-center gap-3 rounded-lg bg-bg-card px-3 py-2 text-left hover:bg-bg-hover"
-                  aria-label={`Add ${app.display_name || app.name}`}
-                >
-                  <AppIcon
-                    src={app.icon}
-                    iconStyle={app.icon_style}
-                    name={app.display_name || app.name}
-                    size="sm"
-                    className="text-accent"
-                  />
-                  <span>
-                    <span className="block text-xs font-semibold text-text">
-                      {app.display_name || app.name}
-                    </span>
-                    <span className="block text-[11px] text-text-muted">
-                      {app.project_id ? "Project" : "Global"} ·{" "}
-                      {ESSENTIAL_APPS[app.name]}
-                    </span>
-                  </span>
-                  <span className="text-accent">+</span>
-                </button>
-              ))}
-            </div>
+        {recommendations.length > 0 && <div className="space-y-2" aria-label="Recommended apps">
+          <h4 className="text-xs font-semibold text-text">Recommended apps</h4>
+          <div className="divide-y divide-border rounded-lg border border-border">
+            {recommendations.map(item => {
+              const canAdd = item.installed ? item.installed.status === "running" : allowAppManagement && !!item.catalog?.manifest_url;
+              return <div key={item.slug} className="flex min-w-0 items-center gap-3 p-3">
+                <AppIcon src={item.icon} iconStyle={item.iconStyle} name={item.name} size="sm" />
+                <div className="min-w-0 flex-1"><p className="text-xs font-semibold">{item.name}</p><p className="text-xs text-text-muted">{item.reason}</p><p className="mt-1 text-[11px] text-text-dim">{item.installed ? item.installed.status === "running" ? item.installed.project_id ? "Installed in this project" : "Shared global installation" : `Unavailable · ${item.installed.status}` : "Installs when you create the agent"}</p></div>
+                <button type="button" aria-label={`Add ${item.name}`} disabled={!canAdd} className={`${buttonClass} disabled:opacity-40`} onClick={() => item.installed ? toggleApp(item.installed.install_id) : toggleQueuedApp(item.slug)}>Add</button>
+              </div>;
+            })}
           </div>
-        )}
+        </div>}
       </section>
 
       <section
@@ -1584,29 +1625,37 @@ export function SetupStep({
                 <PickerOption
                   key={app.install_id}
                   selected={selectedIDs.has(app.install_id)}
-                  disabled={requiredSlugs.has(app.name)}
+                  disabled={templateRequiredSlugs.has(app.name) && selectedIDs.has(app.install_id) && selectedApps.filter(other => other.name === app.name).length === 1}
                   onToggle={() => toggleApp(app.install_id)}
-                  name={app.display_name || app.name}
-                  description={`${app.project_id ? "Project" : "Global"} · v${app.version}${ESSENTIAL_APPS[app.name] ? ` · ${ESSENTIAL_APPS[app.name]}` : app.description ? ` · ${app.description}` : ""}`}
+                  name={`${app.display_name || app.name}${app.installation_name ? ` · ${app.installation_name} · v${app.version}` : ""}`}
+                  description={`${app.project_id ? "Project" : "Global"} · v${app.version}${app.agent_setup?.reason ? ` · ${app.agent_setup.reason}` : app.description ? ` · ${app.description}` : ""}`}
                   badge={
                     requiredSlugs.has(app.name)
                       ? "Required by template"
-                      : ESSENTIAL_APPS[app.name]
-                        ? "Essential"
+                      : isRecommended(app)
+                        ? "Recommended"
                         : undefined
                   }
                   icon={
                     <AppIcon
                       src={app.icon}
                       iconStyle={app.icon_style}
-                      name={app.display_name || app.name}
+                      name={`${app.display_name || app.name}${app.installation_name ? ` · ${app.installation_name} · v${app.version}` : ""}`}
                       size="md"
                       className="text-accent"
                     />
                   }
                 />
               ))}
-              {filteredApps.length === 0 && (
+              {recommendationPool.filter(item => !item.installed && matches(item.name, item.slug, item.reason)).map(item => <PickerOption
+                key={`catalog:${item.slug}`}
+                name={item.name} description={`${item.reason} · Installs on Create`}
+                badge={templateRequiredSlugs.has(item.slug) ? "Required by template" : "Recommended"}
+                selected={requiredSlugs.has(item.slug)} disabled={templateRequiredSlugs.has(item.slug) || !allowAppManagement || !item.catalog?.manifest_url}
+                onToggle={() => toggleQueuedApp(item.slug)}
+                icon={<AppIcon src={item.icon} iconStyle={item.iconStyle} name={item.name} size="md" />}
+              />)}
+              {filteredApps.length === 0 && !recommendationPool.some(item => !item.installed && matches(item.name, item.slug, item.reason)) && (
                 <p className="p-5 text-sm text-text-muted">
                   {query
                     ? "No installed apps match your search."
@@ -1710,7 +1759,7 @@ export function SetupStep({
           <div className="flex flex-wrap items-center gap-3 text-xs text-text-muted">
             <span>
               {picker === "apps"
-                ? selectedApps.length
+                ? selectedApps.length + missingApps.length
                 : selectedConnections.length}{" "}
               selected
             </span>
@@ -1883,12 +1932,12 @@ interface ReviewStepProps {
 }
 
 function ReviewStep({ state, hasProvider, onEdit, installProgress, installedApps, connections, template, marketplace }: ReviewStepProps) {
-  const requiredSlugs = (template?.requirements || []).filter((r) => r.kind === "app" && r.required && r.slug).map((r) => r.slug!);
+  const requiredSlugs = wizardAppRequirements(template, state).filter((r) => r.kind === "app" && r.required && r.slug).map((r) => r.slug!);
   const appIDs = new Set(effectiveAgentAppInstallIDs(state.boundAppInstallIDs, installedApps, requiredSlugs));
   const selectedApps = installedApps.filter((app) => appIDs.has(app.install_id));
   const appNames = selectedApps.map((app) => app.display_name || app.name);
   for (const slug of requiredSlugs) {
-    if (!selectedApps.some((app) => app.name === slug)) appNames.push(`${marketplace.find((app) => app.name === slug)?.display_name || slug} (template requirement)`);
+    if (!selectedApps.some((app) => app.name === slug)) appNames.push(`${marketplace.find((app) => app.name === slug)?.display_name || slug} (will be installed)`);
   }
   const connectionNames = connections.filter((c) => state.boundConnectionIDs.has(c.id)).map((c) => `${c.app_name || c.app_slug} — ${c.name}`);
   const directivePreview = useMemo(() => {
@@ -1918,6 +1967,7 @@ function ReviewStep({ state, hasProvider, onEdit, installProgress, installedApps
 
       <dl className="border border-border rounded-lg divide-y divide-border">
         <Row label="Name"        value={state.name}                       onEdit={() => onEdit(1)} />
+        <div className="flex items-center gap-3 px-4 py-3 text-sm"><dt className="w-28 shrink-0 text-text-muted">Icon</dt><dd className="flex flex-1 items-center gap-2 text-text"><AgentMark icon={state.icon} size="sm" />{AGENT_ICONS.find((item) => item.id === state.icon)?.label || "Generic"}</dd><button type="button" onClick={() => onEdit(1)} className="text-xs text-accent">Edit</button></div>
         {state.highlights.length > 0 && (
           <Row label="What it can do" value={`• ${state.highlights.join("\n• ")}`} multiline onEdit={() => onEdit(0)} />
         )}
@@ -1986,41 +2036,6 @@ function Row({
   );
 }
 
-// TemplateIcon — dispatcher from short icon name (returned by the
-// server) to a stroked SVG. We deliberately don't pull lucide-react
-// in for six icons; inline keeps the bundle smaller and matches the
-// rest of the codebase's hand-rolled icon convention (GlobeIcon,
-// BellIcon, etc.). Unknown names fall back to a neutral box glyph
-// so a future template shipped with an icon name we don't recognise
-// still renders without crashing.
-function TemplateIcon({
-  name,
-  size = 18,
-  className,
-}: {
-  name?: string;
-  size?: number;
-  className?: string;
-}) {
-  const path = TEMPLATE_ICON_PATHS[name ?? ""] ?? TEMPLATE_ICON_PATHS["box"]!;
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      className={className}
-    >
-      {path}
-    </svg>
-  );
-}
-
 // LogoRow — renders the server-resolved logos for a template card.
 // Each entry is either a remote logo URL (integrations catalog, app
 // marketplace) or — when the catalog has no logo for the slug — a
@@ -2083,156 +2098,3 @@ function LogoPill({ logo, isApp }: { logo: import("../api").TemplateLogo; isApp:
     </span>
   );
 }
-// Curated icon set — drop-in lucide-style paths for the builtin
-// templates plus a generic fallback. Adding a new icon name means
-// adding an entry here AND using that name in the seed (or in a
-// template's manifest entry). Names are stable lucide identifiers.
-const TEMPLATE_ICON_PATHS: Record<string, React.ReactNode> = {
-  // user — Personal assistant
-  user: (
-    <>
-      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-      <circle cx="12" cy="7" r="4" />
-    </>
-  ),
-  // search — Research bot
-  search: (
-    <>
-      <circle cx="11" cy="11" r="7" />
-      <path d="m21 21-4.3-4.3" />
-    </>
-  ),
-  // code — Code helper
-  code: (
-    <>
-      <path d="m16 18 6-6-6-6" />
-      <path d="m8 6-6 6 6 6" />
-    </>
-  ),
-  // pen — Content creator
-  pen: (
-    <>
-      <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
-      <path d="m15 5 4 4" />
-    </>
-  ),
-  // mail — Outbound sales
-  mail: (
-    <>
-      <rect width="20" height="16" x="2" y="4" rx="2" />
-      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
-    </>
-  ),
-  // box — Empty (fallback)
-  box: (
-    <>
-      <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
-      <path d="m3.3 7 8.7 5 8.7-5" />
-      <path d="M12 22V12" />
-    </>
-  ),
-  // message — Slack bot
-  message: (
-    <>
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-    </>
-  ),
-  // github — GitHub helper
-  github: (
-    <>
-      <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" />
-      <path d="M9 18c-4.51 2-5-2-7-2" />
-    </>
-  ),
-  // target — Sales prospecting
-  target: (
-    <>
-      <circle cx="12" cy="12" r="10" />
-      <circle cx="12" cy="12" r="6" />
-      <circle cx="12" cy="12" r="2" />
-    </>
-  ),
-  // life-buoy — Customer support
-  "life-buoy": (
-    <>
-      <circle cx="12" cy="12" r="10" />
-      <path d="m4.93 4.93 4.24 4.24" />
-      <path d="m14.83 9.17 4.24-4.24" />
-      <path d="m14.83 14.83 4.24 4.24" />
-      <path d="m9.17 14.83-4.24 4.24" />
-      <circle cx="12" cy="12" r="4" />
-    </>
-  ),
-  // calendar — Meeting coordinator
-  calendar: (
-    <>
-      <path d="M8 2v4" />
-      <path d="M16 2v4" />
-      <rect width="18" height="18" x="3" y="4" rx="2" />
-      <path d="M3 10h18" />
-    </>
-  ),
-  // git-branch — DevOps bot
-  "git-branch": (
-    <>
-      <line x1="6" x2="6" y1="3" y2="15" />
-      <circle cx="18" cy="6" r="3" />
-      <circle cx="6" cy="18" r="3" />
-      <path d="M18 9a9 9 0 0 1-9 9" />
-    </>
-  ),
-  // activity — Site monitoring
-  activity: (
-    <>
-      <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.5.5 0 0 1-.96 0L9.24 2.18a.5.5 0 0 0-.96 0l-2.35 8.36A2 2 0 0 1 4 12H2" />
-    </>
-  ),
-  // share-2 — Content distribution
-  "share-2": (
-    <>
-      <circle cx="18" cy="5" r="3" />
-      <circle cx="6" cy="12" r="3" />
-      <circle cx="18" cy="19" r="3" />
-      <line x1="8.59" x2="15.42" y1="13.51" y2="17.49" />
-      <line x1="15.41" x2="8.59" y1="6.51" y2="10.49" />
-    </>
-  ),
-  // check-square — Todo coach
-  "check-square": (
-    <>
-      <path d="m9 12 2 2 4-4" />
-      <rect width="18" height="18" x="3" y="3" rx="2" />
-    </>
-  ),
-  // heart-pulse — Health logger
-  "heart-pulse": (
-    <>
-      <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.29 1.51 4.04 3 5.5l7 7Z" />
-      <path d="M3.22 12H9.5l.5-1 2 4.5 2-7 1.5 3.5h5.27" />
-    </>
-  ),
-  // users — CRM assistant
-  users: (
-    <>
-      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-      <circle cx="9" cy="7" r="4" />
-      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-    </>
-  ),
-  // image — Image studio
-  image: (
-    <>
-      <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
-      <circle cx="9" cy="9" r="2" />
-      <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
-    </>
-  ),
-  // megaphone — Social poster
-  megaphone: (
-    <>
-      <path d="m3 11 18-5v12L3 14v-3z" />
-      <path d="M11.6 16.8a3 3 0 1 1-5.8-1.6" />
-    </>
-  ),
-};

@@ -12,6 +12,9 @@ export interface Notification {
   /** Stable identity. Format: "<source>:<key>" — e.g. "chat:default-7". */
   id: string;
   source: string;
+  icon?: string;
+  iconStyle?: "image" | "monochrome";
+  sourceLabel?: string;
   title: string;
   preview: string;
   ts: string; // ISO
@@ -25,6 +28,7 @@ export interface Notification {
   latestId: number;
   /** Optional click target. Layout-agnostic — consumers route on it. */
   ref?:
+    | { kind: "app-notification"; notificationId: number; url: string }
     | { kind: "instance-chat"; instanceId: number }
     | { kind: "inbox"; messageId: number; inboxKind: "approval" | "report" | "alert" };
 }
@@ -33,6 +37,15 @@ type Listener = () => void;
 
 class Store {
   private items: Map<string, Notification> = new Map();
+  appUnreadCount = 0;
+  appTabCount = 0;
+  appNextBefore = 0;
+
+  replaceApps(items: Notification[], unreadCount: number, tabCount: number, nextBefore = 0): void {
+    for (const [key, item] of this.items) if (item.source === "app") this.items.delete(key);
+    for (const item of items) this.items.set(item.id, item);
+    this.appUnreadCount = unreadCount; this.appTabCount = tabCount; this.appNextBefore = nextBefore; this.dirty();
+  }
   private listeners: Set<Listener> = new Set();
   private snapshotCache: Notification[] = [];
   private snapshotDirty = true;
@@ -99,7 +112,7 @@ class Store {
 
   /** Clear everything (e.g., logout). */
   reset(): void {
-    if (this.items.size === 0) return;
+    this.appUnreadCount = 0; this.appTabCount = 0; this.appNextBefore = 0;
     this.items.clear();
     this.dirty();
   }
@@ -116,16 +129,21 @@ export const notifications = new Store();
 export function useNotifications(): {
   items: Notification[];
   unreadCount: number;
+  tabCount: number;
+  nextBefore: number;
   totalCount: number;
   markRead: (id: string) => void;
   markAllRead: () => void;
   remove: (id: string) => void;
 } {
   const items = useSyncExternalStore(notifications.subscribe, notifications.getSnapshot, notifications.getSnapshot);
-  const unreadCount = items.reduce((n, it) => n + (it.unread ? 1 : 0), 0);
+  const legacyUnread = items.reduce((n, it) => n + (it.source !== "app" && it.unread ? 1 : 0), 0);
+  const unreadCount = legacyUnread + notifications.appUnreadCount;
   return {
     items,
     unreadCount,
+    tabCount: legacyUnread + notifications.appTabCount,
+    nextBefore: notifications.appNextBefore,
     totalCount: items.length,
     markRead: notifications.markRead.bind(notifications),
     markAllRead: notifications.markAllRead.bind(notifications),

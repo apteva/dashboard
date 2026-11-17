@@ -46,7 +46,7 @@ export function useAssistantDirectory(projectId: string, enabled = true) {
       const contribution = selectAssistantContribution(rows, projectId);
       const candidates: AssistantChoice[] = agents.filter((agent) => agent.project_id === projectId && agent.kind !== "platform_helper")
         .map((agent) => ({ target: { kind: "agent", id: agent.id }, agent }));
-      if (helper?.activated && helper.conversations_installed && helper.agent) candidates.unshift({ target: { kind: "helper" }, agent: helper.agent });
+      if (helper?.activated && helper.provider_configured && helper.conversations_installed && helper.agent) candidates.unshift({ target: { kind: "helper" }, agent: helper.agent });
       const choices = contribution ? (await Promise.all(candidates.map(async (choice) => {
         const eligible = await fetchEligibleContributionKeys(projectId, ASSISTANT_CHAT_SLOT, choice.agent.id).catch(() => new Set<string>());
         return eligible.has(contribution.key) ? choice : null;
@@ -61,8 +61,8 @@ export function useAssistantDirectory(projectId: string, enabled = true) {
     return () => { cancelled = true; };
   }, [enabled, projectId, revision]);
   useEffect(() => {
-    for (const event of ["apteva:apps-changed", "apteva:helper-changed", "apteva:agents-changed"]) window.addEventListener(event, refresh);
-    return () => { for (const event of ["apteva:apps-changed", "apteva:helper-changed", "apteva:agents-changed"]) window.removeEventListener(event, refresh); };
+    for (const event of ["apteva:apps-changed", "apteva:helper-changed", "apteva:agents-changed", "apteva:connections-changed"]) window.addEventListener(event, refresh);
+    return () => { for (const event of ["apteva:apps-changed", "apteva:helper-changed", "apteva:agents-changed", "apteva:connections-changed"]) window.removeEventListener(event, refresh); };
   }, [refresh]);
   return { directory: enabled && directory?.projectId === projectId ? directory : null, loading, error, refresh };
 }

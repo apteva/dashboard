@@ -1,3 +1,4 @@
+import { realtimeSelection } from "../realtime/config";
 import { useEffect, useState } from "react";
 import { core, type RealtimeAvailability } from "../api";
 
@@ -20,14 +21,15 @@ export function useRealtimeAvailability(agentId?: number, running = false): Real
     const refresh = () => {
       core.config(agentId).then((config) => {
         if (cancelled) return;
-        const provider = (config.providers || []).find((candidate) =>
-          candidate.name === "openai-realtime" || candidate.name.includes("realtime"),
-        );
+        const { provider, model, modelTier, voice, execution } = realtimeSelection(config);
         const attached = new Set((config.mcp_servers || []).map((server) => server.name));
         setValue({
           enabled: !!config.realtime_enabled,
           available: !!provider,
-          voice: config.realtime_voice || provider?.realtime_voice || "marin",
+          voice,
+          model,
+          modelTier,
+          execution,
           mcp: (config.realtime_voice_mcp || []).filter((name) => attached.has(name)),
           provider: provider?.name || "openai-realtime",
         });

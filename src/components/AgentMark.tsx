@@ -1,45 +1,34 @@
-// AgentMark is the shared product glyph for an Apteva agent. It is identity
-// chrome, not an avatar: every agent uses the same mark, and semantic theme
-// utilities plus currentColor make it follow every dashboard palette.
-export function AgentMark({
-  size = "md",
-}: {
-  size?: "sm" | "md" | "lg";
-}) {
-  const dimensions =
-    size === "lg"
-      ? "h-20 w-20 rounded-2xl"
-      : size === "sm"
-        ? "h-8 w-8 rounded-lg"
-        : "h-10 w-10 rounded-xl";
-  const glyphSize = size === "lg" ? 38 : size === "sm" ? 17 : 21;
+import { useId, useState } from "react";
+import { AgentMark, AGENT_ICONS, suggestedAgentIcon, type AgentIconId } from "@apteva/ui-kit";
+export { AgentMark, AGENT_ICONS, AGENT_ICON_COLORS, suggestedAgentIcon } from "@apteva/ui-kit";
+export type { AgentIconId, AgentIconColor } from "@apteva/ui-kit";
 
-  return (
-    <span
-      className={`${dimensions} inline-flex shrink-0 items-center justify-center border border-accent/25 bg-accent/10 text-accent shadow-sm`}
-      aria-hidden="true"
-    >
-      <svg
-        width={glyphSize}
-        height={glyphSize}
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <path d="M5.5 18.5 10.2 6.4A2 2 0 0 1 12 5.1a2 2 0 0 1 1.8 1.3l4.7 12.1" />
-        <path d="M8.2 14h7.6" />
-        <path d="M7 18.5h2.2M14.8 18.5H17" />
-        <circle
-          cx="12"
-          cy="18.5"
-          r="1.15"
-          fill="currentColor"
-          stroke="none"
-        />
-      </svg>
-    </span>
-  );
+export function AgentIconPicker({ icon, onIconChange, compact = false }: {
+  icon: string;
+  onIconChange: (icon: AgentIconId) => void;
+  compact?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(!compact);
+  const optionsId = useId();
+  const selectedIcon = suggestedAgentIcon(icon);
+  const selectedLabel = AGENT_ICONS.find((option) => option.id === selectedIcon)?.label || "Generic";
+  return <div>
+    {compact ? <button type="button" onClick={() => setExpanded((value) => !value)}
+      aria-expanded={expanded} aria-controls={optionsId}
+      className="flex w-full items-center gap-3 rounded-lg border border-border bg-bg-input px-3 py-2 text-left focus-visible:outline-2 focus-visible:outline-accent">
+      <AgentMark icon={selectedIcon} size="sm" />
+      <span className="min-w-0 flex-1"><span className="block text-xs text-text-muted">Icon</span><span className="block text-sm font-medium text-text">{selectedLabel}</span></span>
+      <span className="text-xs font-medium text-accent">{expanded ? "Done" : "Change"}</span>
+    </button> : <div className="mb-2 text-xs font-semibold text-text-muted">Icon <span className="font-normal text-text-dim">· {AGENT_ICONS.length} choices</span></div>}
+    {expanded && <div id={optionsId} role="group" aria-label="Agent icon"
+      className={`grid max-h-64 grid-cols-2 gap-2 overflow-y-auto overscroll-contain pr-1 ${compact ? "mt-2" : ""}`}>
+      {AGENT_ICONS.map((option) => <button key={option.id} type="button"
+        onClick={() => { onIconChange(option.id); if (compact) setExpanded(false); }}
+        aria-label={option.label} aria-pressed={selectedIcon === option.id}
+        className={`flex min-h-16 min-w-0 items-center gap-2 rounded-lg border px-2 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-accent ${selectedIcon === option.id ? "border-accent bg-bg-hover" : "border-border hover:border-text-dim hover:bg-bg-hover"}`}>
+        <AgentMark icon={option.id} />
+        <span className="min-w-0 truncate text-xs text-text-muted">{option.label}</span>
+      </button>)}
+    </div>}
+  </div>;
 }

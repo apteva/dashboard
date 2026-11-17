@@ -1,3 +1,5 @@
+import { AppHostSurface } from "./hostUI";
+import type { AppHost, HostUI } from "@apteva/ui-kit";
 // Inline chat components: the dashboard side of the
 // `respond(components=…)` flow. The agent attaches a render hint to
 // a chat message; the chat panel mounts the matching component below
@@ -35,10 +37,12 @@ import {
   parseApprovalReview,
 } from "../approvals/ApprovalReviewModal";
 import { Modal } from "../Modal";
+import type { WidgetActionBridge, WidgetContext } from "./widgetContext";
 
 // ─── manifest-side types ────────────────────────────────────────────
 
 export interface UIComponentSpec {
+  host_ui?: HostUI;
   name: string;            // "file-card"
   entry: string;           // "/ui/FileCard.mjs"
   slots?: string[];        // ["chat.message_attachment"]
@@ -46,12 +50,16 @@ export interface UIComponentSpec {
   description?: string;
   suggested?: boolean;
   visibility?: "attached" | "project";
+  dashboard_scopes?: Array<"project" | "global">;
   refresh_topics?: string[];
   default_width?: 1 | 2;
+  /** Suggested agent-page presets; presentation only, never authorization. */
+  recommended_views?: Array<"personal" | "business" | "developer">;
   supported_sizes?: Array<"half" | "full">;
   default_size?: "half" | "full";
   props_schema?: Record<string, unknown>;
   settings_schema?: Record<string, unknown>;
+  settings_ui?: import("./widgetSettings").WidgetSettingsUI;
 }
 
 // We get app rows from /api/apps. The handler now exposes
@@ -65,6 +73,8 @@ export interface UIComponentSpec {
 // load their bundles from /api/integrations/<slug>/ instead of
 // /api/apps/<slug>/.
 export interface InstalledAppRow {
+  mcp_name?: string;
+  is_default?: boolean;
   install_id: number;
   name: string;
   display_name?: string;
@@ -73,6 +83,8 @@ export interface InstalledAppRow {
   icon_style?: "image" | "monochrome";
   source?: string;
   status?: string;
+  /** True when the currently installed version is still serving UI/API traffic. */
+  serving?: boolean;
   surfaces?: {
     mcp_tool_names?: string[];
   };
@@ -86,11 +98,17 @@ function componentsFor(app: InstalledAppRow): UIComponentSpec[] {
 // ─── Component module cache ─────────────────────────────────────────
 
 interface NativeComponentProps {
+  host?: AppHost;
   /** Forwarded from the agent's respond(components=) call. */
   [key: string]: unknown;
   /** Injected by the host so the component can scope its fetches/events. */
   projectId?: string;
   installId?: number;
+  dashboardScope?: "project" | "global";
+  /** Optional host context. Legacy app widgets can ignore this prop. */
+  widgetContext?: WidgetContext;
+  /** Optional host actions. Legacy app widgets can ignore this prop. */
+  widgetActions?: WidgetActionBridge;
 }
 
 const moduleCache = new Map<string, LazyExoticComponent<ComponentType<NativeComponentProps>>>();
@@ -98,6 +116,31 @@ const moduleCache = new Map<string, LazyExoticComponent<ComponentType<NativeComp
 interface ComponentModuleScope {
   installId?: number;
   projectId?: string;
+}
+
+/**
+ * Custom workspace pages use a generated `page.<id>` surface. App widgets
+ * declared for the dashboard home are also valid on those pages; the page
+ * layout editor already treats them as the same project-scoped widget family.
+ * Keep this rule in one place so rendering matches contribution discovery.
+ */
+export function supportsDashboardScope(spec: UIComponentSpec, scope: "project" | "global"): boolean {
+  // Existing widgets stay project-only until explicitly opting into global data.
+  return scope === "project"
+    ? !spec.dashboard_scopes || spec.dashboard_scopes.includes("project")
+    : !!spec.dashboard_scopes?.includes("global");
+}
+
+export function componentAllowedInSlot(
+  spec: UIComponentSpec,
+  slot: string,
+  scope: "project" | "global" = "project",
+): boolean {
+  const pageSlot = slot.startsWith("page.");
+  const allowed = !spec.slots || spec.slots.includes(slot) || (pageSlot && (
+    spec.slots.includes("dashboard.home") || spec.slots.includes("project.page")
+  ));
+  return allowed && (!(slot === "dashboard.home" || pageSlot) || supportsDashboardScope(spec, scope));
 }
 
 export function buildChatComponentModuleURL(
@@ -152,7 +195,7 @@ function loadComponent(
 interface ChatComponentMountProps {
   comp: ChatComponent;
   apps: InstalledAppRow[];
-  projectId: string;
+  projectId?: string;
   messageId?: number;
   onMessageUpdated?: (message: ChatMessageRow) => void;
   onActionComplete?: () => void;
@@ -160,6 +203,9 @@ interface ChatComponentMountProps {
    *  against the manifest's slots allowlist. Defaults to
    *  chat.message_attachment which is the only slot today. */
   slot?: string;
+  dashboardScope?: "project" | "global";
+  widgetContext?: WidgetContext;
+  widgetActions?: WidgetActionBridge;
 }
 
 /**
@@ -176,6 +222,9 @@ export function ChatComponentMount({
   onMessageUpdated,
   onActionComplete,
   slot = "chat.message_attachment",
+  dashboardScope = "project",
+  widgetContext,
+  widgetActions,
 }: ChatComponentMountProps): ReactNode {
   if (comp.app === "channel-chat" && comp.name === "approval-card") {
     return (
@@ -193,7 +242,7 @@ export function ChatComponentMount({
   if (comp.app === "channel-chat" && comp.name === "alert-card") {
     return <AlertCard props={comp.props ?? {}} />;
   }
-  const app = apps.find((a) => a.name === comp.app);
+  const app = apps.find(a => (a.mcp_name || a.name) === comp.app);
   if (!app) {
     return <ComponentMissing reason={`app "${comp.app}" not installed`} />;
   }
@@ -202,7 +251,7 @@ export function ChatComponentMount({
   if (!spec) {
     return <ComponentMissing reason={`component "${comp.app}:${comp.name}" not declared`} />;
   }
-  if (spec.slots && !spec.slots.includes(slot)) {
+  if (!componentAllowedInSlot(spec, slot, dashboardScope)) {
     return <ComponentMissing reason={`component "${comp.app}:${comp.name}" not allowed in slot "${slot}"`} />;
   }
   const Lazy = loadComponent(app.name, spec.entry, app.version, app.source, {
@@ -220,11 +269,18 @@ export function ChatComponentMount({
             iconStyle: app.icon_style,
           }}
         >
-          <Lazy
+          <AppHostSurface projectId={projectId || ""} installId={app.install_id} surface={slot+":"+comp.name}
+            foreground={!!widgetContext?.hostForeground} hostUI={spec.host_ui}>
+          {host => <Lazy
             {...(comp.props ?? {})}
+            host={host}
             projectId={projectId}
             installId={app.install_id}
-          />
+            dashboardScope={dashboardScope}
+            widgetContext={widgetContext}
+            widgetActions={widgetActions}
+          />}
+          </AppHostSurface>
         </AppIdentityProvider>
       </Suspense>
     </ComponentBoundary>
@@ -548,9 +604,11 @@ interface InstalledAppsCacheEntry {
   apps: InstalledAppRow[];
   promise: Promise<void> | null;
   listeners: Set<() => void>;
+  loaded: boolean;
 }
 
 const installedAppsCache = new Map<string, InstalledAppsCacheEntry>();
+const GLOBAL_APPS_KEY = "__global__";
 const EMPTY_INSTALLED_APPS: InstalledAppRow[] = [];
 let installedAppsChangeListenerReady = false;
 
@@ -565,6 +623,7 @@ function normalizeInstalledApps(rows: unknown): InstalledAppRow[] {
     icon_style: r.icon_style === "monochrome" ? "monochrome" : "image",
     source: typeof r.source === "string" ? r.source : undefined,
     status: typeof r.status === "string" ? r.status : undefined,
+    serving: Boolean(r.serving),
     surfaces: r.surfaces && typeof r.surfaces === "object"
       ? {
           mcp_tool_names: Array.isArray(r.surfaces.mcp_tool_names)
@@ -572,6 +631,8 @@ function normalizeInstalledApps(rows: unknown): InstalledAppRow[] {
             : [],
         }
       : undefined,
+    mcp_name: typeof r.mcp_name === "string" ? r.mcp_name : undefined,
+    is_default: r.is_default,
     ui_components: Array.isArray(r.ui_components) ? r.ui_components : [],
   }));
 }
@@ -579,7 +640,7 @@ function normalizeInstalledApps(rows: unknown): InstalledAppRow[] {
 function cacheEntry(projectId: string): InstalledAppsCacheEntry {
   let entry = installedAppsCache.get(projectId);
   if (!entry) {
-    entry = { apps: [], promise: null, listeners: new Set() };
+    entry = { apps: [], promise: null, listeners: new Set(), loaded: false };
     installedAppsCache.set(projectId, entry);
   }
   return entry;
@@ -589,10 +650,13 @@ function notifyInstalledApps(entry: InstalledAppsCacheEntry) {
   for (const listener of [...entry.listeners]) listener();
 }
 
-function loadInstalledApps(projectId: string, force = false): Promise<void> {
-  const entry = cacheEntry(projectId);
+function loadInstalledApps(scopeKey: string, force = false): Promise<void> {
+  const entry = cacheEntry(scopeKey);
   if (entry.promise && !force) return entry.promise;
-  const request = fetch(`/api/apps?project_id=${encodeURIComponent(projectId)}`, {
+  const query = scopeKey === GLOBAL_APPS_KEY
+    ? "scope=global"
+    : `project_id=${encodeURIComponent(scopeKey)}`;
+  const request = fetch(`/api/apps?${query}`, {
     credentials: "same-origin",
   })
     .then((response) => {
@@ -601,13 +665,14 @@ function loadInstalledApps(projectId: string, force = false): Promise<void> {
     })
     .then((rows) => {
       entry.apps = normalizeInstalledApps(rows);
-      notifyInstalledApps(entry);
     })
     .catch(() => {
       // Preserve the last known-good catalog during transient reconnects.
     })
     .finally(() => {
+      entry.loaded = true;
       if (entry.promise === request) entry.promise = null;
+      notifyInstalledApps(entry);
     });
   entry.promise = request;
   return request;
@@ -636,9 +701,12 @@ export function refreshInstalledApps(projectId?: string) {
  * Refetches only when the project changes — installed apps don't
  * churn at component render frequency.
  */
-export function useInstalledApps(projectId: string | null | undefined): InstalledAppRow[] {
+export function useInstalledAppsState(
+  projectId: string | null | undefined,
+  scope: "project" | "global" = "project",
+): { apps: InstalledAppRow[]; ready: boolean } {
   ensureInstalledAppsChangeListener();
-  const key = projectId || "";
+  const key = scope === "global" ? GLOBAL_APPS_KEY : projectId || "";
   const subscribe = useMemo(
     () => (listener: () => void) => {
       if (!key) return () => {};
@@ -652,11 +720,20 @@ export function useInstalledApps(projectId: string | null | undefined): Installe
     () => () => (key ? cacheEntry(key).apps : EMPTY_INSTALLED_APPS),
     [key],
   );
+  const getReadySnapshot = useMemo(
+    () => () => (key ? cacheEntry(key).loaded : true),
+    [key],
+  );
   const apps = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const ready = useSyncExternalStore(subscribe, getReadySnapshot, getReadySnapshot);
   useEffect(() => {
     if (key) void loadInstalledApps(key);
-  }, [projectId]);
-  return apps;
+  }, [key]);
+  return { apps, ready };
+}
+
+export function useInstalledApps(projectId: string | null | undefined, scope: "project" | "global" = "project"): InstalledAppRow[] {
+  return useInstalledAppsState(projectId, scope).apps;
 }
 
 export const __installedAppsTestHelpers = {

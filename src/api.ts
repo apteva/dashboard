@@ -1,3 +1,6 @@
+import type { HostUI } from "@apteva/ui-kit";
+import type { CoreProviderConfig, RealtimeConfig } from "./realtime/config";
+import { beginAPIWrite } from "./utils/apiWrites";
 // All REST/JSON API endpoints live under /api/ on the server. The SPA owns
 // every other path (refresh on /instances/42 no longer collides with the
 // server's /instances/ prefix match). Static assets and the SPA catchall
@@ -35,6 +38,7 @@ function request<T>(
   const url = `${BASE}${path}`;
   const execute = async (): Promise<T> => {
     if (API_DEBUG) console.debug(`[api] → ${method} ${url}`);
+    const acknowledgeWrite = beginAPIWrite(path, method);
     const res = await fetch(url, {
       method,
       headers,
@@ -104,8 +108,10 @@ function request<T>(
       err.status = res.status;
       throw err;
     }
-    if (res.status === 204) return undefined as T;
-    return (await res.json()) as T;
+    if (res.status === 204) { acknowledgeWrite(); return undefined as T; }
+    const result = (await res.json()) as T;
+    if (!(result && typeof result === "object" && "ok" in result && result.ok === false)) acknowledgeWrite();
+    return result;
   };
 
   // Dashboard panels often request the same read model in the same render
@@ -235,7 +241,39 @@ export interface ServerSettings {
   };
 }
 
+export interface InstanceHTTPSConfig {
+  hostname: string;
+  mode: "direct" | "cloudflare" | "proxy" | "import";
+  email?: string;
+  http_port?: number;
+  https_port?: number;
+  trusted_proxy_cidrs?: string[];
+  connection_id?: number;
+  set_cloudflare_strict?: boolean;
+  trust_cloudflare?: boolean;
+  accept_acme_terms?: boolean;
+}
+export interface InstanceHTTPSStatus {
+  public_url: string;
+  state: { active?: InstanceHTTPSConfig; pending?: InstanceHTTPSConfig; phase: string; message: string; addresses?: string[]; warnings?: string[]; updated_at: string };
+  connections: { id: number; name: string }[];
+  certificate?: { issuer?: string; expires_at?: string; not_after?: string; status?: string; renewal?: string };
+}
+export const instanceHTTPS = {
+  get: () => request<InstanceHTTPSStatus>("GET", "/settings/https"),
+  setup: (config: InstanceHTTPSConfig & { cloudflare_token?: string; certificate_pem?: string; private_key_pem?: string }) => request<InstanceHTTPSStatus>("POST", "/settings/https", { ...config, action: "setup" }),
+  check: () => request<InstanceHTTPSStatus>("POST", "/settings/https", { action: "check" }),
+  retry: () => request<InstanceHTTPSStatus>("POST", "/settings/https", { action: "retry" }),
+  cancel: () => request<InstanceHTTPSStatus>("POST", "/settings/https", { action: "cancel" }),
+};
+
+export interface PublicAddressSettings {
+  public_url: string; configured: boolean; source: "db" | "env" | "unset";
+  https: boolean; verified: boolean; phase: string; updated_at: string | null; can_manage: boolean;
+}
+
 export const serverSettings = {
+  publicAddress: () => request<PublicAddressSettings>("GET", "/settings/public-address"),
   get: () => request<ServerSettings>("GET", "/settings/server"),
   update: (patch: {
     public_url?: string;
@@ -382,6 +420,7 @@ export const auth = {
       created_at: string;
       onboarded: boolean;
       onboarded_at?: string;
+      product_tours?: Record<string, string>;
       language?: string;
       interface_level?: InterfaceLevel | null;
       ui_layout?: Record<string, unknown>;
@@ -428,7 +467,30 @@ export const auth = {
       { value },
     ),
 
+  mutateUIPage: (method: "POST" | "PATCH" | "DELETE", page: {
+    id?: string; scope: "project" | "global"; project_id?: string;
+    title?: string; description?: string; pinned?: boolean; layout?: "grid" | "workspace";
+  }) => request<{ page: { id: string }; ui_layout: Record<string, unknown>; revision: number }>(method, "/ui-layout/pages", page),
+
+  patchGlobalUILayoutSurface: (surface: string, value: unknown[]) =>
+    request<{
+      value: unknown[];
+      ui_layout: Record<string, unknown>;
+      revision: number;
+    }>("PATCH", `/ui-layout/global/surfaces/${encodeURIComponent(surface)}`, { value }),
+
+  patchSidebarApp: (projectId: string, app: string, pinned: boolean, defaults: string[]) =>
+    request<{
+      sidebar: string[];
+      ui_layout: Record<string, unknown>;
+      revision: number;
+    }>("PATCH", `/ui-layout/projects/${encodeURIComponent(projectId)}/sidebar`, {
+      app, pinned, defaults,
+    }),
+
   prepareOnboarding: (mode: "ai") => request<{ status: string }>("POST", "/auth/onboarding/prepare", { mode }),
+  saveProductTour: (id: string, status: "skipped" | "completed") =>
+    request("PUT", "/auth/preferences", { product_tour: { id, status } }),
   completeOnboarding: (interfaceLevel?: InterfaceLevel) =>
     request<{ status: string }>("POST", "/auth/onboarding/complete", { interface_level: interfaceLevel }),
 
@@ -582,7 +644,14 @@ export interface Project {
   provisioning_preset_id?: string;
 }
 
+export interface AgentCapability {
+  name: string;
+  allowed_tools: string[];
+}
+
 export interface ProjectPresetAgent {
+  capabilities?: AgentCapability[];
+  icon?: string;
   key: string;
   name: string;
   directive: string;
@@ -591,7 +660,38 @@ export interface ProjectPresetAgent {
   apps?: string[];
 }
 
+export interface PresetConnectionSetup {
+  app: string;
+  title: string;
+  description: string;
+  required?: boolean;
+}
+
+export interface ProjectPresetLayouts {
+  home?: ProjectPresetWidget[] | null;
+  agent_overview?: Record<string, ProjectPresetWidget[]>;
+}
+
+export interface ProjectPresetSetupStep {
+  min_app_version?: string;
+  requires_operator?: boolean;
+  description?: string;
+  key: string;
+  app: string;
+  tool: string;
+  title?: string;
+  input?: Record<string, unknown>;
+}
+
+export interface ProjectPresetSetupProgress {
+  key: string;
+  status: "pending" | "running" | "completed" | "blocked" | "uncertain";
+  error?: string;
+}
+
 export interface ProjectPreset {
+  recommended?: boolean;
+  setup?: ProjectPresetSetupStep[];
   interface_level?: InterfaceLevel;
   id: string;
   kind?: "project_setup";
@@ -608,6 +708,8 @@ export interface ProjectPreset {
   agents: ProjectPresetAgent[];
   dashboard?: string[];
   dashboard_layout?: ProjectPresetWidget[];
+  layouts?: ProjectPresetLayouts;
+  connections?: PresetConnectionSetup[];
 }
 
 export interface ProjectPresetAppPreview {
@@ -624,6 +726,9 @@ export interface ProjectPresetAgentPreview extends ProjectPresetAgent {
 }
 
 export interface ProjectPresetWidget {
+  agent_key?: string;
+  agent_id?: number;
+  setup?: PresetConnectionSetup[];
   id: string;
   component: string;
   size: "half" | "full";
@@ -631,6 +736,7 @@ export interface ProjectPresetWidget {
 }
 
 export interface ProjectPresetPreview {
+  setup_progress?: ProjectPresetSetupProgress[];
   interface_level?: InterfaceLevel;
   preset: ProjectPreset;
   planner: "selected" | "meta" | "deterministic";
@@ -639,6 +745,7 @@ export interface ProjectPresetPreview {
   apps: ProjectPresetAppPreview[];
   agents: ProjectPresetAgentPreview[];
   layout: ProjectPresetWidget[];
+  agent_layouts?: Record<string, ProjectPresetWidget[]>;
   warnings: string[];
   next_steps?: string[];
 }
@@ -646,6 +753,7 @@ export interface ProjectPresetPreview {
 export type SetupAgentOverride = Pick<ProjectPresetAgentPreview, "key" | "name" | "directive" | "mode">;
 
 export interface ProjectPresetApplyInput {
+  retry_setup_steps?: string[];
   interface_level?: InterfaceLevel;
   agent_overrides?: SetupAgentOverride[];
   preset_id: string;
@@ -653,6 +761,8 @@ export interface ProjectPresetApplyInput {
 }
 
 export interface ProjectSetupPresetDefinition {
+  recommended?: boolean;
+  setup?: ProjectPresetSetupStep[];
   interface_level?: InterfaceLevel;
   category: "personal" | "work" | "development" | "business";
   match?: string[];
@@ -660,6 +770,8 @@ export interface ProjectSetupPresetDefinition {
   agents: ProjectPresetAgent[];
   dashboard?: string[];
   dashboard_layout?: ProjectPresetWidget[];
+  layouts?: ProjectPresetLayouts;
+  connections?: PresetConnectionSetup[];
 }
 
 export interface Preset {
@@ -721,9 +833,11 @@ export interface AgentTemplate {
   user_id?: number;
   source: "builtin" | "app" | "user";
   source_ref?: string;
+  category?: string;
+  preset_name?: string;
   name: string;
   // Short icon name resolved by the dashboard to a stroked SVG
-  // (see TemplateIcon in pages/AgentNew.tsx). Empty / unknown names
+  // (see AgentMark). Empty / unknown names
   // fall back to a generic neutral glyph.
   icon?: string;
   description: string;
@@ -791,9 +905,24 @@ export interface WorkspaceSetupDraft {
   agent_overrides?: SetupAgentOverride[];
 }
 
+export interface WorkspaceSetupProposalResult {
+  agents: Array<{ id: number; name: string; status: string; existing?: boolean }>;
+  warnings?: string[];
+}
+
+export interface WorkspaceSetupProposal {
+  revision: number;
+  status: "empty" | "proposed" | "ready" | "needs_attention";
+  updated_at?: string;
+  preview?: ProjectPresetPreview;
+  result?: WorkspaceSetupProposalResult;
+}
+
 export const workspaceSetup = {
   get: (projectId: string) => request<WorkspaceSetupDraft>("GET", `/projects/${encodeURIComponent(projectId)}/setup/session`),
   save: (projectId: string, draft: WorkspaceSetupDraft) => request<WorkspaceSetupDraft>("PUT", `/projects/${encodeURIComponent(projectId)}/setup/session`, draft),
+  proposal: (projectId: string) => request<WorkspaceSetupProposal>("GET", `/projects/${encodeURIComponent(projectId)}/setup/proposal`),
+  confirm: (projectId: string) => request<{ status: string; project_id: string; agents: Agent[]; warnings?: string[] }>("POST", `/projects/${encodeURIComponent(projectId)}/setup/confirm`),
 };
 
 export const projectPresets = {
@@ -813,12 +942,16 @@ export const projectPresets = {
         revision: preset.revision,
         name: preset.name,
         description: preset.description,
+        recommended: preset.definition.recommended,
         category: preset.definition.category,
         interface_level: preset.definition.interface_level,
         highlights: preset.definition.highlights,
         agents: preset.definition.agents,
         dashboard: preset.definition.dashboard,
         dashboard_layout: preset.definition.dashboard_layout,
+        layouts: preset.definition.layouts,
+        connections: preset.definition.connections,
+        setup: preset.definition.setup,
       })),
     };
   },
@@ -838,7 +971,8 @@ export const projectPresets = {
     ),
   apply: (projectId: string, input: ProjectPresetApplyInput) =>
     request<{
-      status: "applied";
+      status: "applied" | "needs_attention";
+      setup?: ProjectPresetSetupProgress[];
       project_id: string;
       preset_id: string;
       created_agents: Array<{ id: number; name: string; status: string }>;
@@ -1001,9 +1135,12 @@ export interface BehaviorSync {
 export type RunMode = "autonomous" | "cautious" | "learn";
 
 export interface Agent {
+  builtins?: Array<{ name: string; provider: string }>;
   id: number;
   user_id: number;
   name: string;
+  icon?: string;
+  icon_color?: string;
   directive: string;
   mode: RunMode;
   proactivity?: number;
@@ -1036,18 +1173,29 @@ export interface PlatformHelperCapabilities {
   reset_threads?: number;
 }
 
+export interface BuiltInIntegration {
+  id: string;
+  name: string;
+  description: string;
+  logo: string;
+  auto_attached: boolean;
+}
+
 export interface PlatformHelperStatus {
+  default_enabled?: boolean;
   activated: boolean;
   state: "inactive" | "stopped" | "running";
   provider_configured: boolean;
   conversations_installed: boolean;
   conversations_install_id?: number;
   agent?: Agent;
+  built_in_integrations?: BuiltInIntegration[];
 }
 
 export const platformHelper = {
   get: () => request<Agent>("GET", "/platform/helper"),
   status: () => request<PlatformHelperStatus>("GET", "/platform/helper/status"),
+  ensureDefault: () => request<PlatformHelperStatus>("POST", "/platform/helper/ensure-default", {}),
   activate: (installConversations = false) =>
     request<PlatformHelperStatus>("POST", "/platform/helper/activate", {
       install_conversations: installConversations,
@@ -1081,9 +1229,13 @@ export const instances = {
     projectId?: string,
     start?: boolean,
     opts?: {
+      icon?: string;
+      iconColor?: string;
       proactivity?: number;
       idempotencyKey?: string;
       includeChannels?: boolean;
+      defaultProvider?: string;
+      builtinOverrides?: AgentBuiltinOverrides;
       unconscious?: boolean;
       // Setup-step selections — explicit lists of apps + integration
       // connections the operator wants attached as MCP servers on
@@ -1098,6 +1250,9 @@ export const instances = {
   ) =>
     request<Agent & { warning?: string }>("POST", "/agents", {
       name,
+      ...(opts?.defaultProvider || opts?.builtinOverrides ? { config: JSON.stringify({ ...(opts.defaultProvider ? { default_provider: opts.defaultProvider } : {}), ...(opts.builtinOverrides ? { builtin_overrides: opts.builtinOverrides } : {}) }) } : {}),
+      icon: opts?.icon || "robot",
+      icon_color: opts?.iconColor || "accent",
       directive: directive || "",
       mode: mode || "autonomous",
       project_id: projectId || "",
@@ -1127,6 +1282,9 @@ export const instances = {
 
   rename: (id: number, name: string) =>
     request<Agent>("PUT", `/agents/${id}`, { name }),
+
+  updateIdentity: (id: number, identity: { name?: string; icon?: string; icon_color?: string }) =>
+    request<Agent>("PUT", `/agents/${id}`, identity),
 
   delete: (id: number) => request<any>("DELETE", `/agents/${id}`),
 
@@ -1170,18 +1328,24 @@ export const instances = {
       directive?: string;
       mode?: string;
       proactivity?: number;
-      providers?: Array<{ name: string; default: boolean }>;
+      providers?: Array<{ name: string; default: boolean; service_tier?: string | null; realtime_execution?: RealtimeExecutionConfig }>;
       modelOverride?: string;
+      serviceTierOverrides?: Record<string, string | null>;
+      builtinOverrides?: AgentBuiltinOverrides;
       realtimeEnabled?: boolean;
       realtimeVoice?: string;
+      realtimeProvider?: string;
+      realtimeModel?: string;
       realtimeVoiceMCP?: string[];
     },
   ) =>
     request<Agent & { behavior_sync?: BehaviorSync }>("PUT", `/agents/${id}/config`, {
-      ...(opts.directive ? { directive: opts.directive } : {}),
+      ...(opts.directive !== undefined ? { directive: opts.directive } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
       ...(opts.proactivity !== undefined ? { proactivity: opts.proactivity } : {}),
       ...(opts.providers ? { providers: opts.providers } : {}),
+      ...(opts.serviceTierOverrides ? { service_tier_overrides: opts.serviceTierOverrides } : {}),
+      ...(opts.builtinOverrides ? { builtin_overrides: opts.builtinOverrides } : {}),
       ...(opts.modelOverride !== undefined
         ? { model_override: opts.modelOverride }
         : {}),
@@ -1190,6 +1354,12 @@ export const instances = {
         : {}),
       ...(opts.realtimeVoice !== undefined
         ? { realtime_voice: opts.realtimeVoice }
+        : {}),
+      ...(opts.realtimeProvider !== undefined
+        ? { realtime_provider: opts.realtimeProvider }
+        : {}),
+      ...(opts.realtimeModel !== undefined
+        ? { realtime_model: opts.realtimeModel }
         : {}),
       ...(opts.realtimeVoiceMCP !== undefined
         ? { realtime_voice_mcp: opts.realtimeVoiceMCP }
@@ -1381,6 +1551,7 @@ export interface CredentialField {
 // -types list it replaces exposed only raw env var names, which is why
 // onboarding used to label its inputs "ANTHROPIC_API_KEY".
 export interface RuntimeCatalogEntry {
+  service_tiers?: string[];
   slug: string;
   name: string;
   description: string;
@@ -1397,7 +1568,15 @@ export interface RuntimeCatalogEntry {
 
 /** A connected runtime backend, as listed by GET /connections/runtime.
  *  Never carries credentials — it drives a settings screen. */
+export interface BuiltinOption { type: string; enum?: string[]; required?: boolean; default?: unknown }
+export interface BuiltinDescriptor { name: string; type: string; experimental?: boolean; options?: Record<string, BuiltinOption> }
+export interface BuiltinSetting { enabled: boolean; options?: Record<string, any> }
+export type AgentBuiltinOverrides = Record<string, Record<string, BuiltinSetting | null>>;
+
 export interface RuntimeConnection {
+  builtin_capabilities?: BuiltinDescriptor[];
+  builtin_unavailable?: string;
+  service_tiers?: string[];
   id: number;
   name: string;
   app_slug: string;
@@ -1414,6 +1593,12 @@ export interface RuntimeConnection {
   capabilities?: string[];
   /** Model picks and non-secret knobs: model_large, model_small, … */
   runtime_config: Record<string, any>;
+  realtime?: {
+    provider_key: string;
+    default_model: string;
+    models: Array<{ id: string; name: string; available: boolean; voices?: string[]; default_voice?: string }>;
+    voices: string[];
+  };
   env_vars?: string[];
 }
 
@@ -1925,7 +2110,7 @@ export const integrations = {
    *  to clear it and fall back to the provider default. */
   updateRuntimeConfig: (
     connectionId: number,
-    patch: Record<string, string | null>,
+    patch: Record<string, unknown>,
   ) =>
     request<Record<string, any>>(
       "PATCH",
@@ -2065,7 +2250,7 @@ export interface MCPServer {
   status: string; // 'running' | 'stopped' | 'reachable' | 'unprobed'
   tool_count: number;
   pid: number;
-  source: string; // 'custom' | 'managed' | 'local' | 'remote' | 'app'
+  source: string; // 'custom' | 'managed' | 'local' | 'remote' | 'app' | 'builtin'
   transport?: string; // 'stdio' | 'http'
   url?: string;
   provider_id?: number;
@@ -2445,12 +2630,21 @@ export interface RealtimeThreadResponse {
   };
 }
 
+export interface RealtimeExecutionConfig {
+  mode?: "thread" | "provider";
+  provider?: string;
+  model?: string;
+}
+
 export interface RealtimeAvailability {
   enabled: boolean;
   available: boolean;
   voice: string;
   mcp: string[];
   provider: string;
+  model?: string;
+  modelTier?: "large" | "medium" | "small";
+  execution?: RealtimeExecutionConfig;
 }
 
 const REALTIME_DASHBOARD_DIRECTIVE = `
@@ -2609,6 +2803,10 @@ export const core = {
     opts: {
       voice?: string;
       provider?: string;
+      model?: string;
+      realtime_execution?: RealtimeExecutionConfig;
+      directive?: string;
+      initial_message?: string;
       mcp?: string[];
       tools?: string[];
     },
@@ -2621,6 +2819,10 @@ export const core = {
         ephemeral: true,
         voice: opts.voice || undefined,
         provider: opts.provider || undefined,
+        model: opts.model || undefined,
+        realtime_execution: opts.realtime_execution,
+        directive: opts.directive,
+        initial_message: opts.initial_message,
         mcp: opts.mcp || [],
         tools: opts.tools || [],
         bridge_disconnect_ttl_seconds: 45,
@@ -2690,6 +2892,7 @@ export const core = {
   // entry annotated with `connected: true`).
   config: (instanceId: number) =>
     request<{
+      builtin_overrides?: AgentBuiltinOverrides;
       directive: string;
       mode: RunMode;
       proactivity?: number;
@@ -2702,12 +2905,10 @@ export const core = {
       execution_checkpoints?: ExecutionCheckpointMeta[];
       auto_approve?: string[];
       mcp_servers?: MCPServerConfig[];
-      providers?: Array<{
-        name: string;
-        default?: boolean;
-        models?: Partial<Record<"large" | "medium" | "small", string>>;
-        realtime_voice?: string;
-      }>;
+      providers?: CoreProviderConfig[];
+      realtime_providers?: RealtimeConfig["realtime_providers"];
+      realtime_provider?: string;
+      realtime_model?: string;
       realtime_enabled?: boolean;
       realtime_voice?: string;
       realtime_voice_mcp?: string[];
@@ -2988,7 +3189,16 @@ export const telemetry = {
       }>
     >("GET", `/telemetry/timeline?instance_id=${instanceId}&period=${period}`),
 
-  projectActivity: (projectId: string, limit = 80) => request<TelemetryEvent[]>("GET", `/telemetry/project-activity?${new URLSearchParams({ project_id: projectId, limit: String(limit) })}`),
+  projectActivity: (projectId: string | undefined, limit = 80, view?: "runtime") => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (projectId) params.set("project_id", projectId);
+    if (view) params.set("view", view);
+    return request<TelemetryEvent[]>("GET", `/telemetry/project-activity?${params}`);
+  },
+
+  agentsLastActive: (projectId: string) => request<Array<{ agent_id: number; last_active_at: string }>>(
+    "GET", `/telemetry/agents-last-active?project_id=${encodeURIComponent(projectId)}`,
+  ),
 
   // Project-scoped aggregate — ranks every instance in the project by
   // cost/tokens/errors over the period. Empty projectId scopes to every
@@ -3100,8 +3310,11 @@ export const apps = {
 
   // --- v2 Apps system (sidecar-based, see github.com/apteva/app-sdk) ---
 
-  list: (projectId?: string) => {
-    const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  list: (projectId?: string, scope?: "global") => {
+    const params = new URLSearchParams();
+    if (projectId) params.set("project_id", projectId);
+    if (scope) params.set("scope", scope);
+    const q = params.toString() ? `?${params.toString()}` : "";
     return request<AppRow[]>("GET", `/apps${q}`).then((rows) =>
       rows.map((row) => ({
         ...row,
@@ -3143,11 +3356,17 @@ export const apps = {
       ...(opts.manifestYaml ? { manifest_yaml: opts.manifestYaml } : {}),
       ...(opts.repo ? { repo: opts.repo } : {}),
       ...(opts.ref ? { ref: opts.ref } : {}),
+      installation_key: opts.installationKey || "default",
+      installation_name: opts.installationName,
       project_id: opts.projectId || "",
       config: opts.config || {},
       upgrade_policy: opts.upgradePolicy || "manual",
       ...(opts.bindings ? { bindings: opts.bindings } : {}),
-    }),
+      ...(opts.placement ? { placement: opts.placement } : {}),
+    }, opts.idempotencyKey ? {"Idempotency-Key":opts.idempotencyKey} : undefined),
+
+  configureInstallation: (installId: number, options: { installation_name?: string; is_default?: true }) =>
+    request<{ installation_key: string; installation_name: string; is_default: boolean }>("PATCH", `/apps/installs/${installId}/installation`, options),
 
   uninstall: (installId: number) =>
     request<{ status: string }>("DELETE", `/apps/installs/${installId}`),
@@ -3336,7 +3555,13 @@ export interface AppGrantsResponse {
   grants: AppGrantRule[];
 }
 
+export interface AgentSetupRecommendation {
+  recommended?: boolean;
+  reason?: string;
+}
+
 export interface MarketplaceEntry {
+  agent_setup?: AgentSetupRecommendation;
   name: string;
   display_name: string;
   version: string;
@@ -3362,6 +3587,12 @@ export interface MarketplaceEntry {
 }
 
 export interface AppRow {
+  mcp_name?: string;
+  installation_key?: string;
+  installation_name?: string;
+  is_default?: boolean;
+  agent_setup?: AgentSetupRecommendation;
+  deployment?: DeploymentSummary;
   install_id: number;
   app_id: number;
   name: string;
@@ -3373,6 +3604,7 @@ export interface AppRow {
   icon_style?: "image" | "monochrome";
   project_id: string;
   status: "pending" | "running" | "error" | "disabled";
+  serving?: boolean;
   status_message?: string; // live phase string while pending — "Cloning…", "Building…", etc.
   error_message?: string;
   source: "git" | "registry" | "builtin" | "manual" | "integration";
@@ -3417,6 +3649,7 @@ export interface EventDecl {
 }
 
 export interface AppUIPanel {
+  host_ui?: HostUI;
   slot: string; // "project.page" | "instance.tab" | "instance.status" | "settings.app"
   label: string;
   icon: string;
@@ -3426,6 +3659,7 @@ export interface AppUIPanel {
 
 // Manifest entry — what the app declared. Mirrors sdk.UIComponent.
 export interface AppUIComponent {
+  host_ui?: HostUI;
   name: string;
   entry: string;
   slots: string[];
@@ -3433,12 +3667,14 @@ export interface AppUIComponent {
   description?: string;
   suggested?: boolean;
   visibility?: "attached" | "project";
+  dashboard_scopes?: Array<"project" | "global">;
   refresh_topics?: string[];
   default_width?: 1 | 2;
   supported_sizes?: Array<"half" | "full">;
   default_size?: "half" | "full";
   props_schema?: Record<string, unknown>;
   settings_schema?: Record<string, unknown>;
+  settings_ui?: import("./components/apps/widgetSettings").WidgetSettingsUI;
   preview_props?: Record<string, unknown>;
 }
 
@@ -3482,6 +3718,8 @@ export interface AppPreview {
 }
 
 export interface AppManifestV2 {
+  runtime?: {kind: string; ingress?: Record<string,unknown>};
+  setup?: { features: AppSetupFeature[] };
   schema: string;
   name: string;
   display_name: string;
@@ -3498,6 +3736,7 @@ export interface AppManifestV2 {
     mcp_tools?: { name: string; description: string }[];
     prompt_fragments?: { file: string; position: string }[];
     ui_panels?: {
+      host_ui?: HostUI;
       slot: string;
       label: string;
       icon?: string;
@@ -3520,6 +3759,8 @@ export interface AppManifestV2 {
 }
 
 export interface AppConfigField {
+  /** Exact app binding used by select_from_app discovery. */
+  app_role?: string;
   name: string;
   label?: string;
   /** text | password | toggle | select | select_from_integration |
@@ -3565,6 +3806,10 @@ export interface AppConfigFieldDiscovery {
 }
 
 export interface AppInstallOptions {
+  installationKey?: string;
+  installationName?: string;
+  placement?: DeploymentPlacement;
+  idempotencyKey?: string;
   manifestUrl?: string;
   manifestYaml?: string;
   repo?: string;
@@ -3614,12 +3859,16 @@ export interface PreflightConnectionCandidate {
 }
 
 export interface PreflightAppCandidate {
+  project_id?: string;
   install_id: number;
   app_name: string;
   display_name: string;
 }
 
 export interface AppPreflight {
+  setup_features?: AppSetupFeature[];
+  current_bindings?: Record<string, AppBindingValue>;
+  project_id?: string;
   manifest: AppManifestV2;
   roles: PreflightRole[];
 }
@@ -4074,8 +4323,7 @@ export const instanceSkills = {
 };
 
 // --- Platform self-update status (apteva CLI / server / core / dashboard
-// / integrations). The action itself lives in the `apteva update` CLI
-// subcommand; the dashboard surface here is purely informational. ---
+// / integrations). Admin update jobs delegate to the existing CLI updater. ---
 
 export interface PlatformComponentStatus {
   name: string;
@@ -4113,7 +4361,25 @@ export interface PlatformStatus {
 export const platform = {
   status: () => request<PlatformStatus>("GET", "/platform-status"),
   refresh: () => request<PlatformStatus>("POST", "/platform-status/refresh"),
+  updateStatus: () => request<PlatformUpdateStatus>("GET", "/platform-update"),
+  update: (version: string, agent_policy: string) => request<PlatformUpdateStatus>("POST", "/platform-update", { version, agent_policy }),
 };
+
+export interface PlatformUpdateJob {
+  id: string;
+  state: string;
+  message: string;
+  target_version: string;
+  previous_version: string;
+  updated_at: string;
+  backup?: string;
+}
+
+export interface PlatformUpdateStatus {
+  supported: boolean;
+  reason?: string;
+  job?: PlatformUpdateJob;
+}
 
 export interface NewAgentProviderSettings {
   provider: string;
@@ -4121,3 +4387,152 @@ export interface NewAgentProviderSettings {
   inherited_provider: string;
   available_providers: string[];
 }
+
+
+export type { NotificationChannels, NotificationSubscription, NotificationSource, UserNotification, NotificationSnapshot } from "./api/notificationTypes";
+import type { NotificationChannels, NotificationSubscription, NotificationSource, UserNotification, NotificationSnapshot } from "./api/notificationTypes";
+export const userNotifications = {
+  previews: () => request<import("./api/notificationTypes").NotificationPreviewPreferences>("GET", "/notifications/previews"),
+  setPreviews: (value: import("./api/notificationTypes").NotificationPreviewPreferences) => request<import("./api/notificationTypes").NotificationPreviewPreferences>("PUT", "/notifications/previews", value),
+  deliveryStatus: () => request<{pending:number;failed:number}>("GET", "/notifications/delivery-status"),
+  sources: (projectId: string, installId?: number) => request<NotificationSource[]>("GET", `/notifications/sources?${new URLSearchParams({project_id: projectId, ...(installId ? {install_id: String(installId)} : {})})}`),
+  list: (before?: number) => request<NotificationSnapshot>("GET", `/notifications${before ? `?before=${before}` : ""}`),
+  get: (id: number) => request<UserNotification>("GET", `/notifications/${id}`),
+  preferences: () => request<NotificationChannels>("GET", "/notifications/preferences"),
+  setPreferences: (channels: NotificationChannels) => request<NotificationChannels>("PUT", "/notifications/preferences", channels),
+  subscribe: (value: NotificationSubscription) => request<NotificationSubscription>("PUT", "/notifications/subscriptions", value),
+  reset: (value: NotificationSubscription) => request("DELETE", "/notifications/subscriptions", value),
+  update: (id: number, changes: {read?: boolean; dismiss?: boolean}) => request("PATCH", `/notifications/${id}`, changes),
+  devices: () => request<{subscriptions: {id:string; device_name:string; platform:string; status:string; last_error?:string}[]}>("GET", "/mobile/push/subscriptions"),
+};
+
+// Guided setup is additive to existing roles/configuration; legacy apps get
+// a basic setup feature from the server.
+export interface AppSetupFeature {
+  id: string; label: string; description?: string; default?: boolean;
+  requires?: { role: string; feature?: string }[];
+  fields?: string[];
+  configure?: { entry: string };
+  readiness?: { route: string };
+}
+export interface AppSetupNode {
+  install_id?: number; feature_id?: string; role?: string; label: string;
+  status: "ready" | "configured" | "needs_setup" | "pending" | "error" | "not_enabled";
+  message?: string; project_id?: string; configure_url?: string; children?: AppSetupNode[];
+}
+export interface AppSetupState {
+  features: AppSetupFeature[]; selected_features: string[]; required_feature?: string;
+  nodes: AppSetupNode[]; project_id: string; install_status: string; shared: boolean;
+}
+export const appSetup = {
+  get: (id: number, feature?: string) => request<AppSetupState>("GET", `/apps/installs/${id}/setup${feature ? `?feature=${encodeURIComponent(feature)}` : ""}`),
+  save: (id: number, features: string[]) => request<{selected_features: string[]}>("PUT", `/apps/installs/${id}/setup`, {features}),
+};
+
+// Backend-neutral managed app deployment console.
+export interface DeploymentResource { app_install_id: number; resource_type: string; resource_id: string }
+export interface DeploymentBackendRef { app_install_id: number; backend_id: string }
+export interface DeploymentPlacement {
+  resource_policy?: AppResourcePolicy;
+  type: "local" | "backend";
+  backend?: DeploymentBackendRef;
+  target?: DeploymentResource;
+  gateway_url?: string;
+  ingress?: { hostname: string; dns_app_install_id?: number; domain?: string; dns_project_id?: string };
+  options?: Record<string, unknown>;
+}
+export interface DeploymentSummary {
+  type: "local" | "backend"; managed: boolean; backend?: DeploymentBackendRef;
+  backend_name?: string; target: DeploymentResource; target_name?: string;
+  state: string; message?: string; checked_at?: string; admission_state?: string; public_url?: string;
+}
+export interface DeploymentTarget { ref: DeploymentResource; name: string; status: string; available: boolean; reason?: string; platform?: string; region?: string }
+export interface DeploymentBackend {
+  app_install_id: number; id: string; endpoint: string; display_name?: string;
+  target_discovery?: { path: string; items?: string; id_field: string; name_field: string; status_field?: string; ready_value?: string; resource_type: string };
+  capabilities: { target_listing?: boolean; managed_ingress?: boolean; snapshots?: boolean; replicas?: boolean; resource_controls?: boolean; runtime_kinds: string[]; options_schema?: Record<string, any>; target_schema?: Record<string, any> };
+}
+export interface DeploymentOperation { id: string; install_id: number; kind: string; phase: string; status: string; deployment_id?: string; error?: string; created_at: string; updated_at: string }
+export interface DeploymentRecord { id: string; generation: number; status: string; created_at: string; placement: DeploymentPlacement; manifest: { version: string; runtime?: {kind:string;ingress?:Record<string,unknown>} }; execution: { state: string; ready: boolean; browser_endpoint?: string; endpoints?: Record<string, string> } }
+export interface DeploymentDetail { can_scale?: boolean; placement: DeploymentPlacement; active_deployment_id: string; pending_deployment_id: string; deployments: DeploymentRecord[]; summary: DeploymentSummary; operations: DeploymentOperation[] }
+export interface DeploymentPreflight { compatible: boolean; placement: DeploymentPlacement; checks: { name: string; status: string; message?: string }[] }
+export const appDeployments = {
+  backends: () => request<{ backends: DeploymentBackend[] }>("GET", "/apps/execution-backends"),
+  register: (backend: DeploymentBackend) => request<DeploymentBackend>("POST", "/apps/execution-backends", backend),
+  targets: (backend: DeploymentBackendRef, projectId = "", q = "", cursor = "") => request<{ targets: DeploymentTarget[]; next_cursor?: string }>("GET", `/apps/deployment-targets?${new URLSearchParams({ backend_install_id: String(backend.app_install_id), backend_id: backend.backend_id, project_id: projectId, q, cursor })}`),
+  preflight: (input: { install_id?: number; manifest_url?: string; manifest_yaml?: string; project_id?: string; placement: DeploymentPlacement }) => request<DeploymentPreflight>("POST", "/apps/deployment-preflight", input),
+  get: (id: number) => request<DeploymentDetail>("GET", `/apps/installs/${id}/deployment`),
+  action: (id: number, action: "deploy" | "activate" | "restart" | "stop" | "delete" | "discard", placement?: DeploymentPlacement, key: string = crypto.randomUUID()) => request<DeploymentOperation>("POST", `/apps/installs/${id}/deployment/${action}`, placement ? { placement } : {}, { "Idempotency-Key": key }),
+  scale: (id: number, replicas: number) => request("POST", `/apps/installs/${id}/deployment/scale`, {replicas}),
+  operation: (id: number, op: string) => request<DeploymentOperation>("GET", `/apps/installs/${id}/deployment/operations/${encodeURIComponent(op)}`),
+  retry: (id: number, op: string) => request<DeploymentOperation>("POST", `/apps/installs/${id}/deployment/operations/${encodeURIComponent(op)}/retry`, {}),
+  cancel: (id: number, op: string) => request<{ cancel_requested: boolean }>("POST", `/apps/installs/${id}/deployment/operations/${encodeURIComponent(op)}/cancel`, {}),
+  logs: (id: number, cursor = "") => request<{ lines: string[]; cursor?: string }>("GET", `/apps/installs/${id}/deployment/logs?cursor=${encodeURIComponent(cursor)}`),
+};
+
+export interface AppResourcePolicy {
+ process?: {cpu_weight?:number;cpu_quota_percent?:number;memory_high_bytes?:number;memory_max_bytes?:number;io_weight?:number;nice?:number};
+ total_concurrency?:number;
+ workloads?:Record<string,{concurrency:number;queue:number;weight:number}>;
+ network?:Record<string,{receive_bytes?:number;send_bytes?:number;dscp?:number}>;
+}
+export interface AppResourceStatus { revision:number;policy:AppResourcePolicy;resolved:AppResourcePolicy;declaration?:{workloads?:string[];traffic_classes?:string[]};capabilities:Record<string,unknown>;note:string }
+export const appResources = {
+ runtime:(id:number)=>request<{deployment_id:string;generation:number;runtime:unknown}>("GET",`/apps/installs/${id}/deployment/resources/runtime`),
+ apply:(id:number,revision:number,deployment_id:string)=>request<unknown>("POST",`/apps/installs/${id}/deployment/resources/runtime`,{revision,deployment_id}),
+ get:(id:number)=>request<AppResourceStatus>("GET",`/apps/installs/${id}/deployment/resources`),
+ save:(id:number,revision:number,policy:AppResourcePolicy)=>request<AppResourceStatus>("PUT",`/apps/installs/${id}/deployment/resources`,{revision,policy}),
+};
+
+export interface AgentResourceStatus {
+ revision:number;policy:AppResourcePolicy;resolved:AppResourcePolicy;apply:"next_restart";state:string;supported:boolean;observed:Record<string,string>;capabilities:unknown;note:string;
+}
+export const agentResources={
+ get:(id:number)=>request<AgentResourceStatus>("GET",`/agents/${id}/resources`),
+ save:(id:number,revision:number,policy:AppResourcePolicy)=>request<AgentResourceStatus>("PUT",`/agents/${id}/resources`,{revision,policy}),
+};
+
+// Account-level Node sessions inherit the user's normal API permissions.
+export interface AccountDevice {
+  id: string;
+  name: string;
+  version: string;
+  hardware: { id: string; kind: string; description?: string }[];
+  tools: { name: string; description: string; confirm?: string }[] | null;
+  events: { capability: string; kind: string; description?: string }[] | null;
+  project_id: string;
+  agent_id: string;
+  created_at: number;
+  last_seen: number;
+  revoked_at: number;
+  connected: boolean;
+  current: boolean;
+}
+export interface DevicePairingRequest {
+  name: string;
+  version: string;
+  hardware: { id: string; kind: string; description?: string }[];
+  expires_at: number;
+  status: string;
+}
+export interface DeviceToolGrant { agent_id: number; project_id: string; tools: string[] }
+export interface DeviceEventBinding { id: string; device_id: string; agent_id: number; project_id: string; capability: string; kind: string; thread_id: string; instruction: string; enabled: boolean; cooldown_seconds: number; max_age_seconds: number }
+export interface DeviceEventDelivery { event_id: string; binding_id: string; status: string; attempts: number; error: string; execution_id: string }
+export const devices = {
+  grants: (id: string) => request<{ grants: DeviceToolGrant[] }>("GET", `/devices/${encodeURIComponent(id)}/grants`),
+  grant: (id: string, agent: number, tools: string[]) => request<DeviceToolGrant>("PUT", `/devices/${encodeURIComponent(id)}/grants/${agent}`, {tools}),
+  revokeGrant: (id: string, agent: number) => request<{revoked: boolean}>("DELETE", `/devices/${encodeURIComponent(id)}/grants/${agent}`),
+  bindings: (id: string) => request<{ bindings: DeviceEventBinding[] }>("GET", `/devices/${encodeURIComponent(id)}/event-bindings`),
+  subscribe: (id: string, binding: Omit<DeviceEventBinding, "id" | "device_id" | "project_id">) => request<DeviceEventBinding>("POST", `/devices/${encodeURIComponent(id)}/event-bindings`, binding),
+  toggleBinding: (id: string, binding: string, enabled: boolean) => request<DeviceEventBinding>("PATCH", `/devices/${encodeURIComponent(id)}/event-bindings/${encodeURIComponent(binding)}`, {enabled}),
+  removeBinding: (id: string, binding: string) => request("DELETE", `/devices/${encodeURIComponent(id)}/event-bindings/${encodeURIComponent(binding)}`),
+  deliveries: (id: string) => request<{ deliveries: DeviceEventDelivery[] }>("GET", `/devices/${encodeURIComponent(id)}/event-deliveries`),
+  list: () => request<{ devices: AccountDevice[] }>("GET", "/devices"),
+  pairing: (code: string) => request<DevicePairingRequest>("GET", "/devices/pair/request?code=" + encodeURIComponent(code)),
+  approve: (code: string, project_id = "", agent_id = "") =>
+    request<{ status: string; device_id: string }>("POST", "/devices/pair/approve", { code, project_id, agent_id }),
+  deny: (code: string) => request<{ status: string }>("POST", "/devices/pair/deny", { code }),
+  update: (id: string, data: { name?: string; project_id?: string; agent_id?: string }) =>
+    request<AccountDevice>("PATCH", "/devices/" + encodeURIComponent(id), data),
+  revoke: (id: string) => request<{ revoked: boolean }>("DELETE", "/devices/" + encodeURIComponent(id)),
+};
