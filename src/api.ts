@@ -2676,6 +2676,82 @@ export interface ManagedMCPUpdateInput {
   delete_env?: string[];
 }
 
+/** Claude subscription provider: agents run through the Claude CLI signed
+ *  in on the server machine. The server never handles the Claude sign-in
+ *  itself, so these calls only report on and start the CLI's own flow. */
+export interface ClaudeSubscriptionProcess {
+  session: string;
+  owner: string;
+  owner_label?: string;
+  /** Model the process is on; agents switch it per turn. */
+  model?: string;
+  pid: number;
+  state: "starting" | "replying" | "waiting_tool" | "finishing" | "idle" | "waiting_slot" | string;
+  detail?: string;
+  since: string;
+  started_at: string;
+  turns: number;
+  rss_kb?: number;
+}
+
+export interface ClaudeSubscriptionSettings {
+  pool_size: number;
+  idle_seconds: number;
+  queue_seconds: number;
+}
+
+export interface ClaudeSubscriptionStatus {
+  available: boolean;
+  unavailable_reason?: string;
+  installed: boolean;
+  binary?: string;
+  version?: string;
+  server_user?: string;
+  config_dir?: string;
+  sign_in_command: string;
+  connected: boolean;
+  connection_id?: number;
+  settings: ClaudeSubscriptionSettings;
+  auth?: {
+    logged_in: boolean;
+    auth_method?: string;
+    subscription_type?: string;
+    subscription: boolean;
+    checked_at: string;
+  };
+  auth_error?: string;
+  login: { running: boolean; started_at?: string; last_error?: string };
+  pool?: {
+    max_processes: number;
+    running: number;
+    busy: number;
+    waiting: number;
+    sessions: number;
+    idle_seconds: number;
+    queue_seconds: number;
+    rss_kb: number;
+    processes: ClaudeSubscriptionProcess[];
+  };
+  limit?: {
+    status?: string;
+    type?: string;
+    resets_at?: string;
+    utilization?: number;
+    updated_at?: string;
+  };
+}
+
+export const claudeSubscription = {
+  status: (refresh = false) =>
+    request<ClaudeSubscriptionStatus>("GET", `/claude-subscription${refresh ? "?refresh=1" : ""}`),
+  /** Starts `claude auth login` on the server machine, which opens
+   *  Anthropic's sign-in page in that machine's browser. */
+  login: () => request<{ started: boolean }>("POST", "/claude-subscription/login", {}),
+  logout: () => request<{ signed_out: boolean }>("POST", "/claude-subscription/logout", {}),
+  updateSettings: (settings: Partial<ClaudeSubscriptionSettings>) =>
+    request<{ settings: ClaudeSubscriptionSettings }>("PUT", "/claude-subscription/settings", settings),
+};
+
 export const mcpServers = {
   list: (projectId?: string, opts?: { includeAppOwned?: boolean }) => {
     const params = new URLSearchParams();
