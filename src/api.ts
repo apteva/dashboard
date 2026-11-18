@@ -2691,7 +2691,7 @@ export interface ClaudeSubscriptionProcess {
   since: string;
   started_at: string;
   turns: number;
-  rss_kb?: number;
+  memory_kb?: number;
 }
 
 export interface ClaudeSubscriptionSettings {
@@ -2729,7 +2729,7 @@ export interface ClaudeSubscriptionStatus {
     sessions: number;
     idle_seconds: number;
     queue_seconds: number;
-    rss_kb: number;
+    memory_kb: number;
     processes: ClaudeSubscriptionProcess[];
   };
   limit?: {

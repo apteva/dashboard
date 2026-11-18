@@ -129,10 +129,10 @@ test("the provider card shows the process pool and saves its settings", async ()
         sessions: 3,
         idle_seconds: 90,
         queue_seconds: 60,
-        rss_kb: 512000,
+        memory_kb: 512000,
         processes: [
-          { session: "a1", owner: "agent:1", owner_label: "Researcher", model: "opus", pid: 11, state: "waiting_tool", detail: "web_search", since: now, started_at: now, turns: 4, rss_kb: 262144 },
-          { session: "b2", owner: "agent:2", owner_label: "Writer", pid: 12, state: "idle", since: now, started_at: now, turns: 1, rss_kb: 249856 },
+          { session: "a1", owner: "agent:1", owner_label: "Researcher", model: "opus", pid: 11, state: "waiting_tool", detail: "web_search", since: now, started_at: now, turns: 4, memory_kb: 262144 },
+          { session: "b2", owner: "agent:2", owner_label: "Writer", pid: 12, state: "idle", since: now, started_at: now, turns: 1, memory_kb: 249856 },
         ],
       },
     }),

@@ -260,7 +260,7 @@ function ProcessRow({ proc }: { proc: ClaudeSubscriptionProcess }) {
         {proc.detail ? `: ${proc.detail}` : ""}
         <span className="text-text-dim"> · {shortDuration(proc.since)}</span>
       </span>
-      <span className="text-xs tabular-nums text-text-muted">{megabytes(proc.rss_kb)}</span>
+      <span className="text-xs tabular-nums text-text-muted">{megabytes(proc.memory_kb)}</span>
       <span className="text-right text-xs tabular-nums text-text-dim">
         {proc.turns} turn{proc.turns === 1 ? "" : "s"}
       </span>
@@ -412,7 +412,7 @@ export function ClaudeSubscriptionPoolSection() {
               ["Running", `${pool.running} of ${pool.max_processes}`],
               ["Busy", String(pool.busy)],
               ["Queued", String(pool.waiting)],
-              ["Memory", megabytes(pool.rss_kb)],
+              ["Memory", megabytes(pool.memory_kb)],
             ].map(([label, value]) => (
               <div key={label} className="rounded border border-border px-3 py-2">
                 <dt className="text-[11px] text-text-dim">{label}</dt>
