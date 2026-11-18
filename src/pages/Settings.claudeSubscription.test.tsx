@@ -139,6 +139,14 @@ test("the provider card shows the process pool and saves its settings", async ()
   );
   const update = mock(async (next: any) => ({ settings: { pool_size: 6, idle_seconds: 90, queue_seconds: 60, ...next } }));
   claudeSubscription.updateSettings = update;
+  integrations.connectionModels = mock(async () => [
+    { id: "opus", name: "Claude Opus (latest)" },
+    { id: "claude-fable-5-1[1m]", name: "Fable", description: "Most capable" },
+    { id: "sonnet", name: "Sonnet" },
+    { id: "haiku", name: "Haiku" },
+  ]);
+  const pin = mock(async () => ({}));
+  integrations.updateRuntimeConfig = pin;
 
   render(<ProvidersTab />);
   const region = await waitFor(() => screen.getByRole("region", { name: "Claude subscription global provider" }));
@@ -150,6 +158,15 @@ test("the provider card shows the process pool and saves its settings", async ()
   expect(within(list).getByText(/· opus/)).toBeTruthy();
   expect(within(list).getByText(/Waiting for tools: web_search/)).toBeTruthy();
   expect(within(region).queryByRole("button", { name: "Test connection" })).toBeNull();
+
+  // Tiers are picked from the models Claude Code offers.
+  const large = within(region).getByRole("combobox", { name: "large model" }) as HTMLSelectElement;
+  await waitFor(() => expect(large.disabled).toBe(false));
+  expect(large.value).toBe("opus");
+  expect(within(large).getByRole("option", { name: "Fable · claude-fable-5-1[1m]" })).toBeTruthy();
+  expect(within(region).queryByPlaceholderText("Provider default")).toBeNull();
+  fireEvent.change(large, { target: { value: "claude-fable-5-1[1m]" } });
+  await waitFor(() => expect(pin).toHaveBeenCalledWith(1, { model_large: "claude-fable-5-1[1m]" }));
 
   const size = within(region).getByRole("spinbutton", { name: /Pool size/ });
   fireEvent.change(size, { target: { value: "6" } });

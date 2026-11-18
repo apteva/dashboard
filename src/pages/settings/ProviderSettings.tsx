@@ -8,7 +8,7 @@ import { useNewAgentProviderDefault } from "../../hooks/useNewAgentProviderDefau
 import { Modal } from "../../components/Modal";
 
 import { ProviderUsageDetails, ProviderUsageSummary } from "../../components/ProviderUsage";
-import { ClaudeSignInHelper, ClaudeSubscriptionPoolSection } from "../../components/ClaudeSubscription";
+import { ClaudeModelTiers, ClaudeSignInHelper, ClaudeSubscriptionPoolSection } from "../../components/ClaudeSubscription";
 import { ProviderPicker } from "../../components/integrations/ProviderPicker";
 import { CredentialFields } from "../../components/integrations/CredentialFields";
 import { ConnectionReauthDialog, DeviceCodeAuthPanel, isConnectionReauthable } from "../../components/integrations/ConnectionReauthDialog";
@@ -513,6 +513,13 @@ export function ProvidersTab() {
                         )}
                         <ServiceTierSelect connection={connection} value={connection.runtime_config?.service_tier || ""} disabled={busy} onChange={(value) => void handleServiceTier(connection, value)} />
                         <ProviderBuiltinDefaults connection={connection} onSaved={load} disabled={busy} />
+                        {localCLI ? (
+                          <ClaudeModelTiers
+                            connection={connection}
+                            disabled={busy}
+                            onPin={(tier, model) => void handlePinModel(connection, tier, model)}
+                          />
+                        ) : (
                         <div className="space-y-1.5">
                           {(["large", "medium", "small"] as const).map((tier) => (
                             <label
@@ -546,6 +553,7 @@ export function ProvidersTab() {
                             </label>
                           ))}
                         </div>
+                        )}
                         <div className="flex flex-wrap items-center gap-4">
                           {!localCLI && (
                             <button

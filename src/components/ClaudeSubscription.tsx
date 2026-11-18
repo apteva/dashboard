@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   claudeSubscription,
+  integrations,
   type ClaudeSubscriptionProcess,
   type ClaudeSubscriptionSettings,
   type ClaudeSubscriptionStatus,
+  type ModelInfo,
+  type RuntimeConnection,
 } from "../api";
 
 /** Polls the server's Claude CLI status while the page is visible. */
@@ -487,6 +490,76 @@ export function ClaudeSubscriptionPoolSection() {
         </div>
       )}
       {(actionError || error) && <p className="text-xs text-red">{actionError || error}</p>}
+    </div>
+  );
+}
+
+const MODEL_TIERS = ["large", "medium", "small"] as const;
+
+function modelLabel(model: ModelInfo): string {
+  if (!model.name || model.name.toLowerCase() === model.id.toLowerCase()) return model.name || model.id;
+  return `${model.name} · ${model.id}`;
+}
+
+/** Model pickers for the three tiers, listing the models Claude Code
+ *  offers the signed-in plan. */
+export function ClaudeModelTiers({
+  connection,
+  disabled,
+  onPin,
+}: {
+  connection: RuntimeConnection;
+  disabled?: boolean;
+  onPin: (tier: string, model: string) => void;
+}) {
+  const [models, setModels] = useState<ModelInfo[] | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    integrations.connectionModels(connection.id).then(
+      (list) => {
+        if (live) setModels(list);
+      },
+      (err: any) => {
+        if (!live) return;
+        setModels([]);
+        setError(err?.message || "Could not list Claude models");
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [connection.id]);
+
+  return (
+    <div className="space-y-1.5">
+      {MODEL_TIERS.map((tier) => {
+        const current = String(connection.runtime_config?.[`model_${tier}`] || "");
+        const options = models || [];
+        const listed = !current || options.some((model) => model.id === current);
+        return (
+          <label key={tier} className="flex items-center gap-3 min-w-0">
+            <span className="w-12 shrink-0 text-xs capitalize text-text-muted">{tier}</span>
+            <select
+              value={current}
+              onChange={(event) => onPin(tier, event.target.value)}
+              disabled={disabled || models === null}
+              aria-label={`${tier} model`}
+              className="min-w-0 w-full rounded border border-border bg-bg-input px-2 py-1.5 text-xs text-text focus:outline-none focus:border-accent disabled:opacity-50"
+            >
+              <option value="">Default</option>
+              {!listed && <option value={current}>{current}</option>}
+              {options.map((model) => (
+                <option key={model.id} value={model.id} title={model.description}>
+                  {modelLabel(model)}
+                </option>
+              ))}
+            </select>
+          </label>
+        );
+      })}
+      {error && <p className="text-xs text-yellow">{error}</p>}
     </div>
   );
 }
