@@ -8,6 +8,7 @@ import { useNewAgentProviderDefault } from "../../hooks/useNewAgentProviderDefau
 import { Modal } from "../../components/Modal";
 
 import { ProviderUsageDetails, ProviderUsageSummary } from "../../components/ProviderUsage";
+import { ClaudeModelTiers, ClaudeSignInHelper, ClaudeSubscriptionPoolSection } from "../../components/ClaudeSubscription";
 import { ProviderPicker } from "../../components/integrations/ProviderPicker";
 import { CredentialFields } from "../../components/integrations/CredentialFields";
 import { ConnectionReauthDialog, DeviceCodeAuthPanel, isConnectionReauthable } from "../../components/integrations/ConnectionReauthDialog";
@@ -17,6 +18,12 @@ import { useProjects } from "../../hooks/useProjects";
 import { useTranslation } from "react-i18next";
 
 import { primaryRuntimeConnections, groupRuntimeConnectionsByProvider } from "./modelUtils";
+
+// Providers that run through a CLI signed in on the server machine. Their
+// connections store no credentials; sign-in belongs to the CLI itself.
+const LOCAL_CLI_AUTH = "local_cli";
+const usesLocalCLI = (authTypes?: string[] | string) =>
+  Array.isArray(authTypes) ? authTypes.includes(LOCAL_CLI_AUTH) : authTypes === LOCAL_CLI_AUTH;
 
 export function ProvidersTab() {
   const { currentProject } = useProjects();
@@ -62,6 +69,7 @@ export function ProvidersTab() {
     connection: ConnectionInfo;
     auth: DeviceAuthStart;
   } | null>(null);
+  const [localCLIReady, setLocalCLIReady] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -145,6 +153,7 @@ export function ProvidersTab() {
     setConfiguring(entry);
     setCredentials({});
     setMakeGlobal(false);
+    setLocalCLIReady(false);
     setError("");
   };
 
@@ -156,13 +165,15 @@ export function ProvidersTab() {
       const value = (credentials[field.name] || "").trim();
       if (value) trimmed[field.name] = value;
     }
-    const authType =
-      defaultIntegrationAuthType(runtimeEntryAsAppDetail(configuring)) ||
-      "api_key";
+    const authType = usesLocalCLI(configuring.auth_types)
+      ? LOCAL_CLI_AUTH
+      : defaultIntegrationAuthType(runtimeEntryAsAppDetail(configuring)) ||
+        "api_key";
     const managedAuth =
       authType === "oauth1" ||
       authType === "oauth2" ||
-      authType === "oauth_device_code";
+      authType === "oauth_device_code" ||
+      authType === LOCAL_CLI_AUTH;
     if (Object.keys(trimmed).length === 0 && !managedAuth) {
       setError("At least one field is required");
       return;
@@ -456,6 +467,7 @@ export function ProvidersTab() {
                   {group.map((connection, index) => {
                     const busy = busyID === connection.id;
                     const result = testResultByID[connection.id];
+                    const localCLI = usesLocalCLI(connection.auth_type);
                     const content = (
                       <div className="space-y-3 pb-3">
                         {group.length > 1 && (
@@ -491,6 +503,7 @@ export function ProvidersTab() {
                             }}
                           />
                         )}
+                        {localCLI && <ClaudeSubscriptionPoolSection />}
                         {connection.runtime_config?.model_selection_errors && (
                           <div role="alert" className="text-xs text-red-400 space-y-1">
                             {Object.entries(connection.runtime_config.model_selection_errors).map(([tier, message]) => (
@@ -500,6 +513,13 @@ export function ProvidersTab() {
                         )}
                         <ServiceTierSelect connection={connection} value={connection.runtime_config?.service_tier || ""} disabled={busy} onChange={(value) => void handleServiceTier(connection, value)} />
                         <ProviderBuiltinDefaults connection={connection} onSaved={load} disabled={busy} />
+                        {localCLI ? (
+                          <ClaudeModelTiers
+                            connection={connection}
+                            disabled={busy}
+                            onPin={(tier, model) => void handlePinModel(connection, tier, model)}
+                          />
+                        ) : (
                         <div className="space-y-1.5">
                           {(["large", "medium", "small"] as const).map((tier) => (
                             <label
@@ -533,14 +553,17 @@ export function ProvidersTab() {
                             </label>
                           ))}
                         </div>
+                        )}
                         <div className="flex flex-wrap items-center gap-4">
-                          <button
-                            onClick={() => void handleTest(connection)}
-                            disabled={busy}
-                            className="text-xs text-text-muted hover:text-accent disabled:opacity-50"
-                          >
-                            {busy ? "Working…" : "Test connection"}
-                          </button>
+                          {!localCLI && (
+                            <button
+                              onClick={() => void handleTest(connection)}
+                              disabled={busy}
+                              className="text-xs text-text-muted hover:text-accent disabled:opacity-50"
+                            >
+                              {busy ? "Working…" : "Test connection"}
+                            </button>
+                          )}
                           {isConnectionReauthable(connection.auth_type || "") && (
                             <button
                               onClick={() => setReauthFor(connection)}
@@ -675,11 +698,15 @@ export function ProvidersTab() {
             </h3>
             <p className="text-text-muted text-sm">{configuring.description}</p>
 
-            <CredentialFields
-              detail={runtimeEntryAsAppDetail(configuring)}
-              credentials={credentials}
-              setCredentials={setCredentials}
-            />
+            {usesLocalCLI(configuring.auth_types) ? (
+              <ClaudeSignInHelper onReadyChange={setLocalCLIReady} />
+            ) : (
+              <CredentialFields
+                detail={runtimeEntryAsAppDetail(configuring)}
+                credentials={credentials}
+                setCredentials={setCredentials}
+              />
+            )}
 
             {currentProject && (
               <label className="flex items-start gap-2 cursor-pointer select-none">
@@ -713,7 +740,13 @@ export function ProvidersTab() {
               </button>
               <button
                 type="submit"
-                className="px-4 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
+                disabled={usesLocalCLI(configuring.auth_types) && !localCLIReady}
+                title={
+                  usesLocalCLI(configuring.auth_types) && !localCLIReady
+                    ? "Sign in to Claude first"
+                    : undefined
+                }
+                className="px-4 py-2.5 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Connect
               </button>
