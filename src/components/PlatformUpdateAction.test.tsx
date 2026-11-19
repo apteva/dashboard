@@ -66,3 +66,31 @@ test("successful update leaves active conversations open until the user reloads"
   fireEvent.click(button);
   expect(reload).toHaveBeenCalledTimes(1);
 });
+
+test("the database check shows its progress while it runs", async () => {
+  setup({ supported: true, job: { id: "check", source: "cli", state: "preflight", message: "Copying the database (3/4)", target_version: "1.2.3", previous_version: "1.2.2", updated_at: new Date().toISOString(), progress: { phase: "copy", done: 3, total: 4 } } });
+  const view = render(<PlatformUpdateAction status={status} />);
+  const bar = await view.findByRole("progressbar");
+  expect(bar.getAttribute("aria-valuenow")).toBe("75");
+  expect(view.getByText("Started from the Apteva CLI.")).toBeTruthy();
+  expect(view.queryByRole("button", { name: /Update to/ })).toBeNull();
+});
+
+test("an incompatible migration shows its reasons and backup", async () => {
+  setup({ supported: true, job: { id: "done", state: "succeeded", message: "Updated", target_version: "1.2.3", previous_version: "1.2.2", updated_at: new Date().toISOString(),
+    check: { classification: "incompatible", compatible: false, reasons: ["adds a unique index on users"], backup: "/home/apteva/update-backups/done/apteva.db", backup_bytes: 3 * 1024 * 1024 * 1024 } } });
+  const view = render(<PlatformUpdateAction status={status} />);
+  await view.findByText(/cannot use/);
+  expect(view.getByText("adds a unique index on users")).toBeTruthy();
+  expect(view.getByText("/home/apteva/update-backups/done/apteva.db")).toBeTruthy();
+  expect(view.getByText(/3\.0 GB/)).toBeTruthy();
+  expect(view.queryByRole("progressbar")).toBeNull();
+});
+
+test("a compatible update reports that no backup was needed", async () => {
+  setup({ supported: true, job: { id: "done", state: "succeeded", message: "Updated", target_version: "1.2.3", previous_version: "1.2.2", updated_at: new Date().toISOString(),
+    check: { classification: "compatible", compatible: true } } });
+  const view = render(<PlatformUpdateAction status={status} />);
+  await view.findByText(/previous version can still run/);
+  expect(view.queryByText(/Backup taken/)).toBeNull();
+});

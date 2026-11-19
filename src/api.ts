@@ -4872,14 +4872,30 @@ export const platform = {
   update: (version: string, agent_policy: string) => request<PlatformUpdateStatus>("POST", "/platform-update", { version, agent_policy }),
 };
 
+// The release's database check: unchanged (no stored data changes),
+// compatible (the previous version can still run on the migrated database),
+// or incompatible (a backup is taken before activation).
+export interface PlatformUpdateCheck {
+  classification: "unchanged" | "compatible" | "incompatible" | string;
+  compatible: boolean;
+  reasons?: string[];
+  backup?: string;
+  backup_bytes?: number;
+  duration_ms?: number;
+}
+
 export interface PlatformUpdateJob {
   id: string;
+  // "cli" when the update was started from the Apteva CLI.
+  source?: string;
   state: string;
   message: string;
   target_version: string;
   previous_version: string;
   updated_at: string;
   backup?: string;
+  check?: PlatformUpdateCheck;
+  progress?: { phase: string; done: number; total: number };
 }
 
 export interface PlatformUpdateStatus {

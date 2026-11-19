@@ -1,15 +1,45 @@
 import { useEffect, useState } from "react";
-import { platform, type PlatformStatus, type PlatformUpdateStatus } from "../api";
+import { platform, type PlatformStatus, type PlatformUpdateCheck, type PlatformUpdateJob, type PlatformUpdateStatus } from "../api";
 import { useAuth } from "../hooks/useAuth";
 
-const terminal = new Set(["succeeded", "failed", "rolled_back", "recovery_required"]);
+const terminal = new Set(["succeeded", "failed", "rolled_back", "recovery_required", "reconciled", "canceled"]);
 const phases: Record<string, string> = {
   queued: "Preparing", preparing: "Preparing", downloading: "Downloading",
   verifying: "Verifying", preflight: "Checking database", activating: "Activating",
   restarting: "Reconnecting", warming: "Warming candidate", draining: "Finishing active work", transferring: "Switching server", recovering: "Recovering server", rolling_back: "Restoring previous version",
   succeeded: "Updated", failed: "Update failed", rolled_back: "Previous version restored",
-  recovery_required: "Recovery required",
+  recovery_required: "Recovery required", reconciled: "Recovered", canceled: "Canceled",
 };
+
+function formatBytes(bytes: number) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes, unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function checkSummary(check: PlatformUpdateCheck) {
+  switch (check.classification) {
+    case "unchanged": return "Database check: this release changes no stored data.";
+    case "compatible": return "Database check: this release adds to the database. The previous version can still run on it.";
+    default: return "Database check: this release migrates the database in a way the previous version cannot use.";
+  }
+}
+
+function CheckProgress({ progress }: { progress: NonNullable<PlatformUpdateJob["progress"]> }) {
+  const percent = Math.min(100, Math.round((progress.done / progress.total) * 100));
+  return <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-bg" role="progressbar" aria-label="Database check progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+    <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${percent}%` }} />
+  </div>;
+}
+
+function CheckResult({ check }: { check: PlatformUpdateCheck }) {
+  return <div className="mt-2 space-y-1 text-xs text-text-muted">
+    <p>{checkSummary(check)}</p>
+    {check.classification === "incompatible" && !!check.reasons?.length && <p className="break-words">{check.reasons.join("; ")}</p>}
+    {check.backup && <p className="break-words">Backup taken before the update: <span className="font-mono">{check.backup}</span>{check.backup_bytes ? ` (${formatBytes(check.backup_bytes)})` : ""}</p>}
+  </div>;
+}
 
 export function PlatformUpdateAction({ status }: { status: PlatformStatus }) {
   const { user } = useAuth();
@@ -22,6 +52,7 @@ export function PlatformUpdateAction({ status }: { status: PlatformStatus }) {
   const job = view?.job;
   const active = !!job && !terminal.has(job.state);
   const stale = active && Date.now() - new Date(job.updated_at).getTime() > 120_000;
+  const fromCLI = job?.source === "cli";
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -62,8 +93,11 @@ export function PlatformUpdateAction({ status }: { status: PlatformStatus }) {
         <span className="ml-auto text-xs text-text-muted">v{job.target_version}</span>
       </div>
       <p className="mt-2 break-words text-xs text-text-muted">{job.message}</p>
+      {active && job.state === "preflight" && job.progress && job.progress.total > 0 && <CheckProgress progress={job.progress} />}
+      {job.check && <CheckResult check={job.check} />}
+      {fromCLI && <p className="mt-2 text-xs text-text-muted">Started from the Apteva CLI.</p>}
       {job.state === "succeeded" && <button type="button" className="mt-2 text-xs text-accent hover:underline" onClick={() => window.location.reload()}>Reload dashboard</button>}
-      {stale && <p className="mt-2 text-xs text-yellow">The updater has stopped reporting progress. Check the service and platform-update.log on the host before retrying.</p>}
+      {stale && <p className="mt-2 text-xs text-yellow">{fromCLI ? "The command-line update has stopped reporting progress. Check the terminal that started it." : "The updater has stopped reporting progress. Check the service and platform-update.log on the host before retrying."}</p>}
     </div>}
     {disconnected && <p role="status" className="text-xs text-yellow">{active ? "Waiting for the server to reconnect… You can leave this page and return to check progress." : "Could not reach the updater. Retrying…"}</p>}
     {!view && !disconnected && <p className="text-xs text-text-muted">Checking update support…</p>}
