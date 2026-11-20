@@ -58,7 +58,19 @@ function setup(connections: RuntimeConnection[]) {
   integrations.connectionUsage = mock(async () => ({ supported: true, provider_id: 1 }) as any);
 }
 
-test("connecting asks the user to sign in to Claude and never collects credentials", async () => {
+const signInURL = "https://claude.com/cai/oauth/authorize?code=true&state=abc";
+
+async function openConnectForm() {
+  render(<ProvidersTab />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Add provider" })).toBeTruthy());
+  fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Add provider" })).getByRole("button", { name: /Claude subscription.*Connect/ }));
+  const form = screen.getByRole("dialog", { name: "Connect provider" });
+  await waitFor(() => expect(within(form).getByText(/installed .* but not signed in/)).toBeTruthy());
+  return form;
+}
+
+test("connecting signs in with Anthropic's link and the code it shows", async () => {
   setup([]);
   let current = status();
   claudeSubscription.status = mock(async () => current);
@@ -66,25 +78,38 @@ test("connecting asks the user to sign in to Claude and never collects credentia
     current = status({ login: { running: true, started_at: new Date().toISOString() } });
     return { started: true };
   });
+  const submitCode = mock(async (_code: string) => {
+    current = status({ login: { running: true, url: signInURL, code_submitted: true } });
+    return { login: current.login };
+  });
+  claudeSubscription.submitCode = submitCode;
   const connect = mock(async () => ({ id: 9 }) as any);
   integrations.connect = connect;
 
-  render(<ProvidersTab />);
-  await waitFor(() => expect(screen.getByRole("button", { name: "Add provider" })).toBeTruthy());
-  fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
-  fireEvent.click(within(screen.getByRole("dialog", { name: "Add provider" })).getByRole("button", { name: /Claude subscription.*Connect/ }));
-
-  const form = screen.getByRole("dialog", { name: "Connect provider" });
-  await waitFor(() => expect(within(form).getByText(/installed .* but not signed in/)).toBeTruthy());
+  const form = await openConnectForm();
   expect(within(form).queryByRole("textbox")).toBeNull();
   expect(within(form).queryByLabelText(/password|token|key/i)).toBeNull();
   expect(within(form).getByText("claude auth login")).toBeTruthy();
   const submit = within(form).getByRole("button", { name: "Connect" }) as HTMLButtonElement;
   expect(submit.disabled).toBe(true);
 
-  fireEvent.click(within(form).getByRole("button", { name: "Open Claude sign-in" }));
-  await waitFor(() => expect(within(form).getByRole("button", { name: "Waiting for sign-in…" })).toBeTruthy());
+  fireEvent.click(within(form).getByRole("button", { name: "Sign in with Claude" }));
+  await waitFor(() => expect(within(form).getByText("Starting sign-in…")).toBeTruthy());
   expect(claudeSubscription.login).toHaveBeenCalledTimes(1);
+
+  current = status({ login: { running: true, url: signInURL, awaiting_code: true } });
+  fireEvent.click(within(form).getByRole("button", { name: "Check again" }));
+  const link = (await within(form).findByRole("link", { name: "Open sign-in page" })) as HTMLAnchorElement;
+  expect(link.getAttribute("href")).toBe(signInURL);
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+
+  const input = within(form).getByLabelText(/Paste the code/);
+  fireEvent.change(input, { target: { value: "  approved-code#abc  " } });
+  fireEvent.click(within(form).getByRole("button", { name: "Continue" }));
+  await waitFor(() => expect(submitCode).toHaveBeenCalledWith("approved-code#abc"));
+  await waitFor(() => expect(within(form).getByText("Checking the code…")).toBeTruthy());
+  expect(connect).not.toHaveBeenCalled();
 
   current = status({ auth: { logged_in: true, subscription: true, subscription_type: "max", auth_method: "claude.ai", checked_at: new Date().toISOString() } });
   fireEvent.click(within(form).getByRole("button", { name: "Check again" }));
@@ -96,6 +121,63 @@ test("connecting asks the user to sign in to Claude and never collects credentia
   expect(args[0]).toBe("claude-subscription");
   expect(args[2]).toEqual({});
   expect(args[3]).toBe("local_cli");
+});
+
+test("a code Claude rejects shows its message and lets the user try again", async () => {
+  setup([]);
+  let current = status({ login: { running: true, url: signInURL, awaiting_code: true } });
+  claudeSubscription.status = mock(async () => current);
+  claudeSubscription.submitCode = mock(async () => {
+    current = status({ login: { running: false, last_error: "That code wasn't accepted. Sign in again to get a new code." } });
+    return { login: current.login };
+  });
+  const login = mock(async () => {
+    current = status({ login: { running: true, url: signInURL, awaiting_code: true } });
+    return { started: true };
+  });
+  claudeSubscription.login = login;
+
+  render(<ProvidersTab />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Add provider" })).toBeTruthy());
+  fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Add provider" })).getByRole("button", { name: /Claude subscription.*Connect/ }));
+  const form = screen.getByRole("dialog", { name: "Connect provider" });
+  const input = await within(form).findByLabelText(/Paste the code/);
+  fireEvent.change(input, { target: { value: "wrong#abc" } });
+  fireEvent.keyDown(input, { key: "Enter" });
+  await waitFor(() => expect(within(form).getByText(/wasn't accepted/)).toBeTruthy());
+  fireEvent.click(within(form).getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(login).toHaveBeenCalledTimes(1));
+  await within(form).findByRole("link", { name: "Open sign-in page" });
+});
+
+test("a malformed code is explained and cancel ends the sign-in", async () => {
+  setup([]);
+  let current = status({ login: { running: true, url: signInURL, awaiting_code: true } });
+  claudeSubscription.status = mock(async () => current);
+  claudeSubscription.submitCode = mock(async () => {
+    throw new Error("invalid_code");
+  });
+  const cancelLogin = mock(async () => {
+    current = status();
+    return { canceled: true, login: current.login };
+  });
+  claudeSubscription.cancelLogin = cancelLogin;
+
+  render(<ProvidersTab />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Add provider" })).toBeTruthy());
+  fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Add provider" })).getByRole("button", { name: /Claude subscription.*Connect/ }));
+  const form = screen.getByRole("dialog", { name: "Connect provider" });
+  fireEvent.change(await within(form).findByLabelText(/Paste the code/), { target: { value: "half-a-code" } });
+  fireEvent.click(within(form).getByRole("button", { name: "Continue" }));
+  await waitFor(() => expect(within(form).getByText(/Copy the whole code/)).toBeTruthy());
+  expect(within(form).getByRole("link", { name: "Open sign-in page" })).toBeTruthy();
+
+  fireEvent.click(within(form).getByRole("button", { name: "Cancel sign-in" }));
+  await waitFor(() => expect(cancelLogin).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(within(form).getByRole("button", { name: "Sign in with Claude" })).toBeTruthy());
+  expect(within(form).queryByRole("textbox")).toBeNull();
 });
 
 test("the provider card shows the process pool and saves its settings", async () => {
