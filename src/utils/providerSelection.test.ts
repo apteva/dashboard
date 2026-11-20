@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveEffectiveAgentProvider } from "./providerSelection";
+import { resolveEffectiveAgentProvider, savedAgentModelOverride } from "./providerSelection";
 
 describe("resolveEffectiveAgentProvider", () => {
   test("uses the effective runtime default instead of provider-list order", () => {
@@ -27,5 +27,22 @@ describe("resolveEffectiveAgentProvider", () => {
     expect(resolveEffectiveAgentProvider(
       '{"default_provider":"OpenAI Codex"}',
     )).toBe("openai-codex");
+  });
+});
+
+describe("savedAgentModelOverride", () => {
+  const config = '{"model_override":{"provider":"Claude Subscription","model":" sonnet "}}';
+
+  test("returns the pinned model for its own provider", () => {
+    expect(savedAgentModelOverride(config, "claude-subscription")).toBe("sonnet");
+  });
+
+  test("ignores a pin saved for another provider", () => {
+    expect(savedAgentModelOverride(config, "anthropic")).toBe("");
+  });
+
+  test("tolerates missing or invalid config", () => {
+    expect(savedAgentModelOverride("", "anthropic")).toBe("");
+    expect(savedAgentModelOverride("not json", "anthropic")).toBe("");
   });
 });
