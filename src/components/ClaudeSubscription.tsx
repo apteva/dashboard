@@ -32,15 +32,20 @@ export function useClaudeSubscriptionStatus(pollMs: number) {
   useEffect(() => {
     live.current = true;
     void refresh(true);
+    return () => {
+      live.current = false;
+    };
+  }, [refresh]);
+
+  // Poll faster while a sign-in runs, so its link and result show promptly.
+  const signingIn = !!status?.login.running;
+  useEffect(() => {
     const tick = () => {
       if (document.visibilityState === "visible") void refresh();
     };
-    const interval = window.setInterval(tick, pollMs);
-    return () => {
-      live.current = false;
-      window.clearInterval(interval);
-    };
-  }, [pollMs, refresh]);
+    const interval = window.setInterval(tick, signingIn ? Math.min(pollMs, 2000) : pollMs);
+    return () => window.clearInterval(interval);
+  }, [pollMs, refresh, signingIn]);
 
   return { status, error, loading, refresh, setStatus };
 }
@@ -131,13 +136,27 @@ function SignInState({ status }: { status: ClaudeSubscriptionStatus }) {
   );
 }
 
-/** Steps to install and sign in to the Claude CLI on the server machine.
- *  Sign-in always happens in Claude's own command and on Anthropic's page;
- *  Apteva only checks the result. */
+function Spinner() {
+  return <span aria-hidden="true" className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-accent border-t-transparent" />;
+}
+
+const codeErrors: Record<string, string> = {
+  invalid_code: "That doesn't look like the code from Anthropic's page. Copy the whole code and paste it again.",
+  not_running: "This sign-in has ended. Start again.",
+  code_submitted: "A code was already sent for this sign-in.",
+};
+
+/** Steps to install and sign in to Claude Code on the computer running
+ *  Apteva. Sign-in runs in Claude Code's own command: the user approves on
+ *  Anthropic's page and pastes the code it shows, which Apteva passes on to
+ *  Claude Code without keeping it. */
 function SignInSteps({ status, onChanged }: { status: ClaudeSubscriptionStatus; onChanged: () => void }) {
   const [starting, setStarting] = useState(false);
+  const [code, setCode] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const runAs = status.server_user ? ` as ${status.server_user}` : "";
+  const login = status.login;
 
   if (!status.installed) {
     return (
@@ -152,6 +171,7 @@ function SignInSteps({ status, onChanged }: { status: ClaudeSubscriptionStatus; 
   const start = async () => {
     setStarting(true);
     setError("");
+    setCode("");
     try {
       await claudeSubscription.login();
       onChanged();
@@ -162,34 +182,116 @@ function SignInSteps({ status, onChanged }: { status: ClaudeSubscriptionStatus; 
     }
   };
 
+  // Not a <form>: these steps render inside the Connect provider form.
+  const submit = async () => {
+    const value = code.trim();
+    if (!value || submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      await claudeSubscription.submitCode(value);
+      setCode("");
+      onChanged();
+    } catch (err: any) {
+      setError(codeErrors[err?.message] || err?.message || "Could not send the code");
+      if (err?.message !== "invalid_code") onChanged();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const cancel = async () => {
+    setError("");
+    setCode("");
+    try {
+      await claudeSubscription.cancelLogin();
+    } catch (err: any) {
+      setError(err?.message || "Could not cancel the sign-in");
+    }
+    onChanged();
+  };
+
   return (
     <div className="space-y-3 text-xs text-text-muted">
-      <div className="space-y-2">
-        <button
-          type="button"
-          onClick={() => void start()}
-          disabled={starting || status.login.running}
-          className="rounded-lg bg-accent px-3 py-2 text-xs font-bold text-bg hover:bg-accent-hover disabled:opacity-60"
-        >
-          {status.login.running ? "Waiting for sign-in…" : starting ? "Opening…" : "Open Claude sign-in"}
-        </button>
-        {status.login.running ? (
-          <p>
-            A sign-in page opened in the browser on the computer running Apteva. Finish signing in there; this page updates by
-            itself.
-          </p>
-        ) : (
-          <p>Opens Anthropic's sign-in page in a browser on the computer running Apteva.</p>
-        )}
-        {status.login.last_error && !status.login.running && (
-          <p className="text-red">The last sign-in did not finish: {status.login.last_error}</p>
-        )}
-        {error && <p className="text-red">{error}</p>}
-      </div>
-      <div className="space-y-2">
-        <p>If Apteva runs on another machine, or no page opened, run this in a terminal there{runAs}:</p>
+      {!login.running ? (
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => void start()}
+            disabled={starting}
+            className="rounded-lg bg-accent px-3 py-2 text-xs font-bold text-bg hover:bg-accent-hover disabled:opacity-60"
+          >
+            {starting ? "Starting…" : login.last_error ? "Try again" : "Sign in with Claude"}
+          </button>
+          <p>You approve the sign-in on Anthropic's page, then paste the code it shows here.</p>
+          {login.last_error && <p className="text-red">The last sign-in did not finish: {login.last_error}</p>}
+        </div>
+      ) : login.code_submitted ? (
+        <p role="status" className="flex items-center gap-2 text-text">
+          <Spinner />
+          Checking the code…
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <p className="font-medium text-text">1. Approve the sign-in on Anthropic's page</p>
+            {login.url ? (
+              <a
+                href={login.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-block rounded-lg bg-accent px-3 py-2 text-xs font-bold text-bg hover:bg-accent-hover"
+              >
+                Open sign-in page
+              </a>
+            ) : (
+              <p role="status" className="flex items-center gap-2">
+                <Spinner />
+                Starting sign-in…
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <label htmlFor="claude-sign-in-code" className="block font-medium text-text">
+              2. Paste the code shown after you approve
+            </label>
+            <div className="flex gap-2">
+              <input
+                id="claude-sign-in-code"
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void submit();
+                  }
+                }}
+                disabled={submitting}
+                autoComplete="off"
+                spellCheck={false}
+                className="min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 py-2 font-mono text-xs text-text"
+              />
+              <button
+                type="button"
+                onClick={() => void submit()}
+                disabled={submitting || !code.trim()}
+                className="shrink-0 rounded-lg bg-accent px-3 py-2 text-xs font-bold text-bg hover:bg-accent-hover disabled:opacity-60"
+              >
+                {submitting ? "Sending…" : "Continue"}
+              </button>
+            </div>
+          </div>
+          <button type="button" onClick={() => void cancel()} className="text-xs text-text-muted hover:text-accent">
+            Cancel sign-in
+          </button>
+        </div>
+      )}
+      {error && <p className="text-red">{error}</p>}
+      <details className="space-y-2">
+        <summary className="cursor-pointer hover:text-accent">Prefer a terminal?</summary>
+        <p className="pt-2">Run this in a terminal on the computer running Apteva{runAs}:</p>
         <CopyCommand command={status.sign_in_command} />
-      </div>
+      </details>
     </div>
   );
 }
@@ -209,7 +311,7 @@ export function ClaudeSignInHelper({ onReadyChange }: { onReadyChange?: (ready: 
           <SignInState status={status} />
           <SignInSteps status={status} onChanged={() => void refresh(true)} />
           <div className="flex items-center justify-between gap-3">
-            <p className="text-[11px] text-text-dim">Apteva never sees or stores your Claude sign-in.</p>
+            <p className="text-[11px] text-text-dim">Claude Code keeps your Claude sign-in; Apteva never stores it.</p>
             <button type="button" onClick={() => void refresh(true)} className="shrink-0 text-xs text-text-muted hover:text-accent">
               Check again
             </button>

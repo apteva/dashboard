@@ -2720,7 +2720,16 @@ export interface ClaudeSubscriptionStatus {
     checked_at: string;
   };
   auth_error?: string;
-  login: { running: boolean; started_at?: string; last_error?: string };
+  /** Claude Code's sign-in. `url` is Anthropic's sign-in page; the user
+   *  approves there and pastes the code it shows. */
+  login: {
+    running: boolean;
+    started_at?: string;
+    url?: string;
+    awaiting_code?: boolean;
+    code_submitted?: boolean;
+    last_error?: string;
+  };
   pool?: {
     max_processes: number;
     running: number;
@@ -2744,9 +2753,14 @@ export interface ClaudeSubscriptionStatus {
 export const claudeSubscription = {
   status: (refresh = false) =>
     request<ClaudeSubscriptionStatus>("GET", `/claude-subscription${refresh ? "?refresh=1" : ""}`),
-  /** Starts `claude auth login` on the server machine, which opens
-   *  Anthropic's sign-in page in that machine's browser. */
+  /** Starts Claude Code's sign-in on the server, replacing one in progress.
+   *  The status then carries the sign-in page link. */
   login: () => request<{ started: boolean }>("POST", "/claude-subscription/login", {}),
+  /** Passes the code from Anthropic's page to the running sign-in. */
+  submitCode: (code: string) =>
+    request<{ login: ClaudeSubscriptionStatus["login"] }>("POST", "/claude-subscription/login/code", { code }),
+  cancelLogin: () =>
+    request<{ canceled: boolean; login: ClaudeSubscriptionStatus["login"] }>("POST", "/claude-subscription/login/cancel", {}),
   logout: () => request<{ signed_out: boolean }>("POST", "/claude-subscription/logout", {}),
   updateSettings: (settings: Partial<ClaudeSubscriptionSettings>) =>
     request<{ settings: ClaudeSubscriptionSettings }>("PUT", "/claude-subscription/settings", settings),
