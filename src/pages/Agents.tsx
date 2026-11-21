@@ -10,6 +10,7 @@ import { AgentInstructionsEditor } from "../components/AgentInstructionsEditor";
 import { AppContributionArea, ContributionManager } from "../components/apps/contributions";
 import { AgentIconPicker, AgentMark, suggestedAgentIcon } from "../components/AgentMark";
 import { AgentRuntimeFields, useAgentRuntimeChoice } from "../components/AgentRuntimeFields";
+import { providerSaveNotice, restartNeededMessage } from "../utils/providerRestart";
 import { AgentCapabilityIcons, type AgentCapabilityCatalog } from "../components/AgentCapabilityIcons";
 
 type AgentLiveStatus = { threads: number; iter: number; rate: string } & SleepLike;
@@ -68,6 +69,7 @@ export function Agents() {
   const [creating, setCreating] = useState(false);
   const [rollout, setRollout] = useState<AgentCoreRollout | null>(null);
   const [rolloutError, setRolloutError] = useState("");
+  const [saveNotice, setSaveNotice] = useState("");
 
   // Per-instance live thread count, keyed by instance id. Updated every
   // poll from core.status so the list reflects how active each instance is
@@ -159,10 +161,18 @@ export function Agents() {
       const runtimePatch = editRuntime.patch;
       if (nameChanged || appearanceChanged) await instances.updateIdentity(editTarget.id, { ...(nameChanged ? { name: trimmedName } : {}), icon: editIcon, icon_color: "accent" });
       if (directiveChanged || runtimePatch) {
-        await instances.updateConfig(editTarget.id, {
+        const result = await instances.updateConfig(editTarget.id, {
           ...(directiveChanged ? { directive: editDirective } : {}),
           ...(runtimePatch || {}),
         });
+        const notice = providerSaveNotice(trimmedName, result);
+        if (notice?.tone === "error") {
+          load();
+          setEditError(notice.message);
+          setEditSaving(false);
+          return;
+        }
+        setSaveNotice(notice?.message || "");
       }
       closeEditModal();
       load();
@@ -532,6 +542,12 @@ export function Agents() {
           </div>
         )}
         {rolloutError && <div className="text-sm text-red">{rolloutError}</div>}
+        {saveNotice && (
+          <div role="status" className="flex items-center gap-3 text-sm text-green">
+            <span>{saveNotice}</span>
+            <button type="button" onClick={() => setSaveNotice("")} className="text-xs text-text-muted hover:text-text">Dismiss</button>
+          </div>
+        )}
         {list.length === 0 && (
           <div className="text-text-muted text-sm">
             No agents yet.{" "}
@@ -570,6 +586,11 @@ export function Agents() {
                               title={`Running ${inst.core_version || "unknown"}; target ${inst.target_core_version || "current"}`}
                             >
                               core update
+                            </span>
+                          )}
+                          {restartNeededMessage(inst) && (
+                            <span className="rounded bg-yellow/10 px-1.5 py-0.5 text-yellow" title={restartNeededMessage(inst)}>
+                              restart needed
                             </span>
                           )}
                         </div>
@@ -625,6 +646,7 @@ export function Agents() {
                         <span>#{inst.id}</span>
                         <ModeBadge mode={inst.mode} />
                         {inst.core_update_available && <span className="text-yellow">core update</span>}
+                        {restartNeededMessage(inst) && <span className="text-yellow" title={restartNeededMessage(inst)}>restart needed</span>}
                       </div>
                     </Link>
 

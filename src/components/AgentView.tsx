@@ -8,6 +8,8 @@ import { ServiceTierSelect, agentServiceTiers, serviceTierPatch } from "./Servic
 import { AppIcon } from "@apteva/ui-kit";
 import { AgentIconPicker, AgentMark, suggestedAgentIcon } from "./AgentMark";
 import { PickerOption } from "./PickerOption";
+import { AgentRestartNotice, ProviderSaveNoticeBar } from "./AgentRestartNotice";
+import { providerSaveNotice, type ProviderSaveNotice } from "../utils/providerRestart";
 import { ProactivityControl } from "./ProactivityControl";
 import { defaultProactivity } from "../agentBehavior";
 import { behaviorDescriptions, behaviorExplanation } from "../agentBehavior";
@@ -140,6 +142,7 @@ export function AgentView({
   const [resetBusy, setResetBusy] = useState(false);
   const [resetFeedback, setResetFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [showConfig, setShowConfig] = useState(false);
+  const [providerNotice, setProviderNotice] = useState<ProviderSaveNotice | null>(null);
   const [view, setView] = useState<RuntimeView>("overview");
 
   // Track threads, tools, and active LLM calls for the runtime summary.
@@ -694,8 +697,15 @@ export function AgentView({
         open={showConfig}
         onClose={() => setShowConfig(false)}
         instance={instance}
-        onSaved={onReload}
+        onSaved={(notice) => {
+          setProviderNotice(notice);
+          onReload();
+        }}
       />
+
+      <ProviderSaveNoticeBar notice={providerNotice} onDismiss={() => setProviderNotice(null)} />
+      {/* Right after a restart the next reload clears the flag. */}
+      {providerNotice?.tone !== "success" && <AgentRestartNotice agent={instance} onRestarted={onReload} />}
 
       {/* Main content */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -2441,7 +2451,8 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
   open: boolean;
   onClose: () => void;
   instance: Agent;
-  onSaved: () => void;
+  /** Receives what saving did to the running agent, if anything. */
+  onSaved: (notice: ProviderSaveNotice | null) => void;
 }) {
   const auth = useOptionalAuth();
   const { shows } = useAudience();
@@ -2630,7 +2641,13 @@ function ConfigModal({ open, onClose, instance, onSaved }: {
         realtimeVoice: selectedRealtimeVoice,
         realtimeVoiceMCP,
       });
-      onSaved();
+      // A failed restart stays in this dialog; the agent then shows Restart needed.
+      const notice = providerSaveNotice(instance.name, result);
+      onSaved(notice?.tone === "success" ? notice : null);
+      if (notice?.tone === "error") {
+        setError(notice.message);
+        return;
+      }
       if (result.behavior_sync?.pending) {
         setError("Saved. Behavior is still pending for some workers; active voice sessions will continue until they can accept the change.");
         return;
