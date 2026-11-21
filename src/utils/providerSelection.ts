@@ -29,3 +29,16 @@ export function resolveEffectiveAgentProvider(
   if (runtimeDefault) return providerKey(runtimeDefault.name);
   return savedDefaultProvider(agentConfigJSON);
 }
+
+/** The model this agent pins for `providerName`, or "" for the provider's
+ *  own Large/Medium/Small models. The server keeps one override and only
+ *  applies it while its provider is the agent's default. */
+export function savedAgentModelOverride(agentConfigJSON: string, providerName: string): string {
+  try {
+    const override = JSON.parse(agentConfigJSON || "{}")?.model_override;
+    if (!override || providerKey(String(override.provider || "")) !== providerKey(providerName)) return "";
+    return String(override.model || "").trim();
+  } catch {
+    return "";
+  }
+}

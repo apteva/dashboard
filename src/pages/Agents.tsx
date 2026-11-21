@@ -9,6 +9,7 @@ import { sleepClassName, sleepLabel, sleepTitle, type SleepLike } from "../utils
 import { AgentInstructionsEditor } from "../components/AgentInstructionsEditor";
 import { AppContributionArea, ContributionManager } from "../components/apps/contributions";
 import { AgentIconPicker, AgentMark, suggestedAgentIcon } from "../components/AgentMark";
+import { AgentRuntimeFields, useAgentRuntimeChoice } from "../components/AgentRuntimeFields";
 import { AgentCapabilityIcons, type AgentCapabilityCatalog } from "../components/AgentCapabilityIcons";
 
 type AgentLiveStatus = { threads: number; iter: number; rate: string } & SleepLike;
@@ -122,6 +123,7 @@ export function Agents() {
   const [editDirective, setEditDirective] = useState("");
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState("");
+  const editRuntime = useAgentRuntimeChoice(editTarget);
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
@@ -147,15 +149,21 @@ export function Agents() {
     setEditSaving(true);
     setEditError("");
     try {
-      // Two independent endpoints — name via /agents/:id, directive
-      // via /agents/:id/config — fire only the ones that actually
-      // changed to avoid spurious history rows on the directive
-      // audit trail.
+      // Two independent endpoints — name via /agents/:id; directive,
+      // provider and model via /agents/:id/config — and only the fields
+      // that actually changed, to avoid spurious history rows on the
+      // directive audit trail.
       const nameChanged = trimmedName !== editTarget.name;
       const appearanceChanged = editIcon !== (editTarget.icon || "robot") || editTarget.icon_color !== "accent";
       const directiveChanged = editDirective !== (editTarget.directive || "");
+      const runtimePatch = editRuntime.patch;
       if (nameChanged || appearanceChanged) await instances.updateIdentity(editTarget.id, { ...(nameChanged ? { name: trimmedName } : {}), icon: editIcon, icon_color: "accent" });
-      if (directiveChanged) await instances.updateConfig(editTarget.id, { directive: editDirective });
+      if (directiveChanged || runtimePatch) {
+        await instances.updateConfig(editTarget.id, {
+          ...(directiveChanged ? { directive: editDirective } : {}),
+          ...(runtimePatch || {}),
+        });
+      }
       closeEditModal();
       load();
       window.dispatchEvent(new Event("apteva:agents-changed"));
@@ -678,10 +686,11 @@ export function Agents() {
         </div>
       </Modal>
 
-      {/* Quick-edit modal — name + directive only. Lives at page root
-          so it overlays cleanly regardless of which row triggered it.
-          For deeper config (mode, providers, and MCP wiring)
-          operators still go through the agent detail page. */}
+      {/* Quick-edit modal — name, icon, provider, model and directive.
+          Lives at page root so it overlays cleanly regardless of which
+          row triggered it. For deeper config (mode, provider-wide model
+          tiers, MCP wiring) operators still go through the agent detail
+          page. */}
       <Modal open={!!editTarget} onClose={closeEditModal}>
         {editTarget && (
           <form
@@ -691,8 +700,8 @@ export function Agents() {
             <div>
               <h2 className="text-text text-base font-bold">Edit agent</h2>
               <p className="text-text-muted text-xs mt-1">
-                Quick edits — name, icon, and directive. For mode, providers,
-                MCPs, open the agent's detail page.
+                Quick edits — name, icon, provider, model and directive. For
+                mode and MCPs, open the agent's detail page.
               </p>
             </div>
             <div>
@@ -706,6 +715,7 @@ export function Agents() {
               />
             </div>
             <AgentIconPicker icon={editIcon} onIconChange={setEditIcon} compact />
+            <AgentRuntimeFields runtime={editRuntime} disabled={editSaving} />
             <AgentInstructionsEditor value={editDirective} onChange={setEditDirective} agentName={editName} />
             <p className="text-text-dim text-xs">Saving applies your instructions to the running agent.</p>
             {editError && (

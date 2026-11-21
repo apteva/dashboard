@@ -5,11 +5,11 @@ import { Link } from "react-router-dom";
 import { AppIcon } from "@apteva/ui-kit";
 import { core, platformHelper, mcpServers, integrations, instances as instancesAPI, type RuntimeConnection, type ModelInfo, type MCPServer, type Agent, type PlatformHelperStatus } from "../../api";
 
-import { resolveEffectiveAgentProvider } from "../../utils/providerSelection";
+import { resolveEffectiveAgentProvider, savedAgentModelOverride } from "../../utils/providerSelection";
 
 import { globalHelperCapabilityInventory, helperCapabilityKind, helperCapabilityLabel } from "../../utils/helperCapabilities";
 
-import { primaryRuntimeConnections, normalizeProviderName, EMPTY_HELPER_MODELS, type HelperModelMapping } from "./modelUtils";
+import { primaryRuntimeConnections, EMPTY_HELPER_MODELS, type HelperModelMapping } from "./modelUtils";
 
 export function HelperTab() {
   const [runtimeConns, setRuntimeConns] = useState<RuntimeConnection[]>([]);
@@ -93,17 +93,10 @@ export function HelperTab() {
     return () => { cancelled = true; };
   }, [helperStatus?.activated, helperRevision]);
 
-  const savedModelOverride = useCallback((agent: Agent, providerName: string) => {
-    try {
-      const parsed = JSON.parse(agent.config || "{}");
-      const override = parsed?.model_override;
-      return normalizeProviderName(String(override?.provider || "")) === providerName
-        ? String(override?.model || "")
-        : "";
-    } catch {
-      return "";
-    }
-  }, []);
+  const savedModelOverride = useCallback(
+    (agent: Agent, providerName: string) => savedAgentModelOverride(agent.config, providerName),
+    [],
+  );
 
   const applyRuntimeConfig = useCallback((agent: Agent, config: Awaited<ReturnType<typeof core.config>>) => {
     setServiceTierOverrides(agentServiceTiers(agent.config));
