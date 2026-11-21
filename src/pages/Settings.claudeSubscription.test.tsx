@@ -264,6 +264,7 @@ test("an open Claude card shows every usage window and keeps it current", async 
     {
       id: 1,
       name: "Claude subscription",
+      runtime_config: {},
       app_name: "Claude subscription",
       app_slug: "claude-subscription",
       provider_key: "claude-subscription",
