@@ -255,6 +255,14 @@ test("the provider card shows the process pool and saves its settings", async ()
   fireEvent.click(within(region).getByRole("button", { name: "Save pool settings" }));
   await waitFor(() => expect(update).toHaveBeenCalledWith({ pool_size: 6, idle_seconds: 90, queue_seconds: 60 }));
 
+  // Sleeping agents give up their process unless this is ticked.
+  const hold = within(region).getByRole("checkbox", { name: /Keep processes for sleeping agents/ }) as HTMLInputElement;
+  expect(hold.checked).toBe(false);
+  fireEvent.click(hold);
+  fireEvent.click(within(region).getByRole("button", { name: "Save pool settings" }));
+  await waitFor(() => expect(update).toHaveBeenLastCalledWith({ pool_size: 6, idle_seconds: 90, queue_seconds: 60, hold_sleeping: true }));
+  expect((within(region).getByRole("checkbox", { name: /Keep processes for sleeping agents/ }) as HTMLInputElement).checked).toBe(true);
+
   fireEvent.click(within(region).getByRole("button", { name: "Sign out of Claude" }));
   expect(within(region).getByRole("alertdialog", { name: "Sign out of Claude" })).toBeTruthy();
 });
