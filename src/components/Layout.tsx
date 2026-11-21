@@ -28,6 +28,7 @@ import {
   preferredSidebarAppNames,
   SidebarAppManager,
   useProjectUILayout,
+  useUILayoutRefresh,
   workspacePages,
 } from "./apps/contributions";
 
@@ -104,6 +105,7 @@ export function Layout() {
   const [sidebarAppsOpen, setSidebarAppsOpen] = useState(false);
   const location = useLocation();
   const { user, logout } = useAuth();
+  useUILayoutRefresh(!!user);
   const tourDismissed = useProductTourDismissed();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const tourSidebar = useRef({ collapsed: false });
