@@ -1464,7 +1464,25 @@ export interface Agent {
   core_started_at?: string;
   target_core_version?: string;
   core_update_available?: boolean;
+  /** The running core can't run the agent's chosen provider. */
+  provider_unavailable?: ProviderUnavailable;
+  /** The running core needs a restart to use the provider credentials saved now. */
+  needs_restart?: boolean;
+  restart_reason?: "provider_unavailable" | "provider_credentials_changed" | string;
   created_at: string;
+}
+
+export interface ProviderUnavailable {
+  name: string;
+  reason: string;
+}
+
+/** A provider switch a running agent can't apply live restarts it. */
+export interface ProviderRestartResult {
+  restarted?: boolean;
+  restart_reason?: string;
+  restart_error?: string;
+  provider_unavailable?: ProviderUnavailable;
 }
 
 export interface BackgroundMemoryState {
@@ -1601,6 +1619,8 @@ export const instances = {
 
   start: (id: number) => request<Agent>("POST", `/agents/${id}/start`),
 
+  restart: (id: number) => request<{ status: string }>("POST", `/agents/${id}/restart`),
+
   pause: (id: number) =>
     request<{ paused: boolean }>("POST", `/agents/${id}/pause`),
 
@@ -1648,7 +1668,7 @@ export const instances = {
       realtimeVoiceMCP?: string[];
     },
   ) =>
-    request<Agent & { behavior_sync?: BehaviorSync }>("PUT", `/agents/${id}/config`, {
+    request<Agent & { behavior_sync?: BehaviorSync } & ProviderRestartResult>("PUT", `/agents/${id}/config`, {
       ...(opts.directive !== undefined ? { directive: opts.directive } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
       ...(opts.proactivity !== undefined ? { proactivity: opts.proactivity } : {}),
