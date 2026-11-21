@@ -2698,6 +2698,9 @@ export interface ClaudeSubscriptionSettings {
   pool_size: number;
   idle_seconds: number;
   queue_seconds: number;
+  /** Keep a sleeping agent's process until it wakes instead of closing it
+   *  after the idle timeout. Absent on servers without the option. */
+  hold_sleeping?: boolean;
 }
 
 export interface ClaudeSubscriptionStatus {

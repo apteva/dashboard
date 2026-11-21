@@ -512,7 +512,8 @@ export function ClaudeSubscriptionPoolSection() {
     !!draft &&
     (draft.pool_size !== status.settings.pool_size ||
       draft.idle_seconds !== status.settings.idle_seconds ||
-      draft.queue_seconds !== status.settings.queue_seconds);
+      draft.queue_seconds !== status.settings.queue_seconds ||
+      !!draft.hold_sleeping !== !!status.settings.hold_sleeping);
 
   const save = async () => {
     if (!draft) return;
@@ -622,13 +623,28 @@ export function ClaudeSubscriptionPoolSection() {
           />
           <NumberSetting
             label="Idle timeout"
-            hint="Close a process after this long without a turn. Its conversation reopens when needed."
+            hint="Close a process after this long without a turn, or after its agent has slept this long. Its conversation reopens when needed."
             value={draft.idle_seconds}
             min={10}
             max={3600}
             suffix="s"
             onChange={(idle_seconds) => setDraft({ ...draft, idle_seconds })}
           />
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={!!draft.hold_sleeping}
+              onChange={(event) => setDraft({ ...draft, hold_sleeping: event.target.checked })}
+              className="mt-0.5 shrink-0 accent-accent"
+            />
+            <span className="space-y-1">
+              <span className="block text-xs text-text">Keep processes for sleeping agents</span>
+              <span className="block text-[11px] text-text-dim">
+                A sleeping agent keeps its process and pool slot until it wakes. When off, the process closes after the idle timeout,
+                or sooner if another agent needs the slot, and the conversation resumes when the agent wakes.
+              </span>
+            </span>
+          </label>
           <NumberSetting
             label="Queue wait"
             hint="How long a turn waits for a free process before it fails and the agent retries."
