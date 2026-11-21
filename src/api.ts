@@ -2733,7 +2733,13 @@ export interface ClaudeSubscriptionStatus {
   pool?: {
     max_processes: number;
     running: number;
+    /** Processes in a turn, including those waiting for their agent's tools. */
     busy: number;
+    /** Processes starting, replying or finishing a reply. Older servers omit it. */
+    generating?: number;
+    /** Processes waiting for their agent to run tools. Older servers omit it. */
+    waiting_tool?: number;
+    /** Turns queued for a free process. */
     waiting: number;
     sessions: number;
     idle_seconds: number;

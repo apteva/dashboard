@@ -24,6 +24,9 @@ import { primaryRuntimeConnections, groupRuntimeConnectionsByProvider } from "./
 const LOCAL_CLI_AUTH = "local_cli";
 const usesLocalCLI = (authTypes?: string[] | string) =>
   Array.isArray(authTypes) ? authTypes.includes(LOCAL_CLI_AUTH) : authTypes === LOCAL_CLI_AUTH;
+// Each fresh plan-usage read starts a short claude process, so an open
+// card refreshes no faster than this.
+const LOCAL_CLI_USAGE_REFRESH_MS = 60_000;
 
 export function ProvidersTab() {
   const { currentProject } = useProjects();
@@ -144,6 +147,33 @@ export function ProvidersTab() {
   // is where the operator has to choose which credential agents use —
   // the providers table used to decide this silently by lowest id.
   const providerGroups = groupRuntimeConnectionsByProvider(connected);
+
+  // A Claude subscription card shows its plan usage beside the process
+  // pool, so keep the meter current while the card is open. Plain reads
+  // come from the server's cache, which asks the claude command again at
+  // most every two minutes.
+  const openLocalUsageIDs = providerGroups
+    .filter(([groupKey]) => expandedProviders[groupKey])
+    .flatMap(([, group]) => group)
+    .filter(
+      (connection) =>
+        usesLocalCLI(connection.auth_type) &&
+        connection.capabilities?.includes("subscription_usage"),
+    )
+    .map((connection) => connection.id)
+    .join(",");
+
+  useEffect(() => {
+    const ids = openLocalUsageIDs ? openLocalUsageIDs.split(",").map(Number) : [];
+    if (ids.length === 0) return;
+    const refreshOpen = () => {
+      if (document.visibilityState !== "visible") return;
+      ids.forEach((id) => void loadUsage(id));
+    };
+    refreshOpen();
+    const interval = window.setInterval(refreshOpen, LOCAL_CLI_USAGE_REFRESH_MS);
+    return () => window.clearInterval(interval);
+  }, [openLocalUsageIDs, loadUsage]);
 
   const targetProjectID = (): string =>
     makeGlobal || !currentProject ? "" : currentProject.id;
@@ -501,6 +531,7 @@ export function ProvidersTab() {
                               const usage = usageByID[connection.id];
                               if (usage) setUsageDetails({ connection, usage });
                             }}
+                            showAllLimits={localCLI}
                           />
                         )}
                         {localCLI && <ClaudeSubscriptionPoolSection />}

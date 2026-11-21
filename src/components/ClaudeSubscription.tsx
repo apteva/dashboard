@@ -52,6 +52,15 @@ export function useClaudeSubscriptionStatus(pollMs: number) {
 
 const INSTALL_COMMAND = "curl -fsSL https://claude.ai/install.sh | bash";
 
+/** The claude command's version without its "(Claude Code)" suffix. */
+export function cliVersion(version?: string): string {
+  return (version || "").replace(/\s*\(Claude Code\)\s*$/i, "").trim();
+}
+
+function ClaudeCommand() {
+  return <code className="font-mono text-[0.95em]">claude</code>;
+}
+
 function planLabel(subscription?: string): string {
   if (!subscription) return "Claude plan";
   return `${subscription.charAt(0).toUpperCase()}${subscription.slice(1)} plan`;
@@ -101,18 +110,21 @@ function SignInState({ status }: { status: ClaudeSubscriptionStatus }) {
     return (
       <div className="flex items-start gap-2 text-sm text-text">
         <AlertIcon />
-        <span>Claude Code isn't installed on the computer running Apteva.</span>
+        <span>
+          The <ClaudeCommand /> command isn't installed on the computer running Apteva.
+        </span>
       </div>
     );
   }
   const auth = status.auth;
+  const version = cliVersion(status.version);
   if (auth?.subscription) {
     return (
       <div className="flex items-start gap-2 text-sm text-text">
         <CheckIcon />
         <span>
           Signed in with your Claude account · {planLabel(auth.subscription_type)}
-          {status.version && <span className="block text-xs text-text-muted">{status.version}</span>}
+          {version && <span className="block text-xs text-text-muted">claude {version}</span>}
         </span>
       </div>
     );
@@ -122,8 +134,8 @@ function SignInState({ status }: { status: ClaudeSubscriptionStatus }) {
       <div className="flex items-start gap-2 text-sm text-text">
         <AlertIcon />
         <span>
-          Claude Code is signed in with {auth.auth_method || "another method"}, not a Claude plan. Sign out and sign in again
-          with your Claude account to use your plan.
+          The <ClaudeCommand /> command is signed in with {auth.auth_method || "another method"}, not a Claude plan. Sign out
+          and sign in again with your Claude account to use your plan.
         </span>
       </div>
     );
@@ -131,7 +143,9 @@ function SignInState({ status }: { status: ClaudeSubscriptionStatus }) {
   return (
     <div className="flex items-start gap-2 text-sm text-text">
       <AlertIcon />
-      <span>Claude Code is installed{status.version ? ` (${status.version})` : ""} but not signed in.</span>
+      <span>
+        The <ClaudeCommand /> command is installed{version ? ` (${version})` : ""} but not signed in.
+      </span>
     </div>
   );
 }
@@ -305,13 +319,13 @@ export function ClaudeSignInHelper({ onReadyChange }: { onReadyChange?: (ready: 
   return (
     <div className="space-y-3 rounded-lg border border-border p-4" aria-live="polite">
       {loading && !status ? (
-        <p className="text-sm text-text-muted">Checking Claude Code on the computer running Apteva…</p>
+        <p className="text-sm text-text-muted">Checking the Claude sign-in on the computer running Apteva…</p>
       ) : status ? (
         <>
           <SignInState status={status} />
           <SignInSteps status={status} onChanged={() => void refresh(true)} />
           <div className="flex items-center justify-between gap-3">
-            <p className="text-[11px] text-text-dim">Claude Code keeps your Claude sign-in; Apteva never stores it.</p>
+            <p className="text-[11px] text-text-dim">Your Claude sign-in stays on that computer; Apteva never stores it.</p>
             <button type="button" onClick={() => void refresh(true)} className="shrink-0 text-xs text-text-muted hover:text-accent">
               Check again
             </button>
@@ -323,23 +337,45 @@ export function ClaudeSignInHelper({ onReadyChange }: { onReadyChange?: (ready: 
   );
 }
 
-const STATE_LABELS: Record<string, string> = {
-  new: "Starting",
-  starting: "Starting",
-  replying: "Replying",
-  waiting_tool: "Waiting for tools",
-  waiting_slot: "Waiting for a process",
-  finishing: "Finishing",
-  idle: "Idle",
-};
+type ProcessTone = "generating" | "waiting" | "idle";
 
-function shortDuration(since: string): string {
-  const seconds = Math.max(0, Math.round((Date.now() - new Date(since).getTime()) / 1000));
+/** What a process is doing, in words, and whether it is generating. */
+export function processActivity(proc: Pick<ClaudeSubscriptionProcess, "state" | "detail">): { label: string; tone: ProcessTone } {
+  switch (proc.state) {
+    case "starting":
+      return { label: "Starting", tone: "generating" };
+    case "replying":
+      return { label: "Generating", tone: "generating" };
+    case "finishing":
+      return { label: "Finishing", tone: "generating" };
+    case "waiting_tool":
+      return { label: proc.detail ? `Waiting on ${proc.detail}` : "Waiting on a tool", tone: "waiting" };
+    case "idle":
+      return { label: "Idle", tone: "idle" };
+    default:
+      return { label: proc.state, tone: "idle" };
+  }
+}
+
+/** Generating and waiting counts, from the server or, on servers that
+ *  don't report them, from the process list. */
+export function poolActivity(pool: NonNullable<ClaudeSubscriptionStatus["pool"]>): { generating: number; waiting: number } {
+  const tones = pool.processes.map((proc) => processActivity(proc).tone);
+  return {
+    generating: pool.generating ?? tones.filter((tone) => tone === "generating").length,
+    waiting: pool.waiting_tool ?? tones.filter((tone) => tone === "waiting").length,
+  };
+}
+
+/** "for 45 s", "for 7 min", "for 2 h 5 min". */
+export function forDuration(since: string, now = Date.now()): string {
+  const seconds = Math.max(0, Math.round((now - new Date(since).getTime()) / 1000));
   if (!Number.isFinite(seconds)) return "";
-  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 60) return `for ${seconds} s`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  if (minutes < 60) return `for ${minutes} min`;
+  const rest = minutes % 60;
+  return `for ${Math.floor(minutes / 60)} h${rest ? ` ${rest} min` : ""}`;
 }
 
 function megabytes(kb?: number): string {
@@ -347,20 +383,29 @@ function megabytes(kb?: number): string {
   return `${Math.round(kb / 1024)} MB`;
 }
 
+const TONE_DOT: Record<ProcessTone, string> = {
+  generating: "bg-accent",
+  waiting: "bg-text-muted",
+  idle: "bg-text-dim",
+};
+
 function ProcessRow({ proc }: { proc: ClaudeSubscriptionProcess }) {
-  const state = STATE_LABELS[proc.state] || proc.state;
-  const busy = proc.state !== "idle";
+  const activity = processActivity(proc);
+  const duration = forDuration(proc.since);
   return (
     <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 px-3 py-2 sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1.4fr)_4.5rem_4rem]">
       <span className="min-w-0 truncate text-xs text-text" title={proc.owner}>
         {proc.owner_label || proc.owner}
         {proc.model && <span className="text-text-dim"> · {proc.model}</span>}
       </span>
-      <span className="min-w-0 truncate text-xs text-text-muted sm:order-none">
-        <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${busy ? "bg-accent" : "bg-text-dim"}`} />
-        {state}
-        {proc.detail ? `: ${proc.detail}` : ""}
-        <span className="text-text-dim"> · {shortDuration(proc.since)}</span>
+      <span className="min-w-0 truncate text-xs text-text-muted sm:order-none" title={activity.label}>
+        <span
+          aria-hidden="true"
+          data-tone={activity.tone}
+          className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${TONE_DOT[activity.tone]}`}
+        />
+        <span className={activity.tone === "generating" ? "text-text" : undefined}>{activity.label}</span>
+        {duration && <span className="text-text-dim"> {duration}</span>}
       </span>
       <span className="text-xs tabular-nums text-text-muted">{megabytes(proc.memory_kb)}</span>
       <span className="text-right text-xs tabular-nums text-text-dim">
@@ -408,6 +453,40 @@ function NumberSetting({
   );
 }
 
+function PoolSummary({ pool }: { pool: NonNullable<ClaudeSubscriptionStatus["pool"]> }) {
+  const activity = poolActivity(pool);
+  const tiles: Array<{ label: string; value: string; hint?: string; alert?: boolean }> = [
+    { label: "Processes", value: `${pool.running} of ${pool.max_processes}` },
+    { label: "Generating", value: String(activity.generating), hint: "Processes writing a reply now." },
+    {
+      label: "Waiting",
+      value: String(activity.waiting),
+      hint: "Processes waiting for their agent to run a tool, such as pace between turns. They keep their place in the pool but generate nothing while they wait.",
+    },
+    {
+      label: "Queued",
+      value: String(pool.waiting),
+      hint: "Turns waiting for a free process.",
+      alert: pool.waiting > 0,
+    },
+    { label: "Memory", value: megabytes(pool.memory_kb) },
+  ];
+  return (
+    <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+      {tiles.map((tile) => (
+        <div
+          key={tile.label}
+          title={tile.hint}
+          className={`rounded border px-3 py-2 ${tile.alert ? "border-yellow/50 bg-yellow/10" : "border-border"}`}
+        >
+          <dt className="text-[11px] text-text-dim">{tile.label}</dt>
+          <dd className={`text-sm tabular-nums ${tile.alert ? "font-semibold text-yellow" : "text-text"}`}>{tile.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 /** Provider-card section: sign-in state, the process pool and its settings. */
 export function ClaudeSubscriptionPoolSection() {
   const { status, error, loading, refresh } = useClaudeSubscriptionStatus(5000);
@@ -422,7 +501,7 @@ export function ClaudeSubscriptionPoolSection() {
   }, [status, draft]);
 
   if (loading && !status) {
-    return <p className="text-xs text-text-muted">Checking Claude Code…</p>;
+    return <p className="text-xs text-text-muted">Checking the Claude subscription…</p>;
   }
   if (!status) {
     return <p className="text-xs text-red">{error || "Could not read the Claude status"}</p>;
@@ -486,8 +565,8 @@ export function ClaudeSubscriptionPoolSection() {
         {confirmSignOut && (
           <div role="alertdialog" aria-label="Sign out of Claude" className="space-y-2 rounded border border-border p-3">
             <p className="text-xs text-text">
-              This signs Claude Code out on the computer running Apteva, including for anything else that uses it there. Agents on
-              this provider stop until you sign in again.
+              This signs the <ClaudeCommand /> command out on the computer running Apteva, including for anything else that uses
+              it there. Agents on this provider stop until you sign in again.
             </p>
             <div className="flex gap-3">
               <button type="button" onClick={() => void signOut()} className="text-xs font-semibold text-red hover:underline">
@@ -509,19 +588,7 @@ export function ClaudeSubscriptionPoolSection() {
               {pool.sessions} conversation{pool.sessions === 1 ? "" : "s"} kept
             </span>
           </div>
-          <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {[
-              ["Running", `${pool.running} of ${pool.max_processes}`],
-              ["Busy", String(pool.busy)],
-              ["Queued", String(pool.waiting)],
-              ["Memory", megabytes(pool.memory_kb)],
-            ].map(([label, value]) => (
-              <div key={label} className="rounded border border-border px-3 py-2">
-                <dt className="text-[11px] text-text-dim">{label}</dt>
-                <dd className="text-sm tabular-nums text-text">{value}</dd>
-              </div>
-            ))}
-          </dl>
+          <PoolSummary pool={pool} />
           {pool.processes.length > 0 ? (
             <ul className="divide-y divide-border rounded border border-border" aria-label="Claude processes">
               {pool.processes.map((proc) => (

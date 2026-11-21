@@ -238,7 +238,7 @@ test("the provider card shows the process pool and saves its settings", async ()
   const list = within(region).getByRole("list", { name: "Claude processes" });
   expect(within(list).getByText("Researcher")).toBeTruthy();
   expect(within(list).getByText(/· opus/)).toBeTruthy();
-  expect(within(list).getByText(/Waiting for tools: web_search/)).toBeTruthy();
+  expect(within(list).getByText("Waiting on web_search")).toBeTruthy();
   expect(within(region).queryByRole("button", { name: "Test connection" })).toBeNull();
 
   // Tiers are picked from the models Claude Code offers.
@@ -257,4 +257,63 @@ test("the provider card shows the process pool and saves its settings", async ()
 
   fireEvent.click(within(region).getByRole("button", { name: "Sign out of Claude" }));
   expect(within(region).getByRole("alertdialog", { name: "Sign out of Claude" })).toBeTruthy();
+});
+
+test("an open Claude card shows every usage window and keeps it current", async () => {
+  setup([
+    {
+      id: 1,
+      name: "Claude subscription",
+      app_name: "Claude subscription",
+      app_slug: "claude-subscription",
+      provider_key: "claude-subscription",
+      role: "llm",
+      auth_type: "local_cli",
+      project_id: "",
+      scope: "global",
+      is_primary: true,
+      capabilities: entry.capabilities,
+    },
+  ]);
+  const usage = mock(async () => ({
+    supported: true,
+    provider_id: 1,
+    kind: "subscription_quota",
+    plan: "max",
+    limits: [
+      { id: "claude", label: "Claude plan", windows: [{ id: "seven_day", used_percent: 47, duration_minutes: 10080 }] },
+      { id: "model:fable", label: "Fable (weekly)", windows: [{ id: "model:fable", used_percent: 56, duration_minutes: 10080 }] },
+    ],
+  }) as any);
+  integrations.connectionUsage = usage;
+  claudeSubscription.status = mock(async () => status({ connected: true, connection_id: 1 }));
+
+  // Catch the open card's refresh timer instead of waiting a minute.
+  const timers: Array<{ run: () => void; ms: number }> = [];
+  const realSetInterval = window.setInterval;
+  window.setInterval = ((run: () => void, ms: number) => {
+    timers.push({ run, ms });
+    return realSetInterval(() => {}, 1e9);
+  }) as typeof window.setInterval;
+  try {
+    render(<ProvidersTab />);
+    const region = await waitFor(() => screen.getByRole("region", { name: "Claude subscription global provider" }));
+    await waitFor(() => expect(usage).toHaveBeenCalledTimes(1));
+    expect(timers.some((timer) => timer.ms === 60_000)).toBe(false);
+
+    fireEvent.click(within(region).getByRole("button", { name: "Claude subscription global provider details" }));
+    await waitFor(() => expect(usage).toHaveBeenCalledTimes(2));
+    expect(within(region).getByText("Claude plan")).toBeTruthy();
+    expect(within(region).getByText("Fable (weekly)")).toBeTruthy();
+    expect(within(region).queryByText(/additional limit/)).toBeNull();
+    // A plain read: the server's cache decides when to ask claude again.
+    expect(usage).toHaveBeenLastCalledWith(1, false);
+
+    const open = timers.filter((timer) => timer.ms === 60_000);
+    expect(open.length).toBe(1);
+    open[0].run();
+    await waitFor(() => expect(usage).toHaveBeenCalledTimes(3));
+  } finally {
+    window.setInterval = realSetInterval;
+  }
 });

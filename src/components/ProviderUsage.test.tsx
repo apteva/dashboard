@@ -52,6 +52,30 @@ describe("ProviderUsageSummary", () => {
     expect(html).toContain('aria-label="Refresh usage"');
   });
 
+  test("shows every limit under its own name when asked", () => {
+    const claude: ProviderUsageSnapshot = {
+      supported: true,
+      provider_id: 153,
+      kind: "subscription_quota",
+      plan: "max",
+      limits: [
+        { id: "claude", label: "Claude plan", windows: [{ id: "seven_day", used_percent: 47, duration_minutes: 10080 }] },
+        { id: "model:fable", label: "Fable (weekly)", windows: [{ id: "model:fable", used_percent: 56, duration_minutes: 10080 }] },
+        { id: "empty", label: "Nothing reported", windows: [] },
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <ProviderUsageSummary usage={claude} onRefresh={() => {}} onOpenDetails={() => {}} showAllLimits />,
+    );
+
+    expect(html).toContain("Claude plan");
+    expect(html).toContain("Fable (weekly)");
+    expect(html).toContain('aria-valuenow="47"');
+    expect(html).toContain('aria-valuenow="56"');
+    expect(html).not.toContain("Nothing reported");
+    expect(html).not.toContain("additional limit");
+  });
+
   test("does not render for unsupported providers", () => {
     const html = renderToStaticMarkup(
       <ProviderUsageSummary

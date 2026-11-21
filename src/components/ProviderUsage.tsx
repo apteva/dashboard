@@ -8,6 +8,9 @@ interface ProviderUsageSummaryProps {
   refreshing?: boolean;
   onRefresh: () => void;
   onOpenDetails: () => void;
+  /** Show every limit inline, each under its own name, instead of the
+   *  primary one and a link to the rest. */
+  showAllLimits?: boolean;
 }
 
 export function providerUsageWindowLabel(durationMinutes = 0): string {
@@ -77,11 +80,13 @@ export function ProviderUsageSummary({
   refreshing,
   onRefresh,
   onOpenDetails,
+  showAllLimits,
 }: ProviderUsageSummaryProps) {
   const { t } = useTranslation();
   if (usage && !usage.supported) return null;
   const primary = primaryUsageLimit(usage);
   const additionalCount = Math.max(0, (usage?.limits?.length || 0) - (primary ? 1 : 0));
+  const shownLimits = (usage?.limits || []).filter((limit) => (limit.windows?.length || 0) > 0);
 
   return (
     <div className="border-y border-border/70 py-2 my-2 min-h-[3.75rem]" onClick={(event) => event.stopPropagation()}>
@@ -107,6 +112,20 @@ export function ProviderUsageSummary({
         <div className="text-[10px] text-text-dim py-2">{t("settings.providers.loadingUsage")}</div>
       ) : error && !usage ? (
         <div className="text-[10px] text-yellow py-2 truncate" title={error}>{t("settings.providers.usageUnavailable")}</div>
+      ) : showAllLimits && shownLimits.length > 0 ? (
+        <div className="space-y-1.5">
+          {shownLimits.map((limit) => (
+            <section key={limit.id} aria-label={limit.label || limit.id} className="space-y-1">
+              {shownLimits.length > 1 ? (
+                <div className="flex items-center gap-2 text-[10px] text-text-muted">
+                  <span className="truncate">{limit.label || limit.id}</span>
+                  {limit.reached ? <span className="text-red">{t("settings.providers.limitReached")}</span> : null}
+                </div>
+              ) : null}
+              {(limit.windows || []).map((window) => <UsageWindowRow key={window.id} window={window} />)}
+            </section>
+          ))}
+        </div>
       ) : primary && (primary.windows?.length || 0) > 0 ? (
         <div className="space-y-1">
           {(primary.windows || []).map((window) => <UsageWindowRow key={window.id} window={window} />)}
