@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Ref } from "react";
 import type { ConversationComposerHandle } from "../chat/conversationComposer";
 import { AppIcon } from "@apteva/ui-kit";
-import { auth, type DashboardWidgetSize } from "../../api";
+import { auth, type DashboardWidgetSize, type TelemetryEvent } from "../../api";
 import { useOptionalAuth } from "../../hooks/useAuth";
+import { useTelemetryEvents } from "../../hooks/useTelemetryBus";
 import { usePanelEvents } from "../../hooks/usePanelEvents";
 import {
   ChatComponentMount,
@@ -123,6 +124,68 @@ function layoutConflict(error: unknown): { document: UILayoutDocument; revision:
   const failure = error as { status?: number; body?: { ui_layout?: unknown; revision?: unknown } } | undefined;
   if (failure?.status !== 409 || typeof failure.body?.revision !== "number") return null;
   return { document: normalizeLayout(failure.body.ui_layout), revision: failure.body.revision };
+}
+
+// Agents change Pages and their widgets through the Apteva Server tools,
+// outside this tab. Their results arrive on the telemetry bus; a tab coming
+// back into view also reloads, for edits made while it was hidden.
+const LAYOUT_TOOLS = new Set(["widget_add", "widget_configure", "widget_move", "widget_remove", "page_create", "page_update"]);
+const LAYOUT_REFRESH_INTERVAL = 15_000;
+
+/** Whether an event is an agent's completed edit of a Page or its widgets. */
+export function isLayoutToolResult(event: Pick<TelemetryEvent, "type" | "data">): boolean {
+  if (event.type !== "tool.result" || event.data?.success === false) return false;
+  const name = String(event.data?.name || event.data?.tool || "");
+  return LAYOUT_TOOLS.has(name.startsWith("apteva-server_") ? name.slice("apteva-server_".length) : name);
+}
+
+let layoutRefreshing = false;
+let layoutRefreshAgain = false;
+
+/** Load the saved layout again. Mounted layouts show it when it is newer
+ * than theirs, as they do after a save in another tab. */
+export async function refreshUILayout(): Promise<void> {
+  if (layoutRefreshing) {
+    // An edit may have landed after the read in flight started.
+    layoutRefreshAgain = true;
+    return;
+  }
+  layoutRefreshing = true;
+  try {
+    do {
+      layoutRefreshAgain = false;
+      const me = await auth.me();
+      window.dispatchEvent(new CustomEvent(LAYOUT_EVENT, {
+        detail: { document: normalizeLayout(me.ui_layout), revision: Number(me.ui_layout_revision || 0) },
+      }));
+    } while (layoutRefreshAgain);
+  } catch {
+    // Keep the layout on screen until the next refresh.
+  } finally {
+    layoutRefreshing = false;
+  }
+}
+
+/** Show layout edits made outside this tab, by agents or in another tab. */
+export function useUILayoutRefresh(enabled: boolean) {
+  useTelemetryEvents(enabled ? null : undefined, (event) => {
+    if (isLayoutToolResult(event)) void refreshUILayout();
+  });
+  useEffect(() => {
+    if (!enabled) return;
+    let last = Date.now();
+    const onVisible = () => {
+      if (window.document.visibilityState !== "visible" || Date.now() - last < LAYOUT_REFRESH_INTERVAL) return;
+      last = Date.now();
+      void refreshUILayout();
+    };
+    window.addEventListener("focus", onVisible);
+    window.document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onVisible);
+      window.document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [enabled]);
 }
 
 /** Key-order independent JSON, to compare a surface with the server's copy. */
