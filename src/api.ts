@@ -928,21 +928,80 @@ export interface AgentTemplate {
   // need either of those itself to render a card.
   resolved_logos?: TemplateLogo[];
   sort_order: number;
+  // Latest saved version. Saving new instructions, mode, background
+  // memory or required apps adds a version; agents follow or pin one.
+  version?: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface AgentTemplateVersion {
+  version: number;
+  created_by?: number;
+  created_at: string;
+}
+
+/** What one saved template version sets on an agent. */
+export interface AgentTemplateVersionContent {
+  directive: string;
+  mode: "autonomous" | "cautious" | "learn";
+  unconscious: boolean;
+  recommended_apps: string[] | null;
+  requirements: Requirement[] | null;
+}
+
+/** An agent linked to a template, as listed on the template. */
+export interface AgentTemplateFollower {
+  agent_id: number;
+  name: string;
+  project_id?: string;
+  version: number;
+  follow_latest: boolean;
+  changed_locally: boolean;
+  last_error?: string;
+}
+
+export interface AgentTemplateDetail extends AgentTemplate {
+  versions: AgentTemplateVersion[];
+  agents: AgentTemplateFollower[];
+}
+
+/** An agent's link to the template it was created from. */
+export interface AgentTemplateStatus {
+  linked: boolean;
+  template_id?: string;
+  template_name?: string;
+  template_source?: "builtin" | "app" | "user";
+  version?: number;
+  latest_version?: number;
+  follow_latest: boolean;
+  // The agent's instructions or mode differ from its template version,
+  // so later versions are not applied until an operator chooses to.
+  changed_locally: boolean;
+  update_available: boolean;
+  missing_apps?: string[];
+  last_error?: string;
+  outcome?: string;
 }
 
 export const agentTemplates = {
   list: () => request<AgentTemplate[]>("GET", "/agent-templates"),
   get: (id: string) =>
-    request<AgentTemplate>("GET", `/agent-templates/${encodeURIComponent(id)}`),
+    request<AgentTemplateDetail>("GET", `/agent-templates/${encodeURIComponent(id)}`),
+  version: (id: string, version: number) =>
+    request<{ template_id: string; version: number; content: AgentTemplateVersionContent }>(
+      "GET",
+      `/agent-templates/${encodeURIComponent(id)}/versions/${version}`,
+    ),
   create: (t: Partial<AgentTemplate>) =>
     request<AgentTemplate>("POST", "/agent-templates", t),
-  update: (id: string, t: Partial<AgentTemplate>) =>
-    request<AgentTemplate>(
+  // expectedVersion refuses the save (409) when someone saved a newer
+  // version since the editor loaded this one.
+  update: (id: string, t: Partial<AgentTemplate>, expectedVersion?: number) =>
+    request<AgentTemplateDetail>(
       "PUT",
       `/agent-templates/${encodeURIComponent(id)}`,
-      t,
+      expectedVersion ? { ...t, expected_version: expectedVersion } : t,
     ),
   delete: (id: string) =>
     request<any>("DELETE", `/agent-templates/${encodeURIComponent(id)}`),
@@ -1573,6 +1632,13 @@ export const instances = {
       boundAppInstallIDs?: number[];
       boundConnectionIDs?: number[];
       boundAppGrants?: AppGrantPolicy[];
+      // Links the agent to a template version. Without templateVersion
+      // the server uses the latest; followTemplate overrides whether
+      // later versions are applied (default: yes for the user's own
+      // templates, no for built-in ones).
+      templateId?: string;
+      templateVersion?: number;
+      followTemplate?: boolean;
     },
   ) =>
     request<Agent & { warning?: string }>("POST", "/agents", {
@@ -1603,9 +1669,33 @@ export const instances = {
       ...(opts?.boundAppGrants && opts.boundAppGrants.length > 0
         ? { bound_app_grants: opts.boundAppGrants }
         : {}),
+      ...(opts?.templateId && opts.templateId !== "empty"
+        ? {
+            template_id: opts.templateId,
+            ...(opts.templateVersion ? { template_version: opts.templateVersion } : {}),
+            ...(opts.followTemplate !== undefined ? { follow_template: opts.followTemplate } : {}),
+          }
+        : {}),
     }),
 
   get: (id: number) => request<Agent>("GET", `/agents/${id}`),
+
+  // The template an agent was created from, and whether it follows new
+  // versions or stays pinned to one.
+  template: {
+    get: (id: number) => request<AgentTemplateStatus>("GET", `/agents/${id}/template`),
+    // version moves the agent to that version now and pins it there;
+    // follow_latest: true moves it to the latest and keeps following.
+    // A 409 with body.status means the agent's own changes would be
+    // replaced; repeat with overwrite_local_changes to replace them.
+    set: (id: number, change: { follow_latest?: boolean; version?: number; overwrite_local_changes?: boolean }) =>
+      request<AgentTemplateStatus>("PUT", `/agents/${id}/template`, change),
+    unlink: (id: number) => request<AgentTemplateStatus>("DELETE", `/agents/${id}/template`),
+    // Saves the agent's current instructions, mode, background memory and
+    // apps as a new template of the user's own and links the agent to it.
+    save: (id: number, details: { name: string; description?: string; icon?: string }) =>
+      request<{ template: AgentTemplate; status: AgentTemplateStatus }>("POST", `/agents/${id}/template/save`, details),
+  },
 
   rename: (id: number, name: string) =>
     request<Agent>("PUT", `/agents/${id}`, { name }),
