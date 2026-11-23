@@ -3,12 +3,13 @@ import { useOptionalAuth } from "../hooks/useAuth";
 import { realtimeSelection, type RealtimeProviderConfig } from "../realtime/config";
 import type { RealtimeExecutionConfig } from "../api";
 import { ProviderBuiltinsEditor, agentBuiltins, agentBuiltinPatch, BuiltinGlyph, builtinLabel } from "./ProviderBuiltins";
-import type { AgentBuiltinOverrides } from "../api";
+import type { AgentBuiltinOverrides, AgentTemplateStatus } from "../api";
 import { ServiceTierSelect, agentServiceTiers, serviceTierPatch } from "./ServiceTierSelect";
 import { AppIcon } from "@apteva/ui-kit";
 import { AgentIconPicker, AgentMark, suggestedAgentIcon } from "./AgentMark";
 import { PickerOption } from "./PickerOption";
 import { AgentRestartNotice, ProviderSaveNoticeBar } from "./AgentRestartNotice";
+import { AgentTemplateModal, AgentTemplateNoticeBar, useAgentTemplateStatus } from "./AgentTemplate";
 import { providerSaveNotice, type ProviderSaveNotice } from "../utils/providerRestart";
 import { ProactivityControl } from "./ProactivityControl";
 import { defaultProactivity } from "../agentBehavior";
@@ -143,6 +144,13 @@ export function AgentView({
   const [resetFeedback, setResetFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [showConfig, setShowConfig] = useState(false);
   const [providerNotice, setProviderNotice] = useState<ProviderSaveNotice | null>(null);
+  const [showTemplate, setShowTemplate] = useState(false);
+  const templateLink = useAgentTemplateStatus(instance);
+  // Template changes rewrite instructions and mode, so the agent reloads too.
+  const onTemplateChanged = (status: AgentTemplateStatus) => {
+    templateLink.setStatus(status);
+    onReload();
+  };
   const [view, setView] = useState<RuntimeView>("overview");
 
   // Track threads, tools, and active LLM calls for the runtime summary.
@@ -706,6 +714,8 @@ export function AgentView({
       <ProviderSaveNoticeBar notice={providerNotice} onDismiss={() => setProviderNotice(null)} />
       {/* Right after a restart the next reload clears the flag. */}
       {providerNotice?.tone !== "success" && <AgentRestartNotice agent={instance} onRestarted={onReload} />}
+      <AgentTemplateNoticeBar agent={instance} status={templateLink.status} onChanged={onTemplateChanged} onReview={() => setShowTemplate(true)} />
+      <AgentTemplateModal open={showTemplate} onClose={() => setShowTemplate(false)} agent={instance} status={templateLink.status} onChanged={onTemplateChanged} />
 
       {/* Main content */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -726,6 +736,7 @@ export function AgentView({
             onStop={async () => { await instances.stop(instance.id); onReload(); }}
             onStart={async () => { await instances.start(instance.id); onReload(); }}
             onConfig={() => setShowConfig(true)}
+            onTemplate={() => setShowTemplate(true)}
             onAppearanceSaved={onReload}
             onReset={() => setShowResetConfirm(true)}
             onDelete={() => setShowDeleteConfirm(true)}
@@ -766,6 +777,7 @@ export function AgentRuntimePanel({
   onStop,
   onStart,
   onConfig,
+  onTemplate,
   onAppearanceSaved,
   onReset,
   onDelete,
@@ -785,6 +797,7 @@ export function AgentRuntimePanel({
   onStop: () => void | Promise<void>;
   onStart: () => void | Promise<void>;
   onConfig: () => void;
+  onTemplate?: () => void;
   onAppearanceSaved: () => void;
   onReset: () => void;
   onDelete: () => void;
@@ -1045,7 +1058,7 @@ export function AgentRuntimePanel({
           <button type="button" disabled={lifecycleBusy} onClick={() => void performLifecycleAction(onStart)} className="h-9 shrink-0 rounded-md border border-border px-2 text-xs text-accent hover:border-accent disabled:opacity-50 sm:px-3">{lifecycleBusy ? "Starting…" : instance.status === "paused" ? "Resume" : "Start"}</button>
         )}
         <AgentRuntimeActionsMenu paused={isPaused} presentationAudience={selectedAudience} instance={instance} developerControlsVisible={executionControlsVisible}
-          onPause={() => performLifecycleAction(togglePause)} onStop={() => performLifecycleAction(onStop)} onConfig={onConfig} onAppearance={openAppearance}
+          onPause={() => performLifecycleAction(togglePause)} onStop={() => performLifecycleAction(onStop)} onConfig={onConfig} onTemplate={onTemplate} onAppearance={openAppearance}
           onCapabilities={() => setShowCapabilitiesManage(true)} onDiagnostics={openDiagnostics}
           onToggleDeveloperControls={() => { openDiagnostics(); setShowDeveloperControls((visible) => !visible); }}
           onReset={onReset} onDelete={onDelete} />
@@ -1088,6 +1101,7 @@ function AgentRuntimeActionsMenu({
   onPause,
   onStop,
   onConfig,
+  onTemplate,
   onAppearance,
   onCapabilities,
   onDiagnostics,
@@ -1102,6 +1116,7 @@ function AgentRuntimeActionsMenu({
   onPause: () => void | Promise<void>;
   onStop: () => void | Promise<void>;
   onConfig: () => void;
+  onTemplate?: () => void;
   onAppearance: () => void;
   onCapabilities: () => void;
   onDiagnostics: () => void;
@@ -1155,6 +1170,7 @@ function AgentRuntimeActionsMenu({
           <button type="button" role="menuitem" onClick={() => choose(onConfig)} className={itemClass}>Settings</button>
           <button type="button" role="menuitem" onClick={() => choose(onAppearance)} className={itemClass}>Change icon</button>
           <button type="button" role="menuitem" onClick={() => choose(onCapabilities)} className={itemClass}>Add apps &amp; MCPs</button>
+          {onTemplate && <button type="button" role="menuitem" onClick={() => choose(onTemplate)} className={itemClass}>Template</button>}
           {instance.status === "running" && (
             <button type="button" role="menuitem" onClick={() => choose(onPause)} className={itemClass}>{paused ? "Resume agent" : "Pause agent"}</button>
           )}

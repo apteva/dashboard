@@ -31,6 +31,8 @@ const WorkspacePage = lazy(() => import("./pages/WorkspacePage").then((m) => ({ 
 const Agents = lazy(() => import("./pages/Agents").then((m) => ({ default: m.Agents })));
 const Agent = lazy(() => import("./pages/Agent").then((m) => ({ default: m.Agent })));
 const AgentNew = lazy(() => import("./pages/AgentNew").then((m) => ({ default: m.AgentNew })));
+const AgentTemplates = lazy(() => import("./pages/AgentTemplates").then((m) => ({ default: m.AgentTemplates })));
+const AgentTemplateDetailPage = lazy(() => import("./pages/AgentTemplates").then((m) => ({ default: m.AgentTemplateDetailPage })));
 const Integrations = lazy(() => import("./pages/Integrations").then((m) => ({ default: m.Integrations })));
 const Analytics = lazy(() => import("./pages/Analytics").then((m) => ({ default: m.Analytics })));
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
@@ -123,6 +125,8 @@ export default function App() {
             <Route path="/activity" element={<Navigate to="/" replace />} />
             <Route path="/monitor" element={<Navigate to="/" replace />} />
             <Route path="/agents/new" element={<AgentNew />} />
+            <Route path="/agent-templates" element={<AgentTemplates />} />
+            <Route path="/agent-templates/:id" element={<AgentTemplateDetailPage />} />
             {/* Keep stale bookmarks safe while the legacy chat UI is hidden. */}
             <Route path="/chat" element={<Navigate to="/" replace />} />
             <Route path="/chat/:chatId" element={<Navigate to="/" replace />} />

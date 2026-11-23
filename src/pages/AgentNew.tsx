@@ -101,6 +101,10 @@ export interface WizardState {
   boundAppInstallIDs: Set<number>;
   boundConnectionIDs: Set<number>;
   appAccess: Record<number, AppAccessDraft>;
+  // Whether the agent takes the template's later versions. Unset uses the
+  // server default: the user's own templates are followed, built-in and
+  // app templates stay on the version the agent starts from.
+  followTemplate?: boolean;
 }
 
 export const INITIAL: WizardState = {
@@ -172,6 +176,22 @@ export function effectiveAgentAppInstallIDs(
 export function requirementSlugs(requirement: Requirement): string[] {
   if (requirement.compatible_slugs?.length) return requirement.compatible_slugs;
   return requirement.slug ? [requirement.slug] : [];
+}
+
+/** Whether an agent created from this template will take its later versions. */
+export function wizardFollowsTemplate(template: AgentTemplate | null | undefined, state: Pick<WizardState, "followTemplate">): boolean {
+  return state.followTemplate ?? template?.source === "user";
+}
+
+/**
+ * The template link sent with the new agent. A pinned agent names the
+ * version the wizard showed; a following agent takes the latest, since the
+ * server only lets an agent follow from the latest version.
+ */
+export function wizardTemplateCreateOptions(template: AgentTemplate | null | undefined, state: Pick<WizardState, "followTemplate">) {
+  if (!template || template.id === "empty") return {};
+  if (wizardFollowsTemplate(template, state)) return { templateId: template.id, followTemplate: true };
+  return { templateId: template.id, templateVersion: template.version, followTemplate: false };
 }
 
 export function templateAgentConnectionIDs(template: AgentTemplate | null, connections: ConnectionInfo[], projectId?: string): Set<number> {
@@ -468,6 +488,7 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
         unconscious: t.unconscious,
         optionalAppSlugs: [],
         highlights: t.highlights || [],
+        followTemplate: undefined,
       };
     });
   };
@@ -516,6 +537,7 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
           boundAppInstallIDs: effectiveAppInstallIDs,
           boundConnectionIDs: Array.from(state.boundConnectionIDs),
           boundAppGrants,
+          ...wizardTemplateCreateOptions(selectedTemplate, state),
         },
       );
       // P1.1 gate may have returned a created-but-stopped row with a
@@ -589,6 +611,7 @@ export function AgentNew({ onCreated, onBack, reviewContent }: { reviewContent?:
               connections={connections}
               template={templates.find((t) => t.id === state.templateID) || null}
               marketplace={marketplace}
+              onFollowTemplateChange={(followTemplate) => setState((s) => ({ ...s, followTemplate }))}
               onEdit={(i) => setStepIdx(i)}
               installProgress={creating ? installProgress : {}}
             />
@@ -1925,13 +1948,14 @@ interface ReviewStepProps {
   state: WizardState;
   hasProvider: boolean | null;
   onEdit: (stepIdx: number) => void;
+  onFollowTemplateChange: (follow: boolean) => void;
   // Per-app live status while the Create button is auto-installing
   // required apps. Empty until create() kicks off; one entry per
   // app slug while the cascade runs.
   installProgress: Record<string, string>;
 }
 
-function ReviewStep({ state, hasProvider, onEdit, installProgress, installedApps, connections, template, marketplace }: ReviewStepProps) {
+function ReviewStep({ state, hasProvider, onEdit, onFollowTemplateChange, installProgress, installedApps, connections, template, marketplace }: ReviewStepProps) {
   const requiredSlugs = wizardAppRequirements(template, state).filter((r) => r.kind === "app" && r.required && r.slug).map((r) => r.slug!);
   const appIDs = new Set(effectiveAgentAppInstallIDs(state.boundAppInstallIDs, installedApps, requiredSlugs));
   const selectedApps = installedApps.filter((app) => appIDs.has(app.install_id));
@@ -1977,6 +2001,9 @@ function ReviewStep({ state, hasProvider, onEdit, installProgress, installedApps
         <Row label="Memory" value={state.unconscious ? "Active" : "Inactive"} onEdit={() => onEdit(1)} />
         <Row label="Apps" value={appNames.join(", ") || "None selected"} onEdit={() => onEdit(2)} />
         <Row label="Integrations" value={connectionNames.join(", ") || "None selected"} onEdit={() => onEdit(2)} />
+        {template && template.id !== "empty" && (
+          <TemplateUpdatesRow template={template} follow={wizardFollowsTemplate(template, state)} onChange={onFollowTemplateChange} />
+        )}
       </dl>
 
       {Object.keys(installProgress).length > 0 && (
@@ -2000,6 +2027,30 @@ function ReviewStep({ state, hasProvider, onEdit, installProgress, installedApps
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+// TemplateUpdatesRow chooses whether the new agent takes the template's
+// later versions or stays on the one it starts from.
+function TemplateUpdatesRow({ template, follow, onChange }: { template: AgentTemplate; follow: boolean; onChange: (follow: boolean) => void }) {
+  const version = template.version || 1;
+  const option = (selected: boolean) =>
+    `min-h-9 rounded-md border px-3 text-xs font-medium transition-colors ${selected ? "border-accent bg-accent/10 text-accent" : "border-border text-text-muted hover:text-text"}`;
+  return (
+    <div className="p-4">
+      <dt className="text-text-muted text-xs uppercase tracking-wide" id="template-updates-label">Template updates</dt>
+      <dd className="mt-2">
+        <div role="radiogroup" aria-labelledby="template-updates-label" className="flex flex-wrap gap-2">
+          <button type="button" role="radio" aria-checked={follow} onClick={() => onChange(true)} className={option(follow)}>Follow new versions</button>
+          <button type="button" role="radio" aria-checked={!follow} onClick={() => onChange(false)} className={option(!follow)}>Stay on version {version}</button>
+        </div>
+        <p className="text-text-muted text-xs mt-2 leading-relaxed">
+          {follow
+            ? `New versions of ${template.name} update this agent's instructions and mode, unless they were changed on the agent itself.`
+            : `This agent keeps version ${version} of ${template.name}. You can move it to a newer version from its page.`}
+        </p>
+      </dd>
     </div>
   );
 }

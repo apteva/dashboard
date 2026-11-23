@@ -505,6 +505,13 @@ export function Agents() {
             ))}
           </div>
           <button
+            type="button"
+            onClick={() => navigate("/agent-templates")}
+            className="px-3 py-2 border border-border rounded-lg text-text-muted text-xs hover:text-text hover:border-text-dim transition-colors"
+          >
+            Templates
+          </button>
+          <button
             onClick={() => setShowCreate(true)}
             className="px-3 py-2 border border-border rounded-lg text-text-muted text-xs hover:text-text hover:border-text-dim transition-colors"
             title="Open the classic create form — single dialog with all fields"
@@ -694,6 +701,7 @@ export function Agents() {
           <button type="button" onClick={() => { setAgentsViewMode("cards"); setShowMobileActions(false); }} className={`touch-target rounded-lg border px-4 text-left text-sm ${viewMode === "cards" ? "border-accent text-accent" : "border-border text-text"}`}>Card view</button>
           <button type="button" onClick={() => { setAgentsViewMode("list"); setShowMobileActions(false); }} className={`touch-target rounded-lg border px-4 text-left text-sm ${viewMode === "list" ? "border-accent text-accent" : "border-border text-text"}`}>List view</button>
           <button type="button" onClick={() => { setShowMobileActions(false); setShowCreate(true); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text">Quick create</button>
+          <button type="button" onClick={() => navigate("/agent-templates")} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text">Agent templates</button>
           <button type="button" onClick={() => navigate("/agents/new")} className="touch-target rounded-lg border border-accent bg-accent/10 px-4 text-left text-sm font-semibold text-accent">Build a new agent</button>
           {list.some((agent) => agent.core_update_available) && (
             <button

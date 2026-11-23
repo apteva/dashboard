@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { AppRow } from "../api";
+import type { AgentTemplate, AppRow } from "../api";
 import { boundAppInstallIDsPayload } from "../api";
-import { defaultAgentAppInstallIDs, effectiveAgentAppInstallIDs } from "./AgentNew";
+import { defaultAgentAppInstallIDs, effectiveAgentAppInstallIDs, wizardFollowsTemplate, wizardTemplateCreateOptions } from "./AgentNew";
 
 function app(installId: number, isDefault: boolean, status: AppRow["status"] = "running"): AppRow {
   return {
@@ -50,5 +50,24 @@ describe("new-agent default apps", () => {
 
   test("keeps template-required apps attached even when optional defaults are unchecked", () => {
     expect(effectiveAgentAppInstallIDs([], [app(7, false), app(8, true)], ["app-7"])).toEqual([7]);
+  });
+});
+
+describe("template link for a new agent", () => {
+  const template = (source: AgentTemplate["source"], id = "t1") => ({ id, source, version: 4 }) as AgentTemplate;
+
+  test("the user's own templates are followed and others stay pinned unless the operator chooses", () => {
+    expect(wizardFollowsTemplate(template("user"), {})).toBe(true);
+    expect(wizardFollowsTemplate(template("builtin"), {})).toBe(false);
+    expect(wizardFollowsTemplate(template("app"), {})).toBe(false);
+    expect(wizardFollowsTemplate(template("builtin"), { followTemplate: true })).toBe(true);
+    expect(wizardFollowsTemplate(template("user"), { followTemplate: false })).toBe(false);
+  });
+
+  test("a following agent takes the latest version and a pinned one names the version shown", () => {
+    expect(wizardTemplateCreateOptions(template("user"), {})).toEqual({ templateId: "t1", followTemplate: true });
+    expect(wizardTemplateCreateOptions(template("builtin"), {})).toEqual({ templateId: "t1", templateVersion: 4, followTemplate: false });
+    expect(wizardTemplateCreateOptions(template("builtin", "empty"), {})).toEqual({});
+    expect(wizardTemplateCreateOptions(null, {})).toEqual({});
   });
 });

@@ -36,6 +36,7 @@ test("late template accounts seed once, refresh preserves removals, and create k
     created_at: "",
     updated_at: "",
     name: "Research agent",
+    version: 3,
     description: "Research with GitHub and storage.",
     directive: "Research and save findings.",
     mode: "learn",
@@ -147,11 +148,14 @@ test("late template accounts seed once, refresh preserves removals, and create k
   fireEvent.click(screen.getByRole("button", { name: "Continue to review →" }));
   expect(screen.getByText("Conversations, Storage")).toBeTruthy();
   expect(screen.getByText("GitHub — Work GitHub")).toBeTruthy();
+  // Built-in templates keep the agent on the version it starts from.
+  expect(screen.getByRole("radio", { name: "Stay on version 3" }).getAttribute("aria-checked")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "Create agent →" }));
   await screen.findByText("Agent created");
   const options = (instances.create as ReturnType<typeof mock>).mock
     .calls[0]![5] as any;
   expect(options.boundAppInstallIDs).toEqual([1, 3]);
+  expect(options).toMatchObject({ templateId: "research", templateVersion: 3, followTemplate: false });
   expect(options.boundConnectionIDs).toEqual([10]);
   expect(options.boundAppGrants).toEqual([
     {

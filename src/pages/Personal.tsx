@@ -210,6 +210,7 @@ export function Personal() {
           includeChannels: false,
           unconscious: template?.unconscious ?? true,
           boundAppInstallIDs,
+          templateId: template?.id,
         },
       );
       await refresh();
