@@ -30,6 +30,7 @@ const Users = lazy(() => import("./settings/UserSettings").then(m => ({ default:
 const Devices = lazy(() => import("./settings/DeviceSettings").then(m => ({ default: m.DeviceSettings })));
 const SecurityCenter = lazy(() => import("./settings/SecuritySettings").then(m => ({ default: m.SecurityCenter })));
 const Server = lazy(() => import("./settings/ServerSettings").then(m => ({ default: m.ServerTab })));
+const PrivateApps = lazy(() => import("./settings/PrivateAppsSettings").then(m => ({ default: m.PrivateAppsSettings })));
 const Maintenance = lazy(() => import("./settings/MaintenanceSettings").then(m => ({ default: m.DataTab })));
 const PublicAddress = lazy(() => import("./settings/AdditionalSettings").then(m => ({ default: m.PublicAddressPage })));
 const Updates = lazy(() => import("./settings/AdditionalSettings").then(m => ({ default: m.UpdatesPage })));
@@ -58,6 +59,7 @@ function Screen({ id }: { id: string }) {
     case "server": return <PublicAddress />;
     case "updates": return <Updates />;
     case "access-policy": return <Server section="access" />;
+    case "private-apps": return <PrivateApps />;
     case "agent-lifecycle": return <Server section="lifecycle" />;
     case "geoip": return <Server section="geoip" />;
     case "data": return <Maintenance />;
