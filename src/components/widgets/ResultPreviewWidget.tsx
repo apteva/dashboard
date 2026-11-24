@@ -41,7 +41,7 @@ export function ResultPreviewWidget(props: SystemWidgetProps) {
   const text = output.map(([label, value]) => `${label}\n${value}`).join("\n\n");
   const title = preview?.title || selected?.title || "Result / preview";
   const agent = item && props.agents.find(agent => agent.id === item.raw.instance_id);
-  const state = item && activityState(item, props.system.now, props.system.connection === "open", props.activity.rows);
+  const state = item && activityState(item, props.system.now, props.system.connected, props.activity.rows);
   const ask = () => {
     const excerpt = text.slice(0, 4000);
     actions.dispatch({ type: "ask_helper", prompt: `I'd like to adjust this output: ${title}.${agent ? ` Agent: ${agent.name} (ID ${agent.id}).` : ""}${item ? ` Activity: ${context.activityId}; recorded ${item.time}${item.threadId ? `; thread ${item.threadId}` : ""}.` : ""}${preview?.resource ? ` Resource: ${preview.resource.type} ${preview.resource.id}.` : ""}\nPlease help me decide and apply the changes.\n${excerpt ? `\nOutput excerpt:\n${excerpt}${text.length > 4000 ? "\n[Excerpt shortened; full recorded output is in the preview.]" : ""}` : "\nThis preview has no text excerpt. Ask me which part I want to change."}` });

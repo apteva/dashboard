@@ -1,6 +1,6 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { usePanelEvents } from "./usePanelEvents";
+import { panelRefreshTimings, usePanelEvents } from "./usePanelEvents";
 import { __testHelpers } from "./useAppEvents";
 const original = globalThis.EventSource;
 const sources: FakeSource[] = [];
@@ -35,4 +35,31 @@ test("topic filtering, hidden tab recovery, and cleanup cancel pending refreshes
  act(()=>{document.dispatchEvent(new Event("visibilitychange"))});await settle();
  expect(hook.result.current.appEvents).toEqual([]);
  act(()=>{sources[0].send(3,77,"p","run.updated")});hook.unmount();await settle();expect(sources[0].closed).toBe(true);
+});
+
+test("a live stream stops the 30 s refresh; polling covers widgets without one",()=>{
+ globalThis.EventSource=FakeSource as unknown as typeof EventSource;
+ jest.useFakeTimers();
+ try {
+  const {pollMs,safetyMs}=panelRefreshTimings;
+  const live=renderHook(()=>usePanelEvents("processes","p",77));
+  const global=renderHook(()=>usePanelEvents("processes","p",77,[],"global"));
+  act(()=>{sources[0].onopen?.();jest.advanceTimersByTime(250)});
+  const liveStart=live.result.current.eventRevision, globalStart=global.result.current.eventRevision;
+  // Nothing happens for a few minutes: the streamed widget is left alone,
+  // the global one (no stream) still polls.
+  act(()=>{jest.advanceTimersByTime(pollMs*4+250)});
+  expect(live.result.current.eventRevision).toBe(liveStart);
+  expect(global.result.current.eventRevision).toBe(globalStart+4);
+  // A real event refreshes at once and restarts the quiet period.
+  act(()=>{sources[0].send(1);jest.advanceTimersByTime(250)});
+  expect(live.result.current.eventRevision).toBe(liveStart+1);
+  // The rare safety refresh still runs after a long quiet stretch.
+  act(()=>{jest.advanceTimersByTime(safetyMs+pollMs)});
+  expect(live.result.current.eventRevision).toBe(liveStart+2);
+  // Once the stream drops, the widget falls back to polling.
+  act(()=>{sources[0].onerror?.();jest.advanceTimersByTime(pollMs+250)});
+  expect(live.result.current.eventRevision).toBe(liveStart+3);
+  live.unmount();global.unmount();
+ } finally { jest.useRealTimers(); }
 });

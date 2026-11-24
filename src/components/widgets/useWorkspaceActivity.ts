@@ -4,6 +4,10 @@ import { useTelemetryEvents } from "../../hooks/useTelemetryBus";
 import { mergeRuntimeEvent, type RuntimeEventItem } from "../../utils/runtimeActivity";
 
 export const activityID = (item: RuntimeEventItem) => `${item.raw.instance_id}:${item.activityId || item.key}`;
+/** Live events are applied in batches at most this often. Streaming thoughts
+ * arrive many times a second; redrawing every widget per frame shows as
+ * flicker without showing anything new. */
+export const ACTIVITY_BATCH_MS = 250;
 
 /** Reuses the agent detail reducer, including thought streaming and tool/result pairing. */
 export function useWorkspaceActivity(agents: Agent[], projectId: string | undefined, enabled: boolean) {
@@ -15,7 +19,7 @@ export function useWorkspaceActivity(agents: Agent[], projectId: string | undefi
     return [...other, ...mergeRuntimeEvent(own, event)].sort((a,b) => Date.parse(a.time) - Date.parse(b.time)).slice(-250);
   };
   const queue = useRef<TelemetryEvent[]>([]);
-  const frame = useRef<number | undefined>(undefined);
+  const batchTimer = useRef<number | undefined>(undefined);
   const seen = useRef(new Set<string>());
   const key = agents.map(agent => `${agent.id}:${agent.project_id}`).sort().join(",");
   useEffect(() => {
@@ -36,14 +40,19 @@ export function useWorkspaceActivity(agents: Agent[], projectId: string | undefi
         seen.current.add(id); return true;
       });
       if (seen.current.size > 2000) seen.current = new Set([...seen.current].slice(-1000));
-      setState(previous => ({ scope, rows: incoming.reduce(add, previous.scope === scope ? previous.rows : []), loading: false, error: histories.some(r => r.status === "rejected") ? "Some activity could not be refreshed." : "" }));
+      const error = histories.some(r => r.status === "rejected") ? "Some activity could not be refreshed." : "";
+      setState(previous => {
+        // A poll that found nothing new keeps the same state, so nothing redraws.
+        if (previous.scope === scope && !incoming.length && !previous.loading && previous.error === error) return previous;
+        return { scope, rows: incoming.reduce(add, previous.scope === scope ? previous.rows : []), loading: false, error };
+      });
     };
     void load();
     const timer = window.setInterval(() => void load(), 30_000);
     window.addEventListener("apteva.telemetry.reconnected", load);
     window.addEventListener("apteva.telemetry.gap", load);
     document.addEventListener("visibilitychange", load);
-    return () => { cancelled = true; window.clearInterval(timer); if (frame.current !== undefined) cancelAnimationFrame(frame.current); frame.current = undefined; window.removeEventListener("apteva.telemetry.reconnected", load); window.removeEventListener("apteva.telemetry.gap", load); document.removeEventListener("visibilitychange", load); };
+    return () => { cancelled = true; window.clearInterval(timer); if (batchTimer.current !== undefined) window.clearTimeout(batchTimer.current); batchTimer.current = undefined; window.removeEventListener("apteva.telemetry.reconnected", load); window.removeEventListener("apteva.telemetry.gap", load); document.removeEventListener("visibilitychange", load); };
   }, [key, scope, enabled, projectId]);
   useTelemetryEvents(enabled ? null : undefined, event => {
     if (!agents.some(agent => agent.id === event.instance_id)) return;
@@ -52,12 +61,12 @@ export function useWorkspaceActivity(agents: Agent[], projectId: string | undefi
     seen.current.add(id);
     if (seen.current.size > 2000) seen.current.delete(seen.current.values().next().value!);
     queue.current.push(event);
-    if (frame.current !== undefined) return;
-    frame.current = requestAnimationFrame(() => {
-      frame.current = undefined;
+    if (batchTimer.current !== undefined) return;
+    batchTimer.current = window.setTimeout(() => {
+      batchTimer.current = undefined;
       const batch = queue.current.splice(0);
       setState(previous => ({ scope, loading: previous.loading, error: previous.error, rows: batch.reduce(add, previous.scope === scope ? previous.rows : []) }));
-    });
+    }, ACTIVITY_BATCH_MS);
   });
   return state.scope === scope ? state : { rows: [], loading: true, error: "" };
 }

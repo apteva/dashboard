@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useProjectUILayout, type WidgetInstance } from "./contributions";
-import { normalizeStoredWidgets, type WidgetDefinition } from "./WidgetCanvas";
+import { normalizeStoredWidgets, useStableWidgetInstances, type WidgetDefinition } from "./WidgetCanvas";
 import { createWidgetActionBridge, type WidgetAction, type WidgetContext } from "./widgetContext";
 import { Modal } from "../Modal";
 
@@ -14,7 +14,7 @@ export function WorkspaceCanvas({ projectId, slot, definitions, context, onActio
   onVisibleChange: (components: string[]) => void; selectionRevision: number; assistantRevision: number;
 }) {
   const { project } = useProjectUILayout(projectId, context.scope);
-  const widgets = normalizeStoredWidgets(project.slots?.[slot] || [], definitions);
+  const widgets = useStableWidgetInstances(normalizeStoredWidgets(project.slots?.[slot] || [], definitions));
   const keys = widgets.map(widget => widget.component).join("\0");
   const [pane, setPane] = useState<Area>("main");
   const [tabs, setTabs] = useState<Partial<Record<Area, string>>>({});
@@ -22,7 +22,7 @@ export function WorkspaceCanvas({ projectId, slot, definitions, context, onActio
   const [wide, setWide] = useState(() => window.matchMedia("(min-width: 1024px)").matches);
   const detailRef = useRef<HTMLDivElement>(null);
   const actions = useMemo(() => createWidgetActionBridge(onAction), [onAction]);
-  const renderContext = { context: { ...context, presentation: "workspace" as const }, actions };
+  const renderContext = useMemo(() => ({ context: { ...context, presentation: "workspace" as const }, actions }), [context, actions]);
   const groups = Object.fromEntries((["assistant", "main", "activity", "details"] as Area[]).map(area => [area, widgets.filter(widget => (widget.placement || "main") === area)])) as Record<Area, WidgetInstance[]>;
   useEffect(() => { if (ready) onVisibleChange(widgets.map(widget => widget.component)); }, [keys, ready, onVisibleChange]);
   useEffect(() => {

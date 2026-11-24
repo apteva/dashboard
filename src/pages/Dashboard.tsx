@@ -1,5 +1,5 @@
 import { useWorkspaceSystem } from "../components/widgets/useWorkspaceSystem";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useWorkspaceData } from "../components/widgets/useWorkspaceData";
 import { useWorkspaceActivity } from "../components/widgets/useWorkspaceActivity";
@@ -12,7 +12,7 @@ import { nativeWidgetDefinitions } from "../components/widgets/NativeWidgets";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { useProjects } from "../hooks/useProjects";
 import {
-  ContributionMount,
+  AppWidgetMount,
   contributionsFor,
   defaultWidgetSettings,
   defaultWidgetSize,
@@ -107,7 +107,13 @@ export function Dashboard({ page, pageProjectId }: {
     selected: selectedResource,
     activityId, preview,
   }), [allProjects, page?.id, projectId, selectedResource, activityId, preview]);
+  // The handler reads the latest page state through a ref so its identity
+  // never changes; otherwise every data reload would hand each widget a new
+  // action bridge and redraw it.
+  const actionState = useRef({ navigate, widgetContext, data, projectId, visibleWidgetComponents, projects, currentProject, setCurrentProject });
+  actionState.current = { navigate, widgetContext, data, projectId, visibleWidgetComponents, projects, currentProject, setCurrentProject };
   const handleWidgetAction = useCallback((action: WidgetAction) => {
+    const { navigate, widgetContext, data, projectId, visibleWidgetComponents, projects, currentProject, setCurrentProject } = actionState.current;
     setActionError("");
     if (["select", "select_activity", "preview", "clear_selection"].includes(action.type)) setSelectionRevision(n => n + 1);
     if (action.type === "clear_selection") { setSelectedResource(undefined); setActivityId(undefined); setPreview(undefined); return; }
@@ -138,7 +144,7 @@ export function Dashboard({ page, pageProjectId }: {
       return;
     }
     setActionError("This action is not available here. Open the resource to use its own controls.");
-  }, [navigate, widgetContext, data, projectId, visibleWidgetComponents, projects, currentProject?.id, setCurrentProject]);
+  }, []);
   const nativeContext = {
     ...data, projectId, allProjects, projectNames, widgetContext, activity, system,
     widgetActions: { dispatch: handleWidgetAction, select: (resource: WidgetResourceRef) => handleWidgetAction({ type: "select", resource }) },
@@ -165,8 +171,9 @@ export function Dashboard({ page, pageProjectId }: {
       providerLabel: contribution.app.display_name || contribution.app.name,
       providerKey: contribution.app.name,
       render: (instance, renderContext) => (allProjects || projectId) ? (
-        <ContributionMount
-          instance={{ ...instance, contribution }}
+        <AppWidgetMount
+          instance={instance}
+          contribution={contribution}
           apps={installedApps}
           slot={widgetSlot}
           projectId={projectId}

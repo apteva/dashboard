@@ -1,6 +1,6 @@
 import { settingsDefaults, settingProperties as schemaProperties } from "./widgetSettings";
 import { WidgetConfiguration } from "./WidgetConfiguration";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Ref } from "react";
 import type { ConversationComposerHandle } from "../chat/conversationComposer";
 import { AppIcon } from "@apteva/ui-kit";
@@ -690,6 +690,21 @@ export function AppContributionArea({
   );
 }
 
+const NO_WIDGET_SETTINGS: Record<string, unknown> = {};
+
+type ContributionMountProps = Parameters<typeof ContributionMount>[0];
+
+/** A canvas widget from an app. It redraws only when its own inputs change,
+ * not whenever the page around it redraws with new data. */
+export const AppWidgetMount = memo(function AppWidgetMount({
+  instance,
+  contribution,
+  ...props
+}: Omit<ContributionMountProps, "instance"> & { instance: WidgetInstance; contribution: Contribution }) {
+  const resolved = useMemo(() => ({ ...instance, contribution }), [instance, contribution]);
+  return <ContributionMount {...props} instance={resolved} />;
+});
+
 export function ContributionMount({
   composerRef,
   pageContext,
@@ -723,14 +738,16 @@ export function ContributionMount({
   const { contribution } = instance;
   const events = usePanelEvents(contribution.app.name, projectId, contribution.app.install_id, contribution.spec.refresh_topics || [], dashboardScope);
   const width = widgetSpanClass(instance.size);
-  const effectiveContext: WidgetContext = {
+  // Built once per change of their inputs: app widgets commonly key effects
+  // and fetches on these objects, so a fresh copy each render reads as new.
+  const effectiveContext = useMemo<WidgetContext>(() => ({
     projectId,
     scope: dashboardScope,
     ...widgetContext,
     agentId: agentId ?? instance.agent_id ?? widgetContext?.agentId,
     threadId: threadId ?? widgetContext?.threadId,
-  };
-  const effectiveActions = widgetActions || createWidgetActionBridge();
+  }), [projectId, dashboardScope, widgetContext, agentId, instance.agent_id, threadId]);
+  const effectiveActions = useMemo(() => widgetActions || createWidgetActionBridge(), [widgetActions]);
   return (
     <div
       className={`h-full min-w-0 w-full ${width}`}
@@ -751,7 +768,7 @@ export function ContributionMount({
             slot,
             widgetId: instance.id,
             widgetSize: instance.size,
-            widgetSettings: instance.settings || {},
+            widgetSettings: instance.settings || NO_WIDGET_SETTINGS,
             pageContext,
             ...(composerRef ? { composerRef } : {}),
                       widgetContext: effectiveContext,

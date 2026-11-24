@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apps, instances, integrations, skills, mcpServers, telemetry, chat, core, instanceSkills, type Agent, type AppRow, type ConnectionInfo, type Skill, type MCPServer, type MCPServerConfig, type InstanceSkill, type InstanceStats, type CurrentStatusMessageRow } from "../../api";
 import { useTelemetryEvents } from "../../hooks/useTelemetryBus";
+import { keepIfEqual } from "../../utils/keepIfEqual";
 
 export interface AgentAttachments { servers: MCPServerConfig[]; skills: InstanceSkill[]; error?: string }
 export interface WorkspaceData {
@@ -11,6 +12,17 @@ export interface WorkspaceData {
 const empty = (): WorkspaceData => ({ agents: [], apps: [], connections: [], skills: [], inventory: [], stats: [], statuses: [], attachments: {}, loading: true, errors: [] });
 /** Agent runs emit bursts of telemetry; refresh what they change at most this often. */
 export const LIVE_RELOAD_MS = 10_000;
+
+/** Merges app lists in a fixed order: global installs first, then each
+ * project in the order given. Requests run in parallel, so the order must
+ * not depend on which one finished first. A later row for the same install
+ * replaces an earlier one in place. */
+export function mergeAppLists(globalRows: AppRow[], projectRows: Array<AppRow[] | undefined>): AppRow[] {
+  const rows = new Map<number, AppRow>();
+  for (const row of globalRows) rows.set(row.install_id, row);
+  for (const list of projectRows) for (const row of list || []) rows.set(row.install_id, row);
+  return [...rows.values()];
+}
 
 /** One resource snapshot per canvas. Consumers never create their own polling loops. */
 export function useWorkspaceData(projectId: string | undefined, global: boolean, enabled: boolean, relationships: boolean, projectIds: string[]) {
@@ -38,16 +50,16 @@ export function useWorkspaceData(projectId: string | undefined, global: boolean,
     const loadApps = async () => {
       if (!global) return apps.list(projectId);
       const ids = [...projectIds];
-      const rows = new Map<number, AppRow>();
-      for (const row of await apps.list(undefined, "global")) rows.set(row.install_id, row);
+      const globalRows = await apps.list(undefined, "global");
+      const projectRows: Array<AppRow[] | undefined> = new Array(ids.length);
       let index = 0;
       await Promise.all(Array.from({ length: Math.min(4, ids.length) }, async () => {
         while (index < ids.length && !cancelled) {
-          const id = ids[index++];
-          for (const row of await apps.list(id)) rows.set(row.install_id, row);
+          const position = index++;
+          projectRows[position] = await apps.list(ids[position]);
         }
       }));
-      return [...rows.values()];
+      return mergeAppLists(globalRows, projectRows);
     };
     // Live sources are what agent activity changes; the rest refresh on
     // explicit change events and the 30 s timer.
@@ -71,16 +83,19 @@ export function useWorkspaceData(projectId: string | undefined, global: boolean,
       if (cancelled) return;
       if (selected === sources) loadedFull = true;
       setState(previous => {
-        const old = previous.scope === scope ? previous.data : empty();
+        const sameScope = previous.scope === scope;
+        const old = sameScope ? previous.data : empty();
         const data: WorkspaceData = { ...old, loading: false };
         const failed = new Set<string>();
         selected.forEach((source, i) => {
           const result = results[i];
-          if (result.status === "fulfilled") Object.assign(data, { [source.key]: result.value });
+          if (result.status === "fulfilled") Object.assign(data, { [source.key]: keepIfEqual(old[source.key], result.value as never) });
           else failed.add(source.name);
         });
         // A live reload leaves the other sources' last outcome in place.
-        data.errors = sources.flatMap(source => failed.has(source.name) || (!selected.includes(source) && old.errors.includes(failure(source.name))) ? [failure(source.name)] : []);
+        data.errors = keepIfEqual(old.errors, sources.flatMap(source => failed.has(source.name) || (!selected.includes(source) && old.errors.includes(failure(source.name))) ? [failure(source.name)] : []));
+        // Nothing changed: keep the state object so nothing re-renders.
+        if (sameScope && !old.loading && (Object.keys(data) as Array<keyof WorkspaceData>).every(key => data[key] === old[key])) return previous;
         return { scope, data };
       });
       const requested = reloadRequested;
@@ -120,15 +135,22 @@ export function useWorkspaceData(projectId: string | undefined, global: boolean,
   });
   const data = state.scope === scope ? state.data : empty();
   const attachmentKey = JSON.stringify(data.agents.map(agent => [agent.id, agent.config, agent.status]));
+  // An agent's attachments are read again when its config or status changes.
+  // A refresh or an attachment-changing event reads them all again.
+  const attachmentsRead = useRef<{ scope: string; revision: number; attachmentRevision: number; signatures: Map<number, string> }>({ scope: "", revision: -1, attachmentRevision: -1, signatures: new Map() });
   useEffect(() => {
     if (!enabled || !relationships) return;
     let cancelled = false;
     const agents = data.agents;
+    const read = attachmentsRead.current;
+    const full = read.scope !== scope || read.revision !== revision || read.attachmentRevision !== attachmentRevision;
+    const signatures = new Map(agents.map(agent => [agent.id, JSON.stringify([agent.config, agent.status])]));
+    const targets = agents.filter(agent => full || read.signatures.get(agent.id) !== signatures.get(agent.id) || !data.attachments[agent.id]);
     const next: Record<number, AgentAttachments> = {};
     let index = 0;
     const worker = async () => {
-      while (index < agents.length && !cancelled) {
-        const agent = agents[index++];
+      while (index < targets.length && !cancelled) {
+        const agent = targets[index++];
         const [config, attachedSkills] = await Promise.allSettled([core.config(agent.id), instanceSkills.list(agent.id)]);
         let fallback: MCPServerConfig[] = [];
         try { const stored = JSON.parse(agent.config); if (Array.isArray(stored?.mcp_servers)) fallback = stored.mcp_servers; } catch { /* Legacy config may be absent. */ }
@@ -139,10 +161,23 @@ export function useWorkspaceData(projectId: string | undefined, global: boolean,
         };
       }
     };
-    void Promise.all(Array.from({ length: Math.min(4, agents.length) }, worker)).then(() => {
-      if (!cancelled) setState(previous => previous.scope === scope ? { scope, data: { ...previous.data, attachments: next } } : previous);
+    void Promise.all(Array.from({ length: Math.min(4, targets.length) }, worker)).then(() => {
+      if (cancelled) return;
+      attachmentsRead.current = { scope, revision, attachmentRevision, signatures };
+      setState(previous => {
+        if (previous.scope !== scope) return previous;
+        const old = previous.data.attachments;
+        const attachments: Record<number, AgentAttachments> = {};
+        for (const agent of agents) {
+          const entry = next[agent.id] ? keepIfEqual(old[agent.id], next[agent.id]) : old[agent.id];
+          if (entry) attachments[agent.id] = entry;
+        }
+        const ids = Object.keys(attachments);
+        const unchanged = ids.length === Object.keys(old).length && ids.every(id => old[Number(id)] === attachments[Number(id)]);
+        return unchanged ? previous : { scope, data: { ...previous.data, attachments } };
+      });
     });
     return () => { cancelled = true; };
   }, [scope, attachmentKey, enabled, relationships, revision, attachmentRevision]);
-  return { ...data, refresh };
+  return useMemo(() => ({ ...data, refresh }), [data, refresh]);
 }

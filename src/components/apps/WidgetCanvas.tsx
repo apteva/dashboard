@@ -3,7 +3,7 @@ import { WidgetGallery } from "./WidgetGallery";
 import { WidgetIcon } from "./WidgetIcon";
 import { WidgetConfiguration } from "./WidgetConfiguration";
 import type { WidgetSettingsUI } from "./widgetSettings";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   isWidgetSize,
@@ -125,12 +125,25 @@ export function WidgetCanvas({
       size: definition.defaultSize,
       settings: { ...(definition.defaultSettings || {}) },
     }));
-  const configured = ensureRequiredWidgets(initialLayout, definitions);
+  const configured = useStableWidgetInstances(ensureRequiredWidgets(initialLayout, definitions));
   const visible = configured.filter((instance) => instance.component !== "native:inbox");
   const loadingInstances = configured.filter((instance) =>
     byKey.has(instance.component) || !instance.component.startsWith("native:"),
   );
   const visibleComponentsKey = visible.map((instance) => instance.component).join("\u0000");
+  const foregroundId = workspaceLayout && !editing
+    ? activePane || visible.find((item) => (item.placement || "main") === "main")?.id || visible[0]?.id
+    : undefined;
+  // Two shared contexts instead of one new object per widget per render, so
+  // widgets that compare their context see a change only when it changed.
+  const foregroundContext = useMemo<WidgetRenderContext>(
+    () => ({ ...renderContext, context: { ...renderContext.context, hostForeground: true } }),
+    [renderContext],
+  );
+  const backgroundContext = useMemo<WidgetRenderContext>(
+    () => ({ ...renderContext, context: { ...renderContext.context, hostForeground: false } }),
+    [renderContext],
+  );
 
   useEffect(() => {
     if (!definitionsReady) return;
@@ -308,7 +321,7 @@ export function WidgetCanvas({
                   </div>
                 )}
                 <div className={`min-w-0 ${editing ? "min-h-0 flex-1" : "h-full"}`}>
-                  {instance.agent_id === -1 ? <p className="rounded-lg border border-border p-4 text-sm text-text-muted">This widget is waiting for its preset agent. Retry workspace setup to finish creating it.</p> : definition.render(instance, { ...renderContext, context: { ...renderContext.context, hostForeground: workspaceLayout && !editing && (activePane || visible.find(item => (item.placement || "main") === "main")?.id || visible[0]?.id) === instance.id } })}
+                  {instance.agent_id === -1 ? <p className="rounded-lg border border-border p-4 text-sm text-text-muted">This widget is waiting for its preset agent. Retry workspace setup to finish creating it.</p> : definition.render(instance, foregroundId === instance.id ? foregroundContext : backgroundContext)}
                   {!!instance.setup?.length && <PresetConnectionGuide steps={instance.setup} projectId={projectId || undefined} compact /> }
                 </div>
               </div>
@@ -376,6 +389,23 @@ function WidgetCanvasLoading({
       ))}
     </div>
   );
+}
+
+/** Keeps each widget's previous object while its saved form is unchanged.
+ * The layout is rebuilt on every render, and a new settings object would
+ * otherwise make app widgets treat unchanged settings as new ones. */
+export function useStableWidgetInstances(instances: WidgetInstance[]): WidgetInstance[] {
+  const cache = useRef(new Map<string, { json: string; instance: WidgetInstance }>());
+  const next = new Map<string, { json: string; instance: WidgetInstance }>();
+  const stable = instances.map((instance) => {
+    const json = JSON.stringify(instance);
+    const previous = cache.current.get(instance.id);
+    const entry = previous && previous.json === json ? previous : { json, instance };
+    next.set(instance.id, entry);
+    return entry.instance;
+  });
+  cache.current = next;
+  return stable;
 }
 
 function ensureRequiredWidgets(instances: WidgetInstance[], definitions: WidgetDefinition[]): WidgetInstance[] {
