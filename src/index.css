@@ -831,3 +831,19 @@ select {
 .workspace-widget > section > div:last-child { min-height: 0; max-height: none; overflow: auto; }
 .workspace-widget > section > div:last-child:not(.workspace-chat) { flex: 1; }
 .workspace-widget > section > .system-map-body { overflow: hidden; }
+
+/* Widgets in one canvas row share its height. The grid already stretches
+   each cell; these rules stretch what the widget renders to fill it. App
+   widgets draw their own card, and the host wrapper around them is
+   display: contents, so the app's root is a flex item of the mount. A
+   widget that renders several root elements keeps its natural height. */
+[data-widget-cell],
+[data-widget-cell] > [data-app-contribution] {
+  display: flex;
+  flex-direction: column;
+}
+[data-widget-cell] > :first-child,
+[data-widget-cell] > [data-app-contribution] > :only-child,
+[data-widget-cell] > [data-app-contribution] > [data-app-host] > :only-child {
+  flex: 1 0 auto;
+}
