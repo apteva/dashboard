@@ -1,5 +1,5 @@
 import { useWorkspaceSystem } from "../components/widgets/useWorkspaceSystem";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useWorkspaceData } from "../components/widgets/useWorkspaceData";
 import { useWorkspaceActivity } from "../components/widgets/useWorkspaceActivity";
@@ -12,7 +12,7 @@ import { nativeWidgetDefinitions } from "../components/widgets/NativeWidgets";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { useProjects } from "../hooks/useProjects";
 import {
-  ContributionMount,
+  AppWidgetMount,
   contributionsFor,
   defaultWidgetSettings,
   defaultWidgetSize,
@@ -41,12 +41,13 @@ export function Dashboard({ page, pageProjectId }: {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { projects, currentProject, loaded: projectsLoaded, setCurrentProject } = useProjects();
-  // Without projects, Home can only be the all-projects view; a project-scoped
-  // Home would have nowhere to save its layout.
-  const allProjects = page ? page.scope === "global" : searchParams.get("scope") === "all" || (projectsLoaded && projects.length === 0);
-  const requestedProject = projects.find((project) => project.id === (page ? pageProjectId : searchParams.get("project")));
-  const selectedProject = allProjects ? undefined : page ? requestedProject : requestedProject || currentProject || undefined;
+  const { projects, currentProject, allProjects: sidebarAllProjects, loaded: projectsLoaded, setCurrentProject } = useProjects();
+  // Home follows the sidebar picker. Without projects, Home can only be the
+  // all-projects view; a project-scoped Home would have nowhere to save its
+  // layout. A page has its own fixed scope.
+  const allProjects = page ? page.scope === "global" : sidebarAllProjects || (projectsLoaded && projects.length === 0);
+  const requestedProject = page ? projects.find((project) => project.id === pageProjectId) : undefined;
+  const selectedProject = allProjects ? undefined : page ? requestedProject : currentProject || undefined;
   const projectId = selectedProject?.id;
   const widgetSlot = page ? `page.${page.id}` : "dashboard.home";
   const editingRequested = !!page && searchParams.get("edit") === "1";
@@ -107,7 +108,13 @@ export function Dashboard({ page, pageProjectId }: {
     selected: selectedResource,
     activityId, preview,
   }), [allProjects, page?.id, projectId, selectedResource, activityId, preview]);
+  // The handler reads the latest page state through a ref so its identity
+  // never changes; otherwise every data reload would hand each widget a new
+  // action bridge and redraw it.
+  const actionState = useRef({ navigate, widgetContext, data, projectId, visibleWidgetComponents, projects, currentProject, setCurrentProject });
+  actionState.current = { navigate, widgetContext, data, projectId, visibleWidgetComponents, projects, currentProject, setCurrentProject };
   const handleWidgetAction = useCallback((action: WidgetAction) => {
+    const { navigate, widgetContext, data, projectId, visibleWidgetComponents, projects, currentProject, setCurrentProject } = actionState.current;
     setActionError("");
     if (["select", "select_activity", "preview", "clear_selection"].includes(action.type)) setSelectionRevision(n => n + 1);
     if (action.type === "clear_selection") { setSelectedResource(undefined); setActivityId(undefined); setPreview(undefined); return; }
@@ -138,7 +145,7 @@ export function Dashboard({ page, pageProjectId }: {
       return;
     }
     setActionError("This action is not available here. Open the resource to use its own controls.");
-  }, [navigate, widgetContext, data, projectId, visibleWidgetComponents, projects, currentProject?.id, setCurrentProject]);
+  }, []);
   const nativeContext = {
     ...data, projectId, allProjects, projectNames, widgetContext, activity, system,
     widgetActions: { dispatch: handleWidgetAction, select: (resource: WidgetResourceRef) => handleWidgetAction({ type: "select", resource }) },
@@ -165,8 +172,9 @@ export function Dashboard({ page, pageProjectId }: {
       providerLabel: contribution.app.display_name || contribution.app.name,
       providerKey: contribution.app.name,
       render: (instance, renderContext) => (allProjects || projectId) ? (
-        <ContributionMount
-          instance={{ ...instance, contribution }}
+        <AppWidgetMount
+          instance={instance}
+          contribution={contribution}
           apps={installedApps}
           slot={widgetSlot}
           projectId={projectId}
@@ -184,13 +192,6 @@ export function Dashboard({ page, pageProjectId }: {
     () => page || allProjects ? undefined : sharedWidgetLayout(layoutDocument.global?.slots?.[widgetSlot], widgetDefinitions),
     [allProjects, layoutDocument.global?.slots, page, widgetDefinitions, widgetSlot],
   );
-  const chooseScope = (value: string) => {
-    const next = new URLSearchParams(searchParams);
-    next.delete("project");
-    if (value === "all") next.set("scope", "all");
-    else { next.delete("scope"); next.set("project", value); }
-    setSearchParams(next, { replace: true });
-  };
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <header className="border-b border-border px-4 py-3 sm:px-6 sm:py-4">
@@ -214,17 +215,6 @@ export function Dashboard({ page, pageProjectId }: {
             </p>
           </div>
           <div className="flex max-w-full flex-wrap items-center gap-2">
-            {!page && <label className="min-w-0 sm:w-44">
-              <span className="sr-only">Home scope</span>
-              <select
-                value={allProjects ? "all" : projectId || "all"}
-                onChange={(event) => chooseScope(event.target.value)}
-                className="h-9 w-full rounded-lg border border-border bg-bg-input px-3 text-xs text-text outline-none focus:border-accent"
-              >
-                <option value="all">All projects</option>
-                {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-              </select>
-            </label>}
             <button
               type="button"
               data-tour="add-widget"

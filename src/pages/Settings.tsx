@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
+import { ProjectRequired } from "../components/ProjectRequired";
 import { useAssistantPageDetails } from "../components/chat/pageContext";
 import { SETTINGS_SECTIONS, SETTINGS_SCREENS, canOpenSettingsScreen, settingsScopeLabel, type SettingsScreen, type SettingsSection } from "./settings/registry";
 import { useSettingsDraftGuard } from "./settings/useSettingsDraftGuard";
@@ -30,6 +31,7 @@ const Users = lazy(() => import("./settings/UserSettings").then(m => ({ default:
 const Devices = lazy(() => import("./settings/DeviceSettings").then(m => ({ default: m.DeviceSettings })));
 const SecurityCenter = lazy(() => import("./settings/SecuritySettings").then(m => ({ default: m.SecurityCenter })));
 const Server = lazy(() => import("./settings/ServerSettings").then(m => ({ default: m.ServerTab })));
+const PrivateApps = lazy(() => import("./settings/PrivateAppsSettings").then(m => ({ default: m.PrivateAppsSettings })));
 const Maintenance = lazy(() => import("./settings/MaintenanceSettings").then(m => ({ default: m.DataTab })));
 const PublicAddress = lazy(() => import("./settings/AdditionalSettings").then(m => ({ default: m.PublicAddressPage })));
 const Updates = lazy(() => import("./settings/AdditionalSettings").then(m => ({ default: m.UpdatesPage })));
@@ -58,6 +60,7 @@ function Screen({ id }: { id: string }) {
     case "server": return <PublicAddress />;
     case "updates": return <Updates />;
     case "access-policy": return <Server section="access" />;
+    case "private-apps": return <PrivateApps />;
     case "agent-lifecycle": return <Server section="lifecycle" />;
     case "geoip": return <Server section="geoip" />;
     case "data": return <Maintenance />;
@@ -155,7 +158,9 @@ export function Settings() {
             {tab && !screen && <div className="rounded-lg border border-border p-5"><h2 className="font-semibold">Setting not found</h2><p className="mt-2 text-sm text-text-muted">Choose a section or search for the setting you need.</p></div>}
           </>}
           <div ref={root} hidden={searching} key={screen?.id}>
-            {screen && (user === null ? <p role="status" className="text-sm text-text-muted">Loading permissions…</p> : allowed ? <Suspense fallback={<p role="status" className="text-sm text-text-muted">Loading settings…</p>}><Screen id={screen.id} /></Suspense> : <RestrictedScreen screen={screen} />)}
+            {screen && (user === null ? <p role="status" className="text-sm text-text-muted">Loading permissions…</p> : allowed ? <Suspense fallback={<p role="status" className="text-sm text-text-muted">Loading settings…</p>}>{screen.scope === "project"
+              ? <ProjectRequired title={`${screen.title} are set per project`} description="Choose a project to see and change these settings."><Screen id={screen.id} /></ProjectRequired>
+              : <Screen id={screen.id} />}</Suspense> : <RestrictedScreen screen={screen} />)}
           </div>
         </div>
       </main>

@@ -17,7 +17,7 @@ export function WorkspaceActivityWidget(props: SystemWidgetProps) {
   const [limit, setLimit] = useState(40);
   const [view, setView] = useState<"work" | "results">("work");
   const [showRoutine, setShowRoutine] = useState(false);
-  const { activity, resources, edges, connection, now } = props.system;
+  const { activity, resources, edges, connection, connected, now } = props.system;
   const selected = context.selected && resources.get(resourceKey(context.selected));
   const needle = query.trim().toLowerCase();
   const registryFor = (id: number) => {
@@ -26,7 +26,7 @@ export function WorkspaceActivityWidget(props: SystemWidgetProps) {
   };
   const matching = [...activity.values()].reverse().filter(row => {
     const { item, resource, title, summary } = row;
-    const state = activityState(item, now, connection === "open", props.activity.rows);
+    const state = activityState(item, now, connected, props.activity.rows);
     const category = ["thread", "channel"].includes(item.kind) ? "event" : item.kind;
     return (agentId === "all" || String(item.raw.instance_id) === agentId)
       && (kind === "all" || category === kind)
@@ -41,7 +41,7 @@ export function WorkspaceActivityWidget(props: SystemWidgetProps) {
   const rows = view === "results" ? results : matching.filter(row => !foldRoutine || !isRoutineActivity(row.item));
   const clear = () => { setKind("all"); setAgentId("all"); setOutcome("all"); setQuery(""); setFollowSelection(false); setLimit(40); };
   const filtered = kind !== "all" || agentId !== "all" || outcome !== "all" || !!query || followSelection;
-  return <WidgetSection title="Activity" description={`${connection === "open" ? "Live updates" : connection === "reconnecting" ? "Reconnecting · recorded activity" : "Recorded activity"} · ${rows.length} entries`} action={<button className={widgetButton} onClick={() => setMoreFilters(!moreFilters)} aria-expanded={moreFilters}>{filtered ? "Filters active" : "Filter"}</button>}>
+  return <WidgetSection title="Activity" description={`${connected ? "Live updates" : connection === "reconnecting" ? "Reconnecting · recorded activity" : "Recorded activity"} · ${rows.length} entries`} action={<button className={widgetButton} onClick={() => setMoreFilters(!moreFilters)} aria-expanded={moreFilters}>{filtered ? "Filters active" : "Filter"}</button>}>
     <div className="flex shrink-0 flex-wrap items-center justify-between gap-1 border-b border-border px-3 py-1">
       <div className="flex gap-1" role="group" aria-label="Activity view">{([ ["work", "Work"], ["results", `Results (${results.length})`] ] as const).map(([key, label]) => <button key={key} type="button" aria-pressed={view === key} onClick={() => { setView(key); setLimit(40); }} className={`min-h-9 rounded px-2 text-xs font-semibold ${view === key ? "bg-accent/10 text-accent" : "text-text-muted hover:bg-bg-hover"}`}>{label}</button>)}</div>
       {view === "work" && routineCount > 0 && kind === "all" && !needle && outcome === "all" && <button type="button" aria-pressed={showRoutine} onClick={() => setShowRoutine(value => !value)} className="min-h-9 text-[10px] text-text-muted hover:text-accent">{showRoutine ? "Hide" : "Show"} routine ({routineCount})</button>}
@@ -56,7 +56,7 @@ export function WorkspaceActivityWidget(props: SystemWidgetProps) {
       {props.activity.error && <p role="status" className="p-3 text-xs text-yellow">{props.activity.error}</p>}
       <div className="divide-y divide-border">{rows.slice(0, limit).map(({ item, resource, title, summary }) => {
         const agent = props.agents.find(agent => agent.id === item.raw.instance_id);
-        const state = activityState(item, now, connection === "open", props.activity.rows);
+        const state = activityState(item, now, connected, props.activity.rows);
         const date = new Date(item.time);
         return <button key={activityID(item)} type="button" aria-pressed={context.activityId === activityID(item)} onClick={() => actions.dispatch({ type: "select_activity", id: activityID(item), resource: { type: "agent", id: item.raw.instance_id, label: agent?.name, projectId: agent?.project_id } })} className={`flex h-[76px] w-full min-w-0 items-center gap-3 px-3 text-left transition-colors hover:bg-bg-hover ${context.activityId === activityID(item) ? "bg-accent/5 shadow-[inset_2px_0_0_var(--accent)]" : ""}`}>
           <AgentActivityIcon event={item.status === "running" && state !== "In progress" ? { ...item, status: "info" } : item} registry={registryFor(item.raw.instance_id)} />

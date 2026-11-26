@@ -146,3 +146,34 @@ describe("sharedWidgetLayout", () => {
     expect(sharedWidgetLayout([], definitions)).toEqual([]);
   });
 });
+
+describe("WidgetCanvas redraws", () => {
+  test("an unchanged widget keeps its instance and context when the page redraws", () => {
+    const seen: Array<{ instance: unknown; settings: unknown; context: unknown }> = [];
+    const make = (): WidgetDefinition[] => [{
+      key: "native:stable",
+      label: "Stable widget",
+      supportedSizes: ["half"],
+      defaultSize: "half",
+      defaultVisible: true,
+      defaultSettings: { limit: 5 },
+      render: (instance, renderContext) => {
+        seen.push({ instance, settings: instance.settings, context: renderContext });
+        return <section>Stable</section>;
+      },
+    }];
+    const context = { scope: "project" as const };
+    const view = render(
+      <WidgetCanvas projectId="stable-project" slot="dashboard.stable" definitions={make()} context={context} editing={false} onEditingChange={() => undefined} />,
+    );
+    // New data on the page rebuilds the definitions with new render functions.
+    view.rerender(
+      <WidgetCanvas projectId="stable-project" slot="dashboard.stable" definitions={make()} context={context} editing={false} onEditingChange={() => undefined} />,
+    );
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    const [first, last] = [seen[0], seen[seen.length - 1]];
+    expect(last.instance).toBe(first.instance);
+    expect(last.settings).toBe(first.settings);
+    expect(last.context).toBe(first.context);
+  });
+});

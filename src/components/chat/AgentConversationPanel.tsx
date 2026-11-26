@@ -96,6 +96,7 @@ export function AgentConversationPanel({ instance, subscribe, realtime }: Props)
           <ChatPanel
             key={conversationId}
             instanceId={instance.id}
+            projectId={instance.project_id}
             conversationId={conversationId}
             agentName={instance.name}
             agentNames={Object.fromEntries(selectedParticipants.map((agent) => [agent.id, agent.name]))}

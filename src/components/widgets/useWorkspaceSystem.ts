@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useTelemetryConnectionState } from "../../hooks/useTelemetryBus";
+import { useTelemetryConnectionState, type TelemetryConnectionState } from "../../hooks/useTelemetryBus";
 import type { RuntimeEventItem } from "../../utils/runtimeActivity";
 import { activityID } from "./useWorkspaceActivity";
 import { activityResource, activitySummary, isCurrentActivity } from "./workspaceActivityModel";
@@ -9,10 +9,28 @@ import type { WorkspaceData } from "./useWorkspaceData";
 export interface WorkspaceChange { key: string; name: string; kind: "Added" | "Updated" | "Removed"; detail: string; at: number; attached?: string[] }
 type Snapshot = Map<string, { name: string; signature: string; attachments?: string[] }>;
 
+/** A dropped telemetry stream usually reconnects within seconds. Live state
+ * holds through such a gap instead of every agent dropping to "Online" and
+ * coming back. */
+export const CONNECTION_GRACE_MS = 15_000;
+
+/** True while the stream is open, and for a short grace period after it
+ * drops. False from the start until it has opened once. */
+export function useConnectedWithGrace(connection: TelemetryConnectionState, graceMs = CONNECTION_GRACE_MS): boolean {
+  const [lost, setLost] = useState(connection !== "open");
+  useEffect(() => {
+    if (connection === "open") { setLost(false); return; }
+    const timer = window.setTimeout(() => setLost(true), graceMs);
+    return () => window.clearTimeout(timer);
+  }, [connection, graceMs]);
+  return connection === "open" || !lost;
+}
+
 /** One derived graph and change journal per page, shared by all native widgets. */
 export function useWorkspaceSystem(data: WorkspaceData, rows: RuntimeEventItem[], scope: string, enabled: boolean) {
   const [now, setNow] = useState(Date.now);
   const connection = useTelemetryConnectionState();
+  const connected = useConnectedWithGrace(connection);
   useEffect(() => { if (!enabled) return; const timer = window.setInterval(() => setNow(Date.now()), 5000); return () => clearInterval(timer); }, [enabled]);
   const model = useMemo(() => workspaceModel(data), [data.agents, data.apps, data.connections, data.skills, data.inventory, data.attachments, data.statuses]);
   const activity = useMemo(() => new Map(rows.map(item => {
@@ -21,15 +39,15 @@ export function useWorkspaceSystem(data: WorkspaceData, rows: RuntimeEventItem[]
   })), [rows, model, data.apps, data.connections]);
   const states = useMemo(() => new Map(data.agents.map(agent => {
     const own = rows.filter(item => item.raw.instance_id === agent.id).slice().reverse();
-    const current = own.find(item => isCurrentActivity(item, own, now, connection === "open"));
+    const current = own.find(item => isCurrentActivity(item, own, now, connected));
     const report = data.statuses.filter(row => row.instance_id === agent.id && !row.stale).sort((a, b) => Date.parse(b.updated_at || "") - Date.parse(a.updated_at || ""))[0];
     const reportedWorking = report?.state === "working" && now - Date.parse(report.updated_at || "") < 120_000;
-    const live = agent.status === "running" && connection === "open" && (!!current || reportedWorking);
+    const live = agent.status === "running" && connected && (!!current || reportedWorking);
     const label = agent.status !== "running" ? agent.status : live ? current?.kind === "thought" ? "Thinking" : "Working" : report?.state === "blocked" ? "Blocked" : report?.state === "waiting" ? "Waiting" : "Online";
     return [agent.id, { label, live, attention: ["blocked", "error", "failed"].includes(label.toLowerCase()),
       detail: live ? current ? activity.get(activityID(current))?.summary : report?.title : report?.state === "blocked" || report?.state === "waiting" ? report.title : agent.status === "running" ? "No current work confirmed" : "Agent is not running",
       resource: live && current ? activity.get(activityID(current))?.resource : undefined }];
-  })), [data.agents, data.statuses, rows, activity, now, connection]);
+  })), [data.agents, data.statuses, rows, activity, now, connected]);
   const baseline = useRef<{ scope: string; snapshot: Snapshot } | undefined>(undefined);
   const [journal, setJournal] = useState<{ scope: string; changes: WorkspaceChange[] }>({ scope, changes: [] });
   useEffect(() => {
@@ -60,7 +78,13 @@ export function useWorkspaceSystem(data: WorkspaceData, rows: RuntimeEventItem[]
     if (changes.length) setJournal(current => ({ scope, changes: [...changes, ...(current.scope === scope ? current.changes : [])].slice(0, 20) }));
   }, [model, data.loading, data.errors, data.agents, data.attachments, enabled, scope]);
   const changes = journal.scope === scope ? journal.changes : [];
-  const highlighted = new Map(changes.filter(change => now - change.at < 15_000).slice().reverse().flatMap(change => [change.key, ...(change.attached || [])].map(key => [key, change] as const)));
-  return { ...model, activity, states, changes, highlighted, now, connection };
+  const highlighted = useMemo(
+    () => new Map(changes.filter(change => now - change.at < 15_000).slice().reverse().flatMap(change => [change.key, ...(change.attached || [])].map(key => [key, change] as const))),
+    [changes, now],
+  );
+  return useMemo(
+    () => ({ ...model, activity, states, changes, highlighted, now, connection, connected }),
+    [model, activity, states, changes, highlighted, now, connection, connected],
+  );
 }
 export type WorkspaceSystem = ReturnType<typeof useWorkspaceSystem>;

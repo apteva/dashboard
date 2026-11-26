@@ -47,6 +47,8 @@ interface Channel {
   reconnectTimer: number | null;
   closing: boolean;
   reconnectAttempts: number;
+  /** True between the stream's open and its next error or close. */
+  open: boolean;
 }
 
 // Reconnect budget mirrors the telemetry bus / chatConnections: a
@@ -74,6 +76,7 @@ function ensureChannel(projectId: string): Channel {
     reconnectTimer: null,
     closing: false,
     reconnectAttempts: 0,
+    open: false,
   };
   channels.set(key, ch);
   openConnection(projectId, ch);
@@ -113,6 +116,7 @@ function openConnection(projectId: string, ch: Channel): void {
   ch.es = es;
   es.onopen = () => {
     ch.reconnectAttempts = 0; // successful connect resets the budget
+    ch.open = true;
     dbg("EventSource open", { projectId });
     window.dispatchEvent(new CustomEvent("apteva:app-events-connected", {detail:{projectId}}));
   };
@@ -139,6 +143,7 @@ function openConnection(projectId: string, ch: Channel): void {
   es.onerror = () => {
     dbg("EventSource error", { projectId, readyState: es.readyState });
     if (ch.es !== es) return;
+    ch.open = false;
     // Disable EventSource's unbounded native reconnect loop before applying
     // our own retry budget. Most browsers report CONNECTING, not CLOSED, from
     // onerror even for a persistent 404.
@@ -164,10 +169,18 @@ function maybeCloseChannel(projectId: string): void {
   if (!ch) return;
   if (listenerCount(ch) > 0) return;
   ch.closing = true;
+  ch.open = false;
   if (ch.reconnectTimer) window.clearTimeout(ch.reconnectTimer);
   if (ch.es) ch.es.close();
   channels.delete(key);
   dbg("channel closed (no listeners left)", { projectId });
+}
+
+/** Whether the shared app-event stream for a project is connected now.
+ * Consumers fall back to polling while it is not. */
+export function appEventsStreamOpen(projectId: string | undefined | null): boolean {
+  if (!projectId) return false;
+  return channels.get(channelKey(projectId))?.open === true;
 }
 
 // ─── Cross-bundle multiplexer ────────────────────────────────────────

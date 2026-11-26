@@ -7,7 +7,7 @@ import { appDeployments, apps, appSetup, type AppPreflight, type AppSetupFeature
 import { RolePicker, InlineConnectIntegration, ConfigFieldInput, bindingIDs, addBindingSelection, type RoleIntent } from "./SetupFields";
 
 type Frame = { key: number; label?: string; installId?: number; manifestURL?: string; preflight?: AppPreflight; projectId: string; feature?: string; parentRole?: string; onCreated?: (id: number) => void };
-type Props = { installationKey?: string; installationName?: string; onExitGuard?: (guard: () => boolean) => void; installId?: number; preflight?: AppPreflight; manifestURL?: string; projectId?: string; onInstalled?: () => void; onDone?: () => void };
+type Props = { privateInstall?: boolean; installationKey?: string; installationName?: string; onExitGuard?: (guard: () => boolean) => void; installId?: number; preflight?: AppPreflight; manifestURL?: string; projectId?: string; onInstalled?: () => void; onDone?: () => void };
 const button = "min-h-11 rounded-lg border border-border px-3 py-2 text-sm hover:border-accent disabled:opacity-50";
 async function jsonRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const res = await fetch(path, {method, credentials:"same-origin", headers:body ? {"Content-Type":"application/json"} : undefined, body:body ? JSON.stringify(body) : undefined});
@@ -58,14 +58,14 @@ export function GuidedAppSetup(props: Props) {
     {frames.length>1 && <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3 text-xs text-text-muted"><button className="min-h-11 text-sm text-accent" onClick={back}>← Back to parent setup</button><span>{frames.map(f=>f.label || f.preflight?.manifest.display_name || "App setup").join(" → ")}</span></div>}
     {error && <p role="alert" className="text-sm text-error">{error}</p>}
     {frames.map(frame=><div key={frame.key} hidden={frame.key!==current.key}>
-      <SetupStep installationKey={frame.key===0 ? props.installationKey : undefined} installationName={frame.key===0 ? props.installationName : undefined} onLabel={label=>setFrames(old=>old.map(f=>f.key===frame.key && f.label!==label?{...f,label}:f))} reportState={state=>leaveStates.current.set(frame.key,state)} frame={frame} active={frame.key===current.key} revision={revision} onOpen={push}
+      <SetupStep privateInstall={frame.key===0 && !!props.privateInstall} installationKey={frame.key===0 ? props.installationKey : undefined} installationName={frame.key===0 ? props.installationName : undefined} onLabel={label=>setFrames(old=>old.map(f=>f.key===frame.key && f.label!==label?{...f,label}:f))} reportState={state=>leaveStates.current.set(frame.key,state)} frame={frame} active={frame.key===current.key} revision={revision} onOpen={push}
         onCreated={id=>{setFrames(old=>old.map(f=>f.key===frame.key?{...f,installId:id}:f));frame.onCreated?.(id);props.onInstalled?.()}}
         onDone={()=>{if(frames.length>1){leaveStates.current.delete(current.key);setFrames(old=>old.slice(0,-1));setRevision(r=>r+1)}else props.onDone?.()}} />
     </div>)}
   </div>;
 }
 
-function SetupStep({frame,active,revision,onOpen,onCreated,onDone,reportState,onLabel,installationKey,installationName}:{installationKey?:string;installationName?:string;onLabel:(label:string)=>void;reportState:(state:{busy:boolean;dirty:boolean})=>void;frame:Frame;active:boolean;revision:number;onOpen:(f:Omit<Frame,"key">)=>Promise<void>;onCreated:(id:number)=>void;onDone:()=>void}) {
+function SetupStep({frame,active,revision,onOpen,onCreated,onDone,reportState,onLabel,installationKey,installationName,privateInstall}:{privateInstall?:boolean;installationKey?:string;installationName?:string;onLabel:(label:string)=>void;reportState:(state:{busy:boolean;dirty:boolean})=>void;frame:Frame;active:boolean;revision:number;onOpen:(f:Omit<Frame,"key">)=>Promise<void>;onCreated:(id:number)=>void;onDone:()=>void}) {
   const [pf,setPF]=useState<AppPreflight|null>(frame.preflight || null);
   const [installId,setInstallId]=useState(frame.installId);
   const [scope,setScope]=useState(frame.projectId);
@@ -162,7 +162,7 @@ function SetupStep({frame,active,revision,onOpen,onCreated,onDone,reportState,on
           const check = await appDeployments.preflight({manifest_url:frame.manifestURL,project_id:scope,placement});
           if (!check.compatible) throw new Error(check.checks.filter(c=>c.status==="blocked").map(c=>`${c.name}: ${c.message}`).join("; "));
         }
-        const result=await apps.install({installationKey,installationName,manifestUrl:frame.manifestURL,projectId:scope,config,bindings,placement:placement.type==="backend"?placement:undefined,idempotencyKey:installKey.current});
+        const result=await apps.install({private:privateInstall,installationKey,installationName,manifestUrl:frame.manifestURL,projectId:scope,config,bindings,placement:placement.type==="backend"?placement:undefined,idempotencyKey:installKey.current});
         id=result.install_id;setInstallId(id);loaded.current=true;
         setOriginalBindings({...bindings});setOriginalConfig({...config});setSavedSelected(null);
         onCreated(id);
@@ -180,7 +180,7 @@ function SetupStep({frame,active,revision,onOpen,onCreated,onDone,reportState,on
   };
   return <div className="space-y-4">
     <header className="flex items-start gap-3"><AppIcon name={m.display_name || m.name} src={installId && m.icon?.startsWith("/") ? `/api/apps/${encodeURIComponent(m.name)}${m.icon}?install_id=${installId}${scope?`&project_id=${encodeURIComponent(scope)}`:""}` : m.icon?.startsWith("https://") ? m.icon : undefined} size="md"/><div className="min-w-0"><h3 className="text-base font-semibold">{m.display_name || m.name} setup</h3><p className="mt-1 text-sm text-text-muted">Choose what you want to use, then connect and configure it.</p></div></header>
-    {installId && state?.install_status !== "running" && <p className="text-sm text-warn">App status: {state?.install_status || "Checking…"}. <a href="/apps" target="_blank" rel="noreferrer" className="text-accent underline">Open apps to manage it ↗</a></p>}
+    {installId && state?.install_status !== "running" && <p className="text-sm text-warn">App status: {state?.install_status || "Checking…"}.{!privateInstall && <> <a href="/apps" target="_blank" rel="noreferrer" className="text-accent underline">Open apps to manage it ↗</a></>}</p>}
     {installId && <p className="rounded-lg border border-border p-3 text-xs text-text-muted">{state?.shared ? "Shared installation. Changes can affect other projects and apps using it." : "Changes apply to this installation, including other apps linked to it."}</p>}
     {!installId && m.scopes.length>1 && <label className="block text-sm">Install in<select disabled={busy || !!Object.keys(bindings).length} value={scope?"project":"global"} onChange={e=>setScope(e.target.value==="global"?"":frame.projectId)} className="mt-1 min-h-11 w-full rounded-lg border border-border bg-bg-input px-3"><option value="project" disabled={!frame.projectId}>Current project</option><option value="global">Shared across projects</option></select></label>}
     <nav aria-label="Setup steps" className="grid grid-cols-4 gap-1 border-b border-border pb-2">{["Features","Connections","Configure","Review"].map((label,i)=><button key={label} type="button" onClick={()=>setStep(i)} aria-current={step===i?"step":undefined} className={`min-h-11 rounded px-1 text-xs sm:text-sm ${step===i?"bg-accent/10 text-accent":"text-text-muted hover:bg-bg-hover"}`}>{i+1}. {label}</button>)}</nav>
