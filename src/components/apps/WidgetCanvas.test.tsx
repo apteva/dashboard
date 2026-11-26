@@ -114,6 +114,16 @@ describe("WidgetCanvas editing", () => {
     expect(saved.at(-1)?.size).toBe("three-quarter");
   });
 
+  test("renders each widget as the first element of a cell that fills its row", async () => {
+    // index.css stretches the first element of [data-widget-cell], so widgets
+    // in one row share a height even when their own card does not fill it.
+    await renderConfigured(false);
+    const content = screen.getByTestId("widget-content");
+    const cell = content.parentElement!;
+    expect(cell.hasAttribute("data-widget-cell")).toBe(true);
+    expect(cell.firstElementChild).toBe(content);
+  });
+
   test("exits edit mode from the persistent editor toolbar", async () => {
     const onEditingChange = mock(() => undefined);
     await renderConfigured(true, onEditingChange);

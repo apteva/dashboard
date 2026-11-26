@@ -320,7 +320,7 @@ export function WidgetCanvas({
                     </button>}
                   </div>
                 )}
-                <div className={`min-w-0 ${editing ? "min-h-0 flex-1" : "h-full"}`}>
+                <div className={`min-w-0 ${editing ? "min-h-0 flex-1" : "h-full"}`} data-widget-cell>
                   {instance.agent_id === -1 ? <p className="rounded-lg border border-border p-4 text-sm text-text-muted">This widget is waiting for its preset agent. Retry workspace setup to finish creating it.</p> : definition.render(instance, foregroundId === instance.id ? foregroundContext : backgroundContext)}
                   {!!instance.setup?.length && <PresetConnectionGuide steps={instance.setup} projectId={projectId || undefined} compact /> }
                 </div>

@@ -100,7 +100,7 @@ export function AppHostSurface({ projectId, installId, surface, foreground = fal
   const lease = useMemo(() => context ? new HostUILease(context.registry, context.epoch, projectId, inherited, eligible) : null,
     [context, projectId, installId, surface, inherited, eligible]);
   useLayoutEffect(() => { lease?.mount(); return () => lease?.dispose(); }, [lease]);
-  return <div ref={ref} className="contents" onPointerDownCapture={() => lease?.focus()} onFocusCapture={() => lease?.focus()}>{children(lease?.host ?? unsupported)}</div>;
+  return <div ref={ref} className="contents" data-app-host onPointerDownCapture={() => lease?.focus()} onFocusCapture={() => lease?.focus()}>{children(lease?.host ?? unsupported)}</div>;
 }
 
 const FRAME_PROTOCOL = "apteva.host";
