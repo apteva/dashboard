@@ -38,6 +38,7 @@ import {
 } from "../approvals/ApprovalReviewModal";
 import { Modal } from "../Modal";
 import type { WidgetActionBridge, WidgetContext } from "./widgetContext";
+import { keepIfEqual } from "../../utils/keepIfEqual";
 
 // ─── manifest-side types ────────────────────────────────────────────
 
@@ -664,7 +665,9 @@ function loadInstalledApps(scopeKey: string, force = false): Promise<void> {
       return response.json();
     })
     .then((rows) => {
-      entry.apps = normalizeInstalledApps(rows);
+      // An unchanged catalog keeps its identity, so widgets fed from it
+      // are not redrawn by every reload.
+      entry.apps = keepIfEqual(entry.apps, normalizeInstalledApps(rows));
     })
     .catch(() => {
       // Preserve the last known-good catalog during transient reconnects.

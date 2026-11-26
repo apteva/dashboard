@@ -85,7 +85,10 @@ export function SystemMapWidget(props: SystemWidgetProps) {
             const state = states.get(agent.id)!;
             const keys = edges.get(agent.id) || [];
             const capabilities = keys.map(key => resources.get(key)).filter(resource => !!resource);
-            const priority = relatedKey || (selectedKey !== `agent:${agent.id}` ? selectedKey : undefined) || (state.resource && resourceKey(state.resource.ref));
+            // Only the user's selection or search moves icons. The tool an agent
+            // is using right now is highlighted in place (hot), so the row
+            // doesn't reshuffle with every call it makes.
+            const priority = relatedKey || (selectedKey !== `agent:${agent.id}` ? selectedKey : undefined);
             const ordered = [...capabilities].sort((a, b) => {
               const score = (key: string, name: string) => key === priority ? 2 : needle && name.toLowerCase().includes(needle) ? 1 : 0;
               return score(resourceKey(b.ref), b.name) - score(resourceKey(a.ref), a.name);
