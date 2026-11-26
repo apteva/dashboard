@@ -41,12 +41,13 @@ export function Dashboard({ page, pageProjectId }: {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { projects, currentProject, loaded: projectsLoaded, setCurrentProject } = useProjects();
-  // Without projects, Home can only be the all-projects view; a project-scoped
-  // Home would have nowhere to save its layout.
-  const allProjects = page ? page.scope === "global" : searchParams.get("scope") === "all" || (projectsLoaded && projects.length === 0);
-  const requestedProject = projects.find((project) => project.id === (page ? pageProjectId : searchParams.get("project")));
-  const selectedProject = allProjects ? undefined : page ? requestedProject : requestedProject || currentProject || undefined;
+  const { projects, currentProject, allProjects: sidebarAllProjects, loaded: projectsLoaded, setCurrentProject } = useProjects();
+  // Home follows the sidebar picker. Without projects, Home can only be the
+  // all-projects view; a project-scoped Home would have nowhere to save its
+  // layout. A page has its own fixed scope.
+  const allProjects = page ? page.scope === "global" : sidebarAllProjects || (projectsLoaded && projects.length === 0);
+  const requestedProject = page ? projects.find((project) => project.id === pageProjectId) : undefined;
+  const selectedProject = allProjects ? undefined : page ? requestedProject : currentProject || undefined;
   const projectId = selectedProject?.id;
   const widgetSlot = page ? `page.${page.id}` : "dashboard.home";
   const editingRequested = !!page && searchParams.get("edit") === "1";
@@ -191,13 +192,6 @@ export function Dashboard({ page, pageProjectId }: {
     () => page || allProjects ? undefined : sharedWidgetLayout(layoutDocument.global?.slots?.[widgetSlot], widgetDefinitions),
     [allProjects, layoutDocument.global?.slots, page, widgetDefinitions, widgetSlot],
   );
-  const chooseScope = (value: string) => {
-    const next = new URLSearchParams(searchParams);
-    next.delete("project");
-    if (value === "all") next.set("scope", "all");
-    else { next.delete("scope"); next.set("project", value); }
-    setSearchParams(next, { replace: true });
-  };
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <header className="border-b border-border px-4 py-3 sm:px-6 sm:py-4">
@@ -221,17 +215,6 @@ export function Dashboard({ page, pageProjectId }: {
             </p>
           </div>
           <div className="flex max-w-full flex-wrap items-center gap-2">
-            {!page && <label className="min-w-0 sm:w-44">
-              <span className="sr-only">Home scope</span>
-              <select
-                value={allProjects ? "all" : projectId || "all"}
-                onChange={(event) => chooseScope(event.target.value)}
-                className="h-9 w-full rounded-lg border border-border bg-bg-input px-3 text-xs text-text outline-none focus:border-accent"
-              >
-                <option value="all">All projects</option>
-                {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-              </select>
-            </label>}
             <button
               type="button"
               data-tour="add-widget"

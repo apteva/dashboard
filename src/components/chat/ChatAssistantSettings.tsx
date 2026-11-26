@@ -5,7 +5,9 @@ import { useAssistantDirectory, useAssistantPreferences } from "../../hooks/useC
 import { targetKey, type AssistantPreferences } from "./assistantModel";
 
 export function ChatAssistantSettings() {
-  const { currentProject } = useProjects();
+  // In All projects the chat button stays in the last project used.
+  const { currentProject: selectedProject, lastProject } = useProjects();
+  const currentProject = selectedProject || lastProject;
   const projectId = currentProject?.id || "";
   const { preferences, save, saveState } = useAssistantPreferences(projectId);
   const { directory, loading, error, refresh } = useAssistantDirectory(projectId);

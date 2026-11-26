@@ -16,6 +16,7 @@ import { useProjectUILayout } from "./components/apps/contributions";
 import { ThemeProvider } from "./hooks/useTheme";
 import { AudienceProvider, useAudience } from "./hooks/useAudience";
 import { Layout } from "./components/Layout";
+import { ProjectRequired } from "./components/ProjectRequired";
 import { RealtimeVoiceProvider } from "./state/RealtimeVoiceContext";
 import { Login } from "./pages/Login";
 
@@ -74,15 +75,30 @@ function OnboardingGate({ children }: { children: React.ReactNode }) {
 // retain the focused conversation surface, as does Personal without a layout.
 function InterfaceHome() {
   const { audience } = useAudience();
-  const { currentProject } = useProjects();
+  const { currentProject, allProjects } = useProjects();
   const { document, project } = useProjectUILayout(currentProject?.id);
   const [params] = useSearchParams();
   // A project without its own Home inherits the All projects layout.
   const hasHome = [project.slots, document.global?.slots].some((slots) =>
     Object.prototype.hasOwnProperty.call(slots || {}, "dashboard.home"));
   const conversationRequested = params.has("agent") || params.has("chat") || params.has("new");
-  return audience === "personal" && (!hasHome || conversationRequested) ? <Personal /> : <Dashboard />;
+  // All projects always opens the All projects Home; a conversation link
+  // still needs a project, so it asks for one.
+  if (allProjects && !(audience === "personal" && conversationRequested)) return <Dashboard />;
+  return audience === "personal" && (!hasHome || conversationRequested)
+    ? <ProjectRequired {...PROJECT_REQUIRED.conversations}><Personal /></ProjectRequired>
+    : <Dashboard />;
 }
+
+// What each project-only screen says while the sidebar is on All projects.
+const PROJECT_REQUIRED = {
+  conversations: { title: "Conversations happen in a project", description: "Choose a project to see its agents and conversations." },
+  newAgent: { title: "Which project is this agent for?", description: "Each agent belongs to one project. Choose where to create it." },
+  integrations: { title: "Integrations are connected per project", description: "Choose a project to see and manage its connected services." },
+  skills: { title: "Skills are managed per project", description: "Choose a project to see and manage its skills." },
+  mcpServer: { title: "This MCP server belongs to a project", description: "Choose the project to open it in." },
+  appPage: { title: "App pages belong to a project", description: "Choose the project whose app page you want to open." },
+} as const;
 
 export default function App() {
   return (
@@ -118,13 +134,13 @@ export default function App() {
             }
           >
             <Route path="/" element={<InterfaceHome />} />
-            <Route path="/conversations" element={<Personal />} />
+            <Route path="/conversations" element={<ProjectRequired {...PROJECT_REQUIRED.conversations}><Personal /></ProjectRequired>} />
             <Route path="/pages" element={<Navigate to="/settings?tab=pages" replace />} />
             <Route path="/pages/:pageId" element={<WorkspacePage />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/activity" element={<Navigate to="/" replace />} />
             <Route path="/monitor" element={<Navigate to="/" replace />} />
-            <Route path="/agents/new" element={<AgentNew />} />
+            <Route path="/agents/new" element={<ProjectRequired {...PROJECT_REQUIRED.newAgent}><AgentNew /></ProjectRequired>} />
             <Route path="/agent-templates" element={<AgentTemplates />} />
             <Route path="/agent-templates/:id" element={<AgentTemplateDetailPage />} />
             {/* Keep stale bookmarks safe while the legacy chat UI is hidden. */}
@@ -136,17 +152,17 @@ export default function App() {
                 Phase 4 (next release) drops these redirects. */}
             <Route path="/instances" element={<Navigate to="/agents" replace />} />
             <Route path="/instances/:id" element={<LegacyInstanceRedirect />} />
-            <Route path="/integrations" element={<Integrations />} />
+            <Route path="/integrations" element={<ProjectRequired {...PROJECT_REQUIRED.integrations}><Integrations /></ProjectRequired>} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/apps" element={<Apps />} />
-            <Route path="/skills" element={<Skills />} />
-            <Route path="/mcp-servers/:id" element={<MCPServer />} />
+            <Route path="/skills" element={<ProjectRequired {...PROJECT_REQUIRED.skills}><Skills /></ProjectRequired>} />
+            <Route path="/mcp-servers/:id" element={<ProjectRequired {...PROJECT_REQUIRED.mcpServer}><MCPServer /></ProjectRequired>} />
             {/* Generic per-app project-level page. The project.page
                 slot of any installed app's manifest gets rendered here.
                 One route serves every app — :name in the URL picks
                 which one. */}
-            <Route path="/apps/:name/page" element={<AppProjectPage />} />
+            <Route path="/apps/:name/page" element={<ProjectRequired {...PROJECT_REQUIRED.appPage}><AppProjectPage /></ProjectRequired>} />
           </Route>
             </Routes>
           </Suspense>

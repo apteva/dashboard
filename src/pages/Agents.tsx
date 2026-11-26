@@ -40,14 +40,53 @@ function mcpConfigsFromAgentConfig(raw?: string): MCPServerConfig[] {
   }
 }
 
+export interface AgentProjectGroup {
+  projectId: string;
+  /** Heading for the group; empty when only one project is shown. */
+  name: string;
+  agents: Agent[];
+}
+
+// groupAgentsByProject splits an All projects list into one group per project,
+// in the sidebar's project order. Agents of a project the user no longer sees
+// in the picker are kept, under the project id.
+export function groupAgentsByProject(agents: Agent[], projects: ReadonlyArray<{ id: string; name: string }>): AgentProjectGroup[] {
+  const order = new Map(projects.map((project, index) => [project.id, index]));
+  const groups = new Map<string, AgentProjectGroup>();
+  for (const agent of agents) {
+    const id = agent.project_id || "";
+    let group = groups.get(id);
+    if (!group) {
+      group = { projectId: id, name: projects.find((project) => project.id === id)?.name || id || "No project", agents: [] };
+      groups.set(id, group);
+    }
+    group.agents.push(agent);
+  }
+  return [...groups.values()].sort((a, b) =>
+    (order.get(a.projectId) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.projectId) ?? Number.MAX_SAFE_INTEGER)
+    || a.name.localeCompare(b.name));
+}
+
+function uniqueBy<T>(rows: T[], key: (row: T) => unknown): T[] {
+  const seen = new Set<unknown>();
+  return rows.filter((row) => {
+    const value = key(row);
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+}
+
 // Agents is the fleet-list view: all instances in the current project,
 // with status + quick lifecycle actions + a create form. Clicking a row
 // navigates to /instances/:id which renders the full AgentView.
 export function Agents() {
   usePageTitle("Agents");
 
-  const { currentProject } = useProjects();
+  const { currentProject, allProjects, projects } = useProjects();
   const projectId = currentProject?.id;
+  // In All projects the list covers every project the user can access.
+  const scopeKey = allProjects ? "all" : projectId;
   const navigate = useNavigate();
 
   const [list, setList] = useState<Agent[]>([]);
@@ -233,9 +272,9 @@ export function Agents() {
   };
 
   useEffect(() => {
-    if (!projectId) return;
+    if (!scopeKey) return;
     // Bump the generation so any in-flight load() from the previous
-    // projectId stops writing state.
+    // scope stops writing state.
     loadGen.current += 1;
     setList([]);
     setAgentSkills({});
@@ -248,7 +287,7 @@ export function Agents() {
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [scopeKey]);
 
   const loadAgentSkills = (agents: Agent[], gen: number) => {
     if (agents.length === 0) {
@@ -277,43 +316,58 @@ export function Agents() {
 
   // Project capability metadata is loaded once for all cards, then refreshed
   // periodically so attachment icons update after app or connection changes.
+  // All projects loads each project's catalog and merges them.
+  const scopeProjectIds = useMemo(
+    () => (allProjects ? projects.map((project) => project.id) : projectId ? [projectId] : []),
+    [allProjects, projects, projectId],
+  );
+  const scopeProjectKey = scopeProjectIds.join("|");
   useEffect(() => {
-    if (!projectId) return;
+    if (scopeProjectIds.length === 0) return;
     let cancelled = false;
     const refresh = async () => {
-      const [apps, connections, inventory] = await Promise.allSettled([
-        appsAPI.list(projectId),
-        integrations.connections(projectId),
-        mcpServersAPI.list(projectId, { includeAppOwned: true }),
+      const fulfilled = <T,>(results: PromiseSettledResult<T>[]): T[] =>
+        results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+      const [apps, connections, inventory] = await Promise.all([
+        Promise.allSettled(scopeProjectIds.map((id) => appsAPI.list(id))).then(fulfilled),
+        Promise.allSettled(scopeProjectIds.map((id) => integrations.connections(id))).then(fulfilled),
+        Promise.allSettled(scopeProjectIds.map((id) => mcpServersAPI.list(id, { includeAppOwned: true }))).then(fulfilled),
       ]);
       if (!cancelled) setCapabilityCatalog((previous) => ({
-        apps: apps.status === "fulfilled" ? apps.value : previous.apps,
-        connections: connections.status === "fulfilled" ? connections.value : previous.connections,
-        inventory: inventory.status === "fulfilled" ? inventory.value : previous.inventory,
+        apps: apps.length ? uniqueBy(apps.flat(), (app) => app.install_id ?? app.name) : previous.apps,
+        connections: connections.length ? uniqueBy(connections.flat(), (connection) => connection.id) : previous.connections,
+        inventory: inventory.length ? uniqueBy(inventory.flat(), (server) => server.id) : previous.inventory,
       }));
     };
     void refresh();
     const timer = window.setInterval(() => void refresh(), 30_000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [projectId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeProjectKey]);
 
-  // Fetch one activity timestamp per agent in a single project query.
+  // Fetch one activity timestamp per agent with one query per project.
   useEffect(() => {
-    if (!projectId) return;
+    if (scopeProjectIds.length === 0) return;
     let cancelled = false;
     const refresh = async () => {
       if (document.visibilityState === "hidden") return;
-      try {
-        const rows = await telemetry.agentsLastActive(projectId);
-        if (!cancelled) setLastActive(Object.fromEntries(rows.map((row) => [row.agent_id, row.last_active_at])));
-      } catch {
-        // Retain the last known activity when a refresh is temporarily unavailable.
+      const results = await Promise.allSettled(scopeProjectIds.map((id) => telemetry.agentsLastActive(id)));
+      const rows = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+      // Retain the last known activity when every refresh is temporarily unavailable.
+      if (!cancelled && results.some((result) => result.status === "fulfilled")) {
+        setLastActive(Object.fromEntries(rows.map((row) => [row.agent_id, row.last_active_at])));
       }
     };
     void refresh();
     const timer = window.setInterval(() => void refresh(), 30_000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [projectId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeProjectKey]);
+
+  const agentGroups = useMemo<AgentProjectGroup[]>(
+    () => (allProjects ? groupAgentsByProject(list, projects) : [{ projectId: projectId || "", name: "", agents: list }]),
+    [allProjects, list, projects, projectId],
+  );
 
   // The fleet payload's config blob is only a fast fallback: for some older
   // agents it does not contain the full persisted/live mcp_servers list.
@@ -469,16 +523,18 @@ export function Agents() {
           <p className="truncate text-text-muted text-xs mt-0.5 sm:text-sm sm:mt-1">
             {list.length === 0
               ? "No agents yet. Create one to get started."
-              : `${list.length} agent${list.length === 1 ? "" : "s"} in this project.`}
+              : allProjects
+                ? `${list.length} agent${list.length === 1 ? "" : "s"} across ${agentGroups.length} project${agentGroups.length === 1 ? "" : "s"}.`
+                : `${list.length} agent${list.length === 1 ? "" : "s"} in this project.`}
           </p>
         </div>
         <div className="hidden items-center gap-2 lg:flex">
-          <ContributionManager
+          {!allProjects && <ContributionManager
             slot="dashboard.agent_card"
             projectId={projectId}
             label="Edit cards"
-          />
-          {list.some((agent) => agent.core_update_available) && (
+          />}
+          {!allProjects && list.some((agent) => agent.core_update_available) && (
             <button
               type="button"
               onClick={handleProjectCoreUpdate}
@@ -511,13 +567,13 @@ export function Agents() {
           >
             Templates
           </button>
-          <button
+          {!allProjects && <button
             onClick={() => setShowCreate(true)}
             className="px-3 py-2 border border-border rounded-lg text-text-muted text-xs hover:text-text hover:border-text-dim transition-colors"
             title="Open the classic create form — single dialog with all fields"
           >
             Quick create
-          </button>
+          </button>}
           <button
             onClick={() => navigate("/agents/new")}
             className="px-4 py-2 bg-accent text-bg rounded-lg font-bold text-sm hover:bg-accent-hover transition-colors"
@@ -567,9 +623,17 @@ export function Agents() {
           </div>
         )}
 
+        {agentGroups.map((group) => (
+        <section key={group.projectId || "none"} className="space-y-2" aria-label={group.name || undefined}>
+        {group.name && (
+          <h2 className="flex items-baseline gap-2 pt-1 text-xs font-bold text-text">
+            <span className="truncate">{group.name}</span>
+            <span className="shrink-0 font-normal text-text-dim">{group.agents.length} agent{group.agents.length === 1 ? "" : "s"}</span>
+          </h2>
+        )}
         {viewMode === "cards" ? (
           <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-            {list.map((inst) => {
+            {group.agents.map((inst) => {
               const live = liveStatus[inst.id];
               const isRunning = inst.status === "running";
               const assignedSkills = agentSkills[inst.id] || EMPTY_SKILLS;
@@ -605,7 +669,7 @@ export function Agents() {
                     </div>
                     <AgentActivityLine live={live} running={isRunning} lastActiveAt={lastActive[inst.id]} now={now} />
                     <AgentCapabilityIcons builtins={inst.builtins} attached={attachedMCPs} skills={assignedSkills} catalog={capabilityCatalog} />
-                    <AppContributionArea slot="dashboard.agent_card" projectId={projectId} agentId={inst.id} className="mt-3" />
+                    <AppContributionArea slot="dashboard.agent_card" projectId={inst.project_id || projectId} agentId={inst.id} className="mt-3" />
                   </Link>
                   <div className="absolute right-2 top-2 z-20">
                     <AgentActionsMenu
@@ -633,7 +697,7 @@ export function Agents() {
               <span className="text-right">Actions</span>
             </div>
             <div className="divide-y divide-border">
-              {list.map((inst) => {
+              {group.agents.map((inst) => {
                 const live = liveStatus[inst.id];
                 const isRunning = inst.status === "running";
                 const assignedSkills = agentSkills[inst.id] || [];
@@ -659,7 +723,7 @@ export function Agents() {
 
                     <div className="min-w-0">
                       <div className="mb-1 text-[9px] font-bold uppercase tracking-wide text-text-dim lg:hidden">Work</div>
-                      <AppContributionArea slot="dashboard.agent_card" projectId={projectId} agentId={inst.id} />
+                      <AppContributionArea slot="dashboard.agent_card" projectId={inst.project_id || projectId} agentId={inst.id} />
                     </div>
 
                     <div>
@@ -690,6 +754,8 @@ export function Agents() {
             </div>
           </div>
         )}
+        </section>
+        ))}
       </div>
 
       <Modal open={showMobileActions} onClose={() => setShowMobileActions(false)} width="max-w-md" ariaLabel="Agent page actions">
@@ -700,10 +766,10 @@ export function Agents() {
         <div className="page-safe-bottom grid gap-2 p-3">
           <button type="button" onClick={() => { setAgentsViewMode("cards"); setShowMobileActions(false); }} className={`touch-target rounded-lg border px-4 text-left text-sm ${viewMode === "cards" ? "border-accent text-accent" : "border-border text-text"}`}>Card view</button>
           <button type="button" onClick={() => { setAgentsViewMode("list"); setShowMobileActions(false); }} className={`touch-target rounded-lg border px-4 text-left text-sm ${viewMode === "list" ? "border-accent text-accent" : "border-border text-text"}`}>List view</button>
-          <button type="button" onClick={() => { setShowMobileActions(false); setShowCreate(true); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text">Quick create</button>
+          {!allProjects && <button type="button" onClick={() => { setShowMobileActions(false); setShowCreate(true); }} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text">Quick create</button>}
           <button type="button" onClick={() => navigate("/agent-templates")} className="touch-target rounded-lg border border-border px-4 text-left text-sm text-text">Agent templates</button>
           <button type="button" onClick={() => navigate("/agents/new")} className="touch-target rounded-lg border border-accent bg-accent/10 px-4 text-left text-sm font-semibold text-accent">Build a new agent</button>
-          {list.some((agent) => agent.core_update_available) && (
+          {!allProjects && list.some((agent) => agent.core_update_available) && (
             <button
               type="button"
               onClick={() => { setShowMobileActions(false); void handleProjectCoreUpdate(); }}

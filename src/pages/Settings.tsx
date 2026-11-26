@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useProjects } from "../hooks/useProjects";
 import { usePageTitle } from "../hooks/usePageTitle";
+import { ProjectRequired } from "../components/ProjectRequired";
 import { useAssistantPageDetails } from "../components/chat/pageContext";
 import { SETTINGS_SECTIONS, SETTINGS_SCREENS, canOpenSettingsScreen, settingsScopeLabel, type SettingsScreen, type SettingsSection } from "./settings/registry";
 import { useSettingsDraftGuard } from "./settings/useSettingsDraftGuard";
@@ -157,7 +158,9 @@ export function Settings() {
             {tab && !screen && <div className="rounded-lg border border-border p-5"><h2 className="font-semibold">Setting not found</h2><p className="mt-2 text-sm text-text-muted">Choose a section or search for the setting you need.</p></div>}
           </>}
           <div ref={root} hidden={searching} key={screen?.id}>
-            {screen && (user === null ? <p role="status" className="text-sm text-text-muted">Loading permissions…</p> : allowed ? <Suspense fallback={<p role="status" className="text-sm text-text-muted">Loading settings…</p>}><Screen id={screen.id} /></Suspense> : <RestrictedScreen screen={screen} />)}
+            {screen && (user === null ? <p role="status" className="text-sm text-text-muted">Loading permissions…</p> : allowed ? <Suspense fallback={<p role="status" className="text-sm text-text-muted">Loading settings…</p>}>{screen.scope === "project"
+              ? <ProjectRequired title={`${screen.title} are set per project`} description="Choose a project to see and change these settings."><Screen id={screen.id} /></ProjectRequired>
+              : <Screen id={screen.id} />}</Suspense> : <RestrictedScreen screen={screen} />)}
           </div>
         </div>
       </main>

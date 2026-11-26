@@ -125,11 +125,12 @@ function Segmented<T extends string>({ value, options, labels, onChange, label }
 
 export function Analytics() {
   usePageTitle("Usage");
-  const { projects } = useProjects();
+  // Usage follows the sidebar picker: one project, or every project.
+  const { currentProject } = useProjects();
   const [params, setParams] = useSearchParams();
 
   const today = localDate(new Date());
-  const projectId = projects.find((p) => p.id === params.get("project"))?.id;
+  const projectId = currentProject?.id;
   const groupings: UsageGroupBy[] = projectId ? ["agent", "model", "provider"] : ["agent", "model", "provider", "project"];
   const groupBy = pick(params.get("group"), groupings, "agent");
   const preset = pick(params.get("range"), PRESETS, "7d");
@@ -177,7 +178,7 @@ export function Analytics() {
 
   const selected = current && groupBy === "agent" ? current.groups.find((g) => g.key === selectedKey) : undefined;
   const selectGroup = (group: UsageGroup) => setSelectedKey(group.key);
-  const scopeName = projects.find((p) => p.id === projectId)?.name || "All projects";
+  const scopeName = currentProject?.name || "All projects";
   const against = previousLabel(from, to);
   const monthly = current ? current.daily_run_rate * 30 : 0;
 
@@ -192,15 +193,6 @@ export function Analytics() {
           </p>
         </div>
         <div className="flex max-w-full flex-wrap items-center gap-2">
-          <select
-            aria-label="Project"
-            value={projectId || ""}
-            onChange={(e) => update({ project: e.target.value || null, group: e.target.value && groupBy === "project" ? null : params.get("group") })}
-            className="h-8 max-w-[14rem] rounded-md border border-border bg-bg-card px-2 text-xs text-text focus:border-accent focus:outline-none"
-          >
-            <option value="">All projects</option>
-            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
           <Segmented
             label="Date range"
             value={preset}

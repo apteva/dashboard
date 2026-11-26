@@ -100,7 +100,8 @@ describe("audience never unmounts a route", () => {
     const app = source("./App.tsx");
     const layout = source("./components/Layout.tsx");
     const personal = source("./pages/Personal.tsx");
-    expect(app).toContain('audience === "personal" && (!hasHome || conversationRequested) ? <Personal /> : <Dashboard />');
+    expect(app).toContain('audience === "personal" && (!hasHome || conversationRequested)');
+    expect(app).toContain("<ProjectRequired {...PROJECT_REQUIRED.conversations}><Personal /></ProjectRequired>");
     expect(layout).toContain("<SidebarAgentLink");
     expect(layout).toContain("{renderSidebar(false)}");
     expect(layout).not.toContain("isPersonalHome");
