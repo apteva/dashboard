@@ -4003,6 +4003,7 @@ export const apps = {
       upgrade_policy: opts.upgradePolicy || "manual",
       ...(opts.bindings ? { bindings: opts.bindings } : {}),
       ...(opts.placement ? { placement: opts.placement } : {}),
+      ...(opts.private ? { private: true } : {}),
     }, opts.idempotencyKey ? {"Idempotency-Key":opts.idempotencyKey} : undefined),
 
   configureInstallation: (installId: number, options: { installation_name?: string; is_default?: true }) =>
@@ -4446,6 +4447,8 @@ export interface AppConfigFieldDiscovery {
 }
 
 export interface AppInstallOptions {
+  /** Private installations serve only the apps an administrator allows. */
+  private?: boolean;
   installationKey?: string;
   installationName?: string;
   placement?: DeploymentPlacement;
@@ -5191,4 +5194,34 @@ export const devices = {
   update: (id: string, data: { name?: string; project_id?: string; agent_id?: string }) =>
     request<AccountDevice>("PATCH", "/devices/" + encodeURIComponent(id), data),
   revoke: (id: string) => request<{ revoked: boolean }>("DELETE", "/devices/" + encodeURIComponent(id)),
+};
+
+export interface PrivateInstallCaller {
+  install_id: number;
+  app: string;
+  installation_name: string;
+  project_id: string;
+}
+
+/** A private installation: hidden from projects, agents and the Helper,
+ *  reachable only by the installations on its caller list. */
+export interface PrivateInstall {
+  install_id: number;
+  app: string;
+  display_name: string;
+  icon?: string;
+  project_id: string;
+  installation_key: string;
+  installation_name: string;
+  status: string;
+  status_message?: string;
+  error_message?: string;
+  version: string;
+  callers: PrivateInstallCaller[];
+}
+
+export const privateApps = {
+  list: () => request<PrivateInstall[]>("GET", "/apps/private"),
+  setCallers: (installId: number, callerInstallIds: number[]) =>
+    request<PrivateInstall>("PUT", `/apps/private/${installId}/callers`, { caller_install_ids: callerInstallIds }),
 };
