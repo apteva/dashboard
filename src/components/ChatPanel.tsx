@@ -101,6 +101,8 @@ interface Props {
   participantIds?: number[];
   queuedMessage?: ChatQueuedMessage;
   onQueuedMessageHandled?: (id: string) => void;
+  /** The agent's project. Falls back to the sidebar project. */
+  projectId?: string;
 }
 
 const MAX_IMAGE_ATTACHMENTS = 4;
@@ -144,6 +146,7 @@ export function ChatPanel({
   participantIds,
   queuedMessage,
   onQueuedMessageHandled,
+  projectId: projectIdProp,
 }: Props) {
   const { t } = useTranslation();
   // Project context — needed so chat-attached components can scope
@@ -152,7 +155,7 @@ export function ChatPanel({
   // components won't render in that state, but plain text still
   // works).
   const { currentProject } = useProjects();
-  const projectId = currentProject?.id ?? "";
+  const projectId = projectIdProp || currentProject?.id || "";
   // The composer carries a couple of terminal-theme affordances (the `>`
   // prompt glyph). They're identity, not chrome, so they follow data-theme
   // rather than showing up unconditionally in `clean`.

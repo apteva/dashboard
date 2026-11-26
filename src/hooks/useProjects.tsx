@@ -3,21 +3,38 @@ import { projects as projectsAPI, type Project } from "../api";
 
 interface ProjectContextValue {
   projects: Project[];
+  /** The selected project, or null when the sidebar is on All projects. */
   currentProject: Project | null;
+  /** True when the sidebar picker is on All projects. */
+  allProjects: boolean;
+  /** The most recently selected project. Stays set while All projects is on. */
+  lastProject: Project | null;
+  /** All projects is offered only when there is more than one project. */
+  canSelectAll: boolean;
   loaded: boolean;
   setCurrentProject: (p: Project | null) => void;
+  selectAllProjects: () => void;
   reload: () => void;
 }
 
 const ProjectContext = createContext<ProjectContextValue>({
   projects: [],
   currentProject: null,
+  allProjects: false,
+  lastProject: null,
+  canSelectAll: false,
   loaded: false,
   setCurrentProject: () => {},
+  selectAllProjects: () => {},
   reload: () => {},
 });
 
 const PROJECT_KEY = "apteva_project_id";
+// "all" while the sidebar is on All projects, "project" otherwise. The last
+// project id stays in PROJECT_KEY so leaving All projects returns to it.
+const SCOPE_KEY = "apteva_project_scope";
+
+export type ProjectScope = "all" | "project";
 
 type ProjectStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
@@ -56,6 +73,23 @@ export function resolveProjectIDForTab(
   return resolved;
 }
 
+// resolveProjectScopeForTab applies the same tab-first rule to the All
+// projects choice: this tab's own choice wins, then the browser-wide default
+// for new tabs. The result is claimed for the tab. All projects needs at least
+// two projects; with fewer it resolves to "project" without changing storage.
+export function resolveProjectScopeForTab(
+  projectCount: number,
+  tabStorage: ProjectStorage,
+  sharedStorage: ProjectStorage,
+): ProjectScope {
+  const valid = (value: string | null): value is ProjectScope => value === "all" || value === "project";
+  const tabScope = tabStorage.getItem(SCOPE_KEY);
+  const sharedScope = sharedStorage.getItem(SCOPE_KEY);
+  const scope: ProjectScope = valid(tabScope) ? tabScope : valid(sharedScope) ? sharedScope : "project";
+  if (!valid(tabScope)) tabStorage.setItem(SCOPE_KEY, scope);
+  return scope === "all" && projectCount > 1 ? "all" : "project";
+}
+
 // Project selection priority:
 // Tab-independence priority:
 //   1. sessionStorage — what THIS tab last had selected (survives in-tab
@@ -66,9 +100,11 @@ export function resolveProjectIDForTab(
 //   3. projects[0] — fallback when both stores are empty (first-ever
 //      load or freshly-cleared storage).
 //
+// The All projects choice follows the same rules under its own key.
 export function ProjectProvider({ children }: { children: ReactNode }) {
   const [projectList, setProjectList] = useState<Project[]>([]);
   const [current, setCurrent] = useState<Project | null>(null);
+  const [scope, setScope] = useState<ProjectScope>("project");
   const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(() => {
@@ -81,6 +117,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         window.localStorage,
       );
       setCurrent(nextList.find((project) => project.id === selectedID) || null);
+      setScope(resolveProjectScopeForTab(nextList.length, window.sessionStorage, window.localStorage));
       setLoaded(true);
     }).catch(() => { setLoaded(true); });
   }, []);
@@ -94,8 +131,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   //     default (new-tab inheritance) without forcing every already-
   //     open tab to follow along — there's no `storage` event listener
   //     here on purpose, so other tabs keep their own state.
-  const setCurrentProject = (p: Project | null) => {
+  const setCurrentProject = useCallback((p: Project | null) => {
     setCurrent(p);
+    setScope("project");
+    window.sessionStorage.setItem(SCOPE_KEY, "project");
+    window.localStorage.setItem(SCOPE_KEY, "project");
     if (p) {
       window.sessionStorage.setItem(PROJECT_KEY, p.id);
       window.localStorage.setItem(PROJECT_KEY, p.id);
@@ -103,10 +143,28 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       window.sessionStorage.removeItem(PROJECT_KEY);
       window.localStorage.removeItem(PROJECT_KEY);
     }
-  };
+  }, []);
 
+  const canSelectAll = projectList.length > 1;
+  const selectAllProjects = useCallback(() => {
+    setScope("all");
+    window.sessionStorage.setItem(SCOPE_KEY, "all");
+    window.localStorage.setItem(SCOPE_KEY, "all");
+  }, []);
+
+  const allProjects = scope === "all" && canSelectAll;
   return (
-    <ProjectContext.Provider value={{ projects: projectList, currentProject: current, loaded, setCurrentProject, reload: load }}>
+    <ProjectContext.Provider value={{
+      projects: projectList,
+      currentProject: allProjects ? null : current,
+      allProjects,
+      lastProject: current,
+      canSelectAll,
+      loaded,
+      setCurrentProject,
+      selectAllProjects,
+      reload: load,
+    }}>
       {children}
     </ProjectContext.Provider>
   );

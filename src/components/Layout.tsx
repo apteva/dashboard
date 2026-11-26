@@ -2,11 +2,12 @@ import { HostUIProvider } from "./apps/hostUI";
 import { ProductTour } from "./tour/ProductTour";
 import { PRODUCT_TOUR, requestProductTour } from "./tour/config";
 import { useProductTourDismissed } from "./tour/useProductTourCompleted";
-import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { AppIcon } from "@apteva/ui-kit";
 import { useProjects } from "../hooks/useProjects";
+import { ALL_PROJECTS_VALUE, scopeFromLink } from "../hooks/projectScopeLinks";
 import { useAuth } from "../hooks/useAuth";
 import { useAudience, type AudienceSection } from "../hooks/useAudience";
 import { AccountMenu } from "./AccountMenu";
@@ -97,13 +98,47 @@ export function Layout() {
     });
   }, []);
   const [refreshing, setRefreshing] = useState(false);
-  const { projects, currentProject, setCurrentProject } = useProjects();
+  const { projects, currentProject, allProjects, canSelectAll, loaded: projectsLoaded, setCurrentProject, selectAllProjects } = useProjects();
+  const scopeName = allProjects ? "All projects" : currentProject?.name || "";
   const { project: projectUILayout, document: pageLayout } = useProjectUILayout(currentProject?.id);
   const pageNav = workspacePages(pageLayout, currentProject?.id)
     .filter((page) => page.pinned !== false)
-    .map((page) => ({ to: `/pages/${encodeURIComponent(page.id)}?${page.scope === "global" ? "scope=global" : `project=${encodeURIComponent(currentProject!.id)}`}`, label: page.title }));
+    .map((page) => ({ to: `/pages/${encodeURIComponent(page.id)}?${page.scope === "global" || !currentProject ? "scope=global" : `project=${encodeURIComponent(currentProject.id)}`}`, label: page.title }));
   const [sidebarAppsOpen, setSidebarAppsOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
+  // The sidebar picker is the one place that chooses the project scope.
+  // A project page belongs to one project, so leaving that project leaves the
+  // page too.
+  const chooseSidebarScope = (value: string) => {
+    if (value === ALL_PROJECTS_VALUE) selectAllProjects();
+    else setCurrentProject(projects.find((p) => p.id === value) || null);
+    const params = new URLSearchParams(location.search);
+    if (location.pathname.startsWith("/pages/") && params.get("project") && params.get("project") !== value) navigate("/");
+  };
+  // Links that name a scope (`/?scope=all`, `/analytics?project=…`) set the
+  // sidebar and then drop the parameter, so the sidebar stays the only source.
+  // A project page link keeps its parameter and moves the sidebar to the
+  // page's project.
+  useEffect(() => {
+    if (!projectsLoaded) return;
+    const params = new URLSearchParams(location.search);
+    const sync = scopeFromLink(location.pathname, params, projects.map((p) => p.id));
+    if (!sync) return;
+    if (sync.scope === "all") {
+      if (canSelectAll && !allProjects) selectAllProjects();
+    } else if (sync.projectId !== currentProject?.id) {
+      const target = projects.find((p) => p.id === sync.projectId);
+      if (target) setCurrentProject(target);
+    }
+    if (sync.strip) {
+      params.delete("scope");
+      params.delete("project");
+      const search = params.toString();
+      navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: location.hash }, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectsLoaded, location.pathname, location.search]);
   const { user, logout } = useAuth();
   useUILayoutRefresh(!!user);
   const tourDismissed = useProductTourDismissed();
@@ -188,10 +223,11 @@ export function Layout() {
     const params = new URLSearchParams(location.search);
     const workspace = location.pathname === "/" || location.pathname.startsWith("/pages/") || (location.pathname === "/settings" && params.get("tab") === "pages");
     const requested = params.get("project");
-    const selected = workspace && projects.some(project => project.id === requested) ? requested : currentProject?.id;
-    const global = workspace && ["global", "all"].includes(params.get("scope") || "");
+    const requestedKnown = workspace && projects.some(project => project.id === requested);
+    const selected = requestedKnown ? requested : currentProject?.id;
+    const global = (workspace && params.get("scope") === "global") || (allProjects && !requestedKnown);
     window.__aptevaTelemetryBus?.setProjectId(global ? "*" : selected ?? null);
-  }, [user, currentProject?.id, projects, location.pathname, location.search]);
+  }, [user, currentProject?.id, allProjects, projects, location.pathname, location.search]);
 
   // Pull the platform-update status so the sidebar version footer can
   // show "update available" inline with the current version. The
@@ -454,8 +490,8 @@ export function Layout() {
               type="button"
               onClick={toggleSidebarCollapsed}
               className="h-10 w-10 inline-flex items-center justify-center rounded-lg bg-bg-input text-text-muted hover:text-text"
-              aria-label={`Select project: ${currentProject?.name || "none"}`}
-              title={currentProject?.name || "Select project"}
+              aria-label={`Select project: ${scopeName || "none"}`}
+              title={scopeName || "Select project"}
             >
               <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M3 6h6l2 2h10v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
@@ -463,13 +499,15 @@ export function Layout() {
             </button>
           ) : (
             <select
-              value={currentProject?.id || ""}
-              onChange={(e) => {
-                const p = projects.find((p) => p.id === e.target.value);
-                setCurrentProject(p || null);
-              }}
+              aria-label="Project"
+              value={allProjects ? ALL_PROJECTS_VALUE : currentProject?.id || ""}
+              onChange={(e) => chooseSidebarScope(e.target.value)}
               className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
             >
+              {canSelectAll && <>
+                <option value={ALL_PROJECTS_VALUE}>All projects</option>
+                <option disabled value="">──────────</option>
+              </>}
               {projects.map((p) => {
                 const mine = !!user && p.user_id === user.id;
                 return (
@@ -674,7 +712,7 @@ export function Layout() {
   );
 
   return (
-    <HostUIProvider scope={`${location.key}:${currentProject?.id || ""}`}>
+    <HostUIProvider scope={`${location.key}:${allProjects ? ALL_PROJECTS_VALUE : currentProject?.id || ""}`}>
     <div className="app-shell flex h-dvh min-h-dvh bg-bg overflow-hidden">
       {/* Sidebar */}
       <nav className={`hidden md:flex shrink-0 border-r border-border flex-col transition-[width] duration-200 ${sidebarCollapsed ? "w-16" : "w-56"}`} aria-label="Main navigation">
@@ -755,9 +793,9 @@ export function Layout() {
           </button>
           <div className="md:hidden min-w-0 flex-1 leading-tight">
             <div className="text-base font-bold text-accent truncate">Apteva</div>
-            {currentProject && (
-              <div className="text-xs text-text-dim truncate" title={currentProject.name}>
-                {currentProject.name}
+            {scopeName && (
+              <div className="text-xs text-text-dim truncate" title={scopeName}>
+                {scopeName}
               </div>
             )}
           </div>

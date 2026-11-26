@@ -14,12 +14,14 @@ import { allowedAssistantChoices, initialAssistantTarget, targetKey } from "./as
 import type { WidgetContext } from "../apps/widgetContext";
 
 export function ChatAssistantDock() {
-  const { currentProject, projects } = useProjects();
+  // In All projects the chat stays in the last project used, as before the
+  // sidebar offered All projects.
+  const { currentProject, lastProject, projects } = useProjects();
   const location = useLocation();
   const params = new URLSearchParams(location.search);
   const workspace = location.pathname === "/" || location.pathname.startsWith("/pages/") || (location.pathname === "/settings" && params.get("tab") === "pages");
   const requested = workspace ? projects.find(project => project.id === params.get("project")) : undefined;
-  const projectId = requested?.id || currentProject?.id || "";
+  const projectId = requested?.id || currentProject?.id || lastProject?.id || "";
   const [helperSetupError, setHelperSetupError] = useState("");
   useEffect(() => {
     let cancelled = false;
@@ -49,8 +51,8 @@ export function ChatAssistantDock() {
 }
 function ProjectChatAssistant({ projectId, helperSetupError }: { projectId: string; helperSetupError: string }) {
   const launcherHidden = useHostLauncherHidden(projectId);
-  const { currentProject } = useProjects();
-  const pageContext = useAssistantPageContext(projectId, currentProject?.name);
+  const { projects } = useProjects();
+  const pageContext = useAssistantPageContext(projectId, projects.find((project) => project.id === projectId)?.name);
   const { preferences, save } = useAssistantPreferences(projectId);
   const { session: voiceSession } = useRealtimeVoice();
   const { directory, loading, error, refresh } = useAssistantDirectory(projectId, preferences.enabled);

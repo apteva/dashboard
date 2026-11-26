@@ -48,7 +48,7 @@ describe("legacy dashboard surfaces stay hidden", () => {
     const dashboard = source("./pages/Dashboard.tsx");
     const layout = source("./components/Layout.tsx");
 
-    expect(app).toContain('<Route path="/apps/:name/page" element={<AppProjectPage />} />');
+    expect(app).toContain('<Route path="/apps/:name/page" element={<ProjectRequired {...PROJECT_REQUIRED.appPage}><AppProjectPage /></ProjectRequired>} />');
     expect(dashboard).toContain('contributionsFor(installedApps, widgetSlot');
     expect(layout).toContain("useProjectUILayout");
   });

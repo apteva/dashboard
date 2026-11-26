@@ -158,7 +158,10 @@ function AppIcon({
 // Marketplace + permission consent UI are next iteration; for now the
 // install flow is "paste an app URL, fill config, click Install".
 export function Apps() {
-  const { currentProject } = useProjects();
+  const { currentProject, allProjects } = useProjects();
+  // All projects manages the global installs; a project shows its own
+  // installs plus the global ones it can use.
+  const listScope = allProjects ? "global" as const : undefined;
   const [tab, setTab] = useState<Tab>("installed");
   usePageTitle(["Apps", tab === "marketplace" ? "Marketplace" : "Installed"]);
   const [rows, setRows] = useState<AppRow[]>([]);
@@ -204,7 +207,7 @@ export function Apps() {
   const refreshInstalled = (showLoading = true) => {
     if (showLoading) setLoading(true);
     apps
-      .list(currentProject?.id)
+      .list(currentProject?.id, listScope)
       .then((rows) => {
         // Detect status flips to running so we can ping the Layout
         // sidebar to refresh — a freshly-running app may have a
@@ -263,7 +266,7 @@ export function Apps() {
     const run = async () => {
       try {
         if (tab === "installed") {
-          const next = await apps.list(currentProject?.id);
+          const next = await apps.list(currentProject?.id, listScope);
           if (cancelled) return;
           setRows((prev) => {
             const wasRunning = new Set(prev.filter((r) => r.status === "running").map((r) => r.install_id));
@@ -306,7 +309,7 @@ export function Apps() {
     };
     run();
     return () => { cancelled = true; };
-  }, [tab, currentProject?.id, marketplaceQuery, marketplaceCategory, marketplacePage]);
+  }, [tab, currentProject?.id, listScope, marketplaceQuery, marketplaceCategory, marketplacePage]);
 
   // While any install is mid-build, poll every second so the dashboard
   // shows the live phase string ("Cloning…", "Building…", "Starting…")
@@ -323,7 +326,7 @@ export function Apps() {
     let cancelled = false;
     const projectId = currentProject?.id;
     const id = setInterval(() => {
-      apps.list(projectId).then((next) => {
+      apps.list(projectId, listScope).then((next) => {
         if (cancelled) return;
         setRows((prev) => {
           const wasRunning = new Set(prev.filter((r) => r.status === "running").map((r) => r.install_id));
@@ -339,7 +342,7 @@ export function Apps() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [tab, installedRows, currentProject?.id]);
+  }, [tab, installedRows, currentProject?.id, listScope]);
 
   // Keep the installed-app side panel bound to the freshest row. List
   // polling updates `rows`, but the panel stores the row object that was
@@ -517,9 +520,9 @@ export function Apps() {
                 {activeFilterCount > 0 && <span className="tabular-nums">{activeFilterCount}</span>}
               </button>
               <span className="ml-auto hidden shrink-0 px-1 text-[11px] tabular-nums text-text-dim sm:block">
-                {installedSearch.trim() || activeFilterCount ? `${filteredInstalled.length} of ${installedRows.length}` : `${installedRows.length}`} installed
+                {installedSearch.trim() || activeFilterCount ? `${filteredInstalled.length} of ${installedRows.length}` : `${installedRows.length}`} installed{allProjects ? " globally" : ""}
               </span>
-              <button
+              {!allProjects && <button
                 type="button"
                 onClick={openUpdateAll}
                 disabled={projectUpdates.length === 0}
@@ -533,7 +536,7 @@ export function Apps() {
                 {projectUpdates.length > 0
                   ? `Update all (${projectUpdates.length})`
                   : "All up to date"}
-              </button>
+              </button>}
             </div>
 
             {filteredInstalled.length === 0 ? (
@@ -1779,7 +1782,10 @@ function InstallModal({
   const [error, setError] = useState("");
   const [installing, setInstalling] = useState(false);
   const [config, setConfig] = useState<Record<string, string>>({});
-  const [scope, setScope] = useState<"project" | "global">("project");
+  // With no project selected (the sidebar is on All projects), installs
+  // default to global: there is no project to install into.
+  const [scope, setScope] = useState<"project" | "global">(projectId ? "project" : "global");
+  useEffect(() => { if (open) setScope(projectId ? "project" : "global"); }, [open, projectId]);
 
   // Reconcile scope against what the app actually supports as soon as
   // we see a preview. Without this, a global-only app would inherit
@@ -1789,10 +1795,14 @@ function InstallModal({
   useEffect(() => {
     if (!preview) return;
     const supported = preview.manifest.scopes;
+    if (!projectId && scope === "project" && supported.includes("global")) {
+      setScope("global");
+      return;
+    }
     if (!supported.includes(scope) && supported.length > 0) {
       setScope(supported[0] as "project" | "global");
     }
-  }, [preview, scope]);
+  }, [preview, scope, projectId]);
   // bindings: role → connection_id | install_id | null. Built by the
   // role pickers; sent verbatim to apps.install on submit.
   const [bindings, setBindings] = useState<Record<string, AppBindingValue>>({});
@@ -1936,6 +1946,7 @@ function InstallModal({
     return !r.required && intent?.kind === "install_app" && !intent.appName;
   });
   const installBlockers = [
+    ...(scope === "project" && !projectId ? ["Choose a project in the sidebar to install this app into it"] : []),
     ...(!deploymentSelectionReady(deploymentPlacement) ? ["Choose a deployment target"] : []),
     ...requiredRolesUnbound.map((r) => `Connect or install ${r.label || r.role}`),
     ...requiredFieldsUnfilled.map((f) => `Fill in ${f.label || f.name}`),
@@ -2280,8 +2291,10 @@ function PreviewAndConfigure({
                           key={choice}
                           type="button"
                           onClick={() => setScope(choice)}
+                          disabled={choice === "project" && !projectId}
+                          title={choice === "project" && !projectId ? "Choose a project in the sidebar to install into it" : undefined}
                           aria-pressed={scope === choice}
-                          className={`min-h-10 rounded border px-3 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
+                          className={`min-h-10 rounded border px-3 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 ${
                             scope === choice
                               ? "border-accent bg-accent/10 text-accent"
                               : "border-border text-text-muted hover:text-text"
