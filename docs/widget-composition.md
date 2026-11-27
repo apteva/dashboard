@@ -37,6 +37,33 @@ Context contains the page/project scope, selected resource, selected activity ID
 and optional transient preview. Selection and outputs are never saved to user layout
 preferences. Context resets when navigating between page scopes.
 
+`widgetContext.projects` lists the projects a widget may show as `{ id, name, color }`.
+A global widget gets every project the viewer can open; a project widget gets only
+its own, matching the platform rule that project-scoped installs cannot list sibling
+projects. `color` is the Project Settings colour as lower-case `#rgb`/`#rrggbb`, or
+`""` when none is set. The host never decides how it is shown: an app can use a dot,
+an edge, or a chart series. Show the project name with the colour and fall back to a
+neutral style when `color` is empty or `projects` is absent (older dashboards).
+
+To show project colours in an app widget:
+
+1. Read `props.widgetContext?.projects` and look each row's project up by id. Rows
+   need a project id; global list endpoints should already return one.
+2. Apply the colour with an inline style. App bundles are outside the dashboard's
+   Tailwind build, so generated colour classes do not exist there.
+3. Keep the project name next to the colour; colour alone is not enough.
+4. Treat a missing list or `""` as no colour and keep the current neutral look.
+
+```tsx
+const color = props.widgetContext?.projects?.find((p) => p.id === row.project_id)?.color;
+<span className="h-2 w-2 shrink-0 rounded-full"
+  style={color ? { backgroundColor: color } : undefined} />
+```
+
+App server code that needs colours reads `color` from
+`GET /api/apps/callback/projects`, which returns the same normalised value with
+the same project scoping.
+
 For rich output, pass `preview.component` with `app`, `name`, `installId`, and `props`.
 The renderer must already be declared by that installed app for
 `chat.message_attachment` and available in this scope. Unknown/unavailable renderers

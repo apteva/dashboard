@@ -8,6 +8,7 @@ import { auth, type DashboardWidgetSize, type TelemetryEvent } from "../../api";
 import { useOptionalAuth } from "../../hooks/useAuth";
 import { useTelemetryEvents } from "../../hooks/useTelemetryBus";
 import { usePanelEvents } from "../../hooks/usePanelEvents";
+import { useProjects } from "../../hooks/useProjects";
 import {
   ChatComponentMount,
   componentAllowedInSlot,
@@ -19,6 +20,7 @@ import {
   createWidgetActionBridge,
   type WidgetActionBridge,
   type WidgetContext,
+  widgetProjects,
 } from "./widgetContext";
 
 export type WidgetSize = DashboardWidgetSize;
@@ -740,13 +742,17 @@ export function ContributionMount({
   const width = widgetSpanClass(instance.size);
   // Built once per change of their inputs: app widgets commonly key effects
   // and fetches on these objects, so a fresh copy each render reads as new.
-  const effectiveContext = useMemo<WidgetContext>(() => ({
-    projectId,
-    scope: dashboardScope,
-    ...widgetContext,
-    agentId: agentId ?? instance.agent_id ?? widgetContext?.agentId,
-    threadId: threadId ?? widgetContext?.threadId,
-  }), [projectId, dashboardScope, widgetContext, agentId, instance.agent_id, threadId]);
+  const { projects } = useProjects();
+  const effectiveContext = useMemo<WidgetContext>(() => {
+    const base: WidgetContext = {
+      projectId,
+      scope: dashboardScope,
+      ...widgetContext,
+      agentId: agentId ?? instance.agent_id ?? widgetContext?.agentId,
+      threadId: threadId ?? widgetContext?.threadId,
+    };
+    return { ...base, projects: widgetProjects(projects, base.scope, base.projectId) };
+  }, [projectId, dashboardScope, widgetContext, agentId, instance.agent_id, threadId, projects]);
   const effectiveActions = useMemo(() => widgetActions || createWidgetActionBridge(), [widgetActions]);
   return (
     <div

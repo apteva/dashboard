@@ -7,6 +7,7 @@ import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } fr
 import { useTranslation } from "react-i18next";
 import { AppIcon } from "@apteva/ui-kit";
 import { useProjects } from "../hooks/useProjects";
+import { normalizeProjectColor } from "./projects/projectColor";
 import { ALL_PROJECTS_VALUE, scopeFromLink } from "../hooks/projectScopeLinks";
 import { useAuth } from "../hooks/useAuth";
 import { useAudience, type AudienceSection } from "../hooks/useAudience";
@@ -100,6 +101,7 @@ export function Layout() {
   const [refreshing, setRefreshing] = useState(false);
   const { projects, currentProject, allProjects, canSelectAll, loaded: projectsLoaded, setCurrentProject, selectAllProjects } = useProjects();
   const scopeName = allProjects ? "All projects" : currentProject?.name || "";
+  const scopeColor = normalizeProjectColor(currentProject?.color);
   const { project: projectUILayout, document: pageLayout } = useProjectUILayout(currentProject?.id);
   const pageNav = workspacePages(pageLayout, currentProject?.id)
     .filter((page) => page.pinned !== false)
@@ -489,35 +491,53 @@ export function Layout() {
             <button
               type="button"
               onClick={toggleSidebarCollapsed}
-              className="h-10 w-10 inline-flex items-center justify-center rounded-lg bg-bg-input text-text-muted hover:text-text"
+              className="relative h-10 w-10 inline-flex items-center justify-center rounded-lg bg-bg-input text-text-muted hover:text-text"
               aria-label={`Select project: ${scopeName || "none"}`}
               title={scopeName || "Select project"}
             >
               <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M3 6h6l2 2h10v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
               </svg>
+              {scopeColor && (
+                <span
+                  data-testid="project-color"
+                  aria-hidden="true"
+                  className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full"
+                  style={{ backgroundColor: scopeColor }}
+                />
+              )}
             </button>
           ) : (
-            <select
-              aria-label="Project"
-              value={allProjects ? ALL_PROJECTS_VALUE : currentProject?.id || ""}
-              onChange={(e) => chooseSidebarScope(e.target.value)}
-              className="w-full bg-bg-input border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
-            >
-              {canSelectAll && <>
-                <option value={ALL_PROJECTS_VALUE}>All projects</option>
-                <option disabled value="">──────────</option>
-              </>}
-              {projects.map((p) => {
-                const mine = !!user && p.user_id === user.id;
-                return (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                    {mine ? "" : " (shared)"}
-                  </option>
-                );
-              })}
-            </select>
+            <div className="relative">
+              {scopeColor && (
+                <span
+                  data-testid="project-color"
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-3 top-1/2 h-2.5 w-2.5 -translate-y-1/2 rounded-full"
+                  style={{ backgroundColor: scopeColor }}
+                />
+              )}
+              <select
+                aria-label="Project"
+                value={allProjects ? ALL_PROJECTS_VALUE : currentProject?.id || ""}
+                onChange={(e) => chooseSidebarScope(e.target.value)}
+                className={`w-full bg-bg-input border border-border rounded-lg ${scopeColor ? "pl-8" : "pl-3"} pr-3 py-2 text-sm text-text focus:outline-none focus:border-accent`}
+              >
+                {canSelectAll && <>
+                  <option value={ALL_PROJECTS_VALUE}>All projects</option>
+                  <option disabled value="">──────────</option>
+                </>}
+                {projects.map((p) => {
+                  const mine = !!user && p.user_id === user.id;
+                  return (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                      {mine ? "" : " (shared)"}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
           )}
         </div>
       )}

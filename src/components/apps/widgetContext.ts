@@ -5,6 +5,8 @@
  * second resource model and it does not introduce a new server-side entity.
  * App widgets may ignore it and continue using their existing props.
  */
+import { normalizeProjectColor } from "../projects/projectColor";
+
 export type WidgetResourceType = "agent" | "app" | "integration" | "skill" | "mcp" | "process" | "thread" | "page";
 
 export interface WidgetResourceRef {
@@ -24,6 +26,18 @@ export interface WidgetPreview {
   component?: { app: string; name: string; props?: Record<string, unknown>; installId: number };
 }
 
+/** A project as widgets see it. */
+export interface WidgetProject {
+  id: string;
+  name: string;
+  /**
+   * The colour chosen in Project Settings, as lower-case #rgb or #rrggbb, or
+   * "" when none. How to show it (a dot, an edge, a chart series) is up to
+   * the app.
+   */
+  color: string;
+}
+
 export interface WidgetContext {
   /** Read-only rendering of an unsaved configuration, distinct from sample previews. */
   configurationPreview?: boolean;
@@ -33,11 +47,30 @@ export interface WidgetContext {
   projectId?: string;
   pageId?: string;
   scope: "project" | "global";
+  /**
+   * Projects this widget may show, with their colours. A global widget gets
+   * every project the viewer can open; a project widget gets only its own.
+   */
+  projects?: WidgetProject[];
   agentId?: number;
   threadId?: string;
   selected?: WidgetResourceRef;
   activityId?: string;
   preview?: WidgetPreview;
+}
+
+/**
+ * Projects a widget may show. A global widget sees every project the viewer
+ * can open; a project widget sees only its own, matching the platform rule
+ * that project-scoped installs cannot list sibling projects.
+ */
+export function widgetProjects(
+  projects: readonly { id: string; name: string; color?: string | null }[],
+  scope: WidgetContext["scope"],
+  projectId?: string,
+): WidgetProject[] {
+  const visible = scope === "global" ? projects : projects.filter((project) => project.id === projectId);
+  return visible.map((project) => ({ id: project.id, name: project.name, color: normalizeProjectColor(project.color) }));
 }
 
 export type WidgetAction =
