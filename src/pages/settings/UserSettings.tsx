@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-import { subscriptions, channels, users as usersAPI, adminUsers, type UserRow } from "../../api";
+import { subscriptions, channels, users as usersAPI, adminUsers, passwordResetURL, type UserRow } from "../../api";
 
 import { Modal } from "../../components/Modal";
 
@@ -132,7 +132,7 @@ export function UsersTab() {
                     <button
                       onClick={() => setResetTarget(u)}
                       className="text-[10px] text-text-muted hover:text-accent transition-colors mr-3"
-                      title="Set a new password on behalf of this user"
+                      title="Create a one-time link this user opens to choose a new password"
                     >
                       Reset password
                     </button>
@@ -157,7 +157,7 @@ export function UsersTab() {
         open={showAdd}
         onClose={() => { setShowAdd(false); load(); }}
       />
-      <ResetPasswordModal
+      <ResetLinkModal
         target={resetTarget}
         onClose={() => setResetTarget(null)}
       />
@@ -285,29 +285,26 @@ function AddUserModal({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
-function ResetPasswordModal({ target, onClose }: { target: UserRow | null; onClose: () => void }) {
-  const [next, setNext] = useState("");
-  const [confirm, setConfirm] = useState("");
+// ResetLinkModal creates a one-time link the user opens to choose a new
+// password. The server sends no email, so the admin passes the link on.
+export function ResetLinkModal({ target, onClose }: { target: UserRow | null; onClose: () => void }) {
+  const [link, setLink] = useState<{ url: string; expiresAt: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [ok, setOk] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (target) { setNext(""); setConfirm(""); setErr(""); setOk(false); setBusy(false); }
+    if (target) { setLink(null); setErr(""); setBusy(false); setCopied(false); }
   }, [target]);
 
   if (!target) return null;
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const create = async () => {
     setErr("");
-    if (next.length < 8) { setErr("Password must be at least 8 characters."); return; }
-    if (next !== confirm) { setErr("Passwords don't match."); return; }
     setBusy(true);
     try {
-      await usersAPI.resetPassword(target.id, next);
-      setOk(true);
-      setTimeout(onClose, 1500);
+      const created = await usersAPI.createResetLink(target.id);
+      setLink({ url: passwordResetURL(created.token), expiresAt: created.expires_at });
     } catch (e: any) {
       setErr(e?.message || String(e));
     } finally {
@@ -315,39 +312,68 @@ function ResetPasswordModal({ target, onClose }: { target: UserRow | null; onClo
     }
   };
 
+  const copy = async () => {
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link.url);
+      setCopied(true);
+    } catch {
+      setErr("Could not copy. Select the link and copy it yourself.");
+    }
+  };
+
   return (
     <Modal open={!!target} onClose={onClose}>
-      <form onSubmit={submit} className="space-y-3 text-xs p-5 max-w-md">
+      <div className="space-y-3 text-xs p-5 max-w-md">
         <h3 className="text-text text-sm font-bold">Reset password for {target.email}</h3>
-        <p className="text-text-muted leading-relaxed">
-          Sets a new password without needing the current one. Every
-          active session for this user is signed out immediately.
-        </p>
-        <label className="block">
-          <span className="text-text-muted">New password</span>
-          <input type="text" value={next} onChange={(e) => setNext(e.target.value)} minLength={8}
-            className="mt-1 w-full bg-bg-input border border-border rounded-lg px-3 py-1.5 text-text font-mono focus:outline-none focus:border-accent"
-            required autoFocus disabled={busy || ok}
-          />
-        </label>
-        <label className="block">
-          <span className="text-text-muted">Confirm</span>
-          <input type="text" value={confirm} onChange={(e) => setConfirm(e.target.value)} minLength={8}
-            className="mt-1 w-full bg-bg-input border border-border rounded-lg px-3 py-1.5 text-text font-mono focus:outline-none focus:border-accent"
-            required disabled={busy || ok}
-          />
-        </label>
+        {link ? (
+          <>
+            <p className="text-text-muted leading-relaxed">
+              Send this link to {target.email} privately. Anyone who has it can
+              set the password, until it is used or expires on {fmtDateTime(link.expiresAt)}.
+            </p>
+            <div className="flex gap-2">
+              <input
+                readOnly
+                aria-label="Reset link"
+                value={link.url}
+                onFocus={(e) => e.currentTarget.select()}
+                className="min-w-0 flex-1 bg-bg-input border border-border rounded-lg px-3 py-1.5 font-mono text-text focus:outline-none focus:border-accent"
+              />
+              <button type="button" onClick={copy} className="shrink-0 px-3 py-1.5 border border-border rounded-lg text-text-muted hover:text-text transition-colors">
+                {copied ? "Copied" : "Copy"}
+              </button>
+            </div>
+            <p className="text-text-dim leading-relaxed">
+              Their current password keeps working until they use the link. Then
+              every session of theirs signs out.
+            </p>
+          </>
+        ) : (
+          <p className="text-text-muted leading-relaxed">
+            Creates a one-time link {target.email} opens to choose a new password.
+            It works for 24 hours, and creating another link cancels this one.
+          </p>
+        )}
         {err && <div className="text-red text-[11px] bg-red/10 border border-red/30 rounded px-2 py-1">{err}</div>}
-        {ok && <div className="text-green text-[11px] bg-green/10 border border-green/30 rounded px-2 py-1">Password reset. User signed out of all sessions.</div>}
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onClose} className="px-3 py-1.5 border border-border rounded-lg text-text-muted hover:text-text transition-colors" disabled={busy}>Cancel</button>
-          <button type="submit" className="px-3 py-1.5 bg-accent text-bg rounded-lg font-bold hover:bg-accent-hover transition-colors disabled:opacity-50" disabled={busy || ok}>
-            {busy ? "Updating…" : "Reset password"}
+          <button type="button" onClick={onClose} className="px-3 py-1.5 border border-border rounded-lg text-text-muted hover:text-text transition-colors" disabled={busy}>
+            {link ? "Done" : "Cancel"}
           </button>
+          {!link && (
+            <button type="button" onClick={create} className="px-3 py-1.5 bg-accent text-bg rounded-lg font-bold hover:bg-accent-hover transition-colors disabled:opacity-50" disabled={busy}>
+              {busy ? "Creating…" : "Create reset link"}
+            </button>
+          )}
         </div>
-      </form>
+      </div>
     </Modal>
   );
+}
+
+function fmtDateTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
 }
 
 function DeleteUserModal({ target, onClose }: { target: UserRow | null; onClose: () => void }) {

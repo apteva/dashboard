@@ -27,6 +27,7 @@ export function Login() {
   const [setupToken, setSetupToken] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showForgot, setShowForgot] = useState(false);
   const { login, verifyMFA, register, authenticated, refresh } = useAuth();
   const acceptingInvite = useRef(false);
   const navigate = useNavigate();
@@ -416,6 +417,28 @@ export function Login() {
           >
             {busy ? "…" : isRegister ? "Register" : "Sign in"}
           </button>
+
+          {!isRegister && (
+            <div className="mt-4 text-sm">
+              <button
+                type="button"
+                aria-expanded={showForgot}
+                onClick={() => setShowForgot((open) => !open)}
+                className="w-full text-text-muted hover:text-text transition-colors"
+              >
+                Forgot your password?
+              </button>
+              {showForgot && (
+                <div className="mt-3 space-y-2 rounded-lg border border-border bg-bg-input px-4 py-3 text-xs leading-relaxed text-text-muted">
+                  <p>Ask an admin of this Apteva for a reset link. They create it in Settings, Users.</p>
+                  <p>
+                    If you run Apteva yourself, run this on the machine it runs on:
+                    <code className="mt-1 block break-words font-mono text-text">apteva reset-password --email you@example.com</code>
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Only show the register toggle when the server actually accepts
               public registrations. In `locked` mode the button would lead to
