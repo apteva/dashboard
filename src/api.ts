@@ -575,6 +575,16 @@ export const auth = {
       new_password: newPassword,
     }),
 
+  // Public, for the one-time reset links admins create. The token comes from
+  // the link's #fragment and is only ever sent in a request body.
+  checkPasswordReset: (token: string) =>
+    request<{ email: string; expires_at: string }>("POST", "/auth/password-reset/check", { token }),
+  resetPassword: (token: string, newPassword: string) =>
+    request<{ status: string; email: string }>("POST", "/auth/password-reset", {
+      token,
+      new_password: newPassword,
+    }),
+
   // Personal API keys for this user. Backed by /auth/keys — server scopes
   // each key to the calling user via the session cookie. The raw key is
   // only returned by createKey; subsequent listKeys only exposes the prefix.
@@ -673,13 +683,16 @@ export const users = {
   preview: (id: number) =>
     request<UserDeletePreview>("DELETE", `/users/${id}?dry_run=1`),
   remove: (id: number) => request<{ status: string }>("DELETE", `/users/${id}`),
-  // Admin-side password reset: no current-password check, revokes every
-  // session of the target user so they must log in again.
-  resetPassword: (id: number, newPassword: string) =>
-    request<{ status: string }>("PATCH", `/users/${id}/password`, {
-      new_password: newPassword,
-    }),
+  // Admin: a one-time link the user opens to choose a new password. It
+  // replaces any earlier link for that user and expires after 24 hours.
+  createResetLink: (id: number) =>
+    request<{ token: string; url: string; expires_at: string }>("POST", `/users/${id}/password-reset-link`),
 };
+
+/** The reset page on this dashboard for a link token. */
+export function passwordResetURL(token: string, origin = window.location.origin): string {
+  return `${origin}/reset-password#${token}`;
+}
 
 // Provider types (catalog)
 export interface ProviderTypeInfo {

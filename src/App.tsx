@@ -24,6 +24,7 @@ import { Login } from "./pages/Login";
 // and app management contain large graphs/forms that should not delay login
 // or the project dashboard for users who never visit those screens.
 const Connect = lazy(() => import("./pages/Connect").then((m) => ({ default: m.Connect })));
+const ResetPassword = lazy(() => import("./pages/ResetPassword").then((m) => ({ default: m.ResetPassword })));
 const Onboarding = lazy(() => import("./pages/Onboarding").then((m) => ({ default: m.Onboarding })));
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
 const Personal = lazy(() => import("./pages/Personal").then((m) => ({ default: m.Personal })));
@@ -110,6 +111,7 @@ export default function App() {
             <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/connect/:token" element={<Connect />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           <Route
             path="/onboarding"
             element={
